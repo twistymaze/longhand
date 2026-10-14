@@ -10,11 +10,13 @@ symptoms:
   - "Regenerate Summary on that note failed later, with the network up, after a reply was cut off at 2048 tokens"
   - "Transcribe Again on the same note worked at once, with the same endpoint and model"
   - "The log showed budget 8192 tokens (Default) for that run, and 1000000 tokens (Litellm) for every other run"
+  - "After PR #15, a note that already had the saved 8192 plan still failed on each Regenerate Summary: the model's replies do not fit in its context"
 root_cause: missing_validation
 resolution_type: code_fix
 severity: high
 framework_version: rust 1.94.0
-tags: [summary, summary-regeneration, context-probe, budget, plan, checkpoint, stale-state, not-reachable, retry, sleep, wake, darkwake, network]
+last_updated: 2026-10-14
+tags: [summary, summary-regeneration, context-probe, budget, plan, checkpoint, stale-state, not-reachable, retry, sleep, wake, darkwake, network, context-limit, server-error]
 related_components: [summarize, background_job]
 ---
 
@@ -66,9 +68,28 @@ Three changes, in PR #15.
   - `transcribe_again_on_a_note_with_no_title_stores_a_title_request`.
 - **Forensics for a "failed after I closed the lid" report.** Collect the app log, `pmset -g log | grep -E '(Sleep|Wake|DarkWake)'` for the day, and the note's `longhand.json`. Convert the log's UTC times to local time before you compare them with the `pmset` lines.
 
+## Follow-up: error answers and plans that were already saved (PR #17)
+
+PR #15 did not cover two cases. A laptop on version 1.1.2 woke later the same day and showed both.
+
+- **An error answer still gave the default.** The first probe got an answer from the server, not a connect failure, so PR #15's check did not stop the run. The run saved the 8192 plan again. The first completion then failed in the same second.
+- **A note that already had the saved plan stayed broken.** Regenerate Summary keeps a saved plan when the prompt did not change (`crates/pipeline/src/save.rs`, `summarize_again`). At 8192 tokens the reply reserve can grow only to 4096 (half the context), so each run stopped with "the model's replies do not fit in its context". Only Transcribe Again, which deletes the summary checkpoints, could repair the note.
+
+PR #17 changed four things:
+
+1. `answer` and `is_server_problem` (`crates/summarize/src/context.rs:146-161`): a 5xx answer (but not 501), a 408 or a 429 on the **first** probe stops the run before a plan is saved, like a connect failure. A later probe that fails is still a miss, because a gateway can answer 503 for a route that it does not have.
+2. `DEFAULT_LIMIT` is 128,000 (`context.rs:14`). The plan's KTD16 chose 8192; the user chose the large default. A server that gives no probe value and cuts a long prompt silently (Ollama's OpenAI route, for example) can now give a summary of part of the transcript with no error. The Settings footer tells the user to enter the model's limit for such a server.
+3. `Plan::agrees_with` (`crates/pipeline/src/summarize.rs:117`, called at line 530): a saved plan is used again only while the Context limit setting gives its budget. A plan under an older default, under a learned limit, or under a limit that the user cleared is made again with its calls. A set limit keeps a plan under the same limit, whatever gave it, so its calls are not sent again.
+4. A "prompt too long" rejection stops the run and asks the user to enter the limit in Settings > Summaries > Context limit (a lower limit when one is set). Longhand no longer learns and saves a smaller limit. `BudgetSource::Learned` stays only so that older saved plans still parse.
+
+Tests: `a_server_error_from_a_probe_is_an_error_not_the_default` and `a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss` (`crates/summarize/tests/context.rs`), `regenerating_a_stub_planned_under_an_old_default_budget_plans_again` and `a_rejection_for_length_stops_the_summary_and_asks_for_the_context_limit` (`crates/pipeline/tests/runner.rs`), and `a_saved_plan_is_kept_only_while_the_context_limit_setting_gives_its_budget` (unit test in `summarize.rs`).
+
+**Rule added:** when a fix stops a bad value from being saved, also repair the values that earlier versions already saved. Here, the check that decides whether a saved plan can be used again (`agrees_with`) did that repair.
+
 ## Related Issues
 
 - [summary-regeneration-failed-with-no-working-folder.md](summary-regeneration-failed-with-no-working-folder.md): another Regenerate Summary failure, with a different cause.
 - [retry-showed-failed-speaker-attempt-progress.md](retry-showed-failed-speaker-attempt-progress.md): state from a failed try carried into the next try.
 - [resume-during-processing-deleted-live-text-proofs.md](resume-during-processing-deleted-live-text-proofs.md): discard checkpoints that cannot be trusted instead of resuming them.
 - PR #15.
+- PR #17.
