@@ -26,8 +26,6 @@ use session_core::{Event, SessionState, Stage};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::summary_queue::{Class, SummaryQueue, Turn};
-
 use crate::diarize::Speakers;
 use crate::folder_rename::{self, FolderRename};
 use crate::live::{EngineAccess, EngineSlot};
@@ -35,6 +33,7 @@ use crate::progress::{SpeakerMeter, SpeakerProgress, SpeakerWork};
 use crate::reprocess::{self, Guards, Readiness, Refusal};
 use crate::save;
 use crate::summarize::{self, SummaryEndpoint};
+use crate::summary_queue::{Class, SummaryQueue, Turn};
 use crate::transcribe::{self, TurnCuts};
 use crate::type_move::{self, TypeChange};
 use crate::{Control, SharedStore, StageError, assemble, checkpoint, join, lock, verify};
@@ -404,6 +403,14 @@ fn held<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Tell the app the wait of `session_id` (KTD10). `None` ends the wait.
+fn tell_wait(env: &Environment, session_id: &str, wait: Option<Wait>) {
+    (env.events)(RunnerEvent::Waits {
+        session_id: session_id.to_string(),
+        wait,
+    });
+}
+
 /// The control of a stage of a note. It stops on cancel, on quit, and when
 /// the note is no longer `Processing`. An audio stage also waits while
 /// capture is active (KTD20). A stage in the summary queue does not wait,
@@ -431,12 +438,7 @@ impl StageControl {
 impl Control for StageControl {
     fn proceed(&self) -> Result<(), StageError> {
         // The app shows the pause and its end (KTD10).
-        let tell = |wait| {
-            (self.env.events)(RunnerEvent::Waits {
-                session_id: self.session_id.clone(),
-                wait,
-            })
-        };
+        let tell = |wait| tell_wait(&self.env, &self.session_id, wait);
         let mut paused = false;
         loop {
             if self.cancel.is_cancelled() || self.taken_back() {
@@ -526,12 +528,7 @@ impl Runner {
     /// back), also while it waits for the summary queue. Completed
     /// checkpoints stand.
     pub fn cancel(&self, session_id: &str) {
-        if let Some(token) = self
-            .current
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(session_id)
-        {
+        if let Some(token) = held(&self.current).get(session_id) {
             token.cancel();
         }
     }
@@ -767,11 +764,7 @@ impl Runner {
     pub fn is_working(&self) -> bool {
         self.permit.available_permits() == 0
             || self.summary.is_active()
-            || !self
-                .current
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .is_empty()
+            || !held(&self.current).is_empty()
     }
 
     /// True while `session_id` waits for its turn in the summary queue:
@@ -797,10 +790,7 @@ impl Runner {
     /// Mark that `session_id` waits for `wait`, and tell the app.
     fn mark(&self, session_id: &str, wait: Wait) {
         held(&self.marks).insert(session_id.to_string(), wait);
-        (self.env.events)(RunnerEvent::Waits {
-            session_id: session_id.to_string(),
-            wait: Some(wait),
-        });
+        tell_wait(&self.env, session_id, Some(wait));
     }
 
     /// Remove the wait mark of `session_id`. Returns whether it had one.
@@ -869,11 +859,7 @@ impl Runner {
     pub async fn run_titles(&self) -> Vec<(String, TitleJob)> {
         let mut done = Vec::new();
         while !self.shutdown.is_cancelled() {
-            let next = self
-                .titles
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .pop_front();
+            let next = held(&self.titles).pop_front();
             let Some(id) = next else {
                 break;
             };
@@ -887,13 +873,7 @@ impl Runner {
     /// runs. A title job waits for its turn in the summary queue, so the
     /// processing loop does not wait for it.
     fn spawn_titles(self: &Arc<Self>) {
-        if self
-            .titles
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
-            || self.titles_running.swap(true, Ordering::SeqCst)
-        {
+        if held(&self.titles).is_empty() || self.titles_running.swap(true, Ordering::SeqCst) {
             return;
         }
         let runner = Arc::clone(self);
@@ -1211,10 +1191,7 @@ impl Runner {
             }
         }
         for id in missing {
-            (self.env.events)(RunnerEvent::Waits {
-                session_id: id,
-                wait: Some(Wait::Model),
-            });
+            tell_wait(&self.env, &id, Some(Wait::Model));
         }
         let (id, model) = claimed?;
         // A quit stops the work on every note (KTD4).
@@ -1226,44 +1203,42 @@ impl Runner {
     /// Dequeue the first queued session whose models are on disk. Each
     /// session that it reads goes in `scanned` with its readiness.
     fn claim_ready(&self, scanned: &mut Vec<(String, bool)>) -> Option<(String, String)> {
-        {
-            let mut store = lock(&self.env.store);
-            let (next, model) = store.queue().ok()?.into_iter().find_map(|id| {
-                let record = store.session(&id).ok()??;
-                // A Transcribe Again run uses the model it recorded (KTD14).
-                let again = store.transcribe_again_marks(&id).ok()?.model;
-                let model = again
-                    .or(record.asr_model)
-                    .unwrap_or_else(|| self.env.engines.default_model());
-                let ready = if let Some(value) = store
-                    .result_state(&id, "pending-snapshot")
-                    .ok()?
-                    .or(record.recognition_snapshot)
-                {
-                    match serde_json::from_value::<models::recognition::ExecutionSpec>(value) {
-                        Ok(spec) => self.env.engines.ready_exact(&spec),
-                        // Claim invalid snapshots so their precise failure is visible.
-                        Err(_) => true,
-                    }
-                } else {
-                    self.env.engines.ready(&model)
-                };
-                scanned.push((id.clone(), ready));
-                ready.then_some((id, model))
-            })?;
-            let id = match store.dequeue_session(&next, &self.owner, now()) {
-                Ok(Some(id)) => id,
-                Ok(None) => return None,
-                Err(e) => {
-                    log::error!("could not claim {next}: {e}");
-                    return None;
+        let mut store = lock(&self.env.store);
+        let (next, model) = store.queue().ok()?.into_iter().find_map(|id| {
+            let record = store.session(&id).ok()??;
+            // A Transcribe Again run uses the model it recorded (KTD14).
+            let again = store.transcribe_again_marks(&id).ok()?.model;
+            let model = again
+                .or(record.asr_model)
+                .unwrap_or_else(|| self.env.engines.default_model());
+            let ready = if let Some(value) = store
+                .result_state(&id, "pending-snapshot")
+                .ok()?
+                .or(record.recognition_snapshot)
+            {
+                match serde_json::from_value::<models::recognition::ExecutionSpec>(value) {
+                    Ok(spec) => self.env.engines.ready_exact(&spec),
+                    // Claim invalid snapshots so their precise failure is visible.
+                    Err(_) => true,
                 }
+            } else {
+                self.env.engines.ready(&model)
             };
-            // The queued notes wait for this note until it leaves its
-            // audio stages.
-            held(&self.audio).insert(id.clone());
-            Some((id, model))
-        }
+            scanned.push((id.clone(), ready));
+            ready.then_some((id, model))
+        })?;
+        let id = match store.dequeue_session(&next, &self.owner, now()) {
+            Ok(Some(id)) => id,
+            Ok(None) => return None,
+            Err(e) => {
+                log::error!("could not claim {next}: {e}");
+                return None;
+            }
+        };
+        // The queued notes wait for this note until it leaves its
+        // audio stages.
+        held(&self.audio).insert(id.clone());
+        Some((id, model))
     }
 
     /// The task of a claimed note, from dequeue to the end of its Save
@@ -1624,10 +1599,7 @@ impl Runner {
             .await
             .map_err(|e| StageError::Failed(e.to_string()))?;
         drop(mark);
-        (self.env.events)(RunnerEvent::Waits {
-            session_id: id.to_string(),
-            wait: None,
-        });
+        tell_wait(&self.env, id, None);
         Ok(permit)
     }
 
@@ -2326,11 +2298,7 @@ impl Drop for NoteTask<'_> {
         self.heartbeat.abort();
         self.runner.unmark(&self.id);
         held(&self.runner.audio).remove(&self.id);
-        self.runner
-            .current
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.id);
+        held(&self.runner.current).remove(&self.id);
     }
 }
 

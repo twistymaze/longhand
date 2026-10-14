@@ -999,7 +999,6 @@ fn write_working(dir: &Path, name: &str, contents: &str) -> Result<(), StageErro
     Ok(())
 }
 
-/// The home folder of a session, if it is saved.
 /// The error of a regeneration of a note that is not saved.
 fn not_saved() -> StageError {
     StageError::Failed(
@@ -1014,6 +1013,7 @@ pub fn require_saved(store: &Store, session_id: &str) -> Result<(), StageError> 
     Ok(())
 }
 
+/// The home folder of a session, if it is saved.
 fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
     Ok(store
         .session(session_id)?

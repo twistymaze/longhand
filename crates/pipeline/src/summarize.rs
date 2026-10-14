@@ -430,8 +430,7 @@ pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 
 /// The summarize stage: produce the summary and write it into the working
 /// directory, where the save stage picks it up. `queued` is the time that
-/// the note waited for its turn in the summary queue. The request log
-/// gives it.
+/// the note waited for its turn in the summary queue, for the request log.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
