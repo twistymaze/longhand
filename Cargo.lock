@@ -2937,6 +2937,7 @@ dependencies = [
  "session-core",
  "session-save",
  "shared-settings",
+ "summarize",
  "tempfile",
  "thiserror 2.0.20",
 ]

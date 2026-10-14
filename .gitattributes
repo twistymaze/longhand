@@ -9,3 +9,7 @@ crates/*/tests/golden/** text eol=lf
 # The test storage folder keeps LF line ends, so the Rust tests and the
 # script tests read the same bytes on Windows as on macOS (KTD13).
 testdata/** eol=lf
+
+# The skill's copy of the built-in prompts keeps LF line ends, so the skill
+# drift test compares the same bytes on Windows as on macOS.
+plugins/longhand/skills/longhand-notes/references/built-in-prompts.md text eol=lf

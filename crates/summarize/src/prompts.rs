@@ -121,8 +121,10 @@ type is not clear, write only the topics, with no type and no colon.
 
 Keep the title to about ten words.";
 
-/// The two built-in prompts, the default first. Their texts live only in
-/// code, so a new app version can improve them (KTD6).
+/// The two built-in prompts, the default first. Their texts live in code,
+/// so a new app version can improve them (KTD6). The agent skill has a copy
+/// in `plugins/longhand/skills/longhand-notes/references/built-in-prompts.md`.
+/// Change the copy with the text: the skill drift test compares them.
 pub fn built_ins() -> [Prompt; 2] {
     [
         Prompt {
