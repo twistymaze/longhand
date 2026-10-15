@@ -130,6 +130,15 @@ struct Pending {
     install: bool,
 }
 
+/// A download of `version` that has not started.
+fn downloading(version: String) -> UpdateState {
+    UpdateState::Downloading {
+        version,
+        downloaded: 0,
+        total: None,
+    }
+}
+
 /// True when version `a` is newer than version `b`. Two versions that do
 /// not parse count as newer when they differ.
 fn newer(a: &str, b: &str) -> bool {
@@ -589,11 +598,7 @@ impl Flow {
     fn install(&mut self, version: String) -> Vec<Effect> {
         self.delays.remind_until = None;
         self.download_hidden = false;
-        self.state = UpdateState::Downloading {
-            version,
-            downloaded: 0,
-            total: None,
-        };
+        self.state = downloading(version);
         match &mut self.pending {
             Some(pending) => {
                 pending.install = true;
@@ -619,11 +624,7 @@ impl Flow {
         if self.saved.as_deref() == Some(version.as_str()) {
             return self.install_saved(version, facts);
         }
-        self.state = UpdateState::Downloading {
-            version: version.clone(),
-            downloaded: 0,
-            total: None,
-        };
+        self.state = downloading(version.clone());
         vec![Effect::Download { version }]
     }
 
@@ -1063,26 +1064,22 @@ mod tests {
         );
     }
 
-    fn downloading(version: &str) -> UpdateState {
-        UpdateState::Downloading {
-            version: version.into(),
-            downloaded: 0,
-            total: None,
-        }
-    }
-
     #[test]
     fn covers_ae2_install_downloads_the_release_that_a_check_at_the_click_names() {
         let mut f = offering(NEW);
         f.step(Input::Choice(Choice::Install), facts(NINE));
-        assert_eq!(f.state(), &downloading(NEW), "the progress shows at once");
+        assert_eq!(
+            f.state(),
+            &downloading(NEW.into()),
+            "the progress shows at once"
+        );
         assert_eq!(
             f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE)),
             vec![Effect::Download {
                 version: NEWER.into()
             }]
         );
-        assert_eq!(f.state(), &downloading(NEWER));
+        assert_eq!(f.state(), &downloading(NEWER.into()));
     }
 
     #[test]
@@ -1189,7 +1186,7 @@ mod tests {
             f.step(Input::Choice(Choice::RelaunchNow), facts(NINE + HOUR)),
             vec![Effect::QuickCheck, Effect::SaveDelays]
         );
-        assert_eq!(f.state(), &downloading(NEWER));
+        assert_eq!(f.state(), &downloading(NEWER.into()));
     }
 
     #[test]
@@ -1447,7 +1444,11 @@ mod tests {
         assert_eq!(f.tray_version(), Some(NEW), "a failed check keeps it");
         f.step(Input::Timer, facts(NINE + 2 * HOUR));
         f.step(Input::Checked(Ok(None)), facts(NINE + 2 * HOUR));
-        assert_eq!(f.tray_version(), None, "a check that names no release clears it");
+        assert_eq!(
+            f.tray_version(),
+            None,
+            "a check that names no release clears it"
+        );
     }
 
     #[test]

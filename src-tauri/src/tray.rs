@@ -90,7 +90,7 @@ pub fn set_update_item(app: &AppHandle, version: Option<String>) {
         queued.clone_from(&text);
     }
     let handle = app.clone();
-    let queued = app.run_on_main_thread(move || {
+    let scheduled = app.run_on_main_thread(move || {
         let Some(state) = handle.try_state::<UpdateMenu>() else {
             return;
         };
@@ -110,7 +110,7 @@ pub fn set_update_item(app: &AppHandle, version: Option<String>) {
             log::warn!("the tray update item could not change: {e}");
         }
     });
-    if let Err(e) = queued {
+    if let Err(e) = scheduled {
         log::warn!("the tray update item change could not be queued: {e}");
     }
 }

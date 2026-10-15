@@ -12,10 +12,7 @@ use crate::managers::updates::{Choice, UpdateManager, UpdateStateChanged};
 #[tauri::command]
 #[specta::specta]
 pub fn update_state(manager: State<'_, Arc<UpdateManager>>) -> UpdateStateChanged {
-    UpdateStateChanged {
-        state: manager.state(),
-        with_key: manager.with_key(),
-    }
+    manager.snapshot()
 }
 
 /// "Check for Updates…" (R11).

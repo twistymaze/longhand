@@ -79,8 +79,8 @@ enum Message {
 
 /// True when the update window may be visible (KTD2): the flow wants it,
 /// and it shows already, a Longhand window is active, or the user asked.
-fn may_show(wanted: bool, shown: bool, active: bool, asked: bool) -> bool {
-    wanted && (shown || active || asked)
+fn may_show(wanted: bool, shown: bool, asked: bool, active: impl FnOnce() -> bool) -> bool {
+    wanted && (shown || asked || active())
 }
 
 /// True when the launch installs the saved archive: the manifest names
@@ -242,18 +242,13 @@ impl UpdateManager {
         self.send(Message::TrayOpen);
     }
 
-    /// The version for the update item of the tray menu.
-    pub fn tray_version(&self) -> Option<String> {
-        lock(&self.flow).tray_version().map(str::to_string)
-    }
-
-    /// True when the update window shows with the focus: the user asked.
-    pub fn with_key(&self) -> bool {
-        lock(&self.flow).user_asked()
-    }
-
-    pub fn state(&self) -> UpdateState {
-        lock(&self.flow).state().clone()
+    /// The state and whether the window has the focus, read together.
+    pub fn snapshot(&self) -> UpdateStateChanged {
+        let flow = lock(&self.flow);
+        UpdateStateChanged {
+            state: flow.state().clone(),
+            with_key: flow.user_asked(),
+        }
     }
 
     fn facts(&self, busy: bool) -> Facts {
@@ -305,7 +300,7 @@ impl UpdateManager {
             }
         }
 
-        let (before, effects, state, wanted, with_key, install, delays) = {
+        let (before, effects, state, wanted, with_key, install, tray, delays) = {
             let mut flow = lock(&self.flow);
             let before = flow.state().clone();
             let effects: Vec<Effect> = inputs
@@ -319,6 +314,7 @@ impl UpdateManager {
                 flow.window_visible(),
                 flow.user_asked(),
                 flow.install_at_quit().map(str::to_string),
+                flow.tray_version().map(str::to_string),
                 flow.delays().clone(),
             )
         };
@@ -335,14 +331,13 @@ impl UpdateManager {
             .app
             .get_webview_window(crate::window::UPDATE_WINDOW)
             .is_some();
-        let visible = may_show(
-            wanted,
-            shown,
-            crate::window::longhand_window_active(&self.app),
-            with_key,
-        );
+        // The key-window query waits on the main thread, so it runs only
+        // when it decides the result.
+        let visible = may_show(wanted, shown, with_key, || {
+            crate::window::longhand_window_active(&self.app)
+        });
         crate::window::show_update_window(&self.app, visible, with_key, asked_now);
-        crate::tray::set_update_item(&self.app, self.tray_version());
+        crate::tray::set_update_item(&self.app, tray);
         for effect in effects {
             match effect {
                 Effect::Check => self.start_check(CHECK_TIMEOUT),
@@ -412,8 +407,6 @@ impl UpdateManager {
         archive::save(&dir, version, &bytes, &update.signature)
     }
 
-    /// At `RunEvent::Exit`: install the build that the user asked for (R17,
-    /// AE7). Processing must already be stopped.
     /// Keep the `Update` of the build that a quit installs, taken from the
     /// check that named it. A later check replaces only `update` (KTD8).
     fn keep_install_update(&self, version: Option<&str>) {
@@ -429,6 +422,8 @@ impl UpdateManager {
         }
     }
 
+    /// At `RunEvent::Exit`: install the build that the user asked for (R17,
+    /// AE7). Processing must already be stopped.
     pub fn install_at_exit(&self) {
         let Some(version) = lock(&self.flow).install_at_quit().map(str::to_string) else {
             return;
@@ -545,17 +540,17 @@ mod tests {
     #[test]
     fn the_update_window_shows_when_wanted_and_shown_active_or_asked() {
         assert!(
-            may_show(true, false, true, false),
+            may_show(true, false, false, || true),
             "a Longhand window is key"
         );
         assert!(
-            !may_show(true, false, false, false),
+            !may_show(true, false, false, || false),
             "the notice waits for a Longhand window"
         );
-        assert!(may_show(true, true, false, false), "it shows already");
-        assert!(may_show(true, false, false, true), "the user asked");
+        assert!(may_show(true, true, false, || false), "it shows already");
+        assert!(may_show(true, false, true, || false), "the user asked");
         assert!(
-            !may_show(false, true, true, true),
+            !may_show(false, true, true, || true),
             "the flow does not want it"
         );
     }
