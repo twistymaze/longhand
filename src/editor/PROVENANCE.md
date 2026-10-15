@@ -122,11 +122,20 @@ Borrowed material in this directory, one record per file (R27). The source is An
 ## `plugins/changed-ranges.ts`
 
 - Repository: https://github.com/fastrepl/anarlog
-- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Revision: a84a8a5df1666a1ea19383548c246f03f9584687
 - Source paths: `packages/editor/src/plugins/changed-ranges.ts`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: copied
+
+## `plugins/changed-ranges.test.ts`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: a84a8a5df1666a1ea19383548c246f03f9584687
+- Source paths: `packages/editor/src/plugins/image-trailing-paragraph.test.ts`
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: reference — upstream's regression case for a bullet that joins the list above shows the defect. Longhand has no image trailing paragraph plugin, so it tests `getChangedRanges` directly with its own transaction and schema, and adds the single-step, no-change and autolink cases
 
 ## `plugins/clear-marks-on-enter.ts`
 
