@@ -34,7 +34,7 @@ When the window opens, it keeps the version that the check found. While the wind
 
 - **Wait for a Longhand window, not for any app activation.** A window in front shows that the user uses Longhand. The tray menu and the recording widget do not show this. Governs R1, R2.
 - **A tray menu item for users who keep no window open.** With "Hide from Dock" on, a user can go days with no Longhand window in front. The tray item shows the update without an interruption. (session-settled: user-directed — chosen over "wait for a window only" and over "show a normal window after a long wait (for example 3 days)": the tray item tells the user and does not interrupt.) Governs R4, R5.
-- **The newest release, always.** Each step that starts a download or an install uses the newest release that a check found. This prevents two updates in a row. Governs R6 to R8.
+- **The newest release, always.** Each step that starts a download or an install uses the newest release that a check found. This prevents two updates in a row. Governs R6 to R9.
 
 ### Requirements
 
@@ -51,13 +51,14 @@ When the window opens, it keeps the version that the check found. While the wind
 
 **Newest release**
 
-- R6. While a notice waits or shows, the hourly checks continue. A check that finds a newer release changes the version in the notice and in the tray item.
-- R7. A click on "Install and Relaunch" downloads the newest release at the time of the click, also when the notice shows an older version. The progress shows the version that downloads.
+- R6. The hourly checks continue while a notice waits or shows, and during the 24-hour delays after "Remind Me Later" and "Later". A check that finds a newer release changes the version in the notice and in the tray item. The delays still stop the notice from showing by itself.
+- R7. A click on "Install and Relaunch" starts a new check and downloads the release that this check names, also when the notice shows an older version. If the check fails, the download uses the newest release that an earlier check found. The progress shows the version that downloads.
 - R8. At launch, Longhand does not install a saved download when the update manifest names a newer release. It offers the newer release by the rules above.
+- R9. "Relaunch Now" and the install at quit install a saved download only when no check has found a newer release. If a check has found a newer release, Longhand does not install the saved download and offers the newer release by the rules above.
 
 **Window**
 
-- R9. The update notice is a normal window. It does not stay on top of other apps. When the user changes to a different app, the notice goes behind that app.
+- R10. The update notice is a normal window. It does not stay on top of other apps. When the user changes to a different app, the notice goes behind that app.
 
 ### Acceptance Examples
 
@@ -66,7 +67,8 @@ When the window opens, it keeps the version that the check found. While the wind
 - AE3. **Covers R4, R5.** Given the user clicks "Remind Me Later", when they open the tray menu during the next 24 hours, then the tray item is there and a click on it opens the offer.
 - AE4. **Covers R8.** Given 1.0.4 is downloaded and saved, and the user quits before an install, when Longhand launches and the manifest names 1.0.5, then Longhand does not install 1.0.4 and offers 1.0.5.
 - AE5. **Covers R3.** Given no Longhand window is active, when the user chooses "Check for Updates…" in the tray menu, then the result shows immediately.
-- AE6. **Covers R9.** Given the offer shows, when the user changes to a different app, then the offer goes behind that app's windows.
+- AE6. **Covers R10.** Given the offer shows, when the user changes to a different app, then the offer goes behind that app's windows.
+- AE7. **Covers R6, R9.** Given 1.0.4 is saved and the user clicks "Later", when 1.0.5 comes out during the 24-hour delay and the user quits or clicks "Relaunch Now" from the tray item, then 1.0.4 does not install and the offer names 1.0.5.
 
 ### Scope Boundaries
 
@@ -79,7 +81,6 @@ When the window opens, it keeps the version that the check found. While the wind
 **Deferred to Planning**
 
 - How the window gets focus when the user clicks the tray item, given that the notice opens without focus today (`src-tauri/src/window.rs`).
-- Whether the check at the Install click (R7) is a new check, or uses the result of the last hourly check together with R6.
 
 ### Sources / Research
 
