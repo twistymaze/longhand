@@ -12,6 +12,8 @@ bun tauri build --bundles app
 
 Test microphone and Keychain behaviour from this bundle. An unsigned `tauri dev` binary attributes microphone requests to the launching terminal.
 
+This bundle gets no updates. To test the updater, build with `LONGHAND_RELEASE=1` ([Manual test of the updater](solutions/workflow-issues/manual-test-of-the-updater-needs-a-release-flag-build.md)).
+
 Give both ways to run the build, using the exact checkout path:
 
 - On this Mac: `open <checkout>/target/release/bundle/macos/Longhand.app`.
