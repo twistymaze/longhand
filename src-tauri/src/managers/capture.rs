@@ -671,6 +671,30 @@ fn open_cancelled(e: &CaptureError) -> bool {
     matches!(e, CaptureError::Audio(audio::Error::MicStartCancelled))
 }
 
+/// What a failed reopen of the microphone does to its note.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterFailedReopen {
+    /// Record of a note with no audio: the note is a note with no audio
+    /// again (R19).
+    EndRecording,
+    /// The open was cancelled (KTD2): the note is paused again, with no
+    /// alert, for the command that cancelled it. `tray` is true when the
+    /// tray showed the note as recording.
+    Paused { tray: bool },
+    /// The note is interrupted, with its alert and the device watch.
+    Interrupted,
+}
+
+fn after_failed_reopen(reopen: Reopen, cancelled: bool) -> AfterFailedReopen {
+    match (reopen, cancelled) {
+        (Reopen::Record, _) => AfterFailedReopen::EndRecording,
+        (reopen, true) => AfterFailedReopen::Paused {
+            tray: reopen == Reopen::Continue,
+        },
+        (_, false) => AfterFailedReopen::Interrupted,
+    }
+}
+
 /// Why a segment ended on its own.
 struct Loss {
     reason: InterruptReason,
@@ -2080,7 +2104,8 @@ impl CaptureManager {
         reopen: Reopen,
         e: CaptureError,
     ) -> Result<(), CaptureError> {
-        if reopen == Reopen::Record {
+        let after = after_failed_reopen(reopen, open_cancelled(&e));
+        if after == AfterFailedReopen::EndRecording {
             drop(inner);
             if let Err(stop) = self.stop_in_store(app, id) {
                 log::error!("could not end the recording of {id}: {stop}");
@@ -2092,14 +2117,14 @@ impl CaptureManager {
             timeline.abandon_open();
             inner.clock = Some(Clock::new(id, timeline, epoch));
         }
-        if open_cancelled(&e) {
+        if let AfterFailedReopen::Paused { tray } = after {
             // A Stop or a new start cancelled the open (KTD2). The note is
             // paused again, so that command ends it as a paused note. No
             // alert and no device watch.
             inner.paused = Some(id.to_string());
             drop(inner);
             log::info!("the microphone open of {id} was cancelled ({reopen:?})");
-            if reopen == Reopen::Continue {
+            if tray {
                 crate::tray::recording_paused(app, true);
             }
             return Err(e);
@@ -3760,6 +3785,23 @@ mod tests {
         ));
         assert!(!open_cancelled(&timed_out));
         assert!(!open_cancelled(&CaptureError::Other("superseded".into())));
+    }
+
+    #[test]
+    fn a_cancelled_reopen_pauses_the_note_and_a_failed_reopen_interrupts_it() {
+        use AfterFailedReopen::*;
+        assert_eq!(
+            after_failed_reopen(Reopen::Continue, true),
+            Paused { tray: true }
+        );
+        assert_eq!(
+            after_failed_reopen(Reopen::Resume, true),
+            Paused { tray: false }
+        );
+        assert_eq!(after_failed_reopen(Reopen::Continue, false), Interrupted);
+        assert_eq!(after_failed_reopen(Reopen::Resume, false), Interrupted);
+        assert_eq!(after_failed_reopen(Reopen::Record, true), EndRecording);
+        assert_eq!(after_failed_reopen(Reopen::Record, false), EndRecording);
     }
 
     #[test]
