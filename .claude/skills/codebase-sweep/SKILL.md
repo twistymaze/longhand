@@ -48,7 +48,7 @@ When the run stops early, resume it with `resumeFromRunId` and the script path t
 
 ### 7. Show the result
 
-Read `<run folder>/report.md`. Tell the user the counts and each confirmed finding in one line (id, severity, title, `file:line`). Give the path of the report. Do not paste the full report.
+The harness does not let a subagent write a report file, so the report agent returns the text in `report_markdown`, and the workflow result gives only its length. Write it to `<run folder>/report.md` with a script that reads the last `report_markdown` from the run's `journal.jsonl` (the path is in the tool result), so the text does not go through this context. Then read the summary sections of the report. Tell the user the counts and each confirmed finding in one line (id, severity, title, `file:line`). Give the path of the report. Do not paste the full report.
 
 ### 8. Act on the findings
 

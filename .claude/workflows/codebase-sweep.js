@@ -19,7 +19,7 @@ for (const key of ['runDir', 'repoRoot', 'skillDir', 'shards', 'lenses']) {
 }
 const MODE = A.mode || 'run'
 const VERIFY = Object.assign(
-  { highSeverities: ['P0', 'P1'], highVotes: 3, lowVotes: 1, codex: true, codexModel: 'gpt-6-sol' },
+  { highSeverities: ['P0', 'P1'], highVotes: 3, midSeverities: ['P2'], midVotes: 2, lowVotes: 1, codex: true, codexModel: 'gpt-6-sol' },
   A.verify || {},
 )
 const MAX_ROUNDS = A.maxRounds ?? 2
@@ -122,13 +122,13 @@ const CRITIC = {
 const REPORT = {
   type: 'object',
   properties: {
-    report_path: { type: 'string' },
+    report_markdown: { type: 'string' },
     findings_path: { type: 'string' },
     confirmed: { type: 'integer' },
     disputed: { type: 'integer' },
     rejected: { type: 'integer' },
   },
-  required: ['report_path', 'findings_path', 'confirmed', 'disputed', 'rejected'],
+  required: ['report_markdown', 'findings_path', 'confirmed', 'disputed', 'rejected'],
 }
 
 // ---------- Tasks ----------
@@ -141,10 +141,12 @@ const firstTasks = tasksFor(SHARDS)
 const unknownLenses = [...new Set(firstTasks.map(t => t.lens).filter(l => !LENS_IDS.includes(l)))]
 if (unknownLenses.length) throw new Error(`shards use lenses that args.lenses does not list: ${unknownLenses.join(', ')}`)
 
+// Three tiers: high (P0, P1), mid (P2) and low (P3). Codex votes on high and mid findings.
 function votersFor(severity) {
   const high = VERIFY.highSeverities.includes(severity)
-  const roles = high ? ['refute', 'reach', 'trace'].slice(0, VERIFY.highVotes) : ['refute', 'reach', 'trace'].slice(0, VERIFY.lowVotes)
-  return { roles, codex: high && VERIFY.codex }
+  const mid = !high && VERIFY.midSeverities.includes(severity)
+  const n = high ? VERIFY.highVotes : mid ? VERIFY.midVotes : VERIFY.lowVotes
+  return { roles: ['refute', 'reach', 'trace'].slice(0, n), codex: (high || mid) && VERIFY.codex }
 }
 
 if (MODE === 'plan') {
@@ -156,6 +158,7 @@ if (MODE === 'plan') {
     finder_tasks: firstTasks.length,
     tasks: firstTasks.map(t => t.id),
     agents_per_high_finding: high.roles.length + (high.codex ? 1 : 0),
+    agents_per_mid_finding: votersFor(VERIFY.midSeverities[0] || 'P2').roles.length + (VERIFY.codex && VERIFY.midSeverities.length ? 1 : 0),
     agents_per_low_finding: low.roles.length,
     later_rounds: `up to ${MAX_ROUNDS - 1} critic rounds, each with 1 critic and at most ${MAX_CRITIC_TASKS} finder tasks`,
   }
@@ -456,4 +459,6 @@ ${JSON.stringify(records.map(compactRecord), null, 1)}
   { label: 'report', phase: 'Report', schema: REPORT },
 )
 
-return { summary, report }
+// The harness does not let a subagent write a report file. The report text stays in the journal; the skill writes report.md from it.
+const { report_markdown, ...reportRest } = report || {}
+return { summary, report: Object.assign(reportRest, { report_markdown_chars: (report_markdown || '').length }) }

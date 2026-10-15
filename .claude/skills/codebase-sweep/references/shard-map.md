@@ -23,7 +23,7 @@ The shard map is the `args` value of the `codebase-sweep` workflow. You build it
     }
   ],
   "only": ["session-save"],
-  "verify": { "highSeverities": ["P0", "P1"], "highVotes": 3, "lowVotes": 1, "codex": true, "codexModel": "gpt-6-sol" },
+  "verify": { "highSeverities": ["P0", "P1"], "highVotes": 3, "midSeverities": ["P2"], "midVotes": 2, "lowVotes": 1, "codex": true, "codexModel": "gpt-6-sol" },
   "maxRounds": 2,
   "maxCriticTasks": 12
 }
@@ -76,4 +76,4 @@ Most `own` shards get two to four lenses. A shard with all lenses is a sign that
 
 ## Agent count
 
-Each finder task is one agent. Each new P0 or P1 finding adds `highVotes` agents, plus one for Codex. Each new P2 or P3 finding adds `lowVotes` agents. Each later round adds one critic and up to `maxCriticTasks` finders. One agent writes the report. Run the workflow with `mode: "plan"` to get the finder count.
+Each finder task is one agent. Each new P0 or P1 finding adds `highVotes` agents, plus one for Codex. Each new P2 finding adds `midVotes` agents, plus one for Codex. Each new P3 finding adds `lowVotes` agents. Each later round adds one critic and up to `maxCriticTasks` finders. One agent writes the report. Run the workflow with `mode: "plan"` to get the finder count.

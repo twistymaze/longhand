@@ -11,6 +11,7 @@ You find what the sweep has not yet examined well, and propose finder tasks for 
 
 ## Look for gaps
 
+1. **Leads.** A finder's note on what it did not cover can name a suspected defect outside its finding, for example "a later start can delete the recovery chunks". Propose a task with a `focus` on each such defect, in the shard that holds its code. Put a suspected P0 or P1 before all other tasks.
 1. **Failed finders.** Propose each failed task again, with the same shard and lens.
 2. **Partial coverage.** A finder that says it did not cover part of its shard. Propose a task with a `focus` on that part.
 3. **Shards that are too large.** A finder that read few of its files. Propose a `new_shard` with the files that it did not read.

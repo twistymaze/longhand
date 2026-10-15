@@ -44,6 +44,10 @@ You examine one shard of the code through one lens. Your result goes to independ
 
 Rank by the effect on the user, not by how interesting the code is.
 
+A rare trigger does not by itself make a finding P2 or P3. Crashes, force quits, power loss, full disks, and read errors from antivirus or sync software all occur over the life of an install. When one such event is enough to lose or overwrite user data silently (a recording, a note, a setting that the user chose), the finding is at least P1. A trigger that needs several unlikely events at the same time can be lower.
+
+Read each file of the shard to its end. Read a large file in parts. When you cannot read all of a file, give the line ranges that you did not read in `coverage.not_covered`.
+
 ## Do not report
 
 - Style, naming, comments, structure, dead code, or a preferred refactor.

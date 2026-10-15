@@ -1,6 +1,6 @@
 # Report of a sweep
 
-You write two files in the run folder: `report.md` for a person, and `findings.json` for later steps. Write nothing else.
+You make two outputs: the text of `report.md` for a person, and the file `findings.json` in the run folder for later steps. Write only `findings.json`. Do not write `report.md`: the harness does not let a subagent write a report file. Return its full text in `report_markdown`; the skill writes the file.
 
 ## Inputs
 
@@ -31,6 +31,7 @@ Use this structure. Use short, plain sentences.
 **Evidence.** <the most important evidence lines from the confirming votes>
 **Suggested fix.** <when present>
 **Proof.** Not reproduced. <!-- the reproduce step is not part of this version -->
+**Same cause as.** <ids of other findings with the same root cause or the same fix, or omit the line>  <!-- a note only; each finding keeps its own id and outcome -->
 
 ## Disputed
 
