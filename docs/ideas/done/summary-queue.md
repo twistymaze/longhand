@@ -18,3 +18,6 @@ On 2026-10-14 a new note waited 7.5 minutes after Stop behind three regeneration
 
 ## Notes / Current state
 - The plan gives the design and the tests.
+
+## Outcome
+Shipped in PR #20 (https://github.com/twistymaze/longhand/pull/20). The audio stages keep the local permit. The Summarize and Save stages, Regenerate Summary and title jobs take turns in the summary queue: a new note first, then regenerations, then titles. The note page and Home show what a waiting note waits for. The lesson is in `docs/solutions/performance-issues/one-permit-made-audio-wait-for-summary-requests.md`.

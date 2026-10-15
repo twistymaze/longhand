@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A slow summary endpoint does not delay the audio processing of a new note, and old notes' regenerations and titles do not delay its save. A summary that the endpoint makes in up to 30 minutes is saved, not cut off. A second Regenerate Summary of the same note is refused. The app log shows each request to the endpoint and how each regeneration ends.
 - **Means:** The local permit for audio stages and a summary queue for the endpoint work and the writes to the note folder (KTD1, KTD2).
-- **Product authority:** This Product Contract. The idea file is `docs/ideas/next/summary-queue.md`.
+- **Product authority:** This Product Contract. The idea file is `docs/ideas/done/summary-queue.md`.
 - **Dependency:** PR #17 (merged as `352a2c2`) changed the context probe, the saved plan and `SessionDetail.regenerating`. This plan starts from that code.
 - **Open blockers:** None.
 - **Stop conditions:** Stop and ask the user when a change would send a request to the endpoint again after the endpoint can have received it, or when a note would be saved twice for one run.

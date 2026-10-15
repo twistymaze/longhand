@@ -15,7 +15,7 @@ root_cause: missing_validation
 resolution_type: code_fix
 severity: high
 framework_version: rust 1.94.0
-last_updated: 2026-10-14
+last_updated: 2026-10-15
 tags: [summary, summary-regeneration, context-probe, budget, plan, checkpoint, stale-state, not-reachable, retry, sleep, wake, darkwake, network, context-limit, server-error]
 related_components: [summarize, background_job]
 ---
@@ -44,11 +44,11 @@ The user stopped a recording and closed the laptop lid at once. The Mac slept, t
 
 Three changes, in PR #15.
 
-1. **The probe tells "cannot reach" from "no data".** `context::probe` returned `None` both when the endpoint did not answer and when its answers named no context size. `context::resolve` then gave the 8192 default, and `produce` saved that plan as a checkpoint (`crates/pipeline/src/summarize.rs:545`) before the first completion request. Now `probe` returns an error when the first probe cannot reach the endpoint (`crates/summarize/src/context.rs:117-123`), and the stage fails before it saves a plan (`crates/pipeline/src/summarize.rs:527`). After the endpoint answered once, a later probe that fails is a miss, as before, so a server that closes the connection on an unknown route still gets the default.
+1. **The probe tells "cannot reach" from "no data".** `context::probe` returned `None` both when the endpoint did not answer and when its answers named no context size. `context::resolve` then gave the 8192 default, and `produce` saved that plan as a checkpoint (`crates/pipeline/src/summarize.rs:579`) before the first completion request. Now `probe` returns an error when the first probe cannot reach the endpoint (`crates/summarize/src/context.rs:117-123`), and the stage fails before it saves a plan (`crates/pipeline/src/summarize.rs:555-565`). After the endpoint answered once, a later probe that fails is a miss, as before, so a server that closes the connection on an unknown route still gets the default.
 
-2. **A summary request tries again after a failed connection.** `Client::send` (`crates/summarize/src/client.rs:275`) waits and sends again after each wait of `RETRY_WAITS` (`client.rs:121`, about 7 minutes in total). It retries only a reqwest error with `is_connect()` (`client.rs:316`). Any other send error, a broken reply, or a response deadline can follow a request that the endpoint received, so a new try could make the model write the reply twice. Only the summary stage sets the waits. A title request is sent once (`crates/pipeline/src/summarize.rs:212`), because the title job holds the one processing permit, and a 7-minute wait for an optional title would stop the processing of the next note.
+2. **A summary request tries again after a failed connection.** `Client::send` (`crates/summarize/src/client.rs:447`) waits and sends again after each wait of `RETRY_WAITS` (`client.rs:288`, about 7 minutes in total). It retries only a reqwest error with `is_connect()` (`client.rs:508`). Any other send error, a broken reply, or a response deadline can follow a request that the endpoint received, so a new try could make the model write the reply twice. Only the summary stage sets the waits. A title request is sent once (`crates/pipeline/src/summarize.rs:223-226`), because the title job holds a turn in the summary queue, and a 7-minute wait for an optional title would stop the other jobs of that queue (PR #20; see [the summary queue doc](../performance-issues/one-permit-made-audio-wait-for-summary-requests.md)).
 
-3. **Transcribe Again proposes a title when the note has none.** It skipped the title turn for every run, to keep the title that the note has (R16). This note never got a title, because its first summary failed before the title turn. The rule now applies only when the note has a title (`crates/pipeline/src/summarize.rs:870-884`).
+3. **Transcribe Again proposes a title when the note has none.** It skipped the title turn for every run, to keep the title that the note has (R16). This note never got a title, because its first summary failed before the title turn. The rule now applies only when the note has a title (`crates/pipeline/src/summarize.rs:893-915`).
 
 ## Why This Works
 
@@ -60,7 +60,7 @@ Three changes, in PR #15.
 
 - **Do not save a fallback value as a decision when the input was not available.** A default that the code uses because a probe failed is a guess for this run only. Saving it in a checkpoint makes every later run use the guess. The same rule applies to "folder not reachable" in [the Move doc](move-dropped-notes-when-old-folder-went-away.md).
 - **Retry a network request only when the error proves that the request did not arrive.** Do not retry an LLM completion on a timeout or a closed connection.
-- **Keep optional network work out of long waits when it holds a shared permit.**
+- **Keep optional network work out of long waits when it holds a shared turn.** A title job holds a turn in the summary queue, so its request is sent once.
 - **Tests.** Each test fails without its fix:
   - `a_summary_that_cannot_reach_the_endpoint_keeps_no_budget_plan` (`crates/pipeline/tests/runner.rs`) reproduces the saved 8192/2048 plan with a closed local port.
   - `a_summary_waits_for_the_endpoint_to_come_back_and_completes` opens the port only after a `StageStarted { Summarize }` event, so the first try is always refused. A fixed delay from the test start did not work: transcription took longer than the delay, and the test passed with no retries.
@@ -79,7 +79,7 @@ PR #17 changed four things:
 
 1. `answer` and `is_server_problem` (`crates/summarize/src/context.rs:146-161`): a 5xx answer (but not 501), a 408 or a 429 on the **first** probe stops the run before a plan is saved, like a connect failure. A later probe that fails is still a miss, because a gateway can answer 503 for a route that it does not have.
 2. `DEFAULT_LIMIT` is 128,000 (`context.rs:14`). The plan's KTD16 chose 8192; the user chose the large default. A server that gives no probe value and cuts a long prompt silently (Ollama's OpenAI route, for example) can now give a summary of part of the transcript with no error. The Settings footer tells the user to enter the model's limit for such a server.
-3. `Plan::agrees_with` (`crates/pipeline/src/summarize.rs:117`, called at line 530): a saved plan is used again only while the Context limit setting gives its budget. A plan under an older default, under a learned limit, or under a limit that the user cleared is made again with its calls. A set limit keeps a plan under the same limit, whatever gave it, so its calls are not sent again.
+3. `Plan::agrees_with` (`crates/pipeline/src/summarize.rs:117`, called at line 542): a saved plan is used again only while the Context limit setting gives its budget. A plan under an older default, under a learned limit, or under a limit that the user cleared is made again with its calls. A set limit keeps a plan under the same limit, whatever gave it, so its calls are not sent again.
 4. A "prompt too long" rejection stops the run and asks the user to enter the limit in Settings > Summaries > Context limit (a lower limit when one is set). Longhand no longer learns and saves a smaller limit. `BudgetSource::Learned` stays only so that older saved plans still parse.
 
 Tests: `a_server_error_from_a_probe_is_an_error_not_the_default` and `a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss` (`crates/summarize/tests/context.rs`), `regenerating_a_stub_planned_under_an_old_default_budget_plans_again` and `a_rejection_for_length_stops_the_summary_and_asks_for_the_context_limit` (`crates/pipeline/tests/runner.rs`), and `a_saved_plan_is_kept_only_while_the_context_limit_setting_gives_its_budget` (unit test in `summarize.rs`).
