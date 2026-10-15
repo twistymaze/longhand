@@ -6,9 +6,9 @@ This file records the upstream commit up to which each clone in `reference-sourc
 
 | Clone | Upstream | Reviewed through | Review date |
 | --- | --- | --- | --- |
-| anarlog | https://github.com/fastrepl/anarlog | `b02b58de` | 2026-09-29 |
-| Handy | https://github.com/cjpais/Handy | `29bd2c0` | 2026-09-29 |
-| shorthand | https://github.com/mshish/shorthand | `90b8d40` | 2026-09-29 |
+| anarlog | https://github.com/fastrepl/anarlog | `afb35650` | 2026-10-15 |
+| Handy | https://github.com/cjpais/Handy | `9e57a0d` | 2026-10-15 |
+| shorthand | https://github.com/mshish/shorthand | `567640c` | 2026-10-15 |
 
 ## Procedure
 
@@ -29,7 +29,28 @@ This file records the upstream commit up to which each clone in `reference-sourc
 3. Fast-forward each clone to the reviewed commit: `git -C reference-source/<clone> merge --ff-only <commit>`.
 4. Update the table above and add an entry to the log below. Commit this file on `main`.
 
+Handy keeps its recorder and resampler in the external crates `handy-recorder` and `handy-cpal` (since a42131d). Until `docs/ideas/someday/handy-recorder-crates.md` is decided, also compare the new releases of those crates with the files that Longhand copied.
+
 ## Log
+
+### 2026-10-15
+
+Ranges: anarlog `b02b58de..afb35650` (217 commits, about 20 relevant), Handy `29bd2c0..9e57a0d` (28 commits, release v0.9.8), and shorthand `90b8d40..567640c` (59 commits, releases 0.6.1 to 0.7.0, with 17 commits from Handy).
+
+**Act now** (plan: `docs/plans/2026-10-15-1157-fix-reference-review-fixes-plan.md`)
+- anarlog `69350022`, `9a9ed32f`: the microphone start waits with no time limit while the capture manager holds its lock (`crates/audio-cpal/src/lib.rs`). Add a limit and a guard against a second start.
+- Shorthand `19029f4`, `22ef0ed`: on Windows with cpal 0.18.2, a failed open of the default microphone is retried by device ID.
+- anarlog `a84a8a5d`: `getChangedRanges` maps each range to the final document. Longhand's copy in `src/editor/plugins/changed-ranges.ts` is the old code.
+- anarlog `a112ca8a`: prosemirror-view 1.41.7 to 1.42.3 (Dependabot security group).
+- Handy `7b2a28a`: the `SmoothedVad` pre-roll sent frames twice. Latent in Longhand: no production code calls it.
+
+**Ideas** (files in `docs/ideas/someday/`)
+- New: `transcribe-cpp-update`, `handy-recorder-crates`, `custom-vocabulary`, `recognition-in-worker-process`, `summary-endpoint-anthropic-format` (Handy); `summary-language`, `keep-chosen-tab-after-processing`, `buffer-audio-during-storage-errors`, `summary-error-source` (anarlog).
+- Changed: `prewarm-gpu-shaders`, `webview-crash-recovery`, `skip-summary-for-short-transcript`.
+
+**Note only:** the facts are in `docs/reference/borrowing-notes.md`, section "Findings from the 2026-10-15 review".
+
+**Not relevant:** about 197 anarlog commits (web, billing, cloud sync, mobile, calendar, chat, cloud speech-to-text, releases), 16 Handy commits, and 25 shorthand commits (dictation hold mode, telemetry, branding, docs, releases).
 
 ### 2026-09-29
 

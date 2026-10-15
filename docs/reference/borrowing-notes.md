@@ -46,7 +46,7 @@ anarlog's own `LICENSING.md` requires a provenance record — upstream repositor
 
 **anarlog has no hierarchical summarization.** `crates/template-app/assets/_macros.jinja` renders the transcript by flat iteration into a single prompt, and the desktop workflow makes one generation call. There is no chunking, no map-reduce, and no token accounting anywhere in the path. A long transcript either fits the model's context or fails.
 
-**anarlog drops timestamps at prompt-render time.** The renderer produces per-segment and per-word timings, and the mapping into the template type keeps only speaker and text. The summarizer therefore cannot refer to when anything happened. Worth fixing in anything derived from this.
+**anarlog drops timestamps at prompt-render time** (true until 2026-10). The renderer produces per-segment and per-word timings, and the mapping into the template type kept only speaker and text. anarlog 5d9a66dc now prints `[mm:ss]` for each segment in `crates/template-app/assets/_macros.jinja`.
 
 **anarlog's diarization gate depends on a participant list.** Whether the microphone channel is diarized at all hinges on a speaker count derived solely from session participants, with no user-facing speaker-count input. On a stereo recording with no participants added, the microphone channel is never diarized. A rendered-label cap and a consolidation pass further collapse distinct speakers toward the participant count. All of this sits above the diarization engine, not inside it.
 
@@ -57,6 +57,34 @@ anarlog's own `LICENSING.md` requires a provenance record — upstream repositor
 **Handy excludes diarization deliberately.** Its catalog generator copies four capability keys from each model card and silently drops `diarize`; the capability struct has no field for it; inference never requests it; and a test asserts that pure diarization models stay out of the catalog. The capability exists in the models and is removed at three layers.
 
 **Handy's `src-tauri/src/audio_toolkit/text.rs`** provides fuzzy custom-word correction using soundex and n-gram keys — directly applicable to proper nouns and domain jargon, and borrowable as-is.
+
+## Findings from the 2026-10-15 review
+
+These come from the reference source review of 2026-10-15 (`docs/reference/reference-source-reviews.md`).
+
+**Handy moved its recorder and resampler out of its repository** (a42131d), into the crates `handy-recorder` 0.1.0 and `handy-cpal` 0.18.2 (a fork of cpal). Longhand copied both files. Upstream fixes to them no longer show in Handy's git history, so a review must read the source of the crates. See `docs/ideas/someday/handy-recorder-crates.md`.
+
+**Handy moved the transcribe.cpp calls into a worker process** (c8262ab). The code that `crates/asr/PROVENANCE.md` names (`init_transcribe_backend`, the run and stream calls) is now in `src-tauri/src/engine_supervisor/worker.rs`.
+
+**transcribe-cpp 0.4.0 changes the API.** `model.capabilities()` returns a `Result`. Handy is on 0.4.0, Longhand on 0.2.4. See `docs/ideas/someday/transcribe-cpp-update.md`.
+
+**Silero VAD in transcribe-cpp** (Handy 3985508): a `VadSession` with a v6.2 GGUF and 512-sample frames. The backend mask given to `init_backends_with` is fixed at the first registration in a process, so do not register GPU backends in a process for VAD alone.
+
+**Handy chunks long audio at pauses** (9e57a0d): target 30 s, maximum 40 s, minimum 5 s, Silero thresholds 0.5 and 0.35. It does not chunk Whisper. Longhand's `crates/asr/src/windows.rs` already makes VAD windows of 30 s or less.
+
+**Vulkan can crash a Windows build after Modern Standby** (Shorthand 82a164c). `createDevice` can throw `ErrorOutOfDeviceMemory`. ggml's `ggml_vk_get_device` makes `devices[idx]` available before init is complete, the next load reuses the half-built device, and `vulkan-1.dll` stops the process with 0xC0000409. Shorthand says this is still true in transcribe-cpp 0.3.0 and ggml master. Longhand builds transcribe-cpp with `vulkan` and runs it in the app process. See `docs/ideas/someday/recognition-in-worker-process.md`.
+
+**Crash marker around a native model load** (Shorthand 4b2afbe, 5ccbbad, 92478d7). Shorthand writes a marker before the load and reports the crash at the next launch. The load lock stays held through session setup, so two loads cannot clear each other's marker. Use this pattern if Longhand must tell the user about a crash during a model load.
+
+**macOS rejects a socket mode set before bind** (Shorthand c3d0766). `interprocess`'s `ListenerOptionsExt::mode` calls `fchmod()` before `bind()`, and macOS returns EINVAL. Shorthand creates the listener with no mode and checks the peer euid (`LOCAL_PEERCRED`). This matters if `app-command-line-tool` uses a local socket.
+
+**anarlog's per-channel capture recovery** (69350022). Each channel recovers by itself. A `CaptureEvent::Gap` keeps the timeline, and the failed side gets silence (`joiner.rs`, `pop_available_pair`). The AEC state, the linear echo gain and the reference aligner reset when a channel fails. `RestartTracker::record_consecutive_restart` and `reset` were added to the file that `crates/supervisor` borrowed. This matters for the parked `system-audio-capture` idea.
+
+**Window-state calls from a worker thread can deadlock** (anarlog ddf7a2c9). `tauri_plugin_window_state` `restore_state` and `save_window_state` from a worker thread can deadlock with the plugin's window-created handler. Longhand only registers the plugin (`src-tauri/src/lib.rs`).
+
+**Safe delete in anarlog's CLI** (e35b9de8). It deletes a meeting only when the SHA-256 of the export still matches, transcription is complete and the recorder lock is free. A ledger lets an interrupted delete continue. This is a useful design for deletes by an agent.
+
+**Smaller facts.** glib 0.18.5 in `Cargo.lock` is flagged by Dependabot, but it is Linux-only and comes from tauri's GTK, so Longhand cannot update it and does not ship it (anarlog e77fd81b). When a merge regenerates `Cargo.lock`, transitive pins can move without a reason; restore the lock and apply only the intended update (Shorthand 6b7543e). After a native dependency is removed, change the CI cache key: a stale rust-cache with ONNX Runtime files broke Handy's Windows ARM64 signing (5197faf).
 
 ## Settings and secrets
 

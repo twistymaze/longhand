@@ -17,3 +17,4 @@ Longhand has no termination handler (`src-tauri/src`). If the WebKit content pro
 
 ## Notes / Current state
 - anarlog added this between `39613e5` and `b02b58de`. It also lets the user stop from native code while the webview is down.
+- anarlog review, 2026-10-15 (3362b7e9, 3de75bfb, d6ee34e4, 04543276, 109278c9): anarlog moved the save of live words, stop results, recovery markers and gap repair into Rust, so they continue while the webview is down. Longhand already owns these in Rust. Only the reload handler and the UI state restore are still to do.

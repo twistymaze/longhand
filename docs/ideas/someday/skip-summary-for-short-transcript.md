@@ -16,4 +16,4 @@ Skip the summary when the transcript is very short. anarlog uses fewer than 5 wo
 Longhand skips only a transcript with no turns (`crates/pipeline/src/summarize.rs:391`). A transcript of a few words still goes to the summary model, which can invent a summary.
 
 ## Notes / Current state
-- anarlog 849b994a also scales the length target of the summary with the length of the transcript. This has less value.
+- anarlog removed its summary length modes and its length scaling in 7eb62eab and 351ff7f5 (review of 2026-10-15). The short-transcript skip is still in anarlog.
