@@ -56,9 +56,11 @@ The cause is in the tao 0.35.3 crate (its `platform_impl/macos/window.rs`, in th
    dispatch2::DispatchQueue::main().exec_async(move || show_now(&app, &window, focus));
    ```
 
-2. **Show the update window without making it key.** tao's show always calls `makeKeyAndOrderFront`. `order_front_without_key` (`src-tauri/src/window.rs:378`) calls `orderFrontRegardless` on the `NSWindow`. The window comes to the front also when Longhand is not the active app, and a click makes it key as usual. The builder adds `.focused(false)`, `.always_on_top(true)` and `.accept_first_mouse(true)`, so the window is not behind other windows and the first click chooses.
+2. **Show the update window without making it key.** tao's show always calls `makeKeyAndOrderFront`. `order_front_without_key` (`src-tauri/src/window.rs:378`) calls `orderFrontRegardless` on the `NSWindow`. The window comes to the front also when Longhand is not the active app, and a click makes it key as usual. The builder adds `.focused(false)` and `.accept_first_mouse(true)`, so the first click chooses.
 
-3. **Ignore Return and Space in the page.** The page focuses no button and calls `preventDefault()` for Enter and Space key-down (`src/update/UpdateWindow.tsx:160`). Pointer and VoiceOver clicks still choose.
+   Later change (2026-10-14, `docs/plans/2026-10-14-2114-fix-update-notice-timing-plan.md`): the window no longer has `.always_on_top(true)`. An automatic notice now waits until a Longhand window is the key window, so it never opens over another app, and it goes behind an app that the user brings to the front. The tray item and "Check for Updates…" open the window with the focus (`UPDATE_WITH_KEY` in `src-tauri/src/window.rs`).
+
+3. **Ignore Return and Space in the page.** For an automatic notice, the page focuses no button and calls `preventDefault()` for Enter and Space key-down (`src/update/UpdateWindow.tsx`). Pointer and VoiceOver clicks still choose. A window that the user asked for (`with_key` in the state event) focuses the default button, and Return chooses it.
 
 4. **Show the update window after it fits.** The window builds hidden. The page calls the `show_update_window` command after the first window resize that needs no new size request (`windowResized` in `src/update/UpdateWindow.tsx`). A 1 s timer shows the window if the page does not. `UPDATE_OPENS` (an `OpenCount`) records each build, and a timer acts only when its window is still the current one (`src-tauri/src/window.rs:290-295`).
 

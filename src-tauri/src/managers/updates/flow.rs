@@ -86,6 +86,8 @@ pub enum Input {
     },
     /// The download ended. Ok means that the archive is verified and saved.
     Downloaded(Result<(), String>),
+    /// A click on the update item of the tray menu (R4).
+    TrayOpen,
 }
 
 /// The facts at the time of an input.
@@ -103,6 +105,8 @@ pub struct Facts {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     Check,
+    /// A check with the short timeout, for an Install click (KTD7).
+    QuickCheck,
     Download {
         version: String,
     },
@@ -110,6 +114,38 @@ pub enum Effect {
     Restart,
     /// Write the delays to the store.
     SaveDelays,
+}
+
+/// The purposes that wait for the one check in flight. A result serves
+/// each of them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Pending {
+    /// The timer started the check, or a recording start turned a manual
+    /// check into one. Its result can show an offer.
+    background: bool,
+    /// "Check for Updates…" waits for the result.
+    manual: bool,
+    /// An Install click waits for the result to choose the version that
+    /// downloads (R7).
+    install: bool,
+}
+
+/// A download of `version` that has not started.
+fn downloading(version: String) -> UpdateState {
+    UpdateState::Downloading {
+        version,
+        downloaded: 0,
+        total: None,
+    }
+}
+
+/// True when version `a` is newer than version `b`. Two versions that do
+/// not parse count as newer when they differ.
+fn newer(a: &str, b: &str) -> bool {
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => a != b,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +159,15 @@ pub struct Flow {
     download_hidden: bool,
     /// The state that a check returns to when it finds nothing.
     before_check: UpdateState,
+    /// The release that the last successful check named. A check that
+    /// names none clears it, and a failed check keeps it.
+    newest: Option<String>,
+    /// The check in flight, if any. Only one check runs at a time.
+    pending: Option<Pending>,
+    /// The user asked for the window ("Check for Updates…" or the tray
+    /// item), so it shows with the focus and needs no Longhand window in
+    /// front. It ends when the window closes.
+    user_asked: bool,
 }
 
 impl Flow {
@@ -134,7 +179,26 @@ impl Flow {
             saved,
             download_hidden: false,
             before_check: UpdateState::Idle,
+            newest: None,
+            pending: None,
+            user_asked: false,
         }
+    }
+
+    /// True while the window shows a state that the user asked for.
+    pub fn user_asked(&self) -> bool {
+        self.user_asked
+    }
+
+    /// The version for the update item of the tray menu: a newer release
+    /// that is not installing (R4, R5).
+    pub fn tray_version(&self) -> Option<&str> {
+        if let UpdateState::Installing { .. } = self.state {
+            return None;
+        }
+        self.newest
+            .as_deref()
+            .filter(|newest| newer(newest, &self.current))
     }
 
     pub fn state(&self) -> &UpdateState {
@@ -160,29 +224,44 @@ impl Flow {
         }
     }
 
-    /// True when the user asked for the build and a quit must install it (KTD10).
+    /// True when a check found a release newer than `version` (R9).
+    fn superseded(&self, version: &str) -> bool {
+        self.newest.as_deref().is_some_and(|n| newer(n, version))
+    }
+
+    /// The build that a quit must install (KTD10). A ready build that a
+    /// newer release replaces does not install (R9). A build that the user
+    /// confirmed with "Relaunch Now" or a download installs (KTD8).
     pub fn install_at_quit(&self) -> Option<&str> {
         match &self.state {
-            UpdateState::ReadyHeld { version }
-            | UpdateState::Ready { version }
-            | UpdateState::WaitingForQuit { version }
-            | UpdateState::Installing { version } => Some(version),
+            UpdateState::ReadyHeld { version } | UpdateState::Installing { version } => {
+                Some(version)
+            }
+            UpdateState::Ready { version } | UpdateState::WaitingForQuit { version } => {
+                self.unless_superseded(version)
+            }
             // A check and its result keep the build that waits for a quit.
             UpdateState::Checking { .. }
             | UpdateState::UpToDate { .. }
             | UpdateState::CheckFailed { .. } => match &self.before_check {
-                UpdateState::WaitingForQuit { version } => Some(version),
+                UpdateState::WaitingForQuit { version } => self.unless_superseded(version),
                 _ => None,
             },
             _ => None,
         }
     }
 
-    /// Idle, or the ready build that waits for a quit. A check and its
-    /// result return to the state before the check.
+    fn unless_superseded<'a>(&self, version: &'a str) -> Option<&'a str> {
+        (!self.superseded(version)).then_some(version)
+    }
+
+    /// The state to return to after a manual check or its result: the
+    /// notice that was there before, or Idle.
     fn rest(&self) -> UpdateState {
         match &self.state {
-            UpdateState::WaitingForQuit { .. } => self.state.clone(),
+            UpdateState::Offered { .. }
+            | UpdateState::Held { .. }
+            | UpdateState::WaitingForQuit { .. } => self.state.clone(),
             UpdateState::Checking { .. }
             | UpdateState::UpToDate { .. }
             | UpdateState::CheckFailed { .. } => self.before_check.clone(),
@@ -201,9 +280,22 @@ impl Flow {
     }
 
     pub fn step(&mut self, input: Input, facts: Facts) -> Vec<Effect> {
+        let asked = matches!(input, Input::ManualCheck | Input::TrayOpen);
+        let effects = self.apply(input, facts);
+        if asked {
+            self.user_asked = true;
+        }
+        if !self.window_visible() {
+            self.user_asked = false;
+        }
+        effects
+    }
+
+    fn apply(&mut self, input: Input, facts: Facts) -> Vec<Effect> {
         match input {
             Input::Timer => self.timer(facts),
             Input::ManualCheck => self.manual_check(facts),
+            Input::TrayOpen => self.tray_open(),
             Input::Checked(result) => self.checked(result, facts),
             Input::Busy(busy) => self.busy(busy),
             Input::Choice(choice) => self.choice(choice, facts),
@@ -221,21 +313,54 @@ impl Flow {
         }
     }
 
-    /// An automatic check (R9, R10, R15, R17).
+    /// The tray item shows the notice for the newest release, also while
+    /// busy and during a delay, as "Check for Updates…" does (R4).
+    fn tray_open(&mut self) -> Vec<Effect> {
+        match self.state.clone() {
+            UpdateState::Idle => {
+                if let Some(newest) = self.newest.clone() {
+                    self.state = self.notice(newest, false);
+                }
+            }
+            UpdateState::Held { version } => {
+                self.state = UpdateState::Offered {
+                    version,
+                    current: self.current.clone(),
+                }
+            }
+            UpdateState::ReadyHeld { version } => self.state = UpdateState::Ready { version },
+            UpdateState::WaitingForQuit { version } => {
+                self.state = match self.newest.clone() {
+                    Some(newest) if newer(&newest, &version) => self.notice(newest, false),
+                    _ => UpdateState::Ready { version },
+                }
+            }
+            // The item names a release, so it replaces a manual result.
+            UpdateState::UpToDate { .. } | UpdateState::CheckFailed { .. } => {
+                if let Some(newest) = self.newest.clone() {
+                    self.before_check = UpdateState::Idle;
+                    self.state = self.notice(newest, false);
+                }
+            }
+            UpdateState::Downloading { .. } => self.download_hidden = false,
+            _ => {}
+        }
+        vec![]
+    }
+
+    /// An automatic check (R9, R10). It runs also during the delays, and
+    /// the delays decide only whether its result shows a notice (R6).
     fn timer(&mut self, facts: Facts) -> Vec<Effect> {
-        if !facts.automatic_checks || !facts.is_release_build {
+        if !facts.automatic_checks || !facts.is_release_build || self.pending.is_some() {
             return vec![];
         }
-        let due = match &self.state {
-            UpdateState::Idle => !Self::active(self.delays.remind_until, facts.now),
-            UpdateState::WaitingForQuit { .. } => !Self::active(self.delays.later_until, facts.now),
-            _ => false,
-        };
-        if !due {
+        if let UpdateState::Downloading { .. } | UpdateState::Installing { .. } = self.state {
             return vec![];
         }
-        self.before_check = self.rest();
-        self.state = UpdateState::Checking { manual: false };
+        self.pending = Some(Pending {
+            background: true,
+            ..Pending::default()
+        });
         vec![Effect::Check]
     }
 
@@ -258,9 +383,6 @@ impl Flow {
                         version: version.clone(),
                     };
                 }
-                if let UpdateState::Checking { .. } = self.state {
-                    self.state = UpdateState::Checking { manual: true };
-                }
                 return vec![];
             }
             _ => {}
@@ -271,34 +393,50 @@ impl Flow {
         }
         self.before_check = self.rest();
         self.state = UpdateState::Checking { manual: true };
-        vec![Effect::Check]
+        match &mut self.pending {
+            // The check in flight serves the user too.
+            Some(pending) => {
+                pending.manual = true;
+                vec![]
+            }
+            None => {
+                self.pending = Some(Pending {
+                    manual: true,
+                    ..Pending::default()
+                });
+                vec![Effect::Check]
+            }
+        }
     }
 
     fn checked(&mut self, result: Result<Option<String>, String>, facts: Facts) -> Vec<Effect> {
-        let UpdateState::Checking { manual } = self.state else {
+        let Some(pending) = self.pending.take() else {
             return vec![];
         };
-        // A manual result without a build keeps `before_check` until the
-        // window closes.
-        let rest = match (&result, manual) {
-            (Ok(None) | Err(_), true) => self.before_check.clone(),
-            _ => std::mem::replace(&mut self.before_check, UpdateState::Idle),
-        };
+        match &result {
+            Ok(Some(version)) => self.newest = Some(version.clone()),
+            Ok(None) => self.newest = None,
+            Err(_) => {}
+        }
+        if pending.install {
+            return self.install_checked(result.ok().flatten(), facts);
+        }
+        if pending.manual && self.state == (UpdateState::Checking { manual: true }) {
+            self.manual_result(result);
+        } else if pending.background && matches!(result, Ok(Some(_))) {
+            // An automatic check that fails or finds nothing shows nothing (R12).
+            self.offer_newest(facts);
+        }
+        vec![]
+    }
+
+    /// The result of "Check for Updates…" shows at once.
+    fn manual_result(&mut self, result: Result<Option<String>, String>) {
         match result {
-            Ok(Some(version)) if self.saved.as_deref() == Some(version.as_str()) => {
-                // The build is already downloaded and verified.
-                let waiting = Self::active(self.delays.later_until, facts.now);
-                self.state = if !manual && waiting {
-                    UpdateState::WaitingForQuit { version }
-                } else if facts.busy && !manual {
-                    UpdateState::ReadyHeld { version }
-                } else {
-                    UpdateState::Ready { version }
-                };
-            }
             Ok(Some(version)) => {
-                self.state = if facts.busy && !manual {
-                    UpdateState::Held { version }
+                self.before_check = UpdateState::Idle;
+                self.state = if self.saved.as_deref() == Some(version.as_str()) {
+                    UpdateState::Ready { version }
                 } else {
                     UpdateState::Offered {
                         version,
@@ -306,21 +444,75 @@ impl Flow {
                     }
                 };
             }
-            Ok(None) if manual => {
+            Ok(None) => {
                 self.state = UpdateState::UpToDate {
                     current: self.current.clone(),
                 }
             }
-            Err(error) if manual => self.state = UpdateState::CheckFailed { error },
-            // An automatic check shows nothing (R12).
-            Ok(None) | Err(_) => self.state = rest,
+            Err(error) => self.state = UpdateState::CheckFailed { error },
         }
-        vec![]
+    }
+
+    /// After an automatic check: offer the newest release when no delay
+    /// holds it (R6, R15, R17). A shown ready question keeps its version
+    /// (KTD9).
+    fn offer_newest(&mut self, facts: Facts) {
+        let Some(newest) = self.newest.clone() else {
+            return;
+        };
+        let remind = Self::active(self.delays.remind_until, facts.now);
+        let later = Self::active(self.delays.later_until, facts.now);
+        let saved = self.saved.as_deref() == Some(newest.as_str());
+        match &self.state {
+            UpdateState::Idle if saved && later => {
+                self.state = UpdateState::WaitingForQuit { version: newest }
+            }
+            UpdateState::Idle if !remind && !later => self.state = self.notice(newest, facts.busy),
+            UpdateState::WaitingForQuit { .. } if !later => {
+                self.state = self.notice(newest, facts.busy)
+            }
+            UpdateState::Offered { version, .. } | UpdateState::Held { version }
+                if *version != newest =>
+            {
+                self.state = self.notice(newest, facts.busy)
+            }
+            _ => {}
+        }
+    }
+
+    /// The notice for `version`: the ready question for the saved build,
+    /// else the offer. While busy, it is held (R14, R17).
+    fn notice(&self, version: String, busy: bool) -> UpdateState {
+        match (self.saved.as_deref() == Some(version.as_str()), busy) {
+            (true, true) => UpdateState::ReadyHeld { version },
+            (true, false) => UpdateState::Ready { version },
+            (false, true) => UpdateState::Held { version },
+            (false, false) => UpdateState::Offered {
+                version,
+                current: self.current.clone(),
+            },
+        }
     }
 
     /// A recording start closes the window at once (AE2), and the offer or
     /// the question shows again when busy ends (R14, R17).
     fn busy(&mut self, busy: bool) -> Vec<Effect> {
+        // A notice saved before a manual check follows busy too, so that
+        // the state after the check agrees with busy.
+        match (busy, &self.before_check) {
+            (true, UpdateState::Offered { version, .. }) => {
+                self.before_check = UpdateState::Held {
+                    version: version.clone(),
+                }
+            }
+            (false, UpdateState::Held { version }) => {
+                self.before_check = UpdateState::Offered {
+                    version: version.clone(),
+                    current: self.current.clone(),
+                }
+            }
+            _ => {}
+        }
         if busy {
             match &self.state {
                 UpdateState::Offered { version, .. } => {
@@ -337,7 +529,11 @@ impl Flow {
                 UpdateState::Downloading { .. } => self.download_hidden = true,
                 // The check continues, and its result is held or shows nothing.
                 UpdateState::Checking { manual: true } => {
-                    self.state = UpdateState::Checking { manual: false }
+                    if let Some(pending) = &mut self.pending {
+                        pending.manual = false;
+                        pending.background = true;
+                    }
+                    self.settle();
                 }
                 UpdateState::UpToDate { .. }
                 | UpdateState::CheckFailed { .. }
@@ -366,17 +562,16 @@ impl Flow {
 
     fn choice(&mut self, choice: Choice, facts: Facts) -> Vec<Effect> {
         match (choice, &self.state) {
-            (Choice::Install, UpdateState::Offered { version, .. })
+            // A "Relaunch Now" that a newer release replaced the question
+            // under arrives at the offer, and installs the newest (KTD9).
+            (Choice::Install | Choice::RelaunchNow, UpdateState::Offered { version, .. })
             | (Choice::TryAgain, UpdateState::Failed { version, .. }) => {
                 let version = version.clone();
-                self.delays.remind_until = None;
-                self.download_hidden = false;
-                self.state = UpdateState::Downloading {
-                    version: version.clone(),
-                    downloaded: 0,
-                    total: None,
-                };
-                vec![Effect::Download { version }, Effect::SaveDelays]
+                self.install(version)
+            }
+            (Choice::RelaunchNow, UpdateState::Ready { version }) if self.superseded(version) => {
+                let newest = self.newest.clone().unwrap_or_else(|| version.clone());
+                self.install(newest)
             }
             (Choice::RemindLater | Choice::Close, UpdateState::Offered { .. }) => {
                 self.delays.remind_until = Some(facts.now + DELAY_SECONDS);
@@ -408,12 +603,69 @@ impl Flow {
                 | UpdateState::Failed { .. }
                 | UpdateState::Checking { manual: true },
             ) => {
-                // After a cancel, the state is not Checking, so the result
-                // of the check has no effect.
+                // After a cancel, the user no longer waits for the check,
+                // so its result changes only the newest release.
+                if let Some(pending) = &mut self.pending {
+                    pending.manual = false;
+                }
                 self.settle();
                 vec![]
             }
             _ => vec![],
+        }
+    }
+
+    /// The install path (R7, KTD7): the progress shows at once, and a check
+    /// chooses the version that downloads. An Install click while a check
+    /// runs waits for that check.
+    fn install(&mut self, version: String) -> Vec<Effect> {
+        self.delays.remind_until = None;
+        self.download_hidden = false;
+        self.state = downloading(version);
+        match &mut self.pending {
+            Some(pending) => {
+                pending.install = true;
+                vec![Effect::SaveDelays]
+            }
+            None => {
+                self.pending = Some(Pending {
+                    install: true,
+                    ..Pending::default()
+                });
+                vec![Effect::QuickCheck, Effect::SaveDelays]
+            }
+        }
+    }
+
+    /// The check of an Install click ended. A check that fails downloads the
+    /// newest release that an earlier check found (R7). A check that names
+    /// no release downloads the shown version.
+    fn install_checked(&mut self, named: Option<String>, facts: Facts) -> Vec<Effect> {
+        let UpdateState::Downloading { version: shown, .. } = &self.state else {
+            return vec![];
+        };
+        // A check that names no release clears newest, so newest is set
+        // here only when the check failed.
+        let version = named
+            .or_else(|| self.newest.clone())
+            .unwrap_or_else(|| shown.clone());
+        if self.saved.as_deref() == Some(version.as_str()) {
+            return self.install_saved(version, facts);
+        }
+        self.state = downloading(version.clone());
+        vec![Effect::Download { version }]
+    }
+
+    /// The archive of `version` is saved: restart, or wait while busy.
+    fn install_saved(&mut self, version: String, facts: Facts) -> Vec<Effect> {
+        self.saved = Some(version.clone());
+        self.delays.later_until = None;
+        if facts.busy {
+            self.state = UpdateState::ReadyHeld { version };
+            vec![Effect::SaveDelays]
+        } else {
+            self.state = UpdateState::Installing { version };
+            vec![Effect::SaveDelays, Effect::Restart]
         }
     }
 
@@ -424,17 +676,7 @@ impl Flow {
         let version = version.clone();
         self.download_hidden = false;
         match result {
-            Ok(()) => {
-                self.saved = Some(version.clone());
-                self.delays.later_until = None;
-                if facts.busy {
-                    self.state = UpdateState::ReadyHeld { version };
-                    vec![Effect::SaveDelays]
-                } else {
-                    self.state = UpdateState::Installing { version };
-                    vec![Effect::SaveDelays, Effect::Restart]
-                }
-            }
+            Ok(()) => self.install_saved(version, facts),
             Err(error) => {
                 self.state = UpdateState::Failed { version, error };
                 vec![]
@@ -494,6 +736,7 @@ mod tests {
     fn ready() -> Flow {
         let mut f = offering(NEW);
         f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
         f.step(Input::Downloaded(Ok(())), busy(NINE));
         f.step(Input::Busy(false), facts(NINE));
         assert_eq!(
@@ -571,8 +814,13 @@ mod tests {
             vec![Effect::SaveDelays]
         );
         assert_eq!(f.state(), &UpdateState::Idle);
-        for later in [NINE + 3 * HOUR, NINE + 8 * HOUR, NINE + 24 * HOUR - 1] {
-            assert_eq!(f.step(Input::Timer, facts(later)), vec![], "at {later}");
+        // The checks continue during the delay, and their results show
+        // nothing (R6).
+        for later in [NINE + 3 * HOUR, NINE + 24 * HOUR - 1] {
+            assert_eq!(f.step(Input::Timer, facts(later)), vec![Effect::Check]);
+            f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(later));
+            assert_eq!(f.state(), &UpdateState::Idle, "at {later}");
+            assert_eq!(f.tray_version(), Some(NEWER));
         }
         let next_day = NINE + 24 * HOUR;
         assert_eq!(f.step(Input::Timer, facts(next_day)), vec![Effect::Check]);
@@ -648,12 +896,13 @@ mod tests {
             later_until: None,
         };
         let mut f = Flow::new(CURRENT, stored.clone(), None);
-        assert_eq!(f.step(Input::Timer, facts(NINE)), vec![]);
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
         let mut f = Flow::new(CURRENT, stored, None);
-        assert_eq!(
-            f.step(Input::Timer, facts(NINE + HOUR)),
-            vec![Effect::Check]
-        );
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEW));
     }
 
     #[test]
@@ -661,12 +910,13 @@ mod tests {
         let mut f = offering(NEW);
         assert_eq!(
             f.step(Input::Choice(Choice::Install), facts(NINE)),
-            vec![
-                Effect::Download {
-                    version: NEW.into()
-                },
-                Effect::SaveDelays
-            ]
+            vec![Effect::QuickCheck, Effect::SaveDelays]
+        );
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE)),
+            vec![Effect::Download {
+                version: NEW.into()
+            }]
         );
         f.step(
             Input::Progress {
@@ -699,6 +949,7 @@ mod tests {
         f.step(Input::ManualCheck, busy(NINE));
         f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
         f.step(Input::Choice(Choice::Install), busy(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
         let effects = f.step(Input::Downloaded(Ok(())), busy(NINE));
         assert!(!effects.contains(&Effect::Restart));
         assert_eq!(
@@ -714,6 +965,7 @@ mod tests {
     fn covers_f3_a_download_that_started_before_a_recording_finishes_and_asks_after_it() {
         let mut f = offering(NEW);
         f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
         f.step(Input::Busy(true), busy(NINE));
         assert!(!f.window_visible(), "a recording start hides the progress");
         f.step(Input::Downloaded(Ok(())), busy(NINE));
@@ -761,7 +1013,20 @@ mod tests {
     fn with_no_quit_24_hours_after_later_the_next_check_asks_again() {
         let mut f = ready();
         f.step(Input::Choice(Choice::Later), facts(NINE));
-        assert_eq!(f.step(Input::Timer, facts(NINE + 23 * HOUR)), vec![]);
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + 23 * HOUR)),
+            vec![Effect::Check]
+        );
+        f.step(
+            Input::Checked(Ok(Some(NEW.into()))),
+            facts(NINE + 23 * HOUR),
+        );
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
+                version: NEW.into()
+            }
+        );
         let next_day = NINE + 24 * HOUR;
         assert_eq!(f.step(Input::Timer, facts(next_day)), vec![Effect::Check]);
         f.step(Input::Checked(Ok(Some(NEW.into()))), facts(next_day));
@@ -804,6 +1069,7 @@ mod tests {
         f.step(Input::Choice(Choice::Install), facts(NINE));
         f.step(Input::Choice(Choice::Close), facts(NINE));
         assert!(!f.window_visible(), "a close hides the progress");
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
         f.step(Input::Downloaded(Err("bad signature".into())), facts(NINE));
         assert_eq!(
             f.state(),
@@ -816,13 +1082,249 @@ mod tests {
         assert_eq!(f.install_at_quit(), None);
         assert_eq!(
             f.step(Input::Choice(Choice::TryAgain), facts(NINE)),
-            vec![
-                Effect::Download {
-                    version: NEW.into()
-                },
-                Effect::SaveDelays
-            ]
+            vec![Effect::QuickCheck, Effect::SaveDelays]
         );
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE)),
+            vec![Effect::Download {
+                version: NEW.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn covers_ae2_install_downloads_the_release_that_a_check_at_the_click_names() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        assert_eq!(
+            f.state(),
+            &downloading(NEW.into()),
+            "the progress shows at once"
+        );
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE)),
+            vec![Effect::Download {
+                version: NEWER.into()
+            }]
+        );
+        assert_eq!(f.state(), &downloading(NEWER.into()));
+    }
+
+    #[test]
+    fn install_downloads_the_shown_version_when_its_check_fails_or_names_none() {
+        for result in [Err("offline".to_string()), Ok(None)] {
+            let mut f = offering(NEW);
+            f.step(Input::Choice(Choice::Install), facts(NINE));
+            assert_eq!(
+                f.step(Input::Checked(result), facts(NINE)),
+                vec![Effect::Download {
+                    version: NEW.into()
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn install_of_the_saved_version_restarts_without_a_download() {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEWER.into()));
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        let effects = f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE));
+        assert_eq!(effects, vec![Effect::SaveDelays, Effect::Restart]);
+        assert_eq!(
+            f.state(),
+            &UpdateState::Installing {
+                version: NEWER.into()
+            }
+        );
+    }
+
+    #[test]
+    fn install_while_a_check_runs_waits_for_that_check() {
+        let mut f = offering(NEW);
+        f.step(Input::Timer, facts(NINE + HOUR));
+        assert_eq!(
+            f.step(Input::Choice(Choice::Install), facts(NINE + HOUR)),
+            vec![Effect::SaveDelays],
+            "no second check"
+        );
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR)),
+            vec![Effect::Download {
+                version: NEWER.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn busy_and_close_during_the_install_check_hide_the_progress() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert!(!f.window_visible());
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert!(!f.window_visible());
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE)),
+            vec![Effect::Download {
+                version: NEW.into()
+            }],
+            "the download continues"
+        );
+    }
+
+    #[test]
+    fn try_again_downloads_the_newest_release() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Downloaded(Err("offline".into())), facts(NINE));
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        f.step(Input::Choice(Choice::TryAgain), facts(NINE + HOUR));
+        assert_eq!(
+            f.step(Input::Checked(Err("offline".into())), facts(NINE + HOUR)),
+            vec![Effect::Download {
+                version: NEWER.into()
+            }],
+            "the newest known release when the check fails"
+        );
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Downloaded(Err("offline".into())), facts(NINE));
+        f.step(Input::Choice(Choice::TryAgain), facts(NINE));
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE)),
+            vec![Effect::Download {
+                version: NEWER.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn relaunch_now_with_a_newer_release_installs_the_newest() {
+        let mut f = ready();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.step(Input::Choice(Choice::RelaunchNow), facts(NINE + HOUR)),
+            vec![Effect::QuickCheck, Effect::SaveDelays]
+        );
+        assert_eq!(f.state(), &downloading(NEWER.into()));
+    }
+
+    #[test]
+    fn relaunch_now_that_arrives_at_the_offer_installs() {
+        let mut f = offering(NEW);
+        assert_eq!(
+            f.step(Input::Choice(Choice::RelaunchNow), facts(NINE)),
+            vec![Effect::QuickCheck, Effect::SaveDelays]
+        );
+    }
+
+    #[test]
+    fn covers_ae3_the_tray_item_opens_the_offer_during_the_remind_delay() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::RemindLater), facts(NINE));
+        assert_eq!(f.tray_version(), Some(NEW));
+        f.step(Input::TrayOpen, facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEW));
+        assert!(f.user_asked());
+        assert_eq!(f.delays().remind_until, Some(NINE + DELAY_SECONDS));
+    }
+
+    #[test]
+    fn covers_ae5_a_manual_check_counts_as_asked() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        assert!(f.user_asked());
+    }
+
+    #[test]
+    fn a_close_ends_the_ask() {
+        let mut f = offering(NEW);
+        f.step(Input::TrayOpen, facts(NINE));
+        assert!(f.user_asked());
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert!(!f.user_asked());
+    }
+
+    #[test]
+    fn an_automatic_offer_is_not_asked_for() {
+        let f = offering(NEW);
+        assert!(!f.user_asked());
+    }
+
+    #[test]
+    fn the_tray_item_shows_held_notices_while_busy() {
+        let mut f = offering(NEW);
+        f.step(Input::Busy(true), busy(NINE));
+        f.step(Input::TrayOpen, busy(NINE));
+        assert_eq!(f.state(), &offered(NEW));
+        let mut f = ready();
+        f.step(Input::Busy(true), busy(NINE));
+        f.step(Input::TrayOpen, busy(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        f.step(Input::TrayOpen, facts(NINE));
+        assert!(f.window_visible(), "a hidden download shows again");
+    }
+
+    #[test]
+    fn the_tray_item_while_waiting_for_quit_asks_or_offers_the_newer_release() {
+        let mut f = waiting_for_quit();
+        f.step(Input::TrayOpen, facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+        let mut f = waiting_for_quit();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        f.step(Input::TrayOpen, facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEWER));
+    }
+
+    #[test]
+    fn the_tray_item_does_nothing_while_installing() {
+        let mut f = ready();
+        f.step(Input::Choice(Choice::RelaunchNow), facts(NINE));
+        f.step(Input::TrayOpen, facts(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Installing {
+                version: NEW.into()
+            }
+        );
+        assert_eq!(f.tray_version(), None);
+    }
+
+    #[test]
+    fn the_tray_version_is_the_newest_release_or_none() {
+        let mut f = flow();
+        assert_eq!(f.tray_version(), None);
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(f.tray_version(), Some(NEW));
+        f.step(Input::Choice(Choice::RemindLater), facts(NINE));
+        let mut later = waiting_for_quit();
+        assert_eq!(later.tray_version(), Some(NEW));
+        later.step(Input::Timer, facts(NINE + HOUR));
+        later.step(Input::Checked(Ok(None)), facts(NINE + HOUR));
+        assert_eq!(later.tray_version(), None);
     }
 
     #[test]
@@ -886,9 +1388,178 @@ mod tests {
     #[test]
     fn an_automatic_check_keeps_the_install_at_quit_while_it_runs() {
         let mut f = waiting_for_quit();
-        f.step(Input::Timer, facts(NINE + 25 * HOUR));
-        assert_eq!(f.state(), &UpdateState::Checking { manual: false });
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + 25 * HOUR)),
+            vec![Effect::Check]
+        );
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
+                version: NEW.into()
+            }
+        );
         assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn covers_ae2_a_newer_release_changes_the_offer_in_place() {
+        let mut f = offering(NEW);
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + HOUR)),
+            vec![Effect::Check]
+        );
+        assert_eq!(
+            f.state(),
+            &offered(NEW),
+            "the offer stays while the check runs"
+        );
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEWER));
+        assert!(f.window_visible());
+    }
+
+    #[test]
+    fn covers_ae7_a_newer_release_found_after_later_stops_the_install_at_quit() {
+        let mut f = waiting_for_quit();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
+                version: NEW.into()
+            },
+            "the Later delay holds the offer"
+        );
+        assert_eq!(f.install_at_quit(), None);
+        let next_day = NINE + 24 * HOUR;
+        f.step(Input::Timer, facts(next_day));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(next_day));
+        assert_eq!(f.state(), &offered(NEWER));
+    }
+
+    #[test]
+    fn a_shown_ready_question_keeps_its_version_when_a_newer_release_comes_out() {
+        let mut f = ready();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+        assert_eq!(f.tray_version(), Some(NEWER));
+        assert_eq!(f.install_at_quit(), None);
+    }
+
+    #[test]
+    fn a_confirmed_install_still_installs_when_a_newer_release_comes_out() {
+        let mut f = ready();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Choice(Choice::RelaunchNow), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn the_newest_release_follows_the_last_successful_check() {
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Choice(Choice::RemindLater), facts(NINE));
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE + HOUR));
+        assert_eq!(f.tray_version(), Some(NEW), "a failed check keeps it");
+        f.step(Input::Timer, facts(NINE + 2 * HOUR));
+        f.step(Input::Checked(Ok(None)), facts(NINE + 2 * HOUR));
+        assert_eq!(
+            f.tray_version(),
+            None,
+            "a check that names no release clears it"
+        );
+    }
+
+    #[test]
+    fn versions_compare_as_numbers() {
+        assert!(newer("1.0.10", "1.0.9"));
+        assert!(!newer("1.0.9", "1.0.10"));
+        assert!(!newer("1.0.4", "1.0.4"));
+    }
+
+    #[test]
+    fn a_timer_while_a_check_runs_starts_no_second_check() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        assert_eq!(f.step(Input::Timer, facts(NINE)), vec![]);
+    }
+
+    #[test]
+    fn the_checks_continue_while_a_manual_result_shows() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + HOUR)),
+            vec![Effect::Check]
+        );
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::UpToDate {
+                current: CURRENT.into()
+            }
+        );
+        assert_eq!(f.tray_version(), Some(NEW));
+    }
+
+    #[test]
+    fn the_tray_item_replaces_a_manual_result_with_the_offer() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE + HOUR));
+        f.step(Input::TrayOpen, facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEW));
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE));
+        f.step(Input::TrayOpen, facts(NINE));
+        assert_eq!(f.state(), &offered(NEW));
+        f.step(Input::Choice(Choice::RemindLater), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle, "no saved state comes back");
+    }
+
+    #[test]
+    fn a_recording_during_a_manual_check_from_the_offer_holds_the_offer() {
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert!(!f.window_visible(), "the recording start closes the window");
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert!(!f.window_visible());
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW), "the offer shows when busy ends");
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
+        f.step(Input::ManualCheck, busy(NINE));
+        f.step(Input::Checked(Err("offline".into())), busy(NINE));
+        f.step(Input::Busy(false), facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW), "a held offer shows after busy");
+    }
+
+    #[test]
+    fn a_failed_manual_check_from_the_offer_returns_to_the_offer() {
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW));
     }
 
     #[test]

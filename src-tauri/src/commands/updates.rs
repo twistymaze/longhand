@@ -5,13 +5,14 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, State};
 
-use crate::managers::updates::{Choice, UpdateManager, UpdateState};
+use crate::managers::updates::{Choice, UpdateManager, UpdateStateChanged};
 
-/// The current update state, which the window reads once at open.
+/// The current update state, which the window reads once at open, and
+/// whether the window has the focus.
 #[tauri::command]
 #[specta::specta]
-pub fn update_state(manager: State<'_, Arc<UpdateManager>>) -> UpdateState {
-    manager.state()
+pub fn update_state(manager: State<'_, Arc<UpdateManager>>) -> UpdateStateChanged {
+    manager.snapshot()
 }
 
 /// "Check for Updates…" (R11).

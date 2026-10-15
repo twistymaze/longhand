@@ -57,6 +57,64 @@ pub fn set_widget_item(app: &AppHandle, action: crate::widget::PressAction) {
     }
 }
 
+/// The tray menu and its update item, which shows only while a newer
+/// release is known (R4). A menu item has no visibility switch, so the item
+/// is inserted and removed.
+struct UpdateMenu {
+    menu: Menu<tauri::Wry>,
+    item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    /// The last text that was queued, so an unchanged item queues nothing.
+    queued: Mutex<Option<String>>,
+}
+
+/// The position of the update item: above "Check for Updates…".
+const UPDATE_ITEM_POSITION: usize = 3;
+
+/// The text of the update item for `version`.
+pub(crate) fn update_item_text(version: &str) -> String {
+    format!("Update Available: {version}…")
+}
+
+/// Show the update item for `version`, or remove it with none. The change
+/// is queued on the main thread, and the caller does not wait for it.
+pub fn set_update_item(app: &AppHandle, version: Option<String>) {
+    let Some(state) = app.try_state::<UpdateMenu>() else {
+        return;
+    };
+    let text = version.as_deref().map(update_item_text);
+    {
+        let mut queued = state.queued.lock().unwrap_or_else(|e| e.into_inner());
+        if *queued == text {
+            return;
+        }
+        queued.clone_from(&text);
+    }
+    let handle = app.clone();
+    let scheduled = app.run_on_main_thread(move || {
+        let Some(state) = handle.try_state::<UpdateMenu>() else {
+            return;
+        };
+        let mut item = state.item.lock().unwrap_or_else(|e| e.into_inner());
+        let result = match (text, item.as_ref()) {
+            (Some(text), Some(existing)) => existing.set_text(text),
+            (Some(text), None) => MenuItem::with_id(&handle, "update", text, true, None::<&str>)
+                .and_then(|new| {
+                    state.menu.insert(&new, UPDATE_ITEM_POSITION)?;
+                    *item = Some(new);
+                    Ok(())
+                }),
+            (None, Some(existing)) => state.menu.remove(existing).map(|_| *item = None),
+            (None, None) => Ok(()),
+        };
+        if let Err(e) = result {
+            log::warn!("the tray update item could not change: {e}");
+        }
+    });
+    if let Err(e) = scheduled {
+        log::warn!("the tray update item change could not be queued: {e}");
+    }
+}
+
 /// Show a failed-capture alert on the tray, or clear it (U15): a title
 /// beside the menu-bar icon on macOS, which takes precedence over the
 /// recording time, the tooltip, and the menu's first item, which fronts the
@@ -139,6 +197,12 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?)?;
+    #[cfg(target_os = "macos")]
+    app.manage(UpdateMenu {
+        menu: menu.clone(),
+        item: Mutex::new(None),
+        queued: Mutex::new(None),
+    });
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&quit)?;
 
@@ -183,6 +247,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             "widget" => crate::widget::toggle_open_note(app),
             "settings" => open_settings(app),
             "check-updates" => crate::managers::updates::check_for_updates(app),
+            "update" => crate::managers::updates::tray_open(app),
             "quit" => app.exit(0),
             _ => {}
         })
@@ -344,6 +409,11 @@ mod tests {
         assert!(!widget_item(PressAction::None).1);
         assert_eq!(HIDE_WIDGET, "Hide Recording Widget");
         assert_eq!(SHOW_WIDGET, "Show Recording Widget");
+    }
+
+    #[test]
+    fn the_update_item_names_the_version() {
+        assert_eq!(update_item_text("1.0.5"), "Update Available: 1.0.5…");
     }
 
     #[test]

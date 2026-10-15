@@ -1164,9 +1164,10 @@ async buildInfo() : Promise<BuildInfo> {
     return await TAURI_INVOKE("build_info");
 },
 /**
- * The current update state, which the window reads once at open.
+ * The current update state, which the window reads once at open, and
+ * whether the window has the focus.
  */
-async updateState() : Promise<UpdateState> {
+async updateState() : Promise<UpdateStateChanged> {
     return await TAURI_INVOKE("update_state");
 },
 /**
@@ -2861,7 +2862,12 @@ export type UpdateState =
 /**
  * The update state changed. The update window follows it.
  */
-export type UpdateStateChanged = { state: UpdateState }
+export type UpdateStateChanged = { state: UpdateState; 
+/**
+ * The user asked for the window, so it has the focus and Return
+ * chooses the default button (KTD6).
+ */
+with_key: boolean }
 /**
  * What a note waits for before its next stage can run (KTD10).
  */
