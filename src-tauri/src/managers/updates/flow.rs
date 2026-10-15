@@ -112,6 +112,26 @@ pub enum Effect {
     SaveDelays,
 }
 
+/// The purposes that wait for the one check in flight. A result serves
+/// each of them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Pending {
+    /// The timer started the check, or a recording start turned a manual
+    /// check into one. Its result can show an offer.
+    background: bool,
+    /// "Check for Updates…" waits for the result.
+    manual: bool,
+}
+
+/// True when version `a` is newer than version `b`. Two versions that do
+/// not parse count as newer when they differ.
+fn newer(a: &str, b: &str) -> bool {
+    match (semver::Version::parse(a), semver::Version::parse(b)) {
+        (Ok(a), Ok(b)) => a > b,
+        _ => a != b,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Flow {
     state: UpdateState,
@@ -123,6 +143,11 @@ pub struct Flow {
     download_hidden: bool,
     /// The state that a check returns to when it finds nothing.
     before_check: UpdateState,
+    /// The release that the last successful check named. A check that
+    /// names none clears it, and a failed check keeps it.
+    newest: Option<String>,
+    /// The check in flight, if any. Only one check runs at a time.
+    pending: Option<Pending>,
 }
 
 impl Flow {
@@ -134,6 +159,8 @@ impl Flow {
             saved,
             download_hidden: false,
             before_check: UpdateState::Idle,
+            newest: None,
+            pending: None,
         }
     }
 
@@ -143,6 +170,11 @@ impl Flow {
 
     pub fn delays(&self) -> &Delays {
         &self.delays
+    }
+
+    /// The release that the last successful check named.
+    pub fn newest(&self) -> Option<&str> {
+        self.newest.as_deref()
     }
 
     /// True when the update window shows the state.
@@ -160,29 +192,44 @@ impl Flow {
         }
     }
 
-    /// True when the user asked for the build and a quit must install it (KTD10).
+    /// True when a check found a release newer than `version` (R9).
+    fn superseded(&self, version: &str) -> bool {
+        self.newest.as_deref().is_some_and(|n| newer(n, version))
+    }
+
+    /// The build that a quit must install (KTD10). A ready build that a
+    /// newer release replaces does not install (R9). A build that the user
+    /// confirmed with "Relaunch Now" or a download installs (KTD8).
     pub fn install_at_quit(&self) -> Option<&str> {
         match &self.state {
-            UpdateState::ReadyHeld { version }
-            | UpdateState::Ready { version }
-            | UpdateState::WaitingForQuit { version }
-            | UpdateState::Installing { version } => Some(version),
+            UpdateState::ReadyHeld { version } | UpdateState::Installing { version } => {
+                Some(version)
+            }
+            UpdateState::Ready { version } | UpdateState::WaitingForQuit { version } => {
+                self.unless_superseded(version)
+            }
             // A check and its result keep the build that waits for a quit.
             UpdateState::Checking { .. }
             | UpdateState::UpToDate { .. }
             | UpdateState::CheckFailed { .. } => match &self.before_check {
-                UpdateState::WaitingForQuit { version } => Some(version),
+                UpdateState::WaitingForQuit { version } => self.unless_superseded(version),
                 _ => None,
             },
             _ => None,
         }
     }
 
-    /// Idle, or the ready build that waits for a quit. A check and its
-    /// result return to the state before the check.
+    fn unless_superseded<'a>(&self, version: &'a str) -> Option<&'a str> {
+        (!self.superseded(version)).then_some(version)
+    }
+
+    /// The state to return to after a manual check or its result: the
+    /// notice that was there before, or Idle.
     fn rest(&self) -> UpdateState {
         match &self.state {
-            UpdateState::WaitingForQuit { .. } => self.state.clone(),
+            UpdateState::Offered { .. }
+            | UpdateState::Held { .. }
+            | UpdateState::WaitingForQuit { .. } => self.state.clone(),
             UpdateState::Checking { .. }
             | UpdateState::UpToDate { .. }
             | UpdateState::CheckFailed { .. } => self.before_check.clone(),
@@ -221,21 +268,19 @@ impl Flow {
         }
     }
 
-    /// An automatic check (R9, R10, R15, R17).
+    /// An automatic check (R9, R10). It runs also during the delays, and
+    /// the delays decide only whether its result shows a notice (R6).
     fn timer(&mut self, facts: Facts) -> Vec<Effect> {
-        if !facts.automatic_checks || !facts.is_release_build {
+        if !facts.automatic_checks || !facts.is_release_build || self.pending.is_some() {
             return vec![];
         }
-        let due = match &self.state {
-            UpdateState::Idle => !Self::active(self.delays.remind_until, facts.now),
-            UpdateState::WaitingForQuit { .. } => !Self::active(self.delays.later_until, facts.now),
-            _ => false,
-        };
-        if !due {
+        if let UpdateState::Downloading { .. } | UpdateState::Installing { .. } = self.state {
             return vec![];
         }
-        self.before_check = self.rest();
-        self.state = UpdateState::Checking { manual: false };
+        self.pending = Some(Pending {
+            background: true,
+            ..Pending::default()
+        });
         vec![Effect::Check]
     }
 
@@ -258,9 +303,6 @@ impl Flow {
                         version: version.clone(),
                     };
                 }
-                if let UpdateState::Checking { .. } = self.state {
-                    self.state = UpdateState::Checking { manual: true };
-                }
                 return vec![];
             }
             _ => {}
@@ -271,34 +313,47 @@ impl Flow {
         }
         self.before_check = self.rest();
         self.state = UpdateState::Checking { manual: true };
-        vec![Effect::Check]
+        match &mut self.pending {
+            // The check in flight serves the user too.
+            Some(pending) => {
+                pending.manual = true;
+                vec![]
+            }
+            None => {
+                self.pending = Some(Pending {
+                    manual: true,
+                    ..Pending::default()
+                });
+                vec![Effect::Check]
+            }
+        }
     }
 
     fn checked(&mut self, result: Result<Option<String>, String>, facts: Facts) -> Vec<Effect> {
-        let UpdateState::Checking { manual } = self.state else {
+        let Some(pending) = self.pending.take() else {
             return vec![];
         };
-        // A manual result without a build keeps `before_check` until the
-        // window closes.
-        let rest = match (&result, manual) {
-            (Ok(None) | Err(_), true) => self.before_check.clone(),
-            _ => std::mem::replace(&mut self.before_check, UpdateState::Idle),
-        };
+        match &result {
+            Ok(Some(version)) => self.newest = Some(version.clone()),
+            Ok(None) => self.newest = None,
+            Err(_) => {}
+        }
+        if pending.manual && self.state == (UpdateState::Checking { manual: true }) {
+            self.manual_result(result);
+        } else if pending.background && matches!(result, Ok(Some(_))) {
+            // An automatic check that fails or finds nothing shows nothing (R12).
+            self.offer_newest(facts);
+        }
+        vec![]
+    }
+
+    /// The result of "Check for Updates…" shows at once.
+    fn manual_result(&mut self, result: Result<Option<String>, String>) {
         match result {
-            Ok(Some(version)) if self.saved.as_deref() == Some(version.as_str()) => {
-                // The build is already downloaded and verified.
-                let waiting = Self::active(self.delays.later_until, facts.now);
-                self.state = if !manual && waiting {
-                    UpdateState::WaitingForQuit { version }
-                } else if facts.busy && !manual {
-                    UpdateState::ReadyHeld { version }
-                } else {
-                    UpdateState::Ready { version }
-                };
-            }
             Ok(Some(version)) => {
-                self.state = if facts.busy && !manual {
-                    UpdateState::Held { version }
+                self.before_check = UpdateState::Idle;
+                self.state = if self.saved.as_deref() == Some(version.as_str()) {
+                    UpdateState::Ready { version }
                 } else {
                     UpdateState::Offered {
                         version,
@@ -306,16 +361,54 @@ impl Flow {
                     }
                 };
             }
-            Ok(None) if manual => {
+            Ok(None) => {
                 self.state = UpdateState::UpToDate {
                     current: self.current.clone(),
                 }
             }
-            Err(error) if manual => self.state = UpdateState::CheckFailed { error },
-            // An automatic check shows nothing (R12).
-            Ok(None) | Err(_) => self.state = rest,
+            Err(error) => self.state = UpdateState::CheckFailed { error },
         }
-        vec![]
+    }
+
+    /// After an automatic check: offer the newest release when no delay
+    /// holds it (R6, R15, R17). A shown ready question keeps its version
+    /// (KTD9).
+    fn offer_newest(&mut self, facts: Facts) {
+        let Some(newest) = self.newest.clone() else {
+            return;
+        };
+        let remind = Self::active(self.delays.remind_until, facts.now);
+        let later = Self::active(self.delays.later_until, facts.now);
+        let saved = self.saved.as_deref() == Some(newest.as_str());
+        match &self.state {
+            UpdateState::Idle if saved && later => {
+                self.state = UpdateState::WaitingForQuit { version: newest }
+            }
+            UpdateState::Idle if !remind && !later => self.state = self.notice(newest, facts.busy),
+            UpdateState::WaitingForQuit { .. } if !later => {
+                self.state = self.notice(newest, facts.busy)
+            }
+            UpdateState::Offered { version, .. } | UpdateState::Held { version }
+                if *version != newest =>
+            {
+                self.state = self.notice(newest, facts.busy)
+            }
+            _ => {}
+        }
+    }
+
+    /// The notice for `version`: the ready question for the saved build,
+    /// else the offer. While busy, it is held (R14, R17).
+    fn notice(&self, version: String, busy: bool) -> UpdateState {
+        match (self.saved.as_deref() == Some(version.as_str()), busy) {
+            (true, true) => UpdateState::ReadyHeld { version },
+            (true, false) => UpdateState::Ready { version },
+            (false, true) => UpdateState::Held { version },
+            (false, false) => UpdateState::Offered {
+                version,
+                current: self.current.clone(),
+            },
+        }
     }
 
     /// A recording start closes the window at once (AE2), and the offer or
@@ -337,7 +430,11 @@ impl Flow {
                 UpdateState::Downloading { .. } => self.download_hidden = true,
                 // The check continues, and its result is held or shows nothing.
                 UpdateState::Checking { manual: true } => {
-                    self.state = UpdateState::Checking { manual: false }
+                    if let Some(pending) = &mut self.pending {
+                        pending.manual = false;
+                        pending.background = true;
+                    }
+                    self.settle();
                 }
                 UpdateState::UpToDate { .. }
                 | UpdateState::CheckFailed { .. }
@@ -408,8 +505,11 @@ impl Flow {
                 | UpdateState::Failed { .. }
                 | UpdateState::Checking { manual: true },
             ) => {
-                // After a cancel, the state is not Checking, so the result
-                // of the check has no effect.
+                // After a cancel, the user no longer waits for the check,
+                // so its result changes only the newest release.
+                if let Some(pending) = &mut self.pending {
+                    pending.manual = false;
+                }
                 self.settle();
                 vec![]
             }
@@ -571,8 +671,13 @@ mod tests {
             vec![Effect::SaveDelays]
         );
         assert_eq!(f.state(), &UpdateState::Idle);
-        for later in [NINE + 3 * HOUR, NINE + 8 * HOUR, NINE + 24 * HOUR - 1] {
-            assert_eq!(f.step(Input::Timer, facts(later)), vec![], "at {later}");
+        // The checks continue during the delay, and their results show
+        // nothing (R6).
+        for later in [NINE + 3 * HOUR, NINE + 24 * HOUR - 1] {
+            assert_eq!(f.step(Input::Timer, facts(later)), vec![Effect::Check]);
+            f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(later));
+            assert_eq!(f.state(), &UpdateState::Idle, "at {later}");
+            assert_eq!(f.newest(), Some(NEWER));
         }
         let next_day = NINE + 24 * HOUR;
         assert_eq!(f.step(Input::Timer, facts(next_day)), vec![Effect::Check]);
@@ -648,12 +753,13 @@ mod tests {
             later_until: None,
         };
         let mut f = Flow::new(CURRENT, stored.clone(), None);
-        assert_eq!(f.step(Input::Timer, facts(NINE)), vec![]);
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
         let mut f = Flow::new(CURRENT, stored, None);
-        assert_eq!(
-            f.step(Input::Timer, facts(NINE + HOUR)),
-            vec![Effect::Check]
-        );
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEW));
     }
 
     #[test]
@@ -761,7 +867,20 @@ mod tests {
     fn with_no_quit_24_hours_after_later_the_next_check_asks_again() {
         let mut f = ready();
         f.step(Input::Choice(Choice::Later), facts(NINE));
-        assert_eq!(f.step(Input::Timer, facts(NINE + 23 * HOUR)), vec![]);
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + 23 * HOUR)),
+            vec![Effect::Check]
+        );
+        f.step(
+            Input::Checked(Ok(Some(NEW.into()))),
+            facts(NINE + 23 * HOUR),
+        );
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
+                version: NEW.into()
+            }
+        );
         let next_day = NINE + 24 * HOUR;
         assert_eq!(f.step(Input::Timer, facts(next_day)), vec![Effect::Check]);
         f.step(Input::Checked(Ok(Some(NEW.into()))), facts(next_day));
@@ -886,9 +1005,133 @@ mod tests {
     #[test]
     fn an_automatic_check_keeps_the_install_at_quit_while_it_runs() {
         let mut f = waiting_for_quit();
-        f.step(Input::Timer, facts(NINE + 25 * HOUR));
-        assert_eq!(f.state(), &UpdateState::Checking { manual: false });
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + 25 * HOUR)),
+            vec![Effect::Check]
+        );
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
+                version: NEW.into()
+            }
+        );
         assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn covers_ae2_a_newer_release_changes_the_offer_in_place() {
+        let mut f = offering(NEW);
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + HOUR)),
+            vec![Effect::Check]
+        );
+        assert_eq!(
+            f.state(),
+            &offered(NEW),
+            "the offer stays while the check runs"
+        );
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEWER));
+        assert!(f.window_visible());
+    }
+
+    #[test]
+    fn covers_ae7_a_newer_release_found_after_later_stops_the_install_at_quit() {
+        let mut f = waiting_for_quit();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::WaitingForQuit {
+                version: NEW.into()
+            },
+            "the Later delay holds the offer"
+        );
+        assert_eq!(f.install_at_quit(), None);
+        let next_day = NINE + 24 * HOUR;
+        f.step(Input::Timer, facts(next_day));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(next_day));
+        assert_eq!(f.state(), &offered(NEWER));
+    }
+
+    #[test]
+    fn a_shown_ready_question_keeps_its_version_when_a_newer_release_comes_out() {
+        let mut f = ready();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+        assert_eq!(f.newest(), Some(NEWER));
+        assert_eq!(f.install_at_quit(), None);
+    }
+
+    #[test]
+    fn a_confirmed_install_still_installs_when_a_newer_release_comes_out() {
+        let mut f = ready();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Choice(Choice::RelaunchNow), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn the_newest_release_follows_the_last_successful_check() {
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Choice(Choice::RemindLater), facts(NINE));
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE + HOUR));
+        assert_eq!(f.newest(), Some(NEW), "a failed check keeps it");
+        f.step(Input::Timer, facts(NINE + 2 * HOUR));
+        f.step(Input::Checked(Ok(None)), facts(NINE + 2 * HOUR));
+        assert_eq!(f.newest(), None, "a check that names no release clears it");
+    }
+
+    #[test]
+    fn versions_compare_as_numbers() {
+        assert!(newer("1.0.10", "1.0.9"));
+        assert!(!newer("1.0.9", "1.0.10"));
+        assert!(!newer("1.0.4", "1.0.4"));
+    }
+
+    #[test]
+    fn a_timer_while_a_check_runs_starts_no_second_check() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        assert_eq!(f.step(Input::Timer, facts(NINE)), vec![]);
+    }
+
+    #[test]
+    fn the_checks_continue_while_a_manual_result_shows() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + HOUR)),
+            vec![Effect::Check]
+        );
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE + HOUR));
+        assert_eq!(
+            f.state(),
+            &UpdateState::UpToDate {
+                current: CURRENT.into()
+            }
+        );
+        assert_eq!(f.newest(), Some(NEW));
+    }
+
+    #[test]
+    fn a_failed_manual_check_from_the_offer_returns_to_the_offer() {
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW));
     }
 
     #[test]
