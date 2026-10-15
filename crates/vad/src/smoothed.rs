@@ -2,8 +2,9 @@ use super::{VadFrame, VadTailReport, VoiceActivityDetector};
 use anyhow::Result;
 use std::collections::VecDeque;
 
-/// One pre-roll buffer slot. `emitted` and `voiced` exist only to power the
-/// end-of-recording `tail_report()` diagnostic; they never affect emission.
+/// One pre-roll buffer slot. `emitted` keeps the pre-roll from sending a
+/// frame again, and `tail_report()` uses it. Only `tail_report()` uses
+/// `voiced`.
 struct BufferedFrame {
     samples: Vec<f32>,
     emitted: bool,
@@ -81,7 +82,7 @@ impl VoiceActivityDetector for SmoothedVad {
 
                     // Collect prefill + current frame
                     self.temp_out.clear();
-                    for buffered in self.frame_buffer.iter_mut() {
+                    for buffered in self.frame_buffer.iter_mut().filter(|f| !f.emitted) {
                         self.temp_out.extend(buffered.samples.iter());
                         buffered.emitted = true;
                     }
@@ -233,5 +234,38 @@ mod tests {
         let report = vad.tail_report().unwrap();
         assert_eq!(report.withheld_frames, 2);
         assert_eq!(report.withheld_voiced_frames, 0);
+    }
+
+    /// The first sample of each frame in `out`. Each test frame has one value.
+    fn frame_values(out: &[f32]) -> Vec<f32> {
+        out.chunks(4).map(|chunk| chunk[0]).collect()
+    }
+
+    #[test]
+    fn first_onset_sends_the_full_pre_roll() {
+        let mut vad = smoothed(&[false, false, true, true], 2);
+        for v in [1.0, 2.0, 3.0] {
+            assert!(!vad.push_frame(&frame(v)).unwrap().is_speech());
+        }
+        let last = frame(4.0);
+        let VadFrame::Speech(out) = vad.push_frame(&last).unwrap() else {
+            panic!("onset must send speech");
+        };
+        assert_eq!(frame_values(out), [1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn second_onset_does_not_send_hangover_frames_again() {
+        // Speech (1-2), hangover (3-4), one noise frame (5), then speech
+        // again (6-7) inside the pre-roll window. The pre-roll at the second
+        // onset holds frame 4, which the hangover already sent.
+        let mut vad = smoothed(&[true, true, false, false, false, true, true], 2);
+        let mut sent = Vec::new();
+        for v in 1..=7 {
+            if let VadFrame::Speech(out) = vad.push_frame(&frame(v as f32)).unwrap() {
+                sent.extend(frame_values(out));
+            }
+        }
+        assert_eq!(sent, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
     }
 }
