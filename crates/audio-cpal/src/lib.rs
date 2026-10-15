@@ -189,12 +189,9 @@ impl CpalAudio {
             move |starting: Starting<(Input, u32)>| {
                 let provider = CpalAudio { configs, bluetooth };
                 let shared = Arc::new(Shared::default());
-                let opened = (|| {
-                    let host = cpal::default_host();
-                    let device =
-                        config::resolve_input(&host, choice.as_ref(), &provider.bluetooth)?;
-                    let config = provider.config_for(&device)?;
-                    let input = config::input_of(&device);
+                let open_device = |device: &cpal::Device| {
+                    let config = provider.config_for(device)?;
+                    let input = config::input_of(device);
                     log::info!(
                         "opening '{}' at {} Hz, {} channel(s), {:?}",
                         input.name,
@@ -202,11 +199,27 @@ impl CpalAudio {
                         config.channels(),
                         config.sample_format()
                     );
-                    let (stream, consumer, gaps) = build(&device, &config, Arc::clone(&shared))?;
+                    let (stream, consumer, gaps) = build(device, &config, Arc::clone(&shared))?;
                     stream
                         .play()
                         .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
                     Ok((stream, consumer, gaps, config.sample_rate(), input))
+                };
+                let opened = (|| {
+                    let host = cpal::default_host();
+                    let (device, default_handle) =
+                        config::resolve_input_from(&host, choice.as_ref(), &provider.bluetooth)?;
+                    let first = if forced_default_failure(default_handle, false) {
+                        Err(Error::MicStreamInitializationFailed(
+                            "forced failure of the default microphone".into(),
+                        ))
+                    } else {
+                        open_device(&device)
+                    };
+                    if !config::retry_by_id(choice.is_none(), default_handle, &first) {
+                        return first;
+                    }
+                    retry_default_by_id(&host, &provider, first, &open_device)
                 })();
                 let (stream, consumer, gaps, native_rate) = match opened {
                     Ok((stream, consumer, gaps, native_rate, input)) => {
@@ -287,6 +300,59 @@ impl Frames {
             ),
         }
     }
+}
+
+/// On Windows, open the current default input again, found by its ID, after
+/// the default handle failed (KTD5, [`config::retry_by_id`]). Other
+/// platforms return `first`.
+#[cfg(windows)]
+fn retry_default_by_id<T>(
+    host: &cpal::Host,
+    provider: &CpalAudio,
+    first: Result<T, Error>,
+    open_device: &dyn Fn(&cpal::Device) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let Err(error) = first else { return first };
+    let Some(device) = config::default_by_id(host) else {
+        log::warn!("the default microphone did not open ({error}), and no device has its ID");
+        return Err(error);
+    };
+    log::warn!("the default microphone did not open ({error}); opening it again by its ID");
+    provider.forget();
+    if forced_default_failure(true, true) {
+        return Err(Error::MicStreamInitializationFailed(
+            "forced failure of the default microphone by its ID".into(),
+        ));
+    }
+    open_device(&device)
+}
+
+#[cfg(not(windows))]
+fn retry_default_by_id<T>(
+    _host: &cpal::Host,
+    _provider: &CpalAudio,
+    first: Result<T, Error>,
+    _open_device: &dyn Fn(&cpal::Device) -> Result<T, Error>,
+) -> Result<T, Error> {
+    first
+}
+
+/// A Windows debug build fails the open of the default microphone when
+/// `LONGHAND_DEBUG_FAIL_DEFAULT_MIC` is set, so that the retry by ID can be
+/// tested (KTD6). The value `all` also fails the retry. A release build
+/// never reads the variable.
+#[cfg(all(windows, debug_assertions))]
+fn forced_default_failure(default_handle: bool, by_id: bool) -> bool {
+    match std::env::var("LONGHAND_DEBUG_FAIL_DEFAULT_MIC") {
+        Ok(value) if by_id => value == "all",
+        Ok(_) => default_handle,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(all(windows, debug_assertions)))]
+fn forced_default_failure(_default_handle: bool, _by_id: bool) -> bool {
+    false
 }
 
 fn build(
