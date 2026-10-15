@@ -9254,6 +9254,50 @@ fn hold_analyses(r: &Rig, from: usize) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
     (reached, release)
 }
 
+/// A title job queued while another note is in its audio stages starts
+/// at once when the summary queue is idle. It does not wait until the
+/// note leaves its audio stages (KTD13).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_job_does_not_wait_for_the_audio_stages_of_another_note() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    // The launch queues no title job, so the regeneration queues it.
+    pipeline::summarize::delete_title_request(&r.store, "s").unwrap();
+    // Analysis 0 was the analysis of "s". Hold the analysis of "b".
+    let (reached, release) = hold_analyses(&r, 1);
+    queue_session(
+        &r.store,
+        &r.root,
+        "b",
+        200,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let run = tokio::spawn(Arc::clone(&r.runner).run());
+    until("B is in its speaker stage", || {
+        reached.load(Ordering::SeqCst)
+    })
+    .await;
+
+    r.runner.regenerate_summary("s").await.unwrap();
+    until("the title call", || !title_calls(&mock).is_empty()).await;
+    assert!(
+        reached.load(Ordering::SeqCst),
+        "the title call came before B left its audio stages"
+    );
+
+    release.store(true, Ordering::SeqCst);
+    until("B is saved", || event_at(&r, saved_event("b")).is_some()).await;
+    r.runner.shutdown();
+    run.await.unwrap();
+    assert_eq!(
+        proposed_titles(&r),
+        [("s".to_string(), "Weekly sync".to_string())]
+    );
+}
+
 fn cancelled_event(id: &'static str) -> impl Fn(&RunnerEvent) -> bool {
     move |e| matches!(e, RunnerEvent::Cancelled { session_id } if session_id == id)
 }
@@ -9895,6 +9939,11 @@ async fn a_new_note_reaches_the_summary_queue_before_waiting_regenerations() {
     let r = rig().await;
     saved_with_id(&r, "x", 10).await;
     saved_with_id(&r, "y", 20).await;
+    // The launch starts the pending title jobs at once. This test is about
+    // regenerations and new notes, so it removes them.
+    for id in ["x", "y"] {
+        pipeline::summarize::delete_title_request(&r.store, id).unwrap();
+    }
     let (mock, gate) = gated_summaries(&r).await;
     r.events.lock().unwrap().clear();
     queue_session(

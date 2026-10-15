@@ -1120,27 +1120,41 @@ impl Runner {
     /// The processing loop. Each dequeued note runs in its own task. The
     /// loop waits only until the note leaves its audio stages, so only one
     /// note is in the audio stages at a time, in stop order (KTD3). The
-    /// title jobs start between two notes, so they do not wait for the
-    /// whole queue (KTD13).
+    /// title jobs start when they are queued, also while a note is in its
+    /// audio stages (KTD13).
     pub async fn run(self: Arc<Self>) {
         if let Err(e) = self.queue_pending_titles() {
             log::warn!("could not queue the pending title jobs: {e}");
         }
         loop {
             while let Some((id, model, cancel)) = self.claim_next() {
-                let (audio_done, audio) = oneshot::channel();
+                let (audio_done, mut audio) = oneshot::channel();
                 let runner = Arc::clone(&self);
                 tokio::spawn(async move {
                     runner
                         .run_claimed(&id, &model, cancel, Some(audio_done))
                         .await;
                 });
+                // A title job queued while the note is in its audio stages
+                // starts at once, so it does not wait for those stages
+                // (KTD13). The loop keeps each wake that it takes here.
+                let mut woken = false;
+                let ended = loop {
+                    tokio::select! {
+                        ended = &mut audio => break ended,
+                        _ = self.wake.notified() => {
+                            woken = true;
+                            self.spawn_titles();
+                        }
+                    }
+                };
+                if woken {
+                    self.wake();
+                }
                 // A note that waits for a model is back at the head of
                 // the queue. To claim it again at once would repeat until
                 // the model download finishes.
-                let waits = audio
-                    .await
-                    .is_ok_and(|ended| ended == Some(Outcome::Waiting));
+                let waits = ended.is_ok_and(|ended| ended == Some(Outcome::Waiting));
                 self.spawn_titles();
                 if waits {
                     break;

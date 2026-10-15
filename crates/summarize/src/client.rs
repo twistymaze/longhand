@@ -152,6 +152,58 @@ fn end_line(label: &Label, host: &str, model: &str, elapsed: Duration, result: &
     )
 }
 
+/// Logs a `cancelled` end line when it is dropped while it is armed. The
+/// caller can drop a request before it ends (R13: each start line has an
+/// end line). [`Client::send`] disarms it after it logs the usual end line.
+struct EndGuard<'a> {
+    label: &'a Label,
+    host: &'a str,
+    model: &'a str,
+    started: Instant,
+    armed: bool,
+}
+
+impl<'a> EndGuard<'a> {
+    fn new(label: &'a Label, host: &'a str, model: &'a str) -> Self {
+        Self {
+            label,
+            host,
+            model,
+            started: Instant::now(),
+            armed: true,
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.started.elapsed()
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// The end line for a dropped request, or `None` after [`Self::disarm`].
+    fn cancelled_text(&self) -> Option<String> {
+        self.armed.then(|| {
+            end_line(
+                self.label,
+                self.host,
+                self.model,
+                self.elapsed(),
+                "cancelled",
+            )
+        })
+    }
+}
+
+impl Drop for EndGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(text) = self.cancelled_text() {
+            log::info!("{text}");
+        }
+    }
+}
+
 fn describe(label: &Label, host: &str, model: &str) -> String {
     format!(
         "note {}, {}, host {host}, model {model}, {} ms in the queue",
@@ -400,18 +452,13 @@ impl Client {
     ) -> Result<(reqwest::StatusCode, Vec<u8>), SummarizeError> {
         let (host, model) = (self.host(), &self.endpoint.model);
         log::info!("{}", start_line(label, &host, model));
-        let started = Instant::now();
+        let mut guard = EndGuard::new(label, &host, model);
         let result = self.send_with_retries(request, limits).await;
         log::info!(
             "{}",
-            end_line(
-                label,
-                &host,
-                model,
-                started.elapsed(),
-                &result_text(&result)
-            )
+            end_line(label, &host, model, guard.elapsed(), &result_text(&result))
         );
+        guard.disarm();
         result
     }
 
@@ -658,5 +705,20 @@ mod tests {
         let label = Label::without_note(RequestKind::Models);
         let line = end_line(&label, "h", "m", Duration::ZERO, "connection error");
         assert!(line.starts_with("request end: note none, models, host h,"));
+    }
+
+    #[test]
+    fn a_dropped_request_gives_a_cancelled_end_line_unless_it_ended() {
+        // `block_on` drops the send future when a note is resumed or the
+        // app quits. The log must then show that the request stopped.
+        let label = Label::note("2026-10-14-0900", RequestKind::Chunk);
+        let armed = EndGuard::new(&label, "h", "m");
+        let text = armed.cancelled_text().expect("an armed guard gives a line");
+        assert!(text.starts_with("request end: note 2026-10-14-0900, chunk, host h, model m,"));
+        assert!(text.ends_with(" ms, cancelled"));
+
+        let mut ended = EndGuard::new(&label, "h", "m");
+        ended.disarm();
+        assert_eq!(ended.cancelled_text(), None);
     }
 }
