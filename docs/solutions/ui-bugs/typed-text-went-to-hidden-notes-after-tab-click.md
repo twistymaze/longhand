@@ -61,7 +61,7 @@ The causal chain:
 
 With no selection in the editor, typed text goes nowhere. With the focus in the editor, the keymap and the input rules run, and selection changes go into the editor state.
 
-The range must be put back **before** `focus()`. When WebKit focuses an editable element that has no selection, it puts the cursor at the start. ProseMirror's focus handler puts its own selection back only after 20 ms (`node_modules/prosemirror-view/dist/index.js:3811-3821`). Before that, the `selectionchange` from the focus writes the start position into the editor state. In a WebKit check, `focus()` alone moved the cursor to the start of the notes.
+The range must be put back **before** `focus()`. When WebKit focuses an editable element that has no selection, it puts the cursor at the start. ProseMirror's focus handler puts its own selection back only after 20 ms (`handlers.focus` in `node_modules/prosemirror-view/dist/index.js`, lines 3904-3916 in prosemirror-view 1.42.3). Before that, the `selectionchange` from the focus writes the start position into the editor state. In a WebKit check, `focus()` alone moved the cursor to the start of the notes.
 
 ## Prevention
 

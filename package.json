@@ -29,13 +29,17 @@
     "prosemirror-schema-list": "^1.5.1",
     "prosemirror-state": "^1.4.4",
     "prosemirror-transform": "1.12.1",
-    "prosemirror-view": "1.41.7",
+    "prosemirror-view": "1.42.3",
     "react": "~19.2.8",
     "react-dom": "~19.2.8",
     "react-reconciler": "0.33.0",
     "tailwindcss": "^4.1.16",
     "tauri-plugin-macos-permissions-api": "2.3.0",
     "tlds": "^1.261.0"
+  },
+  "overrides": {
+    "prosemirror-model": "1.25.12",
+    "prosemirror-view": "1.42.3"
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.14.5",
