@@ -17,7 +17,7 @@ This bundle gets no updates. To test the updater, build with `LONGHAND_RELEASE=1
 Give both ways to run the build, using the exact checkout path:
 
 - On this Mac: `open <checkout>/target/release/bundle/macos/Longhand.app`.
-- On a remote Mac: zip the bundle with `ditto -c -k --keepParent`. Provide the `scp`, unzip, `spctl` and `open` steps for that build, and the cleanup step. Start the steps with the cleanup step too: an old build in the folder makes the unzip fail. A remote Mac needs a notarized build or Gatekeeper stops the app. Explain this requirement and notarize when the user tests remotely.
+- On a remote Mac: zip the bundle with `ditto -c -k --norsrc --noextattr --keepParent`. Without `--norsrc --noextattr`, the zip keeps extended attributes as `._*` files inside the bundle. `unzip` writes them as real files, which breaks the signature, and macOS then says that the app is damaged. Provide the `scp`, unzip, `spctl` and `open` steps for that build, and the cleanup step. Start the steps with the cleanup step too: an old build in the folder makes the unzip fail. A remote Mac needs a notarized build or Gatekeeper stops the app. Explain this requirement and notarize when the user tests remotely.
 
 Never put a test build in `/Applications`. The app there is the installed release, and it gets updates. Unzip a test build into its own folder, such as `~/Downloads/longhand-test/`, and open it from there. Quit the installed release first: the test build has the same bundle ID, so the installed release can receive the launch instead. The test build uses the same app data as the installed release.
 
