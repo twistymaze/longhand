@@ -39,6 +39,8 @@ const BUSY_POLL: Duration = Duration::from_secs(15);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// The check before an install at launch (KTD10).
 const LAUNCH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// The check at an Install click: the progress already shows (KTD7).
+const QUICK_CHECK_TIMEOUT: Duration = LAUNCH_CHECK_TIMEOUT;
 /// The least download progress between two state events.
 const PROGRESS_STEP: u64 = 256 * 1024;
 
@@ -283,7 +285,8 @@ impl UpdateManager {
         crate::window::show_update_window(&self.app, visible);
         for effect in effects {
             match effect {
-                Effect::Check => self.start_check(),
+                Effect::Check => self.start_check(CHECK_TIMEOUT),
+                Effect::QuickCheck => self.start_check(QUICK_CHECK_TIMEOUT),
                 Effect::Download { version } => self.start_download(version),
                 Effect::SaveDelays => write_delays(&self.app, &delays),
                 // The `RunEvent::Exit` arm stops processing and installs
@@ -303,13 +306,11 @@ impl UpdateManager {
         }
     }
 
-    fn start_check(self: &Arc<Self>) {
+    fn start_check(self: &Arc<Self>, timeout: Duration) {
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let result = if build_info::is_release_build() {
-                check(&manager.app, CHECK_TIMEOUT)
-                    .await
-                    .map(|u| u.map(Box::new))
+                check(&manager.app, timeout).await.map(|u| u.map(Box::new))
             } else {
                 Ok(None)
             };
