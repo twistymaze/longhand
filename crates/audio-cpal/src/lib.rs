@@ -216,7 +216,7 @@ impl CpalAudio {
                     } else {
                         open_device(&device)
                     };
-                    if !config::retry_by_id(choice.is_none(), default_handle, first.is_err()) {
+                    if !config::retry_by_id(default_handle, first.is_err()) {
                         return first;
                     }
                     retry_default_by_id(&host, &provider, first, &open_device)

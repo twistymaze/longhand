@@ -144,16 +144,16 @@ pub fn resolve_input_from(
 }
 
 /// Whether a failed open tries the default microphone again, opened by its
-/// ID (KTD5). Only when the user chose no microphone and the failed device
-/// was cpal's default handle.
+/// ID (KTD5). Only when the failed device was cpal's default handle, which
+/// [`resolve_input_from`] gives only when the user chose no microphone.
 ///
 /// On Windows, cpal opens the default handle through
 /// `ActivateAudioInterfaceAsync`. After the default device changes during a
 /// session, each such open can fail with `RPC_E_CHANGED_MODE` until the app
 /// restarts. A device found by its ID opens through `IMMDevice::Activate`
 /// and does not have this fault. Shorthand 19029f4 retries in the same way.
-pub fn retry_by_id(no_choice: bool, default_handle: bool, failed: bool) -> bool {
-    no_choice && default_handle && failed
+pub fn retry_by_id(default_handle: bool, failed: bool) -> bool {
+    default_handle && failed
 }
 
 /// The current default input, found by its ID, not as cpal's default
@@ -323,16 +323,15 @@ mod tests {
 
     #[test]
     fn a_failed_default_handle_with_no_choice_is_tried_again_by_id() {
-        assert!(retry_by_id(true, true, true));
+        assert!(retry_by_id(true, true));
     }
 
     #[test]
-    fn a_chosen_or_replaced_device_or_a_good_open_is_not_tried_again() {
-        // The user chose the microphone.
-        assert!(!retry_by_id(false, false, true));
-        // A wired input replaced a Bluetooth default.
-        assert!(!retry_by_id(true, false, true));
+    fn a_specific_device_or_a_good_open_is_not_tried_again() {
+        // The user chose the microphone, or a wired input replaced a
+        // Bluetooth default: a specific device, not the default handle.
+        assert!(!retry_by_id(false, true));
         // The first open worked.
-        assert!(!retry_by_id(true, true, false));
+        assert!(!retry_by_id(true, false));
     }
 }
