@@ -15,3 +15,7 @@ Port four upstream fixes for defects that Longhand also has. The plan gives the 
 
 ## Why
 The reference source review of 2026-10-15 found them. The user chose all four.
+
+## Shipped
+
+Shipped in [#22](https://github.com/twistymaze/longhand/pull/22) on 2026-10-15, as release v1.1.7. The PR also fixed a timing race in the runner test `a_title_job_does_not_wait_for_the_audio_stages_of_another_note`.

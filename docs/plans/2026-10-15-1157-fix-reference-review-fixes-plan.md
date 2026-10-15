@@ -320,5 +320,5 @@ U1 and U2 change the same open path, so U2 starts after U1. U3, U4 and U5 have n
 - The manual macOS checks passed, and the Bluetooth start time is in the PR.
 - All local checks and CI pass.
 - One PR with one commit for each unit (five commits). Its title is a `fix` title that names all four fixes, for example `fix: limit microphone start, retry the Windows default mic by ID, and port editor and VAD fixes`.
-- The idea `docs/ideas/next/reference-review-fixes-2026-10.md` moves to `done/` after the merge.
+- The idea `docs/ideas/done/reference-review-fixes-2026-10.md` moves to `done/` after the merge.
 - No code from abandoned attempts remains in the diff.
