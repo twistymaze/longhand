@@ -38,7 +38,6 @@
     "tlds": "^1.261.0"
   },
   "overrides": {
-    "prosemirror-model": "1.25.12",
     "prosemirror-view": "1.42.3"
   },
   "devDependencies": {

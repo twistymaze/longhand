@@ -49,7 +49,6 @@
     },
   },
   "overrides": {
-    "prosemirror-model": "1.25.12",
     "prosemirror-view": "1.42.3",
   },
   "packages": {
