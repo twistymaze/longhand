@@ -4,8 +4,8 @@ reference-source/
 # OS / editor
 .DS_Store
 
-# Compound Engineering local scratch
-.context/compound-engineering/
+# Local scratch: Compound Engineering runs, codebase sweep runs, screenshots.
+/.context/
 
 # Local evaluation fixtures — real recordings, never committed.
 sample.m4a

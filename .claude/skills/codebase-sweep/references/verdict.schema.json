@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "string", "enum": ["confirmed", "rejected", "unresolved"] },
+    "severity": { "type": "string", "enum": ["P0", "P1", "P2", "P3"] },
+    "protected_subject": {
+      "type": "string",
+      "enum": ["none", "data-loss", "concurrency", "memory-safety", "security"]
+    },
+    "reason": { "type": "string" },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "known_decision": { "type": "string" }
+  },
+  "required": ["status", "severity", "protected_subject", "reason", "evidence", "known_decision"]
+}
