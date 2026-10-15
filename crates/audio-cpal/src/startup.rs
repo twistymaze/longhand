@@ -90,10 +90,9 @@ pub(crate) fn start<T: Send + 'static>(
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            log::warn!("the microphone did not start within {limit:?}");
-            return Err(Error::MicStreamInitializationFailed(format!(
-                "the microphone did not start within {limit:?}"
-            )));
+            let message = format!("the microphone did not start within {limit:?}");
+            log::warn!("{message}");
+            return Err(Error::MicStreamInitializationFailed(message));
         }
         match result.recv_timeout(left.min(CANCEL_POLL)) {
             Ok(reported) => return reported,

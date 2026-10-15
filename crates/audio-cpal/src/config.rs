@@ -152,8 +152,8 @@ pub fn resolve_input_from(
 /// session, each such open can fail with `RPC_E_CHANGED_MODE` until the app
 /// restarts. A device found by its ID opens through `IMMDevice::Activate`
 /// and does not have this fault. Shorthand 19029f4 retries in the same way.
-pub fn retry_by_id<T, E>(no_choice: bool, default_handle: bool, first: &Result<T, E>) -> bool {
-    no_choice && default_handle && first.is_err()
+pub fn retry_by_id(no_choice: bool, default_handle: bool, failed: bool) -> bool {
+    no_choice && default_handle && failed
 }
 
 /// The current default input, found by its ID, not as cpal's default
@@ -323,19 +323,16 @@ mod tests {
 
     #[test]
     fn a_failed_default_handle_with_no_choice_is_tried_again_by_id() {
-        let failed: Result<(), ()> = Err(());
-        assert!(retry_by_id(true, true, &failed));
+        assert!(retry_by_id(true, true, true));
     }
 
     #[test]
     fn a_chosen_or_replaced_device_or_a_good_open_is_not_tried_again() {
-        let failed: Result<(), ()> = Err(());
-        let opened: Result<(), ()> = Ok(());
         // The user chose the microphone.
-        assert!(!retry_by_id(false, false, &failed));
+        assert!(!retry_by_id(false, false, true));
         // A wired input replaced a Bluetooth default.
-        assert!(!retry_by_id(true, false, &failed));
+        assert!(!retry_by_id(true, false, true));
         // The first open worked.
-        assert!(!retry_by_id(true, true, &opened));
+        assert!(!retry_by_id(true, true, false));
     }
 }

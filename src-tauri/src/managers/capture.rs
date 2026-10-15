@@ -3101,10 +3101,10 @@ impl CaptureManager {
     /// leaves the segment to a full pass after Stop.
     /// Open the microphone for `choice`, or the system default when a
     /// chosen microphone is missing (R4, KTD3). The device lookup and the
-    /// config query run on the capture thread within the start limit
-    /// (KTD3 of the reference review fixes plan). A config
-    /// that `prepare` cached skips the device queries (R1b). A Stop or a
-    /// new start cancels the open through [`OpenCancel`] (KTD1).
+    /// config query run on the capture thread, within the start limit of
+    /// `audio_cpal`. A config that `prepare` cached skips the device queries
+    /// (R1b). A Stop or a new start cancels the open through [`OpenCancel`]
+    /// (KTD1).
     fn open_microphone(
         &self,
         inner: &mut Inner,
