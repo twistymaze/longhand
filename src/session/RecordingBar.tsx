@@ -274,7 +274,8 @@ export function RecordingBar({
     setBusy(true);
     const result = await action();
     setBusy(false);
-    setError(result.status === "error" ? result.error : null);
+    // An error with no text is an open that a Stop cancelled: no message.
+    setError(result.status === "error" && result.error ? result.error : null);
     await capture.refresh();
   };
 
