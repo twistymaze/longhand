@@ -9,7 +9,7 @@ use shared_settings::note_types::NoteTypeError;
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
 
-use crate::managers::capture::{CaptureManager, RecordingStatus, StopOutcome};
+use crate::managers::capture::{CaptureError, CaptureManager, RecordingStatus, StopOutcome};
 use crate::managers::destination;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
@@ -109,7 +109,12 @@ pub async fn start_recording(
         } else {
             manager.open_note(&app, note_type.as_deref())
         };
-        started.map_err(|e| e.to_string())
+        started.map_err(|e| match e {
+            // A Stop cancelled the microphone start. The user asked for
+            // this, so the page shows no message (empty text).
+            CaptureError::Audio(audio::Error::MicStartCancelled) => String::new(),
+            e => e.to_string(),
+        })
     })
     .await
 }

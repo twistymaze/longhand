@@ -13,10 +13,11 @@
 
 mod callback;
 mod config;
+mod startup;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{HostTrait, StreamTrait};
@@ -29,6 +30,7 @@ pub use config::find_choice;
 
 use audio::resampler::FrameResampler;
 use callback::{FAULT_DEVICE_LOST, NO_FAULT, Overrun, Shared};
+use startup::Starting;
 
 /// Frames queued between the capture thread and the consumer. At 20 ms per
 /// frame this is about 1.3 s, on top of the ring's ten seconds.
@@ -135,6 +137,23 @@ impl CpalAudio {
         Ok(preferred)
     }
 
+    /// Open the chosen microphone, or the system default for `None`, at the
+    /// device's native rate, in frames of `1 / frames_per_second` s. The
+    /// device lookup, the config query, the stream build and `play` all run
+    /// on the capture thread within [`startup::START_LIMIT`] (KTD3). The open
+    /// fails at once with [`Error::MicStartCancelled`] when `cancelled`
+    /// returns true, and with [`Error::MicStreamInitializationFailed`] while
+    /// an earlier start has not returned (KTD4). A choice that matches no
+    /// input fails with [`Error::NoInputDevice`].
+    pub fn open_native(
+        &self,
+        choice: Option<MicChoice>,
+        frames_per_second: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Opened, Error> {
+        self.open_with(choice, Frames::PerSecond(frames_per_second), cancelled)
+    }
+
     /// Open the chosen microphone, or the system default for `None`.
     /// `sample_rate` of 0 means the device's native rate; any other value is
     /// resampled to. A choice that matches no input fails with
@@ -145,15 +164,29 @@ impl CpalAudio {
         sample_rate: u32,
         chunk_size: usize,
     ) -> Result<CaptureStream, Error> {
+        let frames = Frames::Fixed {
+            sample_rate,
+            chunk_size,
+        };
+        self.open_with(choice, frames, &|| false)
+            .map(|opened| opened.stream)
+    }
+
+    fn open_with(
+        &self,
+        choice: Option<MicChoice>,
+        frames: Frames,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Opened, Error> {
         let (tx, rx) = mpsc::channel(FRAME_QUEUE);
-        let (init_tx, init_rx) = std_mpsc::sync_channel::<Result<(), Error>>(1);
         let configs = Arc::clone(&self.configs);
         let bluetooth = Arc::clone(&self.bluetooth);
-        let chunk_size = chunk_size.max(1);
 
-        std::thread::Builder::new()
-            .name("longhand-capture".into())
-            .spawn(move || {
+        let started = startup::start(
+            &startup::MIC_STARTING,
+            startup::START_LIMIT,
+            cancelled,
+            move |starting: Starting<(Input, u32)>| {
                 let provider = CpalAudio { configs, bluetooth };
                 let shared = Arc::new(Shared::default());
                 let opened = (|| {
@@ -161,9 +194,10 @@ impl CpalAudio {
                     let device =
                         config::resolve_input(&host, choice.as_ref(), &provider.bluetooth)?;
                     let config = provider.config_for(&device)?;
+                    let input = config::input_of(&device);
                     log::info!(
                         "opening '{}' at {} Hz, {} channel(s), {:?}",
-                        config::device_name(&device),
+                        input.name,
                         config.sample_rate(),
                         config.channels(),
                         config.sample_format()
@@ -172,30 +206,22 @@ impl CpalAudio {
                     stream
                         .play()
                         .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
-                    Ok((stream, consumer, gaps, config.sample_rate()))
+                    Ok((stream, consumer, gaps, config.sample_rate(), input))
                 })();
                 let (stream, consumer, gaps, native_rate) = match opened {
-                    Ok(opened) => {
-                        let _ = init_tx.send(Ok(()));
-                        opened
+                    Ok((stream, consumer, gaps, native_rate, input)) => {
+                        starting.report(Ok((input, native_rate)));
+                        (stream, consumer, gaps, native_rate)
                     }
                     Err(e) => {
                         // A config that no longer opens is forgotten, so the
                         // next attempt queries the device afresh.
-                        provider
-                            .configs
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clear();
-                        let _ = init_tx.send(Err(e));
+                        provider.forget();
+                        starting.report(Err(e));
                         return;
                     }
                 };
-                let out_rate = if sample_rate == 0 {
-                    native_rate
-                } else {
-                    sample_rate
-                };
+                let (out_rate, chunk_size) = frames.at(native_rate);
                 drain(
                     consumer,
                     gaps,
@@ -206,13 +232,60 @@ impl CpalAudio {
                     &tx,
                 );
                 drop(stream);
-            })
-            .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
+            },
+        );
+        match started {
+            Ok((input, rate)) => Ok(Opened {
+                input,
+                rate,
+                stream: CaptureStream::new(ReceiverStream::new(rx)),
+            }),
+            Err(e) => {
+                // The next start queries the device again. After a timeout,
+                // the cached config can be the cause.
+                self.forget();
+                Err(e)
+            }
+        }
+    }
+}
 
-        init_rx
-            .recv()
-            .map_err(|_| Error::MicStreamInitializationFailed("capture thread exited".into()))??;
-        Ok(CaptureStream::new(ReceiverStream::new(rx)))
+/// A microphone that started: the input, its native rate, and its frames.
+pub struct Opened {
+    pub input: Input,
+    pub rate: u32,
+    pub stream: CaptureStream,
+}
+
+/// The rate and the frame size of the frames that capture sends.
+#[derive(Debug, Clone, Copy)]
+enum Frames {
+    /// `sample_rate` of 0 is the native rate.
+    Fixed { sample_rate: u32, chunk_size: usize },
+    /// The native rate, in this many frames per second.
+    PerSecond(u32),
+}
+
+impl Frames {
+    /// The output rate and the frame size for a device at `native_rate`.
+    fn at(self, native_rate: u32) -> (u32, usize) {
+        match self {
+            Frames::Fixed {
+                sample_rate,
+                chunk_size,
+            } => {
+                let rate = if sample_rate == 0 {
+                    native_rate
+                } else {
+                    sample_rate
+                };
+                (rate, chunk_size.max(1))
+            }
+            Frames::PerSecond(per_second) => (
+                native_rate,
+                (native_rate / per_second.max(1)).max(1) as usize,
+            ),
+        }
     }
 }
 

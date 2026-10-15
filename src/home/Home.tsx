@@ -225,8 +225,9 @@ export function Home({
     setStarting(true);
     try {
       const result = await commands.startRecording(record, null, noteType ?? null);
+      // An error with no text is a start that a Stop cancelled: no message.
       setNotice(
-        result.status === "error"
+        result.status === "error" && result.error
           ? { tone: "negative", text: sentence(result.error) }
           : null,
       );

@@ -20,6 +20,10 @@ pub enum Error {
     MicStreamSetupFailed,
     #[error("microphone capture initialization failed: {0}")]
     MicStreamInitializationFailed(String),
+    /// A Stop or a new start cancelled a microphone start that had not
+    /// completed.
+    #[error("the microphone start was cancelled")]
+    MicStartCancelled,
     #[error("speaker_stream_setup_failed")]
     SpeakerStreamSetupFailed,
     #[error("system audio capture initialization failed: {0}")]
