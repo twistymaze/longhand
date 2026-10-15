@@ -1,7 +1,7 @@
 // Plain-language wording for a session's lifecycle and stages, shared by the
 // Home and the processing view so each state reads the same everywhere.
 
-import type { Readiness, SessionDetail, SessionEntry, SpeakerProgressView } from "../bindings";
+import type { Readiness, SessionDetail, SessionEntry, SpeakerProgressView, WaitView } from "../bindings";
 
 export const STAGES = ["assemble", "diarize", "transcribe", "join", "verify", "summarize", "save"] as const;
 export type StageName = (typeof STAGES)[number];
@@ -37,12 +37,24 @@ export function sentence(message: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".");
 }
 
+const waitTexts: Record<WaitView, string> = {
+  recording: "Waiting for the recording to end",
+  another_note: "Waiting for another note to finish",
+  summary_turn: "Waiting to summarize",
+  model: "Waiting for the model to download",
+};
+
+/// What a note waits for, as Home and the note page show it (KTD10).
+export function waitText(wait: WaitView): string {
+  return waitTexts[wait];
+}
+
 /// A session's status on Home. `live` is the stage an event
-/// named since the list was read. `waits` is true while processing waits
-/// for a recording to finish (KTD20).
-export function entryStatus(entry: SessionEntry, live: string | null, waits = false): string {
+/// named since the list was read. A queued or processing note that waits
+/// says what it waits for (KTD10).
+export function entryStatus(entry: SessionEntry, live: string | null): string {
   const stage = live ?? entry.stage;
-  if (waits && (entry.state === "queued" || entry.state === "processing")) return "Waiting for the recording";
+  if (entry.waits_for && (entry.state === "queued" || entry.state === "processing")) return waitText(entry.waits_for);
   switch (entry.state) {
     case "queued":
       return "Waiting to process";
@@ -84,11 +96,13 @@ export type StageRow = {
 };
 
 /// Every stage with where it stands. A failed session's stage is the failed
-/// one; a processing session's is the one it last started.
-export function stageRows(detail: SessionDetail): StageRow[] {
+/// one; a processing session's is the one it last started. While the note
+/// waits (`waits`, from the runner), no stage runs: the job row can name a
+/// stage that has not started (KTD10).
+export function stageRows(detail: SessionDetail, waits: WaitView | null = detail.entry.waits_for): StageRow[] {
   const done = new Set(detail.done);
   const failed = detail.entry.state === "processing_failed" ? detail.failed_stage : null;
-  const running = detail.entry.state === "processing" ? detail.current : null;
+  const running = detail.entry.state === "processing" && !waits ? detail.current : null;
   return STAGES.map((stage) => ({
     stage,
     label: stageLabel(stage),

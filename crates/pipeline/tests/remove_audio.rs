@@ -731,7 +731,7 @@ fn the_step_writes_the_marker_before_the_delete_and_holds_a_claim() {
             );
             // A summary regeneration and a Move cannot start.
             assert!(claims.busy(ID));
-            assert!(claims.regenerate(ID).is_none());
+            assert!(claims.regenerate(ID).is_err());
             assert!(claims.moving(ID).is_none());
             fs::remove_file(path)
         },

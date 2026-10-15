@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
-use summarize::client::Message;
+use summarize::client::{Label, Message, RequestKind};
 use summarize::prompts::{Details, UserText};
 use summarize::{Budget, BudgetSource, Client, Endpoint, SummarizeError, context, prompts, tokens};
 
@@ -211,16 +211,19 @@ pub fn delete_title_request(store: &SharedStore, session_id: &str) -> Result<(),
 /// Send the title turn `request` to `endpoint` with its reply cap, and
 /// clean the reply with [`clean_title`] (KTD13). The inner error is a
 /// failed turn or a reply that was cut off: the note then keeps its title
-/// (R14). Only a cancel is an outer error.
+/// (R14). Only a cancel is an outer error. `queued` is the time that the
+/// job waited for its turn in the summary queue, for the request log.
 pub fn send_title_request(
     session_id: &str,
     endpoint: &SummaryEndpoint,
     request: &TitleRequest,
     control: &dyn Control,
+    queued: Duration,
 ) -> Result<Result<String, String>, StageError> {
-    // The title job holds the processing permit, and a title is optional.
-    // The request is sent once, with no retry waits, so an endpoint that
-    // cannot be reached does not stop the processing of other notes.
+    // The title job holds a turn in the summary queue, and a title is
+    // optional. The request is sent once, with no retry waits, so an
+    // endpoint that cannot be reached does not stop the other jobs of the
+    // summary queue.
     let client = match Client::new(Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
@@ -237,7 +240,11 @@ pub fn send_title_request(
     }
     let runtime = Runtime::new()?;
     control.proceed()?;
-    let reply = runtime.block_on(client.complete(&request.messages, request.cap), control)?;
+    let label = Label::note(session_id, RequestKind::Title).queued(queued);
+    let reply = runtime.block_on(
+        client.complete(&label, &request.messages, request.cap),
+        control,
+    )?;
     Ok(reply
         .map(|completion| clean_title(&completion.text))
         .map_err(|e| e.to_string()))
@@ -422,7 +429,8 @@ pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 }
 
 /// The summarize stage: produce the summary and write it into the working
-/// directory, where the save stage picks it up.
+/// directory, where the save stage picks it up. `queued` is the time that
+/// the note waited for its turn in the summary queue, for the request log.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
@@ -432,6 +440,7 @@ pub fn run(
     endpoint: SummaryEndpoint,
     active: Prompt,
     control: &dyn Control,
+    queued: Duration,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
@@ -441,6 +450,7 @@ pub fn run(
         endpoint,
         active,
         control,
+        queued,
         progress,
     )?;
     // `summary.md` has no frontmatter: the save writes the summary data
@@ -457,7 +467,8 @@ pub fn run(
 /// Summarize the `transcript.md` in `folder`, resuming any calls already
 /// made. Writes nothing but checkpoints. `active` is the summary prompt of
 /// the note type, which the run uses when it saved no snapshot before, or
-/// when its inputs changed and every call runs again (KTD3).
+/// when its inputs changed and every call runs again (KTD3). `queued` is
+/// the time that the job waited for its turn in the summary queue.
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
@@ -466,6 +477,7 @@ pub fn produce(
     endpoint: SummaryEndpoint,
     active: Prompt,
     control: &dyn Control,
+    queued: Duration,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
@@ -543,7 +555,13 @@ pub fn produce(
                 // An endpoint that cannot be reached fails the stage before
                 // a plan is kept, so the next run probes it again.
                 runtime
-                    .block_on(context::probe(&client), control)?
+                    .block_on(
+                        context::probe(
+                            &client,
+                            &Label::note(session_id, RequestKind::Probe).queued(queued),
+                        ),
+                        control,
+                    )?
                     .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
             };
             let budget = context::resolve(endpoint.context_limit, probed);
@@ -575,6 +593,7 @@ pub fn produce(
         title_text: &prompt.title_text,
         background: &prompt.background,
         details: &details,
+        queued,
         progress: &mut *progress,
     };
     let done = if !said {
@@ -748,6 +767,8 @@ struct Calls<'a> {
     /// The note details as they were when the run started. Every call
     /// carries them, so every budget counts them.
     details: &'a Details,
+    /// The time that the job waited for its turn in the summary queue.
+    queued: Duration,
     progress: &'a mut dyn FnMut(usize, usize),
 }
 
@@ -949,9 +970,18 @@ impl<'a> Calls<'a> {
             return Ok(done);
         }
         self.control.proceed()?;
-        let reply = self
-            .runtime
-            .block_on(self.client.complete(messages, room.reserve), self.control)?;
+        let kind = if key == WHOLE {
+            RequestKind::Single
+        } else if layer == 0 {
+            RequestKind::Chunk
+        } else {
+            RequestKind::Merge
+        };
+        let label = Label::note(self.session_id, kind).queued(self.queued);
+        let reply = self.runtime.block_on(
+            self.client.complete(&label, messages, room.reserve),
+            self.control,
+        )?;
         match reply {
             Ok(completion) => {
                 checkpoint::put(

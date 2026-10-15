@@ -20,6 +20,33 @@ pub enum Reply {
     Hang,
     /// Answer with a function of the request body.
     With(Responder),
+    /// Wait for the time, then answer with the status and the JSON body.
+    Later(std::time::Duration, u16, String),
+    /// Read the request, wait until the test opens the gate, then answer
+    /// with the reply.
+    Gated(Gate, Box<Reply>),
+}
+
+/// A gate that holds the replies of [`Reply::Gated`] until the test opens
+/// it. It does not block a thread. Once open, it stays open.
+#[derive(Clone)]
+pub struct Gate(Arc<tokio::sync::watch::Sender<bool>>);
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self(Arc::new(tokio::sync::watch::channel(false).0))
+    }
+}
+
+impl Gate {
+    pub fn open(&self) {
+        self.0.send_replace(true);
+    }
+
+    async fn wait(&self) {
+        let mut open = self.0.subscribe();
+        let _ = open.wait_for(|open| *open).await;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,16 +102,25 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
                     return;
                 };
                 log.lock().unwrap().push(request.clone());
-                let reply = routes
+                let mut reply = routes
                     .get(&request.path)
                     .cloned()
                     .unwrap_or(Reply::Json(404, "{}".into()));
+                while let Reply::Gated(gate, inner) = reply {
+                    gate.wait().await;
+                    reply = *inner;
+                }
                 let (status, headers, body) = match reply {
+                    Reply::Gated(..) => unreachable!(),
                     Reply::Hang => {
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                         return;
                     }
                     Reply::Json(status, body) => (status, String::new(), body),
+                    Reply::Later(wait, status, body) => {
+                        tokio::time::sleep(wait).await;
+                        (status, String::new(), body)
+                    }
                     Reply::Redirect(status, location) => {
                         (status, format!("Location: {location}\r\n"), String::new())
                     }

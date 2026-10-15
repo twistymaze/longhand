@@ -1926,6 +1926,11 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  */
 { kind: "waiting"; what: string } | 
 /**
+ * What the note waits for changed (KTD10). `None` when its wait
+ * ended. The note's entry gives the current wait.
+ */
+{ kind: "waits"; wait: WaitView | null } | 
+/**
  * Summarization failed; the session is saved with a stub summary.
  */
 { kind: "summary_unavailable"; message: string } | 
@@ -2120,11 +2125,6 @@ paused: boolean;
  * excluded. While paused, it is the elapsed time that the page shows.
  */
 recorded_ms: number; 
-/**
- * Processing waits: a note records, or a live worker saves its last
- * part after Stop (KTD9, KTD20). The same test as the runner's.
- */
-processing_waits: boolean; 
 /**
  * The microphone went away and is being reopened (U14); the session
  * still counts as recording.
@@ -2393,7 +2393,13 @@ tags: string[];
  * A file of the note folder gives no note (R6). The actions that
  * write to the note wait. `None` for a note whose files are valid.
  */
-problem: NoteProblemView | null }
+problem: NoteProblemView | null; 
+/**
+ * What the note waits for before its next stage can run, from the
+ * runner (KTD10). `None` when it waits for nothing: its stage runs,
+ * or it has no work.
+ */
+waits_for: WaitView | null }
 /**
  * The settings that the app uses: the local settings of this computer and
  * the shared settings of the storage folder (KTD7). The local store holds
@@ -2856,6 +2862,27 @@ export type UpdateState =
  * The update state changed. The update window follows it.
  */
 export type UpdateStateChanged = { state: UpdateState }
+/**
+ * What a note waits for before its next stage can run (KTD10).
+ */
+export type WaitView = 
+/**
+ * A recording is active, and the next stage is an audio stage.
+ */
+"recording" | 
+/**
+ * Another note has the local permit or is in its audio stages.
+ */
+"another_note" | 
+/**
+ * The note waits for its turn in the summary queue: a new note, or a
+ * regeneration of a saved note.
+ */
+"summary_turn" | 
+/**
+ * A model that the note needs is not on disk.
+ */
+"model"
 /**
  * A part of a note that the sync has not delivered yet (R6).
  */

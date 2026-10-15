@@ -48,7 +48,6 @@ export function Home({
   revisions = {},
   stages,
   recording,
-  processingWaits = false,
   readiness,
   chord,
   newNoteRecords = true,
@@ -68,8 +67,6 @@ export function Home({
   stages: Record<string, string>;
   /// The open session: recording, or interrupted.
   recording: RecordingNow | null;
-  /// Processing waits for a recording to finish (KTD20).
-  processingWaits?: boolean;
   /// Null until it is read; Home then offers no New Note button.
   readiness: Readiness | null;
   /// The recording shortcut as this platform writes it, or null when the
@@ -441,7 +438,6 @@ export function Home({
                             title={rowTitle(entry, now)}
                             time={clockTime(entry.started)}
                             stage={stages[entry.id] ?? null}
-                            processingWaits={processingWaits}
                             selected={entry.id === selected?.id}
                             renaming={entry.id === renamingId}
                             onSelect={() => setSelectedId(entry.id)}
@@ -477,7 +473,6 @@ export function Home({
             stage={stages[selected.id] ?? null}
             revision={revisions[selected.id] ?? 0}
             now={now}
-            processingWaits={processingWaits}
           />
         )}
       </div>

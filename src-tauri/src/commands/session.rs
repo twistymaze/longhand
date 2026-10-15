@@ -20,8 +20,9 @@ use library::status::LibraryStatus;
 
 use crate::managers::capture::CaptureManager;
 use crate::managers::live::{LiveManager, LiveTranscript};
-use crate::managers::processing::{ProcessingManager, SpeakerProgressView, stage_name};
+use crate::managers::processing::{ProcessingManager, SpeakerProgressView, WaitView, stage_name};
 use crate::managers::settings;
+use pipeline::runner::Waits;
 
 #[derive(Serialize, Clone, Type)]
 pub struct SessionEntry {
@@ -57,6 +58,10 @@ pub struct SessionEntry {
     /// A file of the note folder gives no note (R6). The actions that
     /// write to the note wait. `None` for a note whose files are valid.
     pub problem: Option<NoteProblemView>,
+    /// What the note waits for before its next stage can run, from the
+    /// runner (KTD10). `None` when it waits for nothing: its stage runs,
+    /// or it has no work.
+    pub waits_for: Option<WaitView>,
 }
 
 /// What the user can do about a file of a note folder that gives no note
@@ -520,7 +525,11 @@ fn entry(
     segments: &[session_core::Segment],
     stage: Option<Stage>,
     status: &LibraryStatus,
+    waits: &Waits,
 ) -> SessionEntry {
+    let waits_for = waits
+        .of(&record.id, &record.state, stage)
+        .map(WaitView::from);
     let stage = match &record.state {
         SessionState::ProcessingFailed { stage, .. } => Some(*stage),
         SessionState::Processing { .. } => stage,
@@ -543,6 +552,7 @@ fn entry(
             .problem
             .as_ref()
             .map(NoteProblemView::from),
+        waits_for,
     }
 }
 
@@ -560,6 +570,8 @@ pub fn list_sessions(
     processing: State<'_, Arc<ProcessingManager>>,
 ) -> Result<Vec<SessionEntry>, String> {
     let status = processing.library_status();
+    // The waits read the capture state, so they come before the store lock.
+    let waits = processing.waits();
     let store = capture.shared_store();
     let store = store.lock().unwrap_or_else(|e| e.into_inner());
     let records = store.sessions().map_err(|e| e.to_string())?;
@@ -568,7 +580,7 @@ pub fn list_sessions(
         if record.state != SessionState::Discarded {
             let segments = store.segments(&record.id).map_err(|e| e.to_string())?;
             let stage = store.current_stage(&record.id).map_err(|e| e.to_string())?;
-            out.push(entry(record, &segments, stage, status));
+            out.push(entry(record, &segments, stage, status, &waits));
         }
     }
     Ok(out)
@@ -754,6 +766,8 @@ pub fn session_detail(
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
+    // The waits read the capture state, so they come before the store lock.
+    let waits = processing.waits();
     let (record, segments, saving, audio, again) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
@@ -832,7 +846,7 @@ pub fn session_detail(
     let note = status.note(&session_id);
     let record_button = record_button(&record, !segments.is_empty(), saving, audio, status);
     Ok(SessionDetail {
-        entry: entry(&record, &segments, snapshot.current, status),
+        entry: entry(&record, &segments, snapshot.current, status, &waits),
         done: snapshot.done.into_iter().map(stage_name).collect(),
         current: snapshot.current.map(stage_name),
         windows_done: snapshot.windows.map(|(d, _)| d as u32),
@@ -2440,7 +2454,7 @@ mod entry_tests {
             pending_type: None,
         };
         let status: Arc<LibraryStatus> = Arc::default();
-        let e = entry(&record, &[], None, &status);
+        let e = entry(&record, &[], None, &status, &Waits::default());
         assert!(!e.storage_unavailable);
         assert_eq!(e.remote, None);
         assert_eq!(e.title.as_deref(), Some("Budget review"));
@@ -2468,6 +2482,7 @@ mod entry_tests {
             &[],
             None,
             &status,
+            &Waits::default(),
         );
         assert!(e.storage_unavailable);
         assert_eq!(e.title, None);
@@ -2503,7 +2518,7 @@ mod entry_tests {
             }),
         };
         let status: Arc<LibraryStatus> = Arc::default();
-        let e = entry(&record, &[], None, &status);
+        let e = entry(&record, &[], None, &status, &Waits::default());
         assert_eq!(e.note_type.as_deref(), Some("D&D"));
         assert_eq!(
             e.tags,
@@ -2514,7 +2529,7 @@ mod entry_tests {
             note_type: Some("Board".into()),
             ..record
         };
-        let e = entry(&moved, &[], None, &status);
+        let e = entry(&moved, &[], None, &status, &Waits::default());
         assert_eq!(e.note_type.as_deref(), Some("Board"));
     }
 
@@ -2569,14 +2584,17 @@ mod entry_tests {
             .unwrap();
         let record = store.lock().unwrap().session("s").unwrap().unwrap();
 
-        let e = entry(&record, &[], None, &status);
+        let e = entry(&record, &[], None, &status, &Waits::default());
         assert_eq!(e.remote, Some(RemoteView::InUse));
         assert!(!e.storage_unavailable);
         let here = SessionRecord {
             state: SessionState::Capturing,
             ..record
         };
-        assert_eq!(entry(&here, &[], None, &status).remote, None);
+        assert_eq!(
+            entry(&here, &[], None, &status, &Waits::default()).remote,
+            None
+        );
     }
 }
 

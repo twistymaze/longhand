@@ -423,7 +423,7 @@ fn tick_queues_only_interruptions_past_their_window() {
 
 // ------------------------------------------------------------ delete (U9)
 
-use session_core::jobs::{Claims, DeleteError, delete_session};
+use session_core::jobs::{Claims, DeleteError, RegenerateRefusal, delete_session};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -595,11 +595,33 @@ fn a_regeneration_and_a_delete_exclude_each_other_until_the_claim_is_dropped() {
     drop(regeneration);
     assert!(!claims.busy("s"));
     let delete = claims.delete("s").unwrap();
-    assert!(claims.regenerate("s").is_none());
+    assert_eq!(
+        claims.regenerate("s").err(),
+        Some(RegenerateRefusal::Deleting)
+    );
     assert!(claims.busy("s") && !claims.is_regenerating("s"));
     drop(delete);
     assert!(!claims.busy("s"));
-    assert!(claims.regenerate("s").is_some());
+    assert!(claims.regenerate("s").is_ok());
+}
+
+/// R9, KTD8: a second regeneration of a note is refused while the first
+/// one holds its claim, and runs after the first one ends.
+#[test]
+fn a_second_regeneration_of_a_note_is_refused_until_the_first_claim_is_dropped() {
+    let claims = Claims::default();
+    let first = claims.regenerate("s").unwrap();
+    assert_eq!(
+        claims.regenerate("s").err(),
+        Some(RegenerateRefusal::Regenerating)
+    );
+    assert!(claims.regenerate("other").is_ok());
+    drop(first);
+    assert!(!claims.is_regenerating("s"));
+    let again = claims.regenerate("s").unwrap();
+    assert!(claims.is_regenerating("s"));
+    drop(again);
+    assert!(!claims.busy("s"));
 }
 
 /// The Move's claims (KTD9): the move claim refuses a delete, and the hold
@@ -618,7 +640,7 @@ fn the_move_claims_refuse_a_delete_and_a_hold_makes_an_edit_wait() {
     drop(regeneration);
     let hold = claims.hold("s").unwrap();
     assert!(claims.is_held("s"));
-    assert!(claims.regenerate("s").is_none());
+    assert_eq!(claims.regenerate("s").err(), Some(RegenerateRefusal::Held));
 
     let waited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let waiter = {
@@ -658,7 +680,10 @@ fn a_delete_releases_its_claim_when_it_ends() {
     let mut calls = Vec::new();
     delete_session(&d.store, "s", &d.working, &claims, |path: &Path| {
         // A regeneration that starts while the folder is removed is refused.
-        assert!(claims.regenerate("s").is_none());
+        assert_eq!(
+            claims.regenerate("s").err(),
+            Some(RegenerateRefusal::Deleting)
+        );
         recording(&mut calls)(path)
     })
     .unwrap();

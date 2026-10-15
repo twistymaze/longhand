@@ -35,3 +35,39 @@ test("a failed initial load can retry and an older response cannot overwrite a n
   expect(result.current.entries.map((e) => e.id)).toEqual(["b"]);
   expect(result.current.loadError).toBeNull();
 });
+
+const started = (id: string, stage: string) => ({ session_id: id, update: { kind: "stage_started", stage } });
+
+test("a stage start sets the stage and counts one start", async () => {
+  const tauri = mockTauri({ list_sessions: () => [{ id: "a", state: "processing" }] });
+  const { result } = renderHook(() => useSessions());
+  await act(async () => {});
+  await act(() => tauri.emit("processing-update", started("a", "transcribe")));
+  expect(result.current.stages.a).toBe("transcribe");
+  expect(result.current.starts.a).toBe(1);
+  await act(() => tauri.emit("processing-update", started("a", "summarize")));
+  expect(result.current.stages.a).toBe("summarize");
+  expect(result.current.starts.a).toBe(2);
+});
+
+test("a wait removes the stage of the note", async () => {
+  const tauri = mockTauri({ list_sessions: () => [{ id: "a", state: "processing" }] });
+  const { result } = renderHook(() => useSessions());
+  await act(async () => {});
+  await act(() => tauri.emit("processing-update", started("a", "transcribe")));
+  expect(result.current.stages.a).toBe("transcribe");
+  await act(() => tauri.emit("processing-update", { session_id: "a", update: { kind: "waits", wait: { kind: "model" } } }));
+  expect("a" in result.current.stages).toBe(false);
+});
+
+test("a refresh drops the stage of a note that is not processing", async () => {
+  let state = "processing";
+  const tauri = mockTauri({ list_sessions: () => [{ id: "a", state }] });
+  const { result } = renderHook(() => useSessions());
+  await act(async () => {});
+  await act(() => tauri.emit("processing-update", started("a", "transcribe")));
+  expect(result.current.stages.a).toBe("transcribe");
+  state = "ready";
+  await act(() => result.current.refresh());
+  expect("a" in result.current.stages).toBe(false);
+});

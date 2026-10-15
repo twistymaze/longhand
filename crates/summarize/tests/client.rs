@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{Reply, completion, serve};
-use summarize::client::Message;
+use summarize::client::{Label, Message, RequestKind};
 use summarize::{Client, Endpoint, Limits, SummarizeError};
 
 fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
@@ -16,6 +16,10 @@ fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
         model: "m".into(),
         credential: credential.map(str::to_string),
     }
+}
+
+fn label() -> Label {
+    Label::note("s1", RequestKind::Single)
 }
 
 fn hello() -> Vec<Message> {
@@ -38,7 +42,7 @@ async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
     )]))
     .await;
     let client = Client::new(endpoint(&mock.base, Some("secret"))).unwrap();
-    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
     let SummarizeError::Redirect { status, location } = &err else {
         panic!("{err:?}");
     };
@@ -67,7 +71,7 @@ async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure()
             HashMap::from([("/v1/chat/completions", Reply::Json(200, completion("back")))]),
         );
     });
-    let reply = client.complete(&hello(), 100).await.unwrap();
+    let reply = client.complete(&label(), &hello(), 100).await.unwrap();
     assert_eq!(reply.text, "back");
 }
 
@@ -90,7 +94,7 @@ async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
     let client = Client::new(endpoint(&base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
     // The error names the cause, not only "error sending request".
@@ -103,7 +107,7 @@ async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
 #[tokio::test]
 async fn a_request_with_no_retry_waits_fails_at_once_without_the_network() {
     let client = Client::new(endpoint(&common::closed_base(), None)).unwrap();
-    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
 }
 
@@ -130,7 +134,7 @@ async fn a_reply_that_breaks_after_it_starts_is_not_sent_again() {
     let client = Client::new(endpoint(&base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -147,7 +151,7 @@ async fn a_request_that_reaches_the_endpoint_is_not_sent_again() {
     let client = Client::new(endpoint(&mock.base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
     assert!(
         matches!(err, SummarizeError::Http { status: 500, .. }),
         "{err:?}"
@@ -165,14 +169,79 @@ async fn an_endpoint_that_never_answers_hits_the_deadline() {
         total: Duration::from_secs(1),
         max_bytes: 1 << 20,
     };
-    let client = Client::with_limits(endpoint(&mock.base, None), quick, quick).unwrap();
+    // Retry waits are set: a deadline must not send the request again (R8).
+    let client = Client::with_limits(endpoint(&mock.base, None), quick, quick)
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(10); 3]);
     let started = Instant::now();
-    let err = client.complete(&hello(), 100).await.unwrap_err();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
     assert!(
         matches!(err, SummarizeError::Deadline("response")),
         "{err:?}"
     );
     assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_completion_waits_30_minutes_for_the_reply() {
+    // A slow model can take more than 10 minutes to write a summary (R7).
+    // The connect and idle deadlines do not change (KTD7).
+    let limits = Limits::completion();
+    assert_eq!(limits.response, Duration::from_secs(30 * 60));
+    assert_eq!(limits.total, Duration::from_secs(32 * 60));
+    assert_eq!(limits.connect, Duration::from_secs(10));
+    assert_eq!(limits.idle, Duration::from_secs(60));
+}
+
+/// [`Limits::completion`] with one minute as `minute`.
+fn scaled(limits: Limits, minute: Duration) -> Limits {
+    let scale = |d: Duration| minute.mul_f64(d.as_secs_f64() / 60.0);
+    Limits {
+        connect: limits.connect,
+        response: scale(limits.response),
+        idle: scale(limits.idle),
+        total: scale(limits.total),
+        max_bytes: limits.max_bytes,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_slower_than_the_old_limit_arrives_within_the_new_limit() {
+    // One minute is 100 ms. The old limits (response 10 min, total 15 min)
+    // become 1 s and 1.5 s. The new limits become 3 s and 3.2 s. The
+    // endpoint answers after 1.5 s, which is 15 minutes.
+    let minute = Duration::from_millis(100);
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Later(Duration::from_millis(1500), 200, completion("slow")),
+    )]))
+    .await;
+    let old = Limits {
+        response: Duration::from_secs(600),
+        total: Duration::from_secs(900),
+        ..Limits::completion()
+    };
+    let client = Client::with_limits(
+        endpoint(&mock.base, None),
+        scaled(old, minute),
+        Limits::probe(),
+    )
+    .unwrap();
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Deadline("response")),
+        "{err:?}"
+    );
+
+    let client = Client::with_limits(
+        endpoint(&mock.base, None),
+        scaled(Limits::completion(), minute),
+        Limits::probe(),
+    )
+    .unwrap();
+    let reply = client.complete(&label(), &hello(), 100).await.unwrap();
+    assert_eq!(reply.text, "slow");
 }
 
 #[tokio::test]
@@ -183,9 +252,12 @@ async fn the_credential_goes_only_as_a_bearer_to_the_configured_endpoint() {
     )]))
     .await;
     let with = Client::new(endpoint(&mock.base, Some("sk-test"))).unwrap();
-    assert_eq!(with.complete(&hello(), 100).await.unwrap().text, "fine");
+    assert_eq!(
+        with.complete(&label(), &hello(), 100).await.unwrap().text,
+        "fine"
+    );
     let without = Client::new(endpoint(&mock.base, None)).unwrap();
-    without.complete(&hello(), 100).await.unwrap();
+    without.complete(&label(), &hello(), 100).await.unwrap();
     let seen = mock.seen.lock().unwrap();
     assert_eq!(seen[0].authorization.as_deref(), Some("Bearer sk-test"));
     assert_eq!(seen[1].authorization, None);
@@ -204,7 +276,7 @@ async fn a_context_rejection_is_pressure_and_a_cut_off_reply_is_not() {
     .await;
     let err = Client::new(endpoint(&mock.base, None))
         .unwrap()
-        .complete(&hello(), 100)
+        .complete(&label(), &hello(), 100)
         .await
         .unwrap_err();
     assert!(err.is_context_pressure(), "{err:?}");
@@ -219,7 +291,7 @@ async fn a_context_rejection_is_pressure_and_a_cut_off_reply_is_not() {
     .await;
     let err = Client::new(endpoint(&cut.base, None))
         .unwrap()
-        .complete(&hello(), 100)
+        .complete(&label(), &hello(), 100)
         .await
         .unwrap_err();
     assert!(matches!(err, SummarizeError::ReplyCutOff));
@@ -244,7 +316,7 @@ async fn a_model_refusing_max_tokens_is_asked_again_with_max_completion_tokens()
     let mock = serve(HashMap::from([("/v1/chat/completions", reply)])).await;
     let text = Client::new(endpoint(&mock.base, None))
         .unwrap()
-        .complete(&hello(), 50)
+        .complete(&label(), &hello(), 50)
         .await
         .unwrap()
         .text;

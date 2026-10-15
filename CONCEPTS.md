@@ -156,6 +156,9 @@ A named text in Settings that tells the model what a summary contains and how it
 ### Background
 One free-form Markdown text in Settings, above the summary prompts, where the user writes what a summary model should know: their name, their work, the names and terms that often occur and the words that the transcript often gets wrong. It is shared settings. Every model call of Summarize includes it in the system prompt, and it applies to every summary prompt. It is the user's own text, not data, but the fixed rules still win over it. It counts as evidence for names: a name is used when the transcript, the notes and the Background together make clear who a person is. Do not call it "context", which is the model's context window ("Context limit").
 
+### Summary queue
+The queue for work that sends requests to the summary endpoint and writes note folders: the Summarize and Save stages of a note, Regenerate Summary, and title jobs. It runs one job at a time. A new note goes before a regeneration, and a regeneration goes before a title job. The audio stages of other notes do not wait for it, and a recording does not pause it.
+
 ### Context limit
 The largest amount of text, in tokens, that the summary model accepts in one request. Longhand asks the endpoint for it (the probe), and a value that the user sets in Settings > Summaries wins over the probe. When neither gives a value, Longhand uses 128,000 tokens. Only the user lowers it: when the model rejects a request as too long, the summary stops and asks the user to enter a limit. A summary that runs in parts keeps the limit that it started with while the setting gives the same limit. In code, the limit that a run uses is its budget, and its plan of parts is saved with the note.
 
