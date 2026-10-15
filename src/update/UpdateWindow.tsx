@@ -3,8 +3,11 @@
 // The manager opens and closes the window. A close by the user counts as
 // the left button's choice.
 //
-// The window can open while the user types, so the page ignores the
-// keyboard: no button gets the focus, and Return and Space do not click.
+// An automatic notice can open while the user types in a note, so the page
+// then ignores the keyboard: no button gets the focus, and Return and Space
+// do not click. A window that the user asked for (the tray item or "Check
+// for Updates…") has the focus: the default button gets the focus, and
+// Return chooses it.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
@@ -128,15 +131,19 @@ function useWindowFitsContent(content: RefObject<HTMLElement | null>, shown: boo
 
 export function UpdateWindow() {
   const [state, setState] = useState<UpdateState | null>(null);
+  const [withKey, setWithKey] = useState(false);
   useEffect(() => {
     // The event can come before the first read ends; the event is newer.
     let heard = false;
     const unlisten = events.updateStateChanged.listen(({ payload }) => {
       heard = true;
       setState(payload.state);
+      setWithKey(payload.with_key);
     });
     commands.updateState().then((s) => {
-      if (!heard) setState(s);
+      if (heard) return;
+      setState(s.state);
+      setWithKey(s.with_key);
     }, () => {});
     return () => void unlisten.then((f) => f());
   }, []);
@@ -144,6 +151,12 @@ export function UpdateWindow() {
   const view = state ? viewOf(state) : null;
   const content = useRef<HTMLElement>(null);
   useWindowFitsContent(content, view !== null);
+  const defaultAction = view?.buttons.find((b) => b.prominent);
+  const defaultButton = useRef<HTMLButtonElement>(null);
+  // WebKit does not focus a clicked button, so the focus is set here.
+  useEffect(() => {
+    if (withKey) defaultButton.current?.focus();
+  }, [withKey, defaultAction?.choice]);
 
   if (!view) return <main className="h-screen bg-window" />;
   const choose = (choice: Choice) => void commands.chooseUpdate(choice);
@@ -153,11 +166,13 @@ export function UpdateWindow() {
     <main
       ref={content}
       className="flex w-[480px] gap-4 bg-window px-5 pt-5 pb-4 text-label select-none"
-      // The app does not let the window take the focus. If a button has the
-      // focus all the same, Return and Space do not click it. A click from
-      // the pointer or from VoiceOver still chooses.
+      // Without the focus, Return and Space do not click a button that has
+      // the focus all the same. With it, Return chooses the default button.
+      // A click from the pointer or from VoiceOver always chooses.
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") e.preventDefault();
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        if (e.key === "Enter" && withKey && defaultAction) choose(defaultAction.choice);
       }}
     >
       <AppIcon className="size-14" />
@@ -190,7 +205,12 @@ export function UpdateWindow() {
         )}
         <div className="flex justify-end gap-2 pt-4">
           {view.buttons.map((b) => (
-            <Button key={b.choice} prominent={b.prominent} onClick={() => choose(b.choice)}>
+            <Button
+              key={b.choice}
+              ref={b === defaultAction ? defaultButton : undefined}
+              prominent={b.prominent}
+              onClick={() => choose(b.choice)}
+            >
               {b.label}
             </Button>
           ))}

@@ -249,12 +249,16 @@ fn open_licences_window(app: &AppHandle) {
 
 /// Show or remove the update window to match the update state (KTD9). A
 /// window that shows stays as it is: the page follows the state event, and
-/// progress does not take the focus again. The page registers no close
-/// listener, and a close by the user counts as "Remind Me Later" or "Later".
-pub fn show_update_window(app: &AppHandle, visible: bool) {
+/// a state change does not bring it to the front. Only `focus_now` (the
+/// user asked again) does. The page registers no close listener, and a
+/// close by the user counts as "Remind Me Later" or "Later". `with_key`
+/// gives a new window the focus (KTD6).
+pub fn show_update_window(app: &AppHandle, visible: bool, with_key: bool, focus_now: bool) {
     let existing = app.get_webview_window(UPDATE_WINDOW);
     match (visible, existing) {
+        (true, Some(window)) if focus_now => front(app, &window),
         (true, None) => {
+            UPDATE_WITH_KEY.store(with_key, Ordering::SeqCst);
             // As a macOS alert, the window has no interface zoom. The page
             // then sets the size that fits its content.
             let built = WebviewWindowBuilder::new(
@@ -270,12 +274,12 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
             .maximizable(false)
             .minimizable(false)
             .center()
-            // The window can open while the user types, in another app or
-            // in Longhand. It opens without the focus (`show` with `focus`
-            // false), so the key presses stay where the user types, and it
-            // floats so that it is not behind other windows.
+            // An automatic notice opens when a Longhand window is in front,
+            // maybe while the user types in a note. It opens without the
+            // focus (`show` with `focus` false), so the key presses stay
+            // where the user types. It is a normal window, and goes behind
+            // another app that the user brings to the front (R10).
             .focused(false)
-            .always_on_top(true)
             // The first click on a button chooses, also when Longhand is
             // not the active app.
             .accept_first_mouse(true)
@@ -316,13 +320,30 @@ pub fn show_update_window(app: &AppHandle, visible: bool) {
 /// does not show it.
 const UPDATE_SHOW_LIMIT: Duration = Duration::from_secs(1);
 
-/// Show the update window if it is open and hidden. It takes no focus.
+/// Show the update window if it is open and hidden. It takes the focus only
+/// when the user asked for it.
 pub fn show_built_update_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(UPDATE_WINDOW)
         && !window.is_visible().unwrap_or(true)
     {
-        show(app, &window, false);
+        show(app, &window, UPDATE_WITH_KEY.load(Ordering::SeqCst));
     }
+}
+
+/// True when the update window that is open was built with the focus.
+static UPDATE_WITH_KEY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The windows that show that the user uses Longhand (KTD3). The widget
+/// panel never becomes key, and the update window does not count.
+const ACTIVE_WINDOWS: [&str; 3] = [MAIN_WINDOW, SETTINGS_WINDOW, LICENCES_WINDOW];
+
+/// True when a Longhand window is the key window (R1). A key window also
+/// means that the app is not hidden.
+pub fn longhand_window_active(app: &AppHandle) -> bool {
+    ACTIVE_WINDOWS.iter().any(|label| {
+        app.get_webview_window(label)
+            .is_some_and(|w| w.is_focused().unwrap_or(false))
+    })
 }
 
 /// True while the update manager closes the update window itself.
@@ -483,6 +504,10 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
         // window.
         WindowEvent::Destroyed if window.label() == LICENCES_WINDOW => {
             hide_dock_icon_if_no_window(window);
+        }
+        // A Longhand window in front can show a notice that waits (R1).
+        WindowEvent::Focused(true) if ACTIVE_WINDOWS.contains(&window.label()) => {
+            crate::managers::updates::window_activated(window.app_handle());
         }
         // A close by the user is a choice (KTD9). A close that the update
         // state made is not.

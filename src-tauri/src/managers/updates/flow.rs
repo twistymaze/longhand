@@ -200,11 +200,6 @@ impl Flow {
         &self.delays
     }
 
-    /// The release that the last successful check named.
-    pub fn newest(&self) -> Option<&str> {
-        self.newest.as_deref()
-    }
-
     /// True when the update window shows the state.
     pub fn window_visible(&self) -> bool {
         match &self.state {
@@ -796,7 +791,7 @@ mod tests {
             assert_eq!(f.step(Input::Timer, facts(later)), vec![Effect::Check]);
             f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(later));
             assert_eq!(f.state(), &UpdateState::Idle, "at {later}");
-            assert_eq!(f.newest(), Some(NEWER));
+            assert_eq!(f.tray_version(), Some(NEWER));
         }
         let next_day = NINE + 24 * HOUR;
         assert_eq!(f.step(Input::Timer, facts(next_day)), vec![Effect::Check]);
@@ -1428,7 +1423,7 @@ mod tests {
                 version: NEW.into()
             }
         );
-        assert_eq!(f.newest(), Some(NEWER));
+        assert_eq!(f.tray_version(), Some(NEWER));
         assert_eq!(f.install_at_quit(), None);
     }
 
@@ -1449,10 +1444,10 @@ mod tests {
         f.step(Input::Choice(Choice::RemindLater), facts(NINE));
         f.step(Input::Timer, facts(NINE + HOUR));
         f.step(Input::Checked(Err("offline".into())), facts(NINE + HOUR));
-        assert_eq!(f.newest(), Some(NEW), "a failed check keeps it");
+        assert_eq!(f.tray_version(), Some(NEW), "a failed check keeps it");
         f.step(Input::Timer, facts(NINE + 2 * HOUR));
         f.step(Input::Checked(Ok(None)), facts(NINE + 2 * HOUR));
-        assert_eq!(f.newest(), None, "a check that names no release clears it");
+        assert_eq!(f.tray_version(), None, "a check that names no release clears it");
     }
 
     #[test]
@@ -1485,7 +1480,7 @@ mod tests {
                 current: CURRENT.into()
             }
         );
-        assert_eq!(f.newest(), Some(NEW));
+        assert_eq!(f.tray_version(), Some(NEW));
     }
 
     #[test]

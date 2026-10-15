@@ -9,8 +9,8 @@ import { UpdateWindow } from "./UpdateWindow";
 const CURRENT = "1.0.3";
 const NEW = "1.0.4";
 
-function open(state: UpdateState) {
-  const tauri = mockTauri({ update_state: () => state, choose_update: () => null });
+function open(state: UpdateState, withKey = false) {
+  const tauri = mockTauri({ update_state: () => ({ state, with_key: withKey }), choose_update: () => null });
   render(<UpdateWindow />);
   return tauri;
 }
@@ -33,6 +33,7 @@ describe("the update window", () => {
     await act(() =>
       tauri.emit("update-state-changed", {
         state: { state: "downloading", version: NEW, downloaded: 3_000_000, total: 12_000_000 },
+        with_key: false,
       }),
     );
     expect(await screen.findByText(`Downloading Longhand ${NEW}…`)).toBeTruthy();
@@ -91,6 +92,16 @@ describe("the update window", () => {
     await userEvent.setup().keyboard("{Enter} ");
     expect(choices(tauri)).toEqual([]);
   });
+
+  // The user opened the window from the tray or "Check for Updates…", so
+  // the keyboard belongs to it.
+  test("a window that the user asked for gives the default button the focus, and Return chooses it", async () => {
+    const tauri = open({ state: "offered", version: NEW, current: CURRENT }, true);
+    const install = await screen.findByRole("button", { name: "Install and Relaunch" });
+    await waitFor(() => expect(document.activeElement).toBe(install));
+    await userEvent.setup().keyboard("{Enter}");
+    expect(choices(tauri)).toEqual(["install"]);
+  });
 });
 
 describe("the update window size", () => {
@@ -111,7 +122,7 @@ describe("the update window size", () => {
     setViewport(480, 200);
     try {
       const tauri = mockTauri({
-        update_state: () => ({ state: "up_to_date", current: CURRENT }),
+        update_state: () => ({ state: { state: "up_to_date", current: CURRENT }, with_key: false }),
         "plugin:window|set_size": () => null,
         show_update_window: () => null,
       });

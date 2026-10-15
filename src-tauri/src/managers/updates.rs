@@ -53,6 +53,9 @@ pub const MANIFEST_URL: &str =
 #[derive(Serialize, Type, Debug, Clone, tauri_specta::Event)]
 pub struct UpdateStateChanged {
     pub state: UpdateState,
+    /// The user asked for the window, so it has the focus and Return
+    /// chooses the default button (KTD6).
+    pub with_key: bool,
 }
 
 enum Message {
@@ -67,14 +70,37 @@ enum Message {
         total: Option<u64>,
     },
     Downloaded(Result<(), String>),
+    /// A click on the update item of the tray menu (R4).
+    TrayOpen,
+    /// A Longhand window became the key window, so a waiting notice can
+    /// show (R1).
+    Activated,
+}
+
+/// True when the update window may be visible (KTD2): the flow wants it,
+/// and it shows already, a Longhand window is active, or the user asked.
+fn may_show(wanted: bool, shown: bool, active: bool, asked: bool) -> bool {
+    wanted && (shown || active || asked)
+}
+
+/// True when the launch installs the saved archive: the manifest names
+/// exactly that version (R8, KTD11).
+fn installs_at_launch(named: &str, saved: &str) -> bool {
+    matches!(
+        (semver::Version::parse(named), semver::Version::parse(saved)),
+        (Ok(named), Ok(saved)) if named == saved
+    )
 }
 
 pub struct UpdateManager {
     app: AppHandle,
     flow: Mutex<Flow>,
     /// The `Update` of the last check that found a build. Only a check makes
-    /// one, and each download and install needs it.
+    /// one, and each download needs it.
     update: Mutex<Option<Update>>,
+    /// The `Update` of the build that a quit installs. A later check does
+    /// not replace it, so a confirmed install stays (KTD8).
+    install_update: Mutex<Option<Update>>,
     busy: Box<dyn Fn() -> bool + Send + Sync>,
     was_busy: AtomicBool,
     messages: mpsc::UnboundedSender<Message>,
@@ -157,6 +183,7 @@ impl UpdateManager {
             app: app.clone(),
             flow: Mutex::new(Flow::new(current, read_delays(app), saved)),
             update: Mutex::new(None),
+            install_update: Mutex::new(None),
             busy: Box::new(busy),
             was_busy: AtomicBool::new(false),
             messages,
@@ -210,6 +237,21 @@ impl UpdateManager {
         self.send(Message::Choice(choice));
     }
 
+    /// The update item of the tray menu (R4).
+    pub fn tray_open(&self) {
+        self.send(Message::TrayOpen);
+    }
+
+    /// The version for the update item of the tray menu.
+    pub fn tray_version(&self) -> Option<String> {
+        lock(&self.flow).tray_version().map(str::to_string)
+    }
+
+    /// True when the update window shows with the focus: the user asked.
+    pub fn with_key(&self) -> bool {
+        lock(&self.flow).user_asked()
+    }
+
     pub fn state(&self) -> UpdateState {
         lock(&self.flow).state().clone()
     }
@@ -231,11 +273,14 @@ impl UpdateManager {
         if self.was_busy.swap(busy, Ordering::SeqCst) != busy {
             inputs.push(Input::Busy(busy));
         }
+        // A request for the window brings it to the front with the focus.
+        let asked_now = matches!(message, Message::ManualCheck | Message::TrayOpen);
         match message {
             Message::Timer => inputs.push(Input::Timer),
             Message::ManualCheck => inputs.push(Input::ManualCheck),
+            Message::TrayOpen => inputs.push(Input::TrayOpen),
             Message::Choice(choice) => inputs.push(Input::Choice(choice)),
-            Message::Busy => {}
+            Message::Busy | Message::Activated => {}
             Message::Checked(result) => {
                 let result = result.map(|update| {
                     let version = update.as_ref().map(|u| u.version.clone());
@@ -260,7 +305,7 @@ impl UpdateManager {
             }
         }
 
-        let (before, effects, state, visible, delays) = {
+        let (before, effects, state, wanted, with_key, install, delays) = {
             let mut flow = lock(&self.flow);
             let before = flow.state().clone();
             let effects: Vec<Effect> = inputs
@@ -272,17 +317,32 @@ impl UpdateManager {
                 effects,
                 flow.state().clone(),
                 flow.window_visible(),
+                flow.user_asked(),
+                flow.install_at_quit().map(str::to_string),
                 flow.delays().clone(),
             )
         };
+        self.keep_install_update(install.as_deref());
         if state != before {
             log::info!("updates: {before:?} -> {state:?}");
             let _ = UpdateStateChanged {
                 state: state.clone(),
+                with_key,
             }
             .emit(&self.app);
         }
-        crate::window::show_update_window(&self.app, visible);
+        let shown = self
+            .app
+            .get_webview_window(crate::window::UPDATE_WINDOW)
+            .is_some();
+        let visible = may_show(
+            wanted,
+            shown,
+            crate::window::longhand_window_active(&self.app),
+            with_key,
+        );
+        crate::window::show_update_window(&self.app, visible, with_key, asked_now);
+        crate::tray::set_update_item(&self.app, self.tray_version());
         for effect in effects {
             match effect {
                 Effect::Check => self.start_check(CHECK_TIMEOUT),
@@ -354,11 +414,29 @@ impl UpdateManager {
 
     /// At `RunEvent::Exit`: install the build that the user asked for (R17,
     /// AE7). Processing must already be stopped.
+    /// Keep the `Update` of the build that a quit installs, taken from the
+    /// check that named it. A later check replaces only `update` (KTD8).
+    fn keep_install_update(&self, version: Option<&str>) {
+        let Some(version) = version else {
+            return;
+        };
+        let mut install = lock(&self.install_update);
+        if install.as_ref().is_some_and(|u| u.version == version) {
+            return;
+        }
+        if let Some(update) = lock(&self.update).as_ref().filter(|u| u.version == version) {
+            *install = Some(update.clone());
+        }
+    }
+
     pub fn install_at_exit(&self) {
         let Some(version) = lock(&self.flow).install_at_quit().map(str::to_string) else {
             return;
         };
-        let Some(update) = lock(&self.update).clone() else {
+        let Some(update) = lock(&self.install_update)
+            .clone()
+            .filter(|u| u.version == version)
+        else {
             log::warn!("updates: {version} waits for install, but no update is known");
             return;
         };
@@ -374,6 +452,14 @@ impl UpdateManager {
     }
 }
 
+/// A Longhand window became the key window (R1). The caller is the main
+/// thread, so this only sends a message.
+pub fn window_activated(app: &AppHandle) {
+    if let Some(manager) = app.try_state::<Arc<UpdateManager>>() {
+        manager.send(Message::Activated);
+    }
+}
+
 /// A recording started or stopped. The caller can hold the capture state
 /// lock, so this only sends a message (AE2).
 pub fn recording_changed(app: &AppHandle) {
@@ -384,7 +470,7 @@ pub fn recording_changed(app: &AppHandle) {
 
 /// Before the main window opens: install a saved archive that no quit
 /// installed (KTD10). This runs only with automatic checks on, and only
-/// when a check within 5 s still names that build or a newer one. On an
+/// when a check within 5 s still names exactly that build. On an
 /// install, the app restarts and this does not return.
 pub fn install_at_launch(app: &AppHandle) {
     if !build_info::is_release_build() {
@@ -412,14 +498,9 @@ pub fn install_at_launch(app: &AppHandle) {
         Ok(Err(e)) => return log::info!("updates: the launch check failed: {e}"),
         Err(_) => return log::info!("updates: the launch check timed out"),
     };
-    let allowed = matches!(
-        (
-            semver::Version::parse(&update.version),
-            semver::Version::parse(&saved),
-        ),
-        (Ok(named), Ok(saved)) if named >= saved
-    );
-    if !allowed {
+    // A newer release replaces the saved build: the manager offers it after
+    // the launch, and no second update follows this one (R8).
+    if !installs_at_launch(&update.version, &saved) {
         return;
     }
     let result = archive::load_verified(&dir, &saved, &pubkey(app))
@@ -442,9 +523,42 @@ pub fn check_for_updates(app: &AppHandle) {
     }
 }
 
+/// The update item of the tray menu (R4).
+pub fn tray_open(app: &AppHandle) {
+    if let Some(manager) = app.try_state::<Arc<UpdateManager>>() {
+        manager.tray_open();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn covers_ae4_the_launch_installs_only_the_version_that_the_manifest_names() {
+        assert!(installs_at_launch("1.0.4", "1.0.4"));
+        assert!(!installs_at_launch("1.0.5", "1.0.4"), "a newer release");
+        assert!(!installs_at_launch("1.0.3", "1.0.4"), "an older release");
+        assert!(!installs_at_launch("not a version", "1.0.4"));
+    }
+
+    #[test]
+    fn the_update_window_shows_when_wanted_and_shown_active_or_asked() {
+        assert!(
+            may_show(true, false, true, false),
+            "a Longhand window is key"
+        );
+        assert!(
+            !may_show(true, false, false, false),
+            "the notice waits for a Longhand window"
+        );
+        assert!(may_show(true, true, false, false), "it shows already");
+        assert!(may_show(true, false, false, true), "the user asked");
+        assert!(
+            !may_show(false, true, true, true),
+            "the flow does not want it"
+        );
+    }
 
     #[test]
     fn the_manifest_is_the_latest_json_of_the_latest_release_of_the_source_repository() {
