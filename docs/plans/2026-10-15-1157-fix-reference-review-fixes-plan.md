@@ -40,7 +40,7 @@ The review of 304 upstream commits found five defects that Longhand has. The use
 
 **Microphone start**
 
-- R1. A microphone start that does not complete in a fixed time fails with an error, and the capture manager is available again. Stop, status and the other capture commands do not wait for a blocked start.
+- R1. A microphone start that does not complete in a fixed time fails with an error, and the capture manager is available again. Stop and the commands that supersede a recording do not wait for a blocked start. Status and the other capture commands wait at most the time limit.
 - R2. While an earlier microphone start is still blocked, a new start fails at once and does not start a second capture thread.
 - R3. On Windows, when no microphone is chosen and the open of the default device fails, Longhand opens the same device once more by its ID.
 
@@ -86,7 +86,7 @@ The review of 304 upstream commits found five defects that Longhand has. The use
 - Shorthand `19029f4`, `22ef0ed` (Windows default microphone).
 - Handy `7b2a28a` (voice detector pre-roll).
 
-**Product Contract preservation:** meaning unchanged. A Key Decision about Stop was added (Governs R1). The Objective names prosemirror-view 1.42.3, and the Problem Frame and the PR Key Decision state five defects in four fixes, with one commit for each unit. The three planning questions are answered in KTD2, KTD3 and U4.
+**Product Contract preservation:** changed: R1 — the user approved that status and the other capture commands wait at most the time limit; only Stop and superseding commands do not wait. A Key Decision about Stop was added (Governs R1). The Objective names prosemirror-view 1.42.3, and the Problem Frame and the PR Key Decision state five defects in four fixes, with one commit for each unit. The three planning questions are answered in KTD2, KTD3 and U4.
 
 ---
 
