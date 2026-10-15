@@ -103,6 +103,15 @@ describe("the update window", () => {
     expect(choices(tauri)).toEqual(["install"]);
   });
 
+  test("in a window that the user asked for, Space clicks the button that has the focus", async () => {
+    const tauri = open({ state: "offered", version: NEW, current: CURRENT }, true);
+    const install = await screen.findByRole("button", { name: "Install and Relaunch" });
+    await waitFor(() => expect(document.activeElement).toBe(install));
+    screen.getByRole("button", { name: "Remind Me Later" }).focus();
+    await userEvent.setup().keyboard(" ");
+    expect(choices(tauri)).toEqual(["remind_later"]);
+  });
+
   test("a request for a window that shows already gives the default button the focus", async () => {
     const state: UpdateState = { state: "offered", version: NEW, current: CURRENT };
     const tauri = open(state);

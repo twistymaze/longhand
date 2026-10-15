@@ -167,10 +167,12 @@ export function UpdateWindow() {
       ref={content}
       className="flex w-[480px] gap-4 bg-window px-5 pt-5 pb-4 text-label select-none"
       // Without the focus, Return and Space do not click a button that has
-      // the focus all the same. With it, Return chooses the default button.
-      // A click from the pointer or from VoiceOver always chooses.
+      // the focus all the same. With it, Return chooses the default button,
+      // and Space clicks the button that has the focus. A click from the
+      // pointer or from VoiceOver always chooses.
       onKeyDown={(e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
+        if (e.key === " " && withKey) return;
         e.preventDefault();
         if (e.key === "Enter" && withKey && defaultAction) choose(defaultAction.choice);
       }}
