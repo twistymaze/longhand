@@ -9380,7 +9380,12 @@ async fn a_recording_does_not_pause_a_summary_but_keeps_the_next_note_waiting() 
     .await;
     runner.shutdown();
     run.await.unwrap();
-    assert_eq!(held.load(Ordering::SeqCst), 0);
+    // A title job runs in its own task, so it can release its lease after
+    // the run loop ends.
+    until("every lease is released", || {
+        held.load(Ordering::SeqCst) == 0
+    })
+    .await;
 }
 
 /// The wait of `id` that the runner reports now, from the state and the
