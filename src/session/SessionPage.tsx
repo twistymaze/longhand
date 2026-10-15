@@ -390,7 +390,8 @@ export function SessionPage({
     try {
       const r =
         recordButton.kind === "record" ? await commands.recordNote(id) : await commands.resumeRecording(id);
-      setNotice(r.status === "error" ? { tone: "negative", text: sentence(r.error) } : null);
+      // An error with no text is an open that a Stop cancelled: no message.
+      setNotice(r.status === "error" && r.error ? { tone: "negative", text: sentence(r.error) } : null);
     } finally {
       setRecordBusy(false);
     }
@@ -430,7 +431,7 @@ export function SessionPage({
   const pauseOrContinue = async (e: MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.focus();
     const r = paused ? await commands.continueRecording() : await commands.pauseRecording();
-    setNotice(r.status === "error" ? { tone: "negative", text: sentence(r.error) } : null);
+    setNotice(r.status === "error" && r.error ? { tone: "negative", text: sentence(r.error) } : null);
     await capture.refresh();
   };
 

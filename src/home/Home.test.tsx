@@ -189,6 +189,47 @@ describe("Home", () => {
     expect(tauri.calls.some((c) => c.cmd === "set_recognition_override")).toBe(false);
   });
 
+  test("a failed start shows its error, and a start that a Stop cancelled shows nothing", async () => {
+    let error = "microphone: the microphone did not start within 5s";
+    mockTauri({
+      start_recording: () => {
+        throw error;
+      },
+    });
+    const { container } = render(
+      <Home
+        entries={[]}
+        stages={{}}
+        recording={null}
+        readiness={{
+          microphone_authorized: true,
+          system_audio: "allowed",
+          destination: { kind: "ready", path: "/x", free_bytes: null },
+          armed: true,
+          shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
+          missing_models: [],
+          endpoint_configured: true, can_start_note: true, note_start_refusal: null,
+        }}
+        chord="⌥⇧L"
+        onOpen={() => {}}
+        onChanged={() => {}}
+        now={now}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Record New Note" }));
+    expect(
+      await screen.findByText(/The microphone did not start within 5s/i),
+    ).toBeTruthy();
+
+    error = "";
+    await user.click(screen.getByRole("button", { name: "Record New Note" }));
+    await waitFor(() =>
+      expect(screen.queryByText(/did not start within 5s/i)).toBeNull(),
+    );
+    expect(container.querySelector("p[role=status].text-negative")).toBeNull();
+  });
+
   test("a session with no title shows its start time, and a titled session shows its title", () => {
     mockTauri();
     renderHome({

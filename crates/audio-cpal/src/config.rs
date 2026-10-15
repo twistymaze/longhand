@@ -84,6 +84,18 @@ pub fn resolve_input(
     choice: Option<&MicChoice>,
     bluetooth: &Mutex<HashMap<String, bool>>,
 ) -> Result<Device, Error> {
+    resolve_input_from(host, choice, bluetooth).map(|(device, _)| device)
+}
+
+/// [`resolve_input`], and whether the device is cpal's handle for the
+/// platform default (true) or a specific device (false). On Windows the
+/// default handle opens in a different way than a device found by its ID
+/// (see [`retry_by_id`]).
+pub fn resolve_input_from(
+    host: &cpal::Host,
+    choice: Option<&MicChoice>,
+    bluetooth: &Mutex<HashMap<String, bool>>,
+) -> Result<(Device, bool), Error> {
     if let Some(choice) = choice {
         let mut devices: Vec<Device> = host
             .input_devices()
@@ -91,7 +103,7 @@ pub fn resolve_input(
             .collect();
         let inputs: Vec<Input> = devices.iter().map(input_of).collect();
         let index = find_choice(&inputs, choice).ok_or(Error::NoInputDevice)?;
-        return Ok(devices.swap_remove(index));
+        return Ok((devices.swap_remove(index), false));
     }
     let default = host.default_input_device().ok_or(Error::NoInputDevice)?;
     // `description()` enumerates the device's configs, which costs more than
@@ -112,7 +124,7 @@ pub fn resolve_input(
         verdict
     });
     if !default_is_bluetooth {
-        return Ok(default);
+        return Ok((default, true));
     }
     let replacement = host
         .input_devices()
@@ -125,10 +137,31 @@ pub fn resolve_input(
                 device_name(&default),
                 device_name(&device)
             );
-            Ok(device)
+            Ok((device, false))
         }
-        None => Ok(default),
+        None => Ok((default, true)),
     }
+}
+
+/// Whether a failed open tries the default microphone again, opened by its
+/// ID (KTD5). Only when the failed device was cpal's default handle, which
+/// [`resolve_input_from`] gives only when the user chose no microphone.
+///
+/// On Windows, cpal opens the default handle through
+/// `ActivateAudioInterfaceAsync`. After the default device changes during a
+/// session, each such open can fail with `RPC_E_CHANGED_MODE` until the app
+/// restarts. A device found by its ID opens through `IMMDevice::Activate`
+/// and does not have this fault. Shorthand 19029f4 retries in the same way.
+pub fn retry_by_id(default_handle: bool, failed: bool) -> bool {
+    default_handle && failed
+}
+
+/// The current default input, found by its ID, not as cpal's default
+/// handle (see [`retry_by_id`]).
+#[cfg(windows)]
+pub fn default_by_id(host: &cpal::Host) -> Option<Device> {
+    let id = host.default_input_device()?.id().ok()?;
+    host.device_by_id(&id)
 }
 
 fn is_bluetooth(device: &Device) -> bool {
@@ -286,5 +319,19 @@ mod tests {
         // match a choice that has no ID either.
         let devices = [input("", "Nameless ID"), input("usb-9", "Yeti")];
         assert_eq!(find_choice(&devices, &choice("", "Yeti")), Some(1));
+    }
+
+    #[test]
+    fn a_failed_default_handle_with_no_choice_is_tried_again_by_id() {
+        assert!(retry_by_id(true, true));
+    }
+
+    #[test]
+    fn a_specific_device_or_a_good_open_is_not_tried_again() {
+        // The user chose the microphone, or a wired input replaced a
+        // Bluetooth default: a specific device, not the default handle.
+        assert!(!retry_by_id(false, true));
+        // The first open worked.
+        assert!(!retry_by_id(true, false));
     }
 }

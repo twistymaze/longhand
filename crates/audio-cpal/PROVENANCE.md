@@ -20,6 +20,15 @@ Borrowed material in this crate, one record per file (R27). The provider in `src
 - Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: modified — decided from the transport cpal reports instead of anarlog's device layer
 
+## `src/startup.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 693500220d8e253b175e7a5b88fd831c48b4583b
+- Source paths: `crates/audio-actual/src/mic.rs` (`StartupPermit`, the `init_rx.recv_timeout` wait of 5 s)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — the permit takes its flag as a parameter so that tests use their own flag; the wait checks a cancel in short steps, so a Stop does not wait for the limit; the device lookup and the config query run inside the limit; the thread is not joined after a timeout or a cancel
+
 ## `src/callback.rs`
 
 - Repository: https://github.com/cjpais/Handy

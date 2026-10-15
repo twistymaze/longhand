@@ -9,7 +9,7 @@ use shared_settings::note_types::NoteTypeError;
 use specta::Type;
 use tauri::{AppHandle, Manager, State};
 
-use crate::managers::capture::{CaptureManager, RecordingStatus, StopOutcome};
+use crate::managers::capture::{CaptureError, CaptureManager, RecordingStatus, StopOutcome};
 use crate::managers::destination;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
@@ -109,7 +109,7 @@ pub async fn start_recording(
         } else {
             manager.open_note(&app, note_type.as_deref())
         };
-        started.map_err(|e| e.to_string())
+        started.map_err(open_error)
     })
     .await
 }
@@ -155,7 +155,7 @@ pub async fn continue_recording(
     manager: State<'_, Arc<CaptureManager>>,
 ) -> Result<(), String> {
     let manager = Arc::clone(&manager);
-    blocking(move || manager.continue_session(&app).map_err(|e| e.to_string())).await
+    blocking(move || manager.continue_session(&app).map_err(open_error)).await
 }
 
 /// Record into a note with no audio (R11, KTD2), from the note page or the
@@ -184,7 +184,7 @@ pub async fn record_note(
         )?;
         manager
             .record_session(&app, &session_id)
-            .map_err(|e| e.to_string())
+            .map_err(open_error)
     })
     .await
 }
@@ -205,7 +205,7 @@ pub async fn resume_recording(
         manager
             .resume_session(&app, &id)
             .map(|state| state.name().to_string())
-            .map_err(|e| e.to_string())
+            .map_err(open_error)
     })
     .await?;
     // Out of the queue (R20c); a stage running on it stops at its next checkpoint.
@@ -331,6 +331,16 @@ pub async fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
     .await
 }
 
+/// The text of an error from a command that opens the microphone. A Stop
+/// that cancelled the open is the user's own request, so its text is empty
+/// and the page shows no message.
+fn open_error(error: CaptureError) -> String {
+    match error {
+        CaptureError::Audio(audio::Error::MicStartCancelled) => String::new(),
+        error => error.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +422,17 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_cancelled_open_has_no_text_and_other_open_errors_keep_theirs() {
+        assert_eq!(
+            open_error(CaptureError::Audio(audio::Error::MicStartCancelled)),
+            ""
+        );
+        let timeout = CaptureError::Audio(audio::Error::MicStreamInitializationFailed(
+            "the microphone did not start within 5s".into(),
+        ));
+        assert!(open_error(timeout).contains("did not start within 5s"));
     }
 }

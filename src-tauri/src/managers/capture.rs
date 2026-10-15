@@ -564,11 +564,10 @@ fn early_speaker_at(
     Some(early.opened)
 }
 
-/// An input resolved ahead of the open (R1b, R3): its name and native rate.
+/// An input resolved ahead of the open (R1b, R3), or the input that opened:
+/// its name and native rate.
 #[derive(Debug, Clone)]
 struct Prepared {
-    /// The choice it was resolved for. `None` is "System default".
-    choice: Option<MicChoice>,
     input: Input,
     rate: u32,
     /// The choice did not resolve, and `input` is the system default.
@@ -609,6 +608,90 @@ impl Pending {
             session_id: session_id.to_string(),
             cancel: CancellationToken::new(),
         }
+    }
+}
+
+/// The cancel of the microphone open that runs now (KTD1). The field has
+/// its own lock, outside `inner`, so Stop and Start can fire the token
+/// while an open holds `inner`. No code takes `inner` while it holds this
+/// lock.
+#[derive(Default)]
+struct OpenCancel(Mutex<OpenCancelState>);
+
+#[derive(Default)]
+struct OpenCancelState {
+    token: CancellationToken,
+    /// The Stops that fired the token and wait for `inner`.
+    stops: usize,
+}
+
+impl OpenCancel {
+    fn state(&self) -> std::sync::MutexGuard<'_, OpenCancelState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The token of a new open. Each open gets a new token, so a cancel
+    /// cannot reach a later open. While a Stop waits for `inner`, the token
+    /// is already fired: a background open that takes `inner` before the
+    /// Stop fails at once.
+    fn next(&self) -> CancellationToken {
+        let mut state = self.state();
+        state.token = CancellationToken::new();
+        if state.stops > 0 {
+            state.token.cancel();
+        }
+        state.token.clone()
+    }
+
+    /// Cancel the open that runs now.
+    fn fire(&self) {
+        self.state().token.cancel();
+    }
+
+    /// A Stop begins: cancel the open that runs now, and each open that
+    /// starts before the Stop has `inner`.
+    fn stop_begins(&self) {
+        let mut state = self.state();
+        state.stops += 1;
+        state.token.cancel();
+    }
+
+    /// The Stop has `inner`: opens run normally again.
+    fn stop_has_lock(&self) {
+        let mut state = self.state();
+        state.stops = state.stops.saturating_sub(1);
+    }
+}
+
+/// Whether an open failed because a Stop or a new start cancelled it
+/// (KTD2). A cancelled open raises no alert, starts no device watch and
+/// starts no restart: the command that cancelled it decides. A timed-out
+/// open is an ordinary open error.
+fn open_cancelled(e: &CaptureError) -> bool {
+    matches!(e, CaptureError::Audio(audio::Error::MicStartCancelled))
+}
+
+/// What a failed reopen of the microphone does to its note.
+#[derive(Debug, PartialEq, Eq)]
+enum AfterFailedReopen {
+    /// Record of a note with no audio: the note is a note with no audio
+    /// again (R19).
+    EndRecording,
+    /// The open was cancelled (KTD2): the note is paused again, with no
+    /// alert, for the command that cancelled it. `tray` is true when the
+    /// tray showed the note as recording.
+    Paused { tray: bool },
+    /// The note is interrupted, with its alert and the device watch.
+    Interrupted,
+}
+
+fn after_failed_reopen(reopen: Reopen, cancelled: bool) -> AfterFailedReopen {
+    match (reopen, cancelled) {
+        (Reopen::Record, _) => AfterFailedReopen::EndRecording,
+        (reopen, true) => AfterFailedReopen::Paused {
+            tray: reopen == Reopen::Continue,
+        },
+        (_, false) => AfterFailedReopen::Interrupted,
     }
 }
 
@@ -1114,6 +1197,8 @@ pub struct CaptureManager {
     /// through one connection.
     store: pipeline::SharedStore,
     inner: Mutex<Inner>,
+    /// The cancel of the microphone open that holds `inner` (KTD1).
+    opens: OpenCancel,
     /// See [`CaptureManager::take_recovered_without_audio`].
     recovered_without_audio: Mutex<Vec<String>>,
 }
@@ -1320,6 +1405,7 @@ impl CaptureManager {
             working_root: data.join("sessions"),
             store: Arc::new(Mutex::new(store)),
             inner: Mutex::new(Inner::default()),
+            opens: OpenCancel::default(),
             recovered_without_audio: Mutex::default(),
         })
     }
@@ -1399,7 +1485,6 @@ impl CaptureManager {
             input.name
         );
         self.inner().prepared = Some(Prepared {
-            choice,
             input,
             rate,
             fallback,
@@ -1457,20 +1542,27 @@ impl CaptureManager {
         config: Option<models::recognition::RecognitionConfig>,
         note_type: Option<&str>,
     ) -> Result<String, CaptureError> {
+        let settings = settings::get_settings(app);
+        let models = app.state::<Arc<ModelsManager>>();
+        let recognition = note_recognition(&settings, speaker_count, config, |spec| {
+            models.missing_spec(spec)
+        });
+        // A Start ends the recording: an open that holds `inner` stops now,
+        // and the Start does not wait for it (KTD1). A Start that the model
+        // check refuses cancels nothing.
+        if recognition.is_ok() {
+            self.opens.fire();
+        }
         let mut inner = self.inner();
         if inner.restart_claimed {
             return Err(CaptureError::Restarting);
         }
-        let settings = settings::get_settings(app);
-        let models = app.state::<Arc<ModelsManager>>();
         let NoteRecognition {
             spec,
             snapshot,
             model,
             speaker_count,
-        } = note_recognition(&settings, speaker_count, config, |spec| {
-            models.missing_spec(spec)
-        })?;
+        } = recognition?;
         let mut ended = inner.supersede();
         // A paused note ends as a recording note does.
         if let Some(paused) = inner.paused.take() {
@@ -1611,7 +1703,11 @@ impl CaptureManager {
     /// the note is queued for processing, or it kept no audio and is a note
     /// with no audio again (R19).
     pub fn stop_session(&self, app: &AppHandle) -> Result<StopOutcome, CaptureError> {
+        // Stop does not wait for a microphone start (KTD1): cancel it, and
+        // each open that takes `inner` before this Stop.
+        self.opens.stop_begins();
         let mut inner = self.inner();
+        self.opens.stop_has_lock();
         let reconnecting = inner.supersede();
         let id = match inner.active.take() {
             Some(active) => {
@@ -2008,7 +2104,8 @@ impl CaptureManager {
         reopen: Reopen,
         e: CaptureError,
     ) -> Result<(), CaptureError> {
-        if reopen == Reopen::Record {
+        let after = after_failed_reopen(reopen, open_cancelled(&e));
+        if after == AfterFailedReopen::EndRecording {
             drop(inner);
             if let Err(stop) = self.stop_in_store(app, id) {
                 log::error!("could not end the recording of {id}: {stop}");
@@ -2019,6 +2116,18 @@ impl CaptureManager {
         if let Some((mut timeline, epoch)) = clock {
             timeline.abandon_open();
             inner.clock = Some(Clock::new(id, timeline, epoch));
+        }
+        if let AfterFailedReopen::Paused { tray } = after {
+            // A Stop or a new start cancelled the open (KTD2). The note is
+            // paused again, so that command ends it as a paused note. No
+            // alert and no device watch.
+            inner.paused = Some(id.to_string());
+            drop(inner);
+            log::info!("the microphone open of {id} was cancelled ({reopen:?})");
+            if tray {
+                crate::tray::recording_paused(app, true);
+            }
+            return Err(e);
         }
         drop(inner);
         let loss = Loss {
@@ -2785,17 +2894,22 @@ impl CaptureManager {
         changed(app, Some(id));
 
         let backoff = Backoff(&cancel);
+        let mut open_was_cancelled = false;
         let recovery = supervisor::recover(&mut restarts, &SOURCE_RESTART_BUDGET, &backoff, || {
             let mut inner = self.inner();
             if cancel.is_cancelled() {
                 return Err(CaptureError::Other("superseded".into()));
             }
-            self.reopen(app, &mut inner, id, false, None)
+            let reopened = self.reopen(app, &mut inner, id, false, None);
+            open_was_cancelled = reopened.as_ref().is_err_and(open_cancelled);
+            reopened
         });
 
         let mut inner = self.inner();
         // A stop or a new session took over; it has settled the session.
-        if cancel.is_cancelled() {
+        // A Stop or a new start also cancelled the last open: it finds the
+        // note in `recovering` and settles it (KTD2).
+        if cancel.is_cancelled() || open_was_cancelled {
             return;
         }
         inner.recovering = None;
@@ -3011,32 +3125,29 @@ impl CaptureManager {
     /// a live worker streams the segment (U6); a worker that cannot start
     /// leaves the segment to a full pass after Stop.
     /// Open the microphone for `choice`, or the system default when a
-    /// chosen microphone is missing (R4, KTD3). A prepared input for the
-    /// same choice skips the resolve (R1b). A prepared fallback is resolved
-    /// again, so a chosen microphone connected since then is used.
+    /// chosen microphone is missing (R4, KTD3). The device lookup and the
+    /// config query run on the capture thread, within the start limit of
+    /// `audio_cpal`. A config that `prepare` cached skips the device queries
+    /// (R1b). A Stop or a new start cancels the open through [`OpenCancel`]
+    /// (KTD1).
     fn open_microphone(
         &self,
         inner: &mut Inner,
         choice: Option<&MicChoice>,
     ) -> Result<(Prepared, CaptureStream), CaptureError> {
-        let mut cached = inner
-            .prepared
-            .take()
-            .filter(|p| p.choice.as_ref() == choice && !p.fallback)
-            .map(|p| (p.input, p.rate));
+        inner.prepared = None;
+        let cancel = self.opens.next();
+        let cancelled = || cancel.is_cancelled();
         let opened = with_fallback(choice, |target| {
-            let (input, rate) = match cached.take() {
-                Some(hit) if target == choice => hit,
-                _ => self.audio.mic().prepare_input(target)?,
-            };
-            let chunk = (rate / FRAMES_PER_SECOND) as usize;
-            let stream = self.audio.mic().open_input(target.cloned(), 0, chunk)?;
-            Ok((input, rate, stream))
+            let opened =
+                self.audio
+                    .mic()
+                    .open_native(target.cloned(), FRAMES_PER_SECOND, &cancelled)?;
+            Ok((opened.input, opened.rate, opened.stream))
         });
         match opened {
             Ok(((input, rate, stream), fallback)) => {
                 let prepared = Prepared {
-                    choice: choice.cloned(),
                     input,
                     rate,
                     fallback,
@@ -3628,6 +3739,69 @@ mod tests {
             &CancellationToken::new(),
             Duration::from_millis(1)
         ));
+    }
+
+    #[test]
+    fn a_superseding_command_fires_the_open_token_and_the_next_open_gets_a_new_one() {
+        let opens = OpenCancel::default();
+        let blocked = opens.next();
+        opens.fire();
+        assert!(blocked.is_cancelled());
+        assert!(
+            !opens.next().is_cancelled(),
+            "a cancel reaches no later open"
+        );
+    }
+
+    #[test]
+    fn an_open_while_a_stop_waits_for_the_lock_is_cancelled() {
+        let opens = OpenCancel::default();
+        let blocked = opens.next();
+        opens.stop_begins();
+        assert!(blocked.is_cancelled());
+        // A background open that takes `inner` before the Stop.
+        assert!(opens.next().is_cancelled());
+        opens.stop_has_lock();
+        assert!(!opens.next().is_cancelled(), "after the Stop, opens run");
+    }
+
+    #[test]
+    fn a_stop_flag_stays_while_a_second_stop_waits() {
+        let opens = OpenCancel::default();
+        opens.stop_begins();
+        opens.stop_begins();
+        opens.stop_has_lock();
+        assert!(opens.next().is_cancelled());
+        opens.stop_has_lock();
+        assert!(!opens.next().is_cancelled());
+    }
+
+    #[test]
+    fn a_cancelled_open_raises_nothing_and_a_timed_out_open_is_an_open_error() {
+        let cancelled = CaptureError::Audio(audio::Error::MicStartCancelled);
+        assert!(open_cancelled(&cancelled));
+        let timed_out = CaptureError::Audio(audio::Error::MicStreamInitializationFailed(
+            "the microphone did not start within 5s".into(),
+        ));
+        assert!(!open_cancelled(&timed_out));
+        assert!(!open_cancelled(&CaptureError::Other("superseded".into())));
+    }
+
+    #[test]
+    fn a_cancelled_reopen_pauses_the_note_and_a_failed_reopen_interrupts_it() {
+        use AfterFailedReopen::*;
+        assert_eq!(
+            after_failed_reopen(Reopen::Continue, true),
+            Paused { tray: true }
+        );
+        assert_eq!(
+            after_failed_reopen(Reopen::Resume, true),
+            Paused { tray: false }
+        );
+        assert_eq!(after_failed_reopen(Reopen::Continue, false), Interrupted);
+        assert_eq!(after_failed_reopen(Reopen::Resume, false), Interrupted);
+        assert_eq!(after_failed_reopen(Reopen::Record, true), EndRecording);
+        assert_eq!(after_failed_reopen(Reopen::Record, false), EndRecording);
     }
 
     #[test]

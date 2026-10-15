@@ -13,10 +13,11 @@
 
 mod callback;
 mod config;
+mod startup;
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::{Arc, Mutex, mpsc as std_mpsc};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cpal::traits::{HostTrait, StreamTrait};
@@ -29,6 +30,7 @@ pub use config::find_choice;
 
 use audio::resampler::FrameResampler;
 use callback::{FAULT_DEVICE_LOST, NO_FAULT, Overrun, Shared};
+use startup::Starting;
 
 /// Frames queued between the capture thread and the consumer. At 20 ms per
 /// frame this is about 1.3 s, on top of the ring's ten seconds.
@@ -135,6 +137,23 @@ impl CpalAudio {
         Ok(preferred)
     }
 
+    /// Open the chosen microphone, or the system default for `None`, at the
+    /// device's native rate, in frames of `1 / frames_per_second` s. The
+    /// device lookup, the config query, the stream build and `play` all run
+    /// on the capture thread within [`startup::START_LIMIT`] (KTD3). The open
+    /// fails at once with [`Error::MicStartCancelled`] when `cancelled`
+    /// returns true, and with [`Error::MicStreamInitializationFailed`] while
+    /// an earlier start has not returned (KTD4). A choice that matches no
+    /// input fails with [`Error::NoInputDevice`].
+    pub fn open_native(
+        &self,
+        choice: Option<MicChoice>,
+        frames_per_second: u32,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Opened, Error> {
+        self.open_with(choice, Frames::PerSecond(frames_per_second), cancelled)
+    }
+
     /// Open the chosen microphone, or the system default for `None`.
     /// `sample_rate` of 0 means the device's native rate; any other value is
     /// resampled to. A choice that matches no input fails with
@@ -145,57 +164,77 @@ impl CpalAudio {
         sample_rate: u32,
         chunk_size: usize,
     ) -> Result<CaptureStream, Error> {
+        let frames = Frames::Fixed {
+            sample_rate,
+            chunk_size,
+        };
+        self.open_with(choice, frames, &|| false)
+            .map(|opened| opened.stream)
+    }
+
+    fn open_with(
+        &self,
+        choice: Option<MicChoice>,
+        frames: Frames,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Opened, Error> {
         let (tx, rx) = mpsc::channel(FRAME_QUEUE);
-        let (init_tx, init_rx) = std_mpsc::sync_channel::<Result<(), Error>>(1);
         let configs = Arc::clone(&self.configs);
         let bluetooth = Arc::clone(&self.bluetooth);
-        let chunk_size = chunk_size.max(1);
 
-        std::thread::Builder::new()
-            .name("longhand-capture".into())
-            .spawn(move || {
+        let started = startup::start(
+            &startup::MIC_STARTING,
+            startup::START_LIMIT,
+            cancelled,
+            move |starting: Starting<(Input, u32)>| {
                 let provider = CpalAudio { configs, bluetooth };
                 let shared = Arc::new(Shared::default());
-                let opened = (|| {
-                    let host = cpal::default_host();
-                    let device =
-                        config::resolve_input(&host, choice.as_ref(), &provider.bluetooth)?;
-                    let config = provider.config_for(&device)?;
+                let open_device = |device: &cpal::Device| {
+                    let config = provider.config_for(device)?;
+                    let input = config::input_of(device);
                     log::info!(
                         "opening '{}' at {} Hz, {} channel(s), {:?}",
-                        config::device_name(&device),
+                        input.name,
                         config.sample_rate(),
                         config.channels(),
                         config.sample_format()
                     );
-                    let (stream, consumer, gaps) = build(&device, &config, Arc::clone(&shared))?;
+                    let (stream, consumer, gaps) = build(device, &config, Arc::clone(&shared))?;
                     stream
                         .play()
                         .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
-                    Ok((stream, consumer, gaps, config.sample_rate()))
+                    Ok((stream, consumer, gaps, config.sample_rate(), input))
+                };
+                let opened = (|| {
+                    let host = cpal::default_host();
+                    let (device, default_handle) =
+                        config::resolve_input_from(&host, choice.as_ref(), &provider.bluetooth)?;
+                    let first = if forced_default_failure(default_handle, false) {
+                        Err(Error::MicStreamInitializationFailed(
+                            "forced failure of the default microphone".into(),
+                        ))
+                    } else {
+                        open_device(&device)
+                    };
+                    if !config::retry_by_id(default_handle, first.is_err()) {
+                        return first;
+                    }
+                    retry_default_by_id(&host, &provider, first, &open_device)
                 })();
                 let (stream, consumer, gaps, native_rate) = match opened {
-                    Ok(opened) => {
-                        let _ = init_tx.send(Ok(()));
-                        opened
+                    Ok((stream, consumer, gaps, native_rate, input)) => {
+                        starting.report(Ok((input, native_rate)));
+                        (stream, consumer, gaps, native_rate)
                     }
                     Err(e) => {
                         // A config that no longer opens is forgotten, so the
                         // next attempt queries the device afresh.
-                        provider
-                            .configs
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clear();
-                        let _ = init_tx.send(Err(e));
+                        provider.forget();
+                        starting.report(Err(e));
                         return;
                     }
                 };
-                let out_rate = if sample_rate == 0 {
-                    native_rate
-                } else {
-                    sample_rate
-                };
+                let (out_rate, chunk_size) = frames.at(native_rate);
                 drain(
                     consumer,
                     gaps,
@@ -206,14 +245,114 @@ impl CpalAudio {
                     &tx,
                 );
                 drop(stream);
-            })
-            .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))?;
-
-        init_rx
-            .recv()
-            .map_err(|_| Error::MicStreamInitializationFailed("capture thread exited".into()))??;
-        Ok(CaptureStream::new(ReceiverStream::new(rx)))
+            },
+        );
+        match started {
+            Ok((input, rate)) => Ok(Opened {
+                input,
+                rate,
+                stream: CaptureStream::new(ReceiverStream::new(rx)),
+            }),
+            Err(e) => {
+                // The next start queries the device again. After a timeout,
+                // the cached config can be the cause.
+                self.forget();
+                Err(e)
+            }
+        }
     }
+}
+
+/// A microphone that started: the input, its native rate, and its frames.
+pub struct Opened {
+    pub input: Input,
+    pub rate: u32,
+    pub stream: CaptureStream,
+}
+
+/// The rate and the frame size of the frames that capture sends.
+#[derive(Debug, Clone, Copy)]
+enum Frames {
+    /// `sample_rate` of 0 is the native rate.
+    Fixed { sample_rate: u32, chunk_size: usize },
+    /// The native rate, in this many frames per second.
+    PerSecond(u32),
+}
+
+impl Frames {
+    /// The output rate and the frame size for a device at `native_rate`.
+    fn at(self, native_rate: u32) -> (u32, usize) {
+        match self {
+            Frames::Fixed {
+                sample_rate,
+                chunk_size,
+            } => {
+                let rate = if sample_rate == 0 {
+                    native_rate
+                } else {
+                    sample_rate
+                };
+                (rate, chunk_size.max(1))
+            }
+            Frames::PerSecond(per_second) => (
+                native_rate,
+                (native_rate / per_second.max(1)).max(1) as usize,
+            ),
+        }
+    }
+}
+
+/// On Windows, open the current default input again, found by its ID, after
+/// the default handle failed (KTD5, [`config::retry_by_id`]). Other
+/// platforms return `first`.
+#[cfg(windows)]
+fn retry_default_by_id<T>(
+    host: &cpal::Host,
+    provider: &CpalAudio,
+    first: Result<T, Error>,
+    open_device: &dyn Fn(&cpal::Device) -> Result<T, Error>,
+) -> Result<T, Error> {
+    let Err(error) = first else { return first };
+    let Some(device) = config::default_by_id(host) else {
+        log::warn!("the default microphone did not open ({error}), and no device has its ID");
+        return Err(error);
+    };
+    log::warn!("the default microphone did not open ({error}); opening it again by its ID");
+    provider.forget();
+    if forced_default_failure(true, true) {
+        return Err(Error::MicStreamInitializationFailed(
+            "forced failure of the default microphone by its ID".into(),
+        ));
+    }
+    open_device(&device)
+}
+
+#[cfg(not(windows))]
+fn retry_default_by_id<T>(
+    _host: &cpal::Host,
+    _provider: &CpalAudio,
+    first: Result<T, Error>,
+    _open_device: &dyn Fn(&cpal::Device) -> Result<T, Error>,
+) -> Result<T, Error> {
+    first
+}
+
+/// A Windows debug build fails the open of the default microphone when
+/// `LONGHAND_DEBUG_FAIL_DEFAULT_MIC` is set, so that the retry by ID can be
+/// tested (KTD6). The value `all` also fails the retry. A release build
+/// never reads the variable.
+#[cfg(all(windows, debug_assertions))]
+fn forced_default_failure(default_handle: bool, by_id: bool) -> bool {
+    match std::env::var("LONGHAND_DEBUG_FAIL_DEFAULT_MIC") {
+        Ok(value) if by_id => value == "all",
+        Ok(_) => default_handle,
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(all(windows, debug_assertions)))]
+fn forced_default_failure(_default_handle: bool, _by_id: bool) -> bool {
+    false
 }
 
 fn build(
