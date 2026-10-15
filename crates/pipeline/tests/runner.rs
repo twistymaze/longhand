@@ -9289,12 +9289,17 @@ async fn a_title_job_does_not_wait_for_the_audio_stages_of_another_note() {
     );
 
     release.store(true, Ordering::SeqCst);
-    until("B is saved", || event_at(&r, saved_event("b")).is_some()).await;
+    // The save of B queues its own title job. Wait for it, so that the
+    // shutdown does not race it.
+    until("the title of B", || proposed_titles(&r).len() == 2).await;
     r.runner.shutdown();
     run.await.unwrap();
     assert_eq!(
         proposed_titles(&r),
-        [("s".to_string(), "Weekly sync".to_string())]
+        [
+            ("s".to_string(), "Weekly sync".to_string()),
+            ("b".to_string(), "Weekly sync".to_string())
+        ]
     );
 }
 
