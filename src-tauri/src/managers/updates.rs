@@ -300,15 +300,17 @@ impl UpdateManager {
             }
         }
 
-        let (before, effects, state, wanted, with_key, install, tray, delays) = {
+        let (before, with_key_before, effects, state, wanted, with_key, install, tray, delays) = {
             let mut flow = lock(&self.flow);
             let before = flow.state().clone();
+            let with_key_before = flow.user_asked();
             let effects: Vec<Effect> = inputs
                 .into_iter()
                 .flat_map(|input| flow.step(input, facts))
                 .collect();
             (
                 before,
+                with_key_before,
                 effects,
                 flow.state().clone(),
                 flow.window_visible(),
@@ -319,8 +321,12 @@ impl UpdateManager {
             )
         };
         self.keep_install_update(install.as_deref());
-        if state != before {
-            log::info!("updates: {before:?} -> {state:?}");
+        // A request on a shown notice changes only with_key, and the page
+        // must get it too.
+        if state != before || with_key != with_key_before {
+            if state != before {
+                log::info!("updates: {before:?} -> {state:?}");
+            }
             let _ = UpdateStateChanged {
                 state: state.clone(),
                 with_key,

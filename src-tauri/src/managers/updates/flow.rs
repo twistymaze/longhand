@@ -335,6 +335,13 @@ impl Flow {
                     _ => UpdateState::Ready { version },
                 }
             }
+            // The item names a release, so it replaces a manual result.
+            UpdateState::UpToDate { .. } | UpdateState::CheckFailed { .. } => {
+                if let Some(newest) = self.newest.clone() {
+                    self.before_check = UpdateState::Idle;
+                    self.state = self.notice(newest, false);
+                }
+            }
             UpdateState::Downloading { .. } => self.download_hidden = false,
             _ => {}
         }
@@ -490,6 +497,22 @@ impl Flow {
     /// A recording start closes the window at once (AE2), and the offer or
     /// the question shows again when busy ends (R14, R17).
     fn busy(&mut self, busy: bool) -> Vec<Effect> {
+        // A notice saved before a manual check follows busy too, so that
+        // the state after the check agrees with busy.
+        match (busy, &self.before_check) {
+            (true, UpdateState::Offered { version, .. }) => {
+                self.before_check = UpdateState::Held {
+                    version: version.clone(),
+                }
+            }
+            (false, UpdateState::Held { version }) => {
+                self.before_check = UpdateState::Offered {
+                    version: version.clone(),
+                    current: self.current.clone(),
+                }
+            }
+            _ => {}
+        }
         if busy {
             match &self.state {
                 UpdateState::Offered { version, .. } => {
@@ -614,13 +637,18 @@ impl Flow {
         }
     }
 
-    /// The check of an Install click ended. A check that fails or names no
-    /// release downloads the shown version.
+    /// The check of an Install click ended. A check that fails downloads the
+    /// newest release that an earlier check found (R7). A check that names
+    /// no release downloads the shown version.
     fn install_checked(&mut self, named: Option<String>, facts: Facts) -> Vec<Effect> {
         let UpdateState::Downloading { version: shown, .. } = &self.state else {
             return vec![];
         };
-        let version = named.unwrap_or_else(|| shown.clone());
+        // A check that names no release clears newest, so newest is set
+        // here only when the check failed.
+        let version = named
+            .or_else(|| self.newest.clone())
+            .unwrap_or_else(|| shown.clone());
         if self.saved.as_deref() == Some(version.as_str()) {
             return self.install_saved(version, facts);
         }
@@ -1160,9 +1188,9 @@ mod tests {
         assert_eq!(
             f.step(Input::Checked(Err("offline".into())), facts(NINE + HOUR)),
             vec![Effect::Download {
-                version: NEW.into()
+                version: NEWER.into()
             }],
-            "the shown version when the check fails"
+            "the newest known release when the check fails"
         );
         let mut f = offering(NEW);
         f.step(Input::Choice(Choice::Install), facts(NINE));
@@ -1482,6 +1510,47 @@ mod tests {
             }
         );
         assert_eq!(f.tray_version(), Some(NEW));
+    }
+
+    #[test]
+    fn the_tray_item_replaces_a_manual_result_with_the_offer() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE + HOUR));
+        f.step(Input::TrayOpen, facts(NINE + HOUR));
+        assert_eq!(f.state(), &offered(NEW));
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE));
+        f.step(Input::TrayOpen, facts(NINE));
+        assert_eq!(f.state(), &offered(NEW));
+        f.step(Input::Choice(Choice::RemindLater), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle, "no saved state comes back");
+    }
+
+    #[test]
+    fn a_recording_during_a_manual_check_from_the_offer_holds_the_offer() {
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert!(!f.window_visible(), "the recording start closes the window");
+        let mut f = offering(NEW);
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Err("offline".into())), facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert!(!f.window_visible());
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW), "the offer shows when busy ends");
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
+        f.step(Input::ManualCheck, busy(NINE));
+        f.step(Input::Checked(Err("offline".into())), busy(NINE));
+        f.step(Input::Busy(false), facts(NINE));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert_eq!(f.state(), &offered(NEW), "a held offer shows after busy");
     }
 
     #[test]

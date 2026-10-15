@@ -102,6 +102,16 @@ describe("the update window", () => {
     await userEvent.setup().keyboard("{Enter}");
     expect(choices(tauri)).toEqual(["install"]);
   });
+
+  test("a request for a window that shows already gives the default button the focus", async () => {
+    const state: UpdateState = { state: "offered", version: NEW, current: CURRENT };
+    const tauri = open(state);
+    const install = await screen.findByRole("button", { name: "Install and Relaunch" });
+    await act(() => tauri.emit("update-state-changed", { state, with_key: true }));
+    await waitFor(() => expect(document.activeElement).toBe(install));
+    await userEvent.setup().keyboard("{Enter}");
+    expect(choices(tauri)).toEqual(["install"]);
+  });
 });
 
 describe("the update window size", () => {
