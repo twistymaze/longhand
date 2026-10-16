@@ -12,9 +12,7 @@ use std::path::Path;
 
 use crate::folder::{FolderError, SessionDoc, SessionMd, fingerprint};
 use crate::jobs::{Title, TitleSource};
-use crate::note_record::{
-    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, check_session_id,
-};
+use crate::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, check_session_id};
 
 /// The name of the user file of a note folder.
 pub const SESSION_FILE: &str = "session.md";

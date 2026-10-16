@@ -4,7 +4,9 @@ use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
     FolderError, PendingType, ResultFlag, SegmentRecord, SummaryMeta, fingerprint,
 };
-use session_core::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, session_id_of};
+use session_core::note_record::{
+    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, session_id_of,
+};
 use session_core::recognition::ArtifactReference;
 use session_core::{SpeakerCount, Title, TitleSource};
 

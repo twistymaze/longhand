@@ -2569,6 +2569,12 @@ impl Claims {
         ClaimSet::has(&self.set().regenerating, session_id)
     }
 
+    /// True while a delete holds a claim on the session. Record and Resume
+    /// are then refused.
+    pub fn is_deleting(&self, session_id: &str) -> bool {
+        ClaimSet::has(&self.set().deleting, session_id)
+    }
+
     /// True while a regeneration or a delete holds a claim on the session.
     /// The Move then waits, and Transcribe Again is refused.
     pub fn is_regenerating_or_deleting(&self, session_id: &str) -> bool {

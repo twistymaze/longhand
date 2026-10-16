@@ -46,7 +46,7 @@ use recorder::{
     ChunkedWriter, Frame, SegmentArgs, SegmentEnd, SegmentInput, SegmentOutcome, SpeakerCommand,
 };
 use serde::Serialize;
-use session_core::jobs::RECORDED_INTO;
+use session_core::jobs::{Claims, RECORDED_INTO};
 use session_core::{
     CaptureChoice, Closed, Event, InterruptReason, Microphone, RecordingModel, SessionState,
     SpeakerCount, Store, Timeline,
@@ -1752,13 +1752,16 @@ enum Reopen {
 /// (KTD2), with the recognition of `recognition` and the capture choice
 /// `capture`, as a new note gets them now. The note keeps the time it
 /// opened (R16), and is marked as a note that existed before its
-/// recording (R19). The caller holds the store lock.
+/// recording (R19). The caller holds the store lock. Refused while a
+/// delete of the note holds its claim in `claims`.
 fn record_in_store(
     store: &mut Store,
     id: &str,
+    claims: &Claims,
     recognition: &NoteRecognition,
     capture: &CaptureChoice,
 ) -> Result<(), CaptureError> {
+    refuse_while_deleting(claims, id)?;
     let has_segments = !store.segments(id)?.is_empty();
     if has_segments {
         return Err(CaptureError::Other(
@@ -1772,6 +1775,49 @@ fn record_in_store(
     store.set_capture_choice(id, capture)?;
     store.set_result_state(id, RECORDED_INTO, &serde_json::Value::Bool(true))?;
     Ok(())
+}
+
+/// The processing claims, which a delete of a note takes. Empty when the
+/// processing manager is not set up.
+fn processing_claims(app: &AppHandle) -> Claims {
+    app.try_state::<Arc<ProcessingManager>>()
+        .map(|processing| processing.claims())
+        .unwrap_or_default()
+}
+
+/// The refusal of Record and Resume while a delete of the note runs.
+const NOTE_DELETING: &str = "This note is being deleted.";
+
+/// Refuse when a delete of the note `id` holds its claim in `claims`. The
+/// delete removes the folders of the note without the store lock, so a
+/// recording that starts then would lose its audio. The delete takes its
+/// claim before it reads the state under the store lock: a check under
+/// the store lock sees the claim, or the delete sees the recording.
+fn refuse_while_deleting(claims: &Claims, id: &str) -> Result<(), CaptureError> {
+    if claims.is_deleting(id) {
+        return Err(CaptureError::Other(NOTE_DELETING.to_string()));
+    }
+    Ok(())
+}
+
+/// Take the note `id` to the state that Resume gives in the store: Capturing
+/// when the store allows the resume. The caller holds the store lock.
+/// Refused while a delete of the note holds its claim in `claims`.
+fn resume_in_store(
+    store: &mut Store,
+    id: &str,
+    claims: &Claims,
+    space_ok: bool,
+    audio_intact: bool,
+) -> Result<SessionState, CaptureError> {
+    refuse_while_deleting(claims, id)?;
+    Ok(store.apply(
+        id,
+        &Event::UserResume {
+            space_ok,
+            audio_intact,
+        },
+    )?)
 }
 
 pub fn recording_model(settings: &Settings) -> RecordingModel {
@@ -2355,6 +2401,11 @@ impl CaptureManager {
     ) -> Result<SessionState, CaptureError> {
         let inner = self.inner();
         may_capture(&inner)?;
+        // A delete of the note removes its working folder: refuse before
+        // the chunks of that folder are read. The check under the store
+        // lock below settles a delete that starts after this one.
+        let claims = processing_claims(app);
+        refuse_while_deleting(&claims, id)?;
         // The next segment takes its index from the segment rows, so audio
         // with no row must get its row first. Nothing records now, so no
         // writer runs on the folder.
@@ -2410,13 +2461,7 @@ impl CaptureManager {
             let audio_intact = pipeline::save::audio_state(&store, id).map_err(other)?
                 == pipeline::save::AudioState::Present;
             let old_segments = store.segments(id)?;
-            let state = store.apply(
-                id,
-                &Event::UserResume {
-                    space_ok,
-                    audio_intact,
-                },
-            )?;
+            let state = resume_in_store(&mut store, id, &claims, space_ok, audio_intact)?;
             // The old segments of a saved note are listed for their copy
             // into the working location (KTD8 of the audio removal plan).
             // The list reads no audio, so the recording does not wait for
@@ -2464,6 +2509,8 @@ impl CaptureManager {
     pub fn record_session(self: &Arc<Self>, app: &AppHandle, id: &str) -> Result<(), CaptureError> {
         let mut inner = self.inner();
         may_capture(&inner)?;
+        let claims = processing_claims(app);
+        refuse_while_deleting(&claims, id)?;
         let settings = settings::get_settings(app);
         let models = app.state::<Arc<ModelsManager>>();
         let count = crate::shortcut::speaker_count(settings.default_speaker_count);
@@ -2481,7 +2528,7 @@ impl CaptureManager {
             // The row follows its folder first (KTD3): the recording keeps
             // the title and notes that another computer wrote.
             pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
-            record_in_store(&mut store, id, &recognition, &capture)?;
+            record_in_store(&mut store, id, &claims, &recognition, &capture)?;
         }
         // This run's in-use marker, then the flag "recording not saved"
         // (KTD4). Neither write holds up the recording.
@@ -5357,7 +5404,14 @@ mod tests {
         store
             .set_title("n", "Planning", session_core::TitleSource::User)
             .unwrap();
-        record_in_store(&mut store, "n", &recognition(), &CaptureChoice::default()).unwrap();
+        record_in_store(
+            &mut store,
+            "n",
+            &Claims::default(),
+            &recognition(),
+            &CaptureChoice::default(),
+        )
+        .unwrap();
         assert_eq!(
             store.session("n").unwrap().unwrap().state,
             SessionState::Capturing
@@ -5390,7 +5444,7 @@ mod tests {
             microphone: Some(Microphone::from(&usb())),
             system_audio: false,
         };
-        record_in_store(&mut store, "n", &r, &capture).unwrap();
+        record_in_store(&mut store, "n", &Claims::default(), &r, &capture).unwrap();
 
         let record = store.session("n").unwrap().unwrap();
         assert_eq!(record.state, SessionState::Capturing);
@@ -5408,14 +5462,108 @@ mod tests {
         assert_eq!(record.start(&store.segments("n").unwrap()), at(0));
     }
 
+    // Covers C5: a delete removes the folders without the store lock, so a
+    // Record that started then would lose its audio.
+    #[test]
+    fn record_is_refused_while_a_delete_of_the_note_runs() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("n", at(0), Some("/notes/n"))
+            .unwrap();
+        let claims = Claims::default();
+        let delete = claims.delete("n").unwrap();
+        let e = record_in_store(
+            &mut store,
+            "n",
+            &claims,
+            &recognition(),
+            &CaptureChoice::default(),
+        )
+        .unwrap_err();
+        assert_eq!(e.to_string(), NOTE_DELETING);
+        assert_eq!(
+            store.session("n").unwrap().unwrap().state,
+            SessionState::Saved
+        );
+        drop(delete);
+        record_in_store(
+            &mut store,
+            "n",
+            &claims,
+            &recognition(),
+            &CaptureChoice::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.session("n").unwrap().unwrap().state,
+            SessionState::Capturing
+        );
+    }
+
+    #[test]
+    fn resume_is_refused_while_a_delete_of_the_note_runs() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        stop_note(&mut store, "s", at(70)).unwrap();
+        store.dequeue("run", at(71)).unwrap();
+        store.apply("s", &Event::Saved).unwrap();
+        let claims = Claims::default();
+        let delete = claims.delete("s").unwrap();
+        let e = resume_in_store(&mut store, "s", &claims, true, true).unwrap_err();
+        assert_eq!(e.to_string(), NOTE_DELETING);
+        assert_eq!(
+            store.session("s").unwrap().unwrap().state,
+            SessionState::Saved
+        );
+        drop(delete);
+        let state = resume_in_store(&mut store, "s", &claims, true, true).unwrap();
+        assert_eq!(state, SessionState::Capturing);
+    }
+
+    // The delete holds its claim while it removes the folders. A Record in
+    // that time is refused, and the delete completes.
+    #[test]
+    fn a_record_during_the_removal_of_the_folders_is_refused_and_the_delete_completes() {
+        let dir = tempfile::tempdir().unwrap();
+        let working = dir.path().join("n");
+        std::fs::create_dir_all(&working).unwrap();
+        let store = Mutex::new(Store::open_in_memory().unwrap());
+        store
+            .lock()
+            .unwrap()
+            .create_notes_only("n", at(0), None)
+            .unwrap();
+        let claims = Claims::default();
+        session_core::jobs::delete_session(&store, "n", &working, &claims, |path: &Path| {
+            let refused = record_in_store(
+                &mut store.lock().unwrap(),
+                "n",
+                &claims,
+                &recognition(),
+                &CaptureChoice::default(),
+            );
+            assert!(refused.is_err());
+            std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert!(store.lock().unwrap().session("n").unwrap().is_none());
+    }
+
     #[test]
     fn record_is_refused_for_a_note_with_audio() {
         let mut store = Store::open_in_memory().unwrap();
         recording_note(&mut store, "s", "");
         store.put_segment("s", &one_segment(1)).unwrap();
         stop_note(&mut store, "s", at(70)).unwrap();
-        let e = record_in_store(&mut store, "s", &recognition(), &CaptureChoice::default())
-            .unwrap_err();
+        let e = record_in_store(
+            &mut store,
+            "s",
+            &Claims::default(),
+            &recognition(),
+            &CaptureChoice::default(),
+        )
+        .unwrap_err();
         assert!(e.to_string().contains("Resume"), "{e}");
         assert_eq!(store.session("s").unwrap().unwrap().state.name(), "queued");
     }
