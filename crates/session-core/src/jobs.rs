@@ -1917,11 +1917,19 @@ impl Store {
         let Some(id) = queued else {
             return Ok(None);
         };
-        self.apply(&id, &Event::Dequeued)?;
-        self.conn.execute(
+        // The state and the claim are one transaction. A Processing note
+        // with no claim is never taken back at launch.
+        let current = self.require(&id)?;
+        let event = Event::Dequeued;
+        let next = current.state.transition(&event)?;
+        let tx = self.conn.transaction()?;
+        write_state(&tx, &id, &next)?;
+        apply_queue_effects(&tx, &id, &current.state, &next, &event)?;
+        tx.execute(
             "UPDATE jobs SET claim_owner = ?2, claimed_at = ?3, heartbeat_at = ?3 WHERE session_id = ?1",
             params![id, owner, now.to_rfc3339()],
         )?;
+        tx.commit()?;
         Ok(Some(id))
     }
 
