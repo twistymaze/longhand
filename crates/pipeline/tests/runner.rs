@@ -6257,12 +6257,30 @@ async fn a_save_refused_because_another_computer_changed_the_records_keeps_the_p
         "the other computer's change stays"
     );
     assert_eq!(asr_model(&r).as_deref(), Some("m"));
-    // The save had started, so the run keeps its staged result for a retry.
-    assert!(matches!(
-        state(&r.store, "s"),
-        SessionState::ProcessingFailed { .. }
-    ));
-    assert!(r.root.join("s").exists());
+    // Nothing of the run reached the folder, so the run fails as a
+    // Transcribe Again run does: the note is saved again with the error,
+    // and a new Transcribe Again can start. A Retry would fail the same
+    // way each time.
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    let marks = r.store.lock().unwrap().transcribe_again_marks("s").unwrap();
+    assert_eq!(marks.model, None);
+    assert!(
+        marks
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("the note changed during processing")),
+        "{marks:?}"
+    );
+    assert_eq!(
+        r.store
+            .lock()
+            .unwrap()
+            .result_state("s", "replacement-base")
+            .unwrap(),
+        None
+    );
+    assert!(!r.root.join("s").exists(), "the run's working copy goes");
+    confirm_again(&r).unwrap();
 }
 
 /// An agent writes `session.md` with a new title, its own YAML style, an
@@ -6961,6 +6979,132 @@ async fn a_replacement_with_an_unwritable_summary_rolls_forward_on_retry() {
     assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
     assert_eq!(marks(&r), Default::default());
     assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+/// A recognition snapshot that this build refuses, as after an update
+/// that changed a runtime revision.
+fn historic_snapshot() -> serde_json::Value {
+    let mut spec = models::recognition::resolve(&settings()).unwrap();
+    spec.runtimes[0].revision = "historic-runtime".into();
+    serde_json::to_value(&spec).unwrap()
+}
+
+fn set_pending_snapshot(r: &Rig, id: &str, value: serde_json::Value) {
+    r.store
+        .lock()
+        .unwrap()
+        .set_result_state(id, "pending-snapshot", &value)
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_refused_at_the_claim_fails_the_note_with_its_reason() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    set_pending_snapshot(&r, "s", historic_snapshot());
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Transcribe,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    // The note shows why it failed, and the interface hears of it.
+    let reason = pipeline::progress::error(&r.store, "s", Stage::Transcribe).unwrap();
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|e| e.contains("different runtime revision")),
+        "{reason:?}"
+    );
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::StageFailed { session_id, stage: Stage::Transcribe, .. } if session_id == "s"
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_whose_snapshot_is_refused_at_the_claim_keeps_the_saved_note() {
+    for snapshot in [historic_snapshot(), serde_json::json!("not a snapshot")] {
+        let r = rig().await;
+        let folder = saved_note(&r, None).await;
+        let transcript = read(&folder, TRANSCRIPT_FILE);
+        confirm_again(&r).unwrap();
+        set_pending_snapshot(&r, "s", snapshot);
+
+        let (_, outcome) = r.runner.run_next().await.unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+        assert_eq!(state(&r.store, "s"), SessionState::Saved);
+        assert_eq!(marks(&r).model, None);
+        assert!(marks(&r).error.is_some(), "{:?}", marks(&r));
+        assert_eq!(
+            r.store
+                .lock()
+                .unwrap()
+                .result_state("s", "pending-snapshot")
+                .unwrap(),
+            None
+        );
+        assert_eq!(read(&folder, TRANSCRIPT_FILE), transcript);
+        assert!(r.events.lock().unwrap().iter().any(
+            |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+        ));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recorded_publication_is_kept_when_its_snapshot_is_refused() {
+    // The publication wrote files into the folder: a refused snapshot
+    // fails the run but must not drop the record that rolls it forward.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    confirm_again(&r).unwrap();
+    std::fs::remove_file(folder.join("summary.md")).unwrap();
+    std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    let replaced = read(&folder, TRANSCRIPT_FILE);
+    assert!(
+        r.root
+            .join("s")
+            .join(session_save::publication::RECORD)
+            .exists()
+    );
+    set_pending_snapshot(&r, "s", historic_snapshot());
+
+    r.runner.retry("s", false).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    assert!(
+        r.root
+            .join("s")
+            .join(session_save::publication::RECORD)
+            .exists(),
+        "the record stays for a retry"
+    );
+    assert_eq!(marks(&r).model.as_deref(), Some(MODEL));
+    assert_eq!(read(&folder, TRANSCRIPT_FILE), replaced);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -7727,7 +7871,18 @@ async fn a_rename_from_another_computer_during_reprocessing_preserves_the_previo
     let doc = session_md(&renamed);
     assert_eq!(doc.title.as_deref(), Some("Budget review"));
     assert_eq!(doc.asr_model.as_deref(), Some("m"));
-    assert!(a.root.join("s").exists(), "staged work remains recoverable");
+    // Nothing of the run reached the folder: the note is saved again with
+    // the error, and a new Transcribe Again can start.
+    assert_eq!(state(&a.store, "s"), SessionState::Saved);
+    let marks = a.store.lock().unwrap().transcribe_again_marks("s").unwrap();
+    assert!(
+        marks
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("the note folder moved during processing")),
+        "{marks:?}"
+    );
+    confirm_again(&a).unwrap();
     assert_eq!(
         title_of(&a),
         Some(Title {

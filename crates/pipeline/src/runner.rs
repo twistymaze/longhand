@@ -1333,26 +1333,19 @@ impl Runner {
         let again = lock(&self.env.store)
             .transcribe_again_marks(id)
             .is_ok_and(|marks| marks.model.is_some());
-        let snapshot = crate::recognition::snapshot(&self.env.store, id);
+        let snapshot =
+            crate::recognition::snapshot(&self.env.store, id).and_then(|spec| match spec {
+                Some(spec) => crate::recognition::TaskGraph::resolve(&spec)
+                    .map(|graph| Some(graph.stages))
+                    .map_err(|e| StageError::Failed(e.to_string())),
+                None => Ok(None),
+            });
         let exact = matches!(&snapshot, Ok(Some(_)));
         let stages = match snapshot {
-            Ok(Some(spec)) => match crate::recognition::TaskGraph::resolve(&spec) {
-                Ok(graph) => graph.stages,
-                Err(error) => {
-                    return Outcome::Failed {
-                        stage: Stage::Transcribe,
-                        message: error.to_string(),
-                    };
-                }
-            },
+            Ok(Some(stages)) => stages,
             Ok(None) => STAGES.to_vec(),
             Err(error) => {
-                let message = error.to_string();
-                let _ = lock(&self.env.store).apply(id, &Event::StageFailed(Stage::Transcribe));
-                return Outcome::Failed {
-                    stage: Stage::Transcribe,
-                    message,
-                };
+                return self.fail_run(id, Stage::Transcribe, error.to_string(), again);
             }
         };
         let mut attempt = crate::recognition::durable::Attempt::default();
@@ -1408,15 +1401,7 @@ impl Runner {
                 Err(StageError::Failed(message) | StageError::NoDestination(message))
                     if again
                         && (stage != Stage::Diarize || exact)
-                        && !(stage == Stage::Save
-                            && (save::home_changed(&lock(&self.env.store), id)
-                                .unwrap_or(true)
-                                || self
-                                    .env
-                                    .working_root
-                                    .join(id)
-                                    .join(session_save::publication::RECORD)
-                                    .exists())) =>
+                        && !(stage == Stage::Save && self.publication_begun(id)) =>
                 {
                     return self.fail_transcribe_again(id, stage, message);
                 }
@@ -1487,25 +1472,9 @@ impl Runner {
                     });
                     return Outcome::Cancelled;
                 }
+                // The Transcribe Again arm above took the other runs.
                 Err(StageError::Failed(message)) => {
-                    log::error!("{stage:?} failed for {id}: {message}");
-                    if let Err(e) =
-                        crate::progress::record_error(&self.env.store, id, stage, &message)
-                    {
-                        log::warn!("could not record the failure of {id}: {e}");
-                    }
-                    // A resume may have taken the session in the meantime;
-                    // then there is nothing to mark.
-                    if let Err(e) = lock(&self.env.store).apply(id, &Event::StageFailed(stage)) {
-                        log::warn!("could not record the failure of {id}: {e}");
-                    }
-                    self.drop_removed_old_audio(id);
-                    emit(RunnerEvent::StageFailed {
-                        session_id: id.to_string(),
-                        stage,
-                        message: message.clone(),
-                    });
-                    return Outcome::Failed { stage, message };
+                    return self.fail_run(id, stage, message, false);
                 }
             }
         }
@@ -1584,6 +1553,45 @@ impl Runner {
     /// checkpoints, record the error for the note page, and remove the
     /// working directory that the run made. When a resume took the session
     /// first, the resume owns the working directory and nothing changes.
+    /// Whether the save of `id` has begun to replace the documents in its
+    /// folder: then the run must finish, and a failure keeps its record for
+    /// a retry.
+    fn publication_begun(&self, id: &str) -> bool {
+        save::home_changed(&lock(&self.env.store), id).unwrap_or(true)
+            || self
+                .env
+                .working_root
+                .join(id)
+                .join(session_save::publication::RECORD)
+                .exists()
+    }
+
+    /// End the run of `id` that failed at `stage`. A Transcribe Again run
+    /// (`again`) whose publication has not begun returns the note to
+    /// Saved with the error (R19). Any other run records the error, and
+    /// the note fails processing.
+    fn fail_run(&self, id: &str, stage: Stage, message: String, again: bool) -> Outcome {
+        if again && !self.publication_begun(id) {
+            return self.fail_transcribe_again(id, stage, message);
+        }
+        log::error!("{stage:?} failed for {id}: {message}");
+        if let Err(e) = crate::progress::record_error(&self.env.store, id, stage, &message) {
+            log::warn!("could not record the failure of {id}: {e}");
+        }
+        // A resume may have taken the session in the meantime; then there
+        // is nothing to mark.
+        if let Err(e) = lock(&self.env.store).apply(id, &Event::StageFailed(stage)) {
+            log::warn!("could not record the failure of {id}: {e}");
+        }
+        self.drop_removed_old_audio(id);
+        (self.env.events)(RunnerEvent::StageFailed {
+            session_id: id.to_string(),
+            stage,
+            message: message.clone(),
+        });
+        Outcome::Failed { stage, message }
+    }
+
     fn fail_transcribe_again(&self, id: &str, stage: Stage, message: String) -> Outcome {
         log::error!("transcribing {id} again failed at {stage:?}: {message}");
         match lock(&self.env.store).fail_transcribe_again(id, &message) {
