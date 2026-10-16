@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { mockWindows } from "@tauri-apps/api/mocks";
 import type { AudioRemovalSetting, Settings } from "../bindings";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { AudioRemoval, parseDays } from "./AudioRemoval";
@@ -23,6 +24,8 @@ function pane(settings: Settings, handlers: Record<string, CommandHandler> = {})
     set_audio_removal: (args) => withRemoval(args.removal as AudioRemovalSetting),
     ...handlers,
   });
+  // A field with typed text registers a save for the window close.
+  mockWindows("settings");
   const received: Settings[] = [];
   const view = render(<AudioRemoval settings={settings} onSettings={(s) => received.push(s)} />);
   return { tauri, received, view, user: userEvent.setup() };
@@ -156,5 +159,32 @@ describe("AudioRemoval", () => {
     );
     expect(screen.getByRole("switch", { name: "Remove old audio" })).toBeTruthy();
     view.unmount();
+  });
+
+  test("a pane change saves typed days that remove no audio", async () => {
+    const { tauri, user, view } = pane(after(90), { audio_removal_count: () => 0 });
+    await user.clear(field());
+    await user.type(field(), "60");
+    view.unmount();
+    await waitFor(() => expect(cmds(tauri)).toEqual(["audio_removal_count", "set_audio_removal"]));
+    expect(tauri.calls[1].args).toEqual({ removal: { kind: "after_days", days: 60 } });
+  });
+
+  test("a pane change does not save or ask about typed days that would remove audio", async () => {
+    const { tauri, user, view } = pane(after(90), {
+      audio_removal_count: () => 4,
+      log_from_webview: () => null,
+      "plugin:window|destroy": () => null,
+    });
+    await user.clear(field());
+    await user.type(field(), "30");
+    view.unmount();
+    await waitFor(() => expect(cmds(tauri)).toEqual(["audio_removal_count"]));
+    await act(async () => {});
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    // The commit ended, so no close save stays registered: a window close
+    // does not go through the close coordinator.
+    await tauri.emit("tauri://close-requested");
+    expect(cmds(tauri)).toEqual(["audio_removal_count"]);
   });
 });

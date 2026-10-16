@@ -278,19 +278,21 @@ export function EndpointForm({
     return true;
   };
 
-  const setLimit = async (text: string) => {
+  const setLimit = async (text: string): Promise<boolean> => {
     const trimmed = text.trim();
     const limit = trimmed === "" ? null : Number(trimmed);
     if (limit !== null && (!Number.isInteger(limit) || limit <= 0)) {
       setLimitError("Enter a whole number of tokens, or leave empty for automatic.");
-      return;
+      return false;
     }
-    const result = await commands.setContextLimit(limit);
-    if (result.status === "error") setLimitError(result.error);
-    else {
-      setLimitError(null);
-      onSettings(result.data);
-    }
+    return save(commands.setContextLimit(limit), setLimitError);
+  };
+  // The close waits only for the save of the Base URL, not for the model
+  // list that the check then asks the server for.
+  const saveBaseUrl = (v: string) => {
+    const saved = save(commands.setEndpointBaseUrl(v), setUrlError);
+    void check(false, () => saved);
+    return saved;
   };
 
   const baseUrl = settings.endpoint_base_url ?? DEFAULT_BASE_URL;
@@ -324,7 +326,7 @@ export function EndpointForm({
             label="Base URL"
             value={baseUrl}
             placeholder="https://api.example.com/v1"
-            onCommit={(v) => void check(false, () => save(commands.setEndpointBaseUrl(v), setUrlError))}
+            onCommit={saveBaseUrl}
           />
         </Row>
         {urlError && <ErrorText>{urlError}</ErrorText>}

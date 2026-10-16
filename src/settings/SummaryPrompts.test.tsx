@@ -1431,6 +1431,21 @@ describe("own saves of prompts", () => {
     ]);
   });
 
+  test("a change of prompt saves the name typed for the prompt before", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), " notes");
+    // A click in WKWebView does not move the focus, so no blur comes.
+    act(() => void fireEvent.click(row("Topic summary")));
+    await waitFor(() =>
+      expect(b.tauri.calls.filter((c) => c.cmd === "rename_summary_prompt").map((c) => c.args)).toEqual([
+        { id: "c1", name: "Team sync notes" },
+      ]),
+    );
+  });
+
   test("after a failed save, a change on another computer and Reload, Duplicate and New Prompt run", async () => {
     const b = heldBackend();
     renderPrompts();

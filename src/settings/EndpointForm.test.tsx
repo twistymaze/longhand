@@ -188,6 +188,29 @@ describe("the Summaries pane", () => {
     });
   });
 
+  test("a window close saves a typed Base URL and does not wait for the model list", async () => {
+    const b = backend({
+      list: (i) => (i === 0 ? { kind: "not-requested", reason: "key-needed" } : "defer"),
+      over: { "plugin:window|destroy": () => null, log_from_webview: () => null },
+    });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await waitFor(() => expect(status().textContent).toContain("Add an API key"));
+    const field = screen.getByLabelText("Base URL");
+    await user.clear(field);
+    await user.type(field, "http://localhost:11434/v1");
+    await b.mock.emit("tauri://close-requested");
+    await waitFor(() => expect(b.mock.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true), {
+      timeout: 3000,
+    });
+    expect(b.mock.calls.find((c) => c.cmd === "set_endpoint_base_url")?.args).toEqual({
+      baseUrl: "http://localhost:11434/v1",
+    });
+    const logs = b.mock.calls.filter((c) => c.cmd === "log_from_webview").map((c) => c.args.message);
+    expect(logs).toContain("the save is complete");
+    b.pending.forEach((p) => p.resolve({ kind: "not-listed" }));
+  });
+
   test("a server that does not list models gives a text field that saves on blur", async () => {
     const b = backend({ settings: { endpoint_base_url: "https://gw.example.com" }, list: () => ({ kind: "not-listed" }) });
     const user = userEvent.setup();

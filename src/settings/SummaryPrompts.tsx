@@ -349,20 +349,22 @@ export function SummaryPrompts({
   const valid = (field: Field, text: string) =>
     (field === "title" || text.trim() !== "") && [...text].length <= limits[field];
 
+  // Resolves to true when the command saved.
   const run = async (
     op: () => Promise<Result<Settings, string>>,
     setError: (e: string | null) => void,
     after?: (s: Settings) => void,
-  ) => {
+  ): Promise<boolean> => {
     const result = await op();
     if (result.status === "error") {
       setError(result.error);
-      return;
+      return false;
     }
     setError(null);
     onSettings(result.data);
     await load();
     after?.(result.data);
+    return true;
   };
 
   const show = (id: string | null) => {
@@ -540,7 +542,7 @@ export function SummaryPrompts({
             label="Name"
             value={name}
             disabled={selected.built_in || locked}
-            onCommit={(v) => void run(() => commands.renameSummaryPrompt(id, v), setEditorError)}
+            onCommit={(v) => run(() => commands.renameSummaryPrompt(id, v), setEditorError)}
           />
         </Row>
         {tooLarge && (
