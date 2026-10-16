@@ -15,3 +15,5 @@ The shard holds test code. Do not look for defects in the app here. Find tests t
 ## For each finding
 
 `trigger` gives the defect in the app that the test would miss. `failure` explains why the test still passes.
+
+Before you report that a test cannot fail, name one exact change to the code under test (for example "remove the retry in `client.rs:508`"). Check each assertion of the test against that change, and search the other tests for one that catches it. Report the finding only when the test and the other tests all still pass. Put the change in `trigger`.

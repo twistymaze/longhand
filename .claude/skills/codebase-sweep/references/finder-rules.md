@@ -11,6 +11,7 @@ You examine one shard of the code through one lens. Your result goes to independ
 ## Scope
 
 - Report defects whose cause is in the files of the shard. Read code outside the shard to understand callers, callees and data, but cite a line in the shard.
+- Trace how the current app reaches the code with the state that your trigger needs. Check the callers and the validation before the call. Data that only an old build or a removed path could make is not a trigger.
 - When the shard has a `category`, follow the lens instructions for that category.
 - When the profile or the shard marks a file as generated or as borrowed, follow those instructions.
 

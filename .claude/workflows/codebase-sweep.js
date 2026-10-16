@@ -244,15 +244,20 @@ function words(text) {
   return new Set(String(text).toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2))
 }
 
-function similar(a, b) {
-  if (a.file !== b.file) return false
-  if (Math.abs(a.line - b.line) > 3) return false
-  if (a.line === b.line) return true
-  const wa = words(a.title)
-  const wb = words(b.title)
+function overlap(x, y) {
+  const wa = words(x)
+  const wb = words(y)
   const inter = [...wa].filter(w => wb.has(w)).length
   const union = new Set([...wa, ...wb]).size
-  return union > 0 && inter / union >= 0.4
+  return union > 0 ? inter / union : 0
+}
+
+// Two finders often describe one defect with different titles at near lines, so the trigger is compared too.
+function similar(a, b) {
+  if (a.file !== b.file) return false
+  if (Math.abs(a.line - b.line) > 5) return false
+  if (a.line === b.line) return true
+  return overlap(a.title, b.title) >= 0.4 || overlap(a.trigger, b.trigger) >= 0.35
 }
 
 function admit(result, t, round) {
