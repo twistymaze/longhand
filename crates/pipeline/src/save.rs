@@ -1139,8 +1139,8 @@ pub fn save_notes(
         .map(PathBuf::from)
         .filter(|home| saved || home.is_dir());
     // A home folder in an old storage folder gets no more writes: the new
-    // early write and its sync take the notes from the store (KTD7 of plan
-    // E). So the folder keeps the files that its removal checks.
+    // early write and its sync take the notes from the store. So the folder
+    // keeps the files that its removal checks.
     if let Some(old) = &home
         && crate::early_home::rehoming(store, session_id, old)?
     {

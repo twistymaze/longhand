@@ -811,9 +811,8 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
 // computer changed stays.
 
 /// The `result_state` key that records the early folder of a note in the
-/// old storage folder after a change of storage folder with Leave them
-///. A launch continues the removal of a folder that this
-/// key records.
+/// old storage folder after a change of storage folder with Leave them. A
+/// launch continues the removal of a folder that this key records.
 pub const OLD_HOME: &str = "old-early-home";
 
 /// The early folder of a note in the old storage folder, and the
@@ -943,6 +942,11 @@ pub fn rehome_unsaved(store: &SharedStore, old: &Path) -> Result<Vec<String>, St
         .sessions()?
         .into_iter()
         .filter(|r| !matches!(r.state, SessionState::Saved | SessionState::Discarded))
+        .filter(|r| {
+            r.home_path
+                .as_deref()
+                .is_some_and(|h| is_in(Path::new(h), old))
+        })
         .map(|r| r.id)
         .collect();
     ids.sort();
@@ -958,11 +962,15 @@ pub fn rehome_unsaved(store: &SharedStore, old: &Path) -> Result<Vec<String>, St
 /// Whether `id` has an early folder in an old storage folder ([`OLD_HOME`])
 /// that its home path still is: the new early write is not done.
 pub(crate) fn rehoming(store: &Store, id: &str, home: &Path) -> Result<bool, StageError> {
+    Ok(old_home(store, id)?.is_some_and(|old| old.path == home))
+}
+
+/// The [`OLD_HOME`] record of `id`.
+fn old_home(store: &Store, id: &str) -> Result<Option<OldHome>, StageError> {
     Ok(store
         .result_state(id, OLD_HOME)?
         .map(serde_json::from_value::<OldHome>)
-        .transpose()?
-        .is_some_and(|old| old.path == home))
+        .transpose()?)
 }
 
 /// After the new early write of `id` is done: remove its early folder in
@@ -979,10 +987,9 @@ fn remove_old_home(
 ) -> Result<(), StageError> {
     let (old, home) = {
         let guard = lock(store);
-        let Some(value) = guard.result_state(id, OLD_HOME)? else {
+        let Some(old) = old_home(&guard, id)? else {
             return Ok(());
         };
-        let old: OldHome = serde_json::from_value(value)?;
         let home = guard.session(id)?.and_then(|r| r.home_path);
         (old, home.map(PathBuf::from))
     };

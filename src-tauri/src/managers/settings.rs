@@ -1791,14 +1791,19 @@ fn write_settings(app: &AppHandle, settings: &LocalSettings) -> Result<(), Strin
     let store = app
         .try_state::<LocalStore>()
         .ok_or("The settings are not ready yet.")?;
-    let mut values = store.values.lock().unwrap_or_else(|e| e.into_inner());
-    let mut changed = values.clone();
+    // The callers hold `UPDATES.lock`, which orders the writes. The values
+    // stay readable during the file write.
+    let mut changed = store
+        .values
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     changed.insert(
         SETTINGS_KEY.into(),
         serde_json::to_value(settings).map_err(|e| e.to_string())?,
     );
     local_store::write(&store.path, &changed).map_err(|e| e.to_string())?;
-    *values = changed;
+    *store.values.lock().unwrap_or_else(|e| e.into_inner()) = changed;
     Ok(())
 }
 

@@ -18,19 +18,8 @@ fn signature_path(dir: &Path, version: &str) -> PathBuf {
     dir.join(format!("{version}.tar.gz.sig"))
 }
 
-/// The temporary name of a file that a save writes: `.<name>.<process>-<time>.tmp`
-/// in the same folder.
-fn temp_path(path: &Path) -> PathBuf {
-    let name = path.file_name().unwrap_or_default().to_string_lossy();
-    let time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |t| t.as_nanos());
-    path.with_file_name(format!(
-        ".{name}.{}-{time}{TEMP_SUFFIX}",
-        std::process::id()
-    ))
-}
-
+/// The end of the name of the temporary file that a save writes
+/// (`session_save::home_write`).
 const TEMP_SUFFIX: &str = ".tmp";
 
 fn decode_base64_text(value: &str, what: &str) -> Result<String, String> {
@@ -72,17 +61,8 @@ fn save_with(
     // final name holds all its bytes. The archive is last: with no archive,
     // `newest_saved` finds no saved update.
     let write = |path: PathBuf, bytes: &[u8]| {
-        let temp = temp_path(&path);
-        let written = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp)
-            .and_then(|mut file| fill(&mut file, bytes).and_then(|()| file.sync_all()))
-            .and_then(|()| std::fs::rename(&temp, &path));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temp);
-        }
-        written
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        session_save::home_write::fill_atomic_with(dir, &name, |file| fill(file, bytes))
     };
     write(signature_path(dir, version), signature.as_bytes())
         .and_then(|()| write(archive_path(dir, version), bytes))

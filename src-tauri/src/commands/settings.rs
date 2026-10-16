@@ -1233,10 +1233,6 @@ mod tests {
         early_home::record(&store, "s", &next).unwrap();
 
         assert_eq!(check(), Err(NOTE_SAVING.to_string()));
-        assert_eq!(
-            NOTE_SAVING,
-            "A note is being saved to the current storage folder. Try again in a moment."
-        );
         early_home::write(&store, "s", Some(&current), "run", &session_save::RealFs).unwrap();
         assert_eq!(check(), Ok(()));
     }

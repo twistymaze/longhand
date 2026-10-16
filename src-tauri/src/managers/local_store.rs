@@ -8,8 +8,6 @@
 //! a crash or a power loss never leaves a partly written file.
 
 use std::fmt;
-use std::fs::OpenOptions;
-use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -84,15 +82,6 @@ fn read_with(
     result
 }
 
-fn unpredictable() -> u64 {
-    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
-    h.write_u32(std::process::id());
-    if let Ok(t) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-        h.write_u128(t.as_nanos());
-    }
-    h.finish()
-}
-
 /// Replace the file with `map`. The bytes go to a new temporary file in the
 /// same folder, which is synced and renamed over the file. An error before
 /// the rename keeps the old file. The rename is the commit: after it, the
@@ -108,17 +97,7 @@ pub fn write(path: &Path, map: &Map<String, Value>) -> io::Result<()> {
         .to_string_lossy();
     let bytes = serde_json::to_vec_pretty(map).map_err(io::Error::other)?;
     std::fs::create_dir_all(dir)?;
-    let temp = dir.join(format!(".{name}.{:016x}.tmp", unpredictable()));
-    let written = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .and_then(|mut file| file.write_all(&bytes).and_then(|()| file.sync_all()))
-        .and_then(|()| std::fs::rename(&temp, path));
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
-    }
+    session_save::home_write::replace_with(dir, &name, |file| file.write_all(&bytes))?;
     if let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
         log::warn!("could not sync the folder of the settings file: {e}");
     }
