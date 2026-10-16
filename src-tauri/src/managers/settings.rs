@@ -13,24 +13,23 @@
 //! settings manager (`managers::shared`). [`Settings`] joins both.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
 use summarize::prompts::TOPIC_SUMMARY_ID;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 use tauri_specta::Event;
 
+use crate::managers::local_store;
 use crate::managers::shared::{
     SharedAvailability, SharedSettingsManager, SharedSnapshot, SharedState,
 };
 
-/// Relative, so `tauri-plugin-store` resolves it under the app data directory.
-pub const SETTINGS_STORE_PATH: &str = "settings.json";
+/// The key of the local settings in the local settings file.
 const SETTINGS_KEY: &str = "settings";
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 6;
@@ -430,7 +429,9 @@ pub struct RecognitionFailure {
 /// use, for the Settings window (R18, R19).
 #[derive(Serialize, Type, Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecognitionState {
-    /// The chosen configuration differs from the configuration in use.
+    /// The chosen configuration differs from the configuration in use. A
+    /// chosen configuration with a value that this version does not know
+    /// always differs, so Settings tells the user to update.
     pub differs: bool,
     /// The chosen configuration has a value that this version does not
     /// know, for example a model from a newer version. The configuration in
@@ -753,7 +754,7 @@ impl Settings {
             speaker_processing_mode: local.speaker_processing_mode,
             recognition_language: local.recognition_language,
             recognition: RecognitionState {
-                differs: chosen_recognition != in_use,
+                differs: chosen_not_known || chosen_recognition != in_use,
                 chosen_not_known,
                 ..RecognitionState::default()
             },
@@ -855,7 +856,8 @@ impl Settings {
         self.speaker_processing_mode = choice.speaker_processing_mode;
         self.recognition_language = choice.recognition_language.clone();
         self.default_speaker_count = choice.default_speaker_count;
-        self.recognition.differs = self.chosen_recognition != *choice;
+        self.recognition.differs =
+            self.recognition.chosen_not_known || self.chosen_recognition != *choice;
     }
 
     /// Choose the usual microphone, or `None` for "System default" (R1).
@@ -1437,7 +1439,7 @@ pub fn ensure_storage_folder(app: &AppHandle, local: LocalSettings) -> LocalSett
     let (local, changed) = with_storage_folder(local, &local_data);
     if changed {
         log::info!("the storage folder is the default folder");
-        let _guard = UPDATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = UPDATES.lock.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = write_settings(app, &local) {
             log::error!("could not save the default storage folder: {e}");
         }
@@ -1460,111 +1462,404 @@ pub fn get_background(app: &AppHandle) -> String {
     shared_snapshot(app).view.background
 }
 
-/// The local settings. A first run writes the defaults, and an old store
-/// migrates. The migration of a store from before version 6 puts the old
-/// shared values into the cache first, when no cache exists. When that
-/// write fails, the store stays as it is, so the next read tries again.
-pub fn get_local_settings(app: &AppHandle) -> LocalSettings {
-    let store = match app.store(SETTINGS_STORE_PATH) {
-        Ok(store) => store,
-        Err(e) => {
-            log::error!("failed to open settings store: {e}; using defaults");
-            return LocalSettings::default();
-        }
-    };
-    let stored = store.get(SETTINGS_KEY);
-    let (settings, updated) = match &stored {
+/// The values of the local settings file after the launch read, as the app
+/// uses them. [`write_settings`] changes them only after the file write
+/// succeeded.
+pub struct LocalStore {
+    path: PathBuf,
+    values: Mutex<Map<String, Value>>,
+}
+
+/// The path of the local settings file in the app data folder.
+fn local_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join(local_store::FILE_NAME))
+        .map_err(|e| e.to_string())
+}
+
+/// The local settings in `values`, and whether a migration changed them.
+fn local_from(values: &Map<String, Value>) -> (LocalSettings, bool) {
+    match values.get(SETTINGS_KEY) {
         Some(stored) => settings_from_value(stored),
         None => (LocalSettings::default(), true),
+    }
+}
+
+/// What the launch does with the result of the read of the local settings
+/// file. A file that cannot be read needs the user's choice: the defaults
+/// never replace it without that choice.
+#[derive(Debug, PartialEq)]
+pub enum LaunchRead {
+    /// The values of the file. A missing file has no values.
+    Values(Map<String, Value>),
+    /// The file is there and cannot be read.
+    Ask(local_store::Unreadable),
+}
+
+pub fn launch_read(
+    read: Result<Option<Map<String, Value>>, local_store::Unreadable>,
+) -> LaunchRead {
+    match read {
+        Ok(values) => LaunchRead::Values(values.unwrap_or_default()),
+        Err(e) => LaunchRead::Ask(e),
+    }
+}
+
+/// Read the local settings file at launch, before any other reader that
+/// writes. A first run writes the defaults, and an old file migrates. The
+/// migration of a file from before version 6 puts the old shared values into
+/// the cache first, when no cache exists. When that write fails, the file
+/// stays as it is, so the next launch tries again. A file that cannot be
+/// read shows the startup alert: Quit changes no file, and Use Default
+/// Settings keeps the file under another name and starts as a first run.
+pub fn load_at_launch(app: &AppHandle) -> Result<LocalSettings, crate::startup::Failure> {
+    let failure = |e: String| crate::startup::Failure {
+        description: crate::startup::SETTINGS_FAILURE,
+        source: e.into(),
     };
-    if updated {
-        if let Some(legacy) = stored.as_ref().and_then(legacy_shared) {
-            let seeded = shared_cache_dir(app).and_then(|dir| {
+    let path = local_store_path(app).map_err(failure)?;
+    local_store::remove_temp_files(&path);
+    let read = local_store::read(&path, local_store::LAUNCH_TRIES, local_store::LAUNCH_DELAY);
+    let values = match launch_read(read) {
+        LaunchRead::Values(values) => values,
+        LaunchRead::Ask(error) => {
+            log::error!(
+                "the local settings file {} can't be read: {error}",
+                path.display()
+            );
+            crate::startup::ask_about_settings(&path, &error.to_string());
+            let kept = local_store::set_aside(&path)
+                .map_err(|e| failure(format!("{}: {e}", path.display())))?;
+            log::info!("the unreadable settings file is kept as {}", kept.display());
+            Map::new()
+        }
+    };
+    let (settings, updated) = local_from(&values);
+    let values = if updated {
+        let legacy = values.get(SETTINGS_KEY).and_then(legacy_shared);
+        let seeded = match legacy {
+            Some(legacy) => shared_cache_dir(app).and_then(|dir| {
                 crate::managers::shared::seed_cache(&dir, legacy).map_err(|e| e.to_string())
-            });
-            if let Err(e) = seeded {
+            }),
+            None => Ok(false),
+        };
+        match seeded {
+            Err(e) => {
                 log::error!("could not keep the old shared settings in the cache: {e}");
-                return settings;
+                values
+            }
+            Ok(_) => {
+                let mut migrated = values.clone();
+                migrated.insert(
+                    SETTINGS_KEY.into(),
+                    serde_json::to_value(&settings).expect("settings serialize"),
+                );
+                match local_store::write(&path, &migrated) {
+                    Ok(()) => migrated,
+                    Err(e) => {
+                        log::error!("failed to persist migrated settings: {e}");
+                        values
+                    }
+                }
             }
         }
-        store.set(
-            SETTINGS_KEY,
-            serde_json::to_value(&settings).expect("settings serialize"),
-        );
-        if let Err(e) = store.save() {
-            log::error!("failed to persist migrated settings: {e}");
-        }
+    } else {
+        values
+    };
+    app.manage(LocalStore {
+        path,
+        values: Mutex::new(values),
+    });
+    Ok(settings)
+}
+
+/// The local settings. Before the launch read, this reads the file and
+/// writes nothing, as [`read_settings`] does: the update install at launch
+/// runs before the launch read.
+pub fn get_local_settings(app: &AppHandle) -> LocalSettings {
+    match app.try_state::<LocalStore>() {
+        Some(store) => local_from(&store.values.lock().unwrap_or_else(|e| e.into_inner())).0,
+        None => read_settings(app),
     }
-    settings
+}
+
+/// The local settings in the file at `path`, with no write: a migrated
+/// value is not saved, and a file that cannot be read gives the defaults.
+pub fn read_settings_at(path: &Path) -> LocalSettings {
+    local_store::read(path, 1, std::time::Duration::ZERO)
+        .ok()
+        .flatten()
+        .map(|values| local_from(&values).0)
+        .unwrap_or_default()
 }
 
 /// Read the local settings and write nothing: a migrated value is not
 /// saved. Launch reads the Dock policy with this before the single-instance
 /// lock (U19), so a second copy that exits changes no file.
 pub fn read_settings(app: &AppHandle) -> LocalSettings {
-    app.store(SETTINGS_STORE_PATH)
-        .ok()
-        .and_then(|store| store.get(SETTINGS_KEY))
-        .map(|stored| settings_from_value(&stored).0)
+    local_store_path(app)
+        .map(|path| read_settings_at(&path))
         .unwrap_or_default()
 }
-
-/// Serializes read-modify-write so two commands changing different fields
-/// never lose one another's change.
-static UPDATE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Apply `change` to the settings and save each store that the change
 /// touches (R15, KTD7). The local fields go to the local store. The shared
 /// fields that changed go to the shared settings file as a patch of only
 /// those values. A store with no changed field is not written. Nothing is
-/// written when `change` refuses, or when the change sets a shared field
-/// while the shared settings are read-only. The prompts have their own
-/// commands: a change of `summary_prompts` here is not saved.
+/// written when `change` refuses. The local part of a change that also sets
+/// a shared field is written first; when the shared save refuses (for
+/// example while the shared settings are read-only), the local part is put
+/// back and the error is returned. The prompts have their own commands: a
+/// change of `summary_prompts` here is not saved.
 pub fn update_settings(
     app: &AppHandle,
     change: impl FnOnce(&mut Settings) -> Result<(), String>,
 ) -> Result<Settings, String> {
-    let _guard = UPDATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let local = get_local_settings(app);
-    let mut shared = shared_snapshot(app);
-    let before = Settings::from_parts(local.clone(), &shared);
+    let (local, shared) = update_with(
+        &UPDATES,
+        &Stores {
+            read_local: &|| get_local_settings(app),
+            snapshot: &|| shared_snapshot(app),
+            save_shared: &|patch| {
+                app.try_state::<Arc<SharedSettingsManager>>()
+                    .ok_or("The shared settings are not ready yet.")?
+                    .save(patch)
+            },
+            write_local: &|local| write_settings(app, local),
+        },
+        change,
+    )?;
+    Ok(with_downloads(app, Settings::from_parts(local, &shared)))
+}
+
+/// The reads and writes of [`update_with`].
+struct Stores<'a> {
+    read_local: &'a dyn Fn() -> LocalSettings,
+    snapshot: &'a dyn Fn() -> SharedSnapshot,
+    save_shared: &'a dyn Fn(&[SharedValue]) -> Result<SharedSnapshot, String>,
+    write_local: &'a dyn Fn(&LocalSettings) -> Result<(), String>,
+}
+
+/// The order of [`update_with`]. `lock` serializes each read-modify-write
+/// of the local settings, so two commands changing different fields never
+/// lose one another's change. A change of a shared setting does not hold
+/// `lock` while the shared settings save, because that save can wait for
+/// the storage folder. It takes a turn instead, so shared changes take
+/// effect in the order that they were made.
+struct Updates {
+    lock: Mutex<()>,
+    turns: Mutex<Turns>,
+    turn_ended: Condvar,
+}
+
+/// The turns of the shared changes: `given` turns were given, and the turns
+/// before `current` have ended. `pending` holds the patch of each turn that
+/// has not ended: a change made while an earlier shared save waits starts
+/// from the values that the earlier change chose, not from the values in
+/// the file.
+struct Turns {
+    given: u64,
+    current: u64,
+    pending: Vec<(u64, Vec<SharedValue>)>,
+    #[cfg(test)]
+    waiting: u64,
+}
+
+static UPDATES: Updates = Updates::new();
+
+impl Updates {
+    const fn new() -> Self {
+        Self {
+            lock: Mutex::new(()),
+            turns: Mutex::new(Turns {
+                given: 0,
+                current: 0,
+                pending: Vec::new(),
+                #[cfg(test)]
+                waiting: 0,
+            }),
+            turn_ended: Condvar::new(),
+        }
+    }
+
+    /// Give the next turn to a change with `patch`. Call this with `lock`
+    /// held.
+    fn give_turn(&self, patch: &[SharedValue]) -> u64 {
+        let mut turns = self.turns.lock().unwrap_or_else(|e| e.into_inner());
+        let turn = turns.given;
+        turns.given += 1;
+        turns.pending.push((turn, patch.to_vec()));
+        turn
+    }
+
+    /// Put the patches of the turns that have not ended onto `settings`, in
+    /// the order of the turns. Call this with `lock` held.
+    fn with_pending(&self, settings: &mut Settings) {
+        let turns = self.turns.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, patch) in &turns.pending {
+            for value in patch {
+                apply_shared(settings, value);
+            }
+        }
+    }
+
+    /// Wait until `turn` is the current turn. The turn ends when the result
+    /// is dropped, also after an error.
+    fn wait_for(&self, turn: u64) -> TurnGuard<'_> {
+        let mut turns = self.turns.lock().unwrap_or_else(|e| e.into_inner());
+        #[cfg(test)]
+        {
+            turns.waiting += 1;
+            self.turn_ended.notify_all();
+        }
+        while turns.current != turn {
+            turns = self
+                .turn_ended
+                .wait(turns)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        #[cfg(test)]
+        {
+            turns.waiting -= 1;
+        }
+        TurnGuard { updates: self }
+    }
+}
+
+struct TurnGuard<'a> {
+    updates: &'a Updates,
+}
+
+impl Drop for TurnGuard<'_> {
+    fn drop(&mut self) {
+        let mut turns = self.updates.turns.lock().unwrap_or_else(|e| e.into_inner());
+        let ended = turns.current;
+        turns.pending.retain(|(turn, _)| *turn != ended);
+        turns.current += 1;
+        self.updates.turn_ended.notify_all();
+    }
+}
+
+/// Set the value of one shared setting in `settings`, as [`shared_patch`]
+/// reads it. A value that [`shared_patch`] never gives changes nothing.
+fn apply_shared(settings: &mut Settings, value: &SharedValue) {
+    let chosen = &mut settings.chosen_recognition;
+    match value {
+        SharedValue::ActiveSummaryPrompt(id) => settings.active_summary_prompt = id.clone(),
+        SharedValue::DefaultSpeakerCount(count) => {
+            chosen.default_speaker_count = count.map(Into::into)
+        }
+        SharedValue::AsrModel(model) => chosen.asr_model = model.clone(),
+        SharedValue::LiveTranscript(on) => chosen.live_transcript = *on,
+        SharedValue::SpeakerSource(source) => chosen.speaker_source = *source,
+        SharedValue::SpeakerProcessingMode(mode) => chosen.speaker_processing_mode = *mode,
+        SharedValue::RecognitionLanguage(language) => {
+            chosen.recognition_language = language.clone()
+        }
+        SharedValue::CheckUpdatesAutomatically(on) => settings.check_updates_automatically = *on,
+        SharedValue::AudioRemoval(removal) => settings.audio_removal = (*removal).into(),
+        SharedValue::ShowRecordingWidget(on) => settings.show_recording_widget = *on,
+        SharedValue::NewNoteRecords(on) => settings.new_note_records = *on,
+        SharedValue::NoteTypes(_)
+        | SharedValue::DefaultNoteType(_)
+        | SharedValue::NoteTypePrompts(_) => {}
+    }
+}
+
+/// `current` with each top-level field that a change set from its value in
+/// `before` to its value in `after` put back to its value in `before`. A
+/// field that no longer has the value in `after` keeps its value in
+/// `current`: another change set it.
+fn without_local_changes(
+    current: &LocalSettings,
+    before: &LocalSettings,
+    after: &LocalSettings,
+) -> Result<LocalSettings, String> {
+    let as_map = |local: &LocalSettings| match serde_json::to_value(local) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => Err("the local settings are not an object".to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    let (before, after) = (as_map(before)?, as_map(after)?);
+    let mut reverted = as_map(current)?;
+    for (key, value) in before {
+        if after.get(&key) != Some(&value) && reverted.get(&key) == after.get(&key) {
+            reverted.insert(key, value);
+        }
+    }
+    serde_json::from_value(Value::Object(reverted)).map_err(|e| e.to_string())
+}
+
+/// The steps of [`update_settings`], with the stores as arguments. Returns
+/// the local settings and the shared view after the change.
+fn update_with(
+    updates: &Updates,
+    stores: &Stores<'_>,
+    change: impl FnOnce(&mut Settings) -> Result<(), String>,
+) -> Result<(LocalSettings, SharedSnapshot), String> {
+    let guard = updates.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let local = (stores.read_local)();
+    let shared = (stores.snapshot)();
+    let mut before = Settings::from_parts(local.clone(), &shared);
+    updates.with_pending(&mut before);
     let mut after = before.clone();
     change(&mut after)?;
     let patch = shared_patch(&before, &after);
-    if !patch.is_empty() {
-        let manager = app
-            .try_state::<Arc<SharedSettingsManager>>()
-            .ok_or("The shared settings are not ready yet.")?;
-        shared = manager.save(&patch)?;
-    }
     let changed_local = after.local();
     if changed_local != local {
-        write_settings(app, &changed_local)?;
+        (stores.write_local)(&changed_local)?;
     }
-    Ok(with_downloads(
-        app,
-        Settings::from_parts(changed_local, &shared),
-    ))
+    if patch.is_empty() {
+        return Ok((changed_local, shared));
+    }
+    // The local part is written, in the order of the lock. The shared save
+    // can wait for the storage folder, so it runs without the lock, in the
+    // order of the turns.
+    let turn = updates.give_turn(&patch);
+    drop(guard);
+    let _turn = updates.wait_for(turn);
+    let saved = (stores.save_shared)(&patch);
+    let _guard = updates.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let current = (stores.read_local)();
+    match saved {
+        Ok(shared) => Ok((current, shared)),
+        Err(e) => {
+            // Nothing of a refused change is kept: put back each local
+            // field that this change changed and that still has this
+            // change's value. A change that another command made during
+            // the shared save stays.
+            let reverted = without_local_changes(&current, &local, &changed_local)?;
+            if reverted != current
+                && let Err(write) = (stores.write_local)(&reverted)
+            {
+                log::error!("could not put back the local settings of a refused change: {write}");
+            }
+            Err(e)
+        }
+    }
 }
 
-/// Write and flush immediately: the store's autosave is debounced, and a
-/// setting changed just before quitting must survive the quit.
+/// Write the local settings file now, so a setting changed just before
+/// quitting survives the quit. The values in memory change only when the
+/// write succeeded.
 fn write_settings(app: &AppHandle, settings: &LocalSettings) -> Result<(), String> {
-    let store = app.store(SETTINGS_STORE_PATH).map_err(|e| e.to_string())?;
-    let previous = store.get(SETTINGS_KEY);
-    store.set(
-        SETTINGS_KEY,
+    let store = app
+        .try_state::<LocalStore>()
+        .ok_or("The settings are not ready yet.")?;
+    // The callers hold `UPDATES.lock`, which orders the writes. The values
+    // stay readable during the file write.
+    let mut changed = store
+        .values
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    changed.insert(
+        SETTINGS_KEY.into(),
         serde_json::to_value(settings).map_err(|e| e.to_string())?,
     );
-    if let Err(error) = store.save() {
-        match previous {
-            Some(value) => store.set(SETTINGS_KEY, value),
-            None => {
-                store.delete(SETTINGS_KEY);
-            }
-        }
-        return Err(error.to_string());
-    }
+    local_store::write(&store.path, &changed).map_err(|e| e.to_string())?;
+    *store.values.lock().unwrap_or_else(|e| e.into_inner()) = changed;
     Ok(())
 }
 
@@ -2632,6 +2927,357 @@ mod tests {
         let mut after = settings.clone();
         after.endpoint_model = "gpt-4o".into();
         assert!(shared_patch(&settings, &after).is_empty());
+    }
+
+    #[test]
+    fn the_launch_asks_for_a_file_that_cannot_be_read_and_starts_a_missing_file_empty() {
+        assert_eq!(launch_read(Ok(None)), LaunchRead::Values(Map::new()));
+        let values = json!({ "settings": { "storage_folder": "/notes" } })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            launch_read(Ok(Some(values.clone()))),
+            LaunchRead::Values(values)
+        );
+        let damaged = local_store::Unreadable::DoesNotParse("EOF".into());
+        assert_eq!(launch_read(Err(damaged.clone())), LaunchRead::Ask(damaged));
+    }
+
+    #[test]
+    fn a_read_before_the_launch_read_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(local_store::FILE_NAME);
+        // A missing file gives the defaults and stays missing.
+        assert_eq!(read_settings_at(&path), LocalSettings::default());
+        assert!(!path.exists());
+        // A damaged file gives the defaults and does not change.
+        std::fs::write(&path, b"{\"settings\": {\"storage_fol").unwrap();
+        assert_eq!(read_settings_at(&path), LocalSettings::default());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"{\"settings\": {\"storage_fol"
+        );
+        // An old file reads migrated and does not change.
+        let old = serde_json::to_vec(&json!({ "settings": {
+            "settings_schema_version": 2,
+            "storage_folder": "/notes",
+        }}))
+        .unwrap();
+        std::fs::write(&path, &old).unwrap();
+        assert_eq!(read_settings_at(&path).storage_folder, "/notes");
+        assert_eq!(std::fs::read(&path).unwrap(), old);
+    }
+
+    type SaveStarts = std::sync::mpsc::Receiver<Vec<SharedValue>>;
+    type SaveReleases = std::sync::mpsc::Sender<Result<(), String>>;
+
+    /// Stores in memory for [`update_with`]. A shared save waits for a
+    /// message on its own channel after it says that it started.
+    struct MemoryStores {
+        local: Mutex<LocalSettings>,
+        saves: Mutex<Vec<Vec<SharedValue>>>,
+        started: Mutex<std::sync::mpsc::Sender<Vec<SharedValue>>>,
+        release: Mutex<std::sync::mpsc::Receiver<Result<(), String>>>,
+    }
+
+    impl MemoryStores {
+        /// The stores, the start of each shared save, and the release of it.
+        fn new() -> (Arc<Self>, SaveStarts, SaveReleases) {
+            let (started, on_start) = std::sync::mpsc::channel();
+            let (release, on_release) = std::sync::mpsc::channel();
+            let stores = Arc::new(Self {
+                local: Mutex::new(LocalSettings::default()),
+                saves: Mutex::new(Vec::new()),
+                started: Mutex::new(started),
+                release: Mutex::new(on_release),
+            });
+            (stores, on_start, release)
+        }
+
+        fn update(
+            &self,
+            updates: &Updates,
+            change: impl FnOnce(&mut Settings) -> Result<(), String>,
+        ) -> Result<LocalSettings, String> {
+            update_with(
+                updates,
+                &Stores {
+                    read_local: &|| self.local.lock().unwrap().clone(),
+                    snapshot: &SharedSnapshot::default,
+                    save_shared: &|patch| {
+                        self.started.lock().unwrap().send(patch.to_vec()).unwrap();
+                        self.release.lock().unwrap().recv().unwrap()?;
+                        self.saves.lock().unwrap().push(patch.to_vec());
+                        Ok(SharedSnapshot::default())
+                    },
+                    write_local: &|local| {
+                        *self.local.lock().unwrap() = local.clone();
+                        Ok(())
+                    },
+                },
+                change,
+            )
+            .map(|(local, _)| local)
+        }
+    }
+
+    fn new_updates() -> &'static Updates {
+        Box::leak(Box::new(Updates::new()))
+    }
+
+    /// Wait until `count` changes wait for their turn.
+    /// Only a failure reaches the time limit.
+    fn wait_for_waiting(updates: &Updates, count: u64) {
+        let (turns, _) = updates
+            .turn_ended
+            .wait_timeout_while(
+                updates.turns.lock().unwrap(),
+                std::time::Duration::from_secs(30),
+                |turns| turns.waiting != count,
+            )
+            .unwrap();
+        assert_eq!(turns.waiting, count, "no change waited for its turn");
+    }
+
+    #[test]
+    fn shared_changes_take_effect_in_the_order_that_they_were_made() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        // Each change sets a shared field and a local field to one value.
+        let change = |value: bool| {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, move |s| {
+                    s.new_note_records = value;
+                    s.alert_sound = value;
+                    Ok(())
+                })
+            })
+        };
+        let first = change(false);
+        on_start.recv().unwrap();
+        let second = change(true);
+        // The second change waits for the turn of the first.
+        wait_for_waiting(updates, 1);
+        release.send(Ok(())).unwrap();
+        assert!(first.join().unwrap().is_ok());
+        on_start.recv().unwrap();
+        release.send(Ok(())).unwrap();
+        assert!(second.join().unwrap().unwrap().alert_sound);
+        assert_eq!(
+            *stores.saves.lock().unwrap(),
+            [
+                vec![SharedValue::NewNoteRecords(false)],
+                vec![SharedValue::NewNoteRecords(true)],
+            ]
+        );
+        // The local part of the later change is the one that stays.
+        assert!(stores.local.lock().unwrap().alert_sound);
+    }
+
+    #[test]
+    fn a_change_back_during_a_shared_save_is_saved_after_it() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        let set = |value: bool| {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, move |s| {
+                    s.new_note_records = value;
+                    Ok(())
+                })
+            })
+        };
+        // The user turns the setting off, and on again while the first
+        // save waits for the storage folder.
+        let off = set(false);
+        assert_eq!(
+            on_start.recv().unwrap(),
+            [SharedValue::NewNoteRecords(false)]
+        );
+        let on = set(true);
+        wait_for_waiting(updates, 1);
+        release.send(Ok(())).unwrap();
+        assert!(off.join().unwrap().is_ok());
+        assert_eq!(
+            on_start.recv().unwrap(),
+            [SharedValue::NewNoteRecords(true)]
+        );
+        release.send(Ok(())).unwrap();
+        assert!(on.join().unwrap().is_ok());
+        assert_eq!(
+            *stores.saves.lock().unwrap(),
+            [
+                vec![SharedValue::NewNoteRecords(false)],
+                vec![SharedValue::NewNoteRecords(true)],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_shared_save_keeps_the_local_changes_of_other_commands() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        let failing = {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, |s| {
+                    s.new_note_records = false;
+                    s.alert_sound = false;
+                    s.endpoint_model = "refused".into();
+                    Ok(())
+                })
+            })
+        };
+        on_start.recv().unwrap();
+        // During the shared save, other commands change a field of the
+        // refused change and a field that it did not change.
+        stores
+            .update(updates, |s| {
+                s.endpoint_model = "later".into();
+                s.live_transcript = false;
+                Ok(())
+            })
+            .unwrap();
+        release.send(Err("the folder is gone".into())).unwrap();
+        assert!(failing.join().unwrap().is_err());
+        let local = stores.local.lock().unwrap().clone();
+        // The refused change's own field goes back; the others stay.
+        assert!(local.alert_sound);
+        assert_eq!(local.endpoint_model, "later");
+        assert!(!local.live_transcript);
+    }
+
+    #[test]
+    fn each_shared_value_reads_back_as_the_same_patch() {
+        let before = Settings::default();
+        let mut after = before.clone();
+        after.active_summary_prompt = "custom".into();
+        after.chosen_recognition.default_speaker_count =
+            Some(SpeakerCountSetting::Exact { count: 3 });
+        after.chosen_recognition.asr_model = "whisper-large-v3-turbo-q5km".into();
+        after.chosen_recognition.live_transcript = !before.chosen_recognition.live_transcript;
+        after.chosen_recognition.recognition_language = Some("de".into());
+        after.check_updates_automatically = !before.check_updates_automatically;
+        after.show_recording_widget = !before.show_recording_widget;
+        after.new_note_records = !before.new_note_records;
+        let patch = shared_patch(&before, &after);
+        assert_eq!(patch.len(), 8);
+        let mut applied = before.clone();
+        for value in &patch {
+            apply_shared(&mut applied, value);
+        }
+        assert_eq!(shared_patch(&before, &applied), patch);
+        assert!(shared_patch(&after, &applied).is_empty());
+    }
+
+    #[test]
+    fn a_failed_shared_save_ends_its_turn_and_writes_no_local_change() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        let failing = {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, |s| {
+                    s.new_note_records = false;
+                    s.alert_sound = false;
+                    Ok(())
+                })
+            })
+        };
+        on_start.recv().unwrap();
+        release.send(Err("the folder is gone".into())).unwrap();
+        assert_eq!(
+            failing.join().unwrap(),
+            Err("the folder is gone".to_string())
+        );
+        assert!(stores.local.lock().unwrap().alert_sound);
+        // The next shared change gets its turn.
+        let next = {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, |s| {
+                    s.new_note_records = false;
+                    Ok(())
+                })
+            })
+        };
+        on_start.recv().unwrap();
+        release.send(Ok(())).unwrap();
+        assert!(next.join().unwrap().is_ok());
+    }
+
+    #[test]
+    fn a_local_change_does_not_wait_for_a_shared_save() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        let shared_change = {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, |s| {
+                    s.new_note_records = false;
+                    Ok(())
+                })
+            })
+        };
+        // The shared save started and waits, for example on a slow folder.
+        assert_eq!(
+            on_start.recv().unwrap(),
+            [SharedValue::NewNoteRecords(false)]
+        );
+        let (done, local_done) = std::sync::mpsc::channel();
+        let local_change = {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                let result = stores.update(updates, |s| {
+                    s.alert_sound = false;
+                    Ok(())
+                });
+                done.send(()).unwrap();
+                result
+            })
+        };
+        // Only a failure reaches the time limit: the local change does not
+        // wait for the folder.
+        local_done
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("a local change waited for the shared save");
+        assert!(!local_change.join().unwrap().unwrap().alert_sound);
+        release.send(Ok(())).unwrap();
+        let after = shared_change.join().unwrap().unwrap();
+        // The local change that ran during the shared save stays.
+        assert!(!after.alert_sound);
+        assert!(!stores.local.lock().unwrap().alert_sound);
+    }
+
+    #[test]
+    fn a_model_from_a_newer_version_differs_when_the_other_chosen_values_are_in_use() {
+        use shared_settings::view::{self, Availability};
+        let in_use = LocalSettings::default();
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert("asr_model".into(), json!("model-from-the-future"));
+        let cache = shared_settings::cache::Cache {
+            source: PathBuf::from("/vault"),
+            settings: raw,
+            prompts: Vec::new(),
+            active_prompt: None,
+            type_prompts: Vec::new(),
+            background: String::new(),
+        };
+        let shared = SharedSnapshot {
+            view: view::cached(Some(&cache), Availability::Available),
+            ..SharedSnapshot::default()
+        };
+        let mut settings = Settings::from_parts(in_use, &shared);
+        assert_eq!(settings.chosen_recognition, settings.in_use());
+        // Settings shows "Chosen in a newer version of Longhand" only when
+        // the choice differs (Models.tsx).
+        assert!(settings.recognition.chosen_not_known);
+        assert!(settings.recognition.differs);
+        let in_use = settings.in_use();
+        settings.set_in_use(&in_use);
+        assert!(settings.recognition.differs);
     }
 
     #[test]

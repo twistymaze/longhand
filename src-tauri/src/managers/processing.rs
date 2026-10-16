@@ -828,6 +828,18 @@ impl ProcessingManager {
                     // (R5).
                     processing.run_type_moves_soon();
                 }
+                // A first Save that waits for the early write of its home
+                // folder in the storage folder: the write starts now. The
+                // job of a note that has one gets more work, which does no
+                // harm.
+                if let RunnerEvent::AwaitingDestination {
+                    session_id,
+                    problem,
+                } = &event
+                    && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
+                {
+                    processing.start_unfinished_early_write(session_id, problem);
+                }
                 match Sent::from(event) {
                     Sent::Processing(update) => {
                         if let Err(e) = update.emit(&events) {
@@ -869,12 +881,13 @@ impl ProcessingManager {
             Box::new(move |_| {
                 if let Some(processing) = written.try_state::<Arc<ProcessingManager>>() {
                     processing.in_use_changed();
-                    if let Err(e) = processing.runner.retry_awaiting() {
-                        log::error!("could not retry sessions awaiting a destination: {e}");
-                    }
+                    // Also a note whose home folder outside the storage
+                    // folder could not be read before tries again.
+                    processing.retry_awaiting();
                 }
             }),
-        );
+        )
+        .with_earlier_runs(own_runs.get(1..).unwrap_or_default().to_vec());
         let library_status: Arc<library::status::LibraryStatus> = Arc::default();
         let audio_removal = AudioRemovalManager::new(
             app,
@@ -1115,6 +1128,9 @@ impl ProcessingManager {
             // remove before it quit (R18, KTD8): a folder that the pass
             // removes is not written again.
             self.remove_empty_notes(launched);
+            // A stop after a change of storage folder with Leave them can
+            // come before the rehome of a note that has had no first save.
+            self.rehome_outside();
             self.early_homes.resume();
             // A note that the crash recovery made a note with no audio
             // again gets the flag "no recording" in its folder (R19).
@@ -1391,6 +1407,64 @@ impl ProcessingManager {
         }
     }
 
+    /// The store of this run's notes.
+    pub fn shared_store(&self) -> &pipeline::SharedStore {
+        &self.store
+    }
+
+    /// The first Save of `id` waits for its folder because of `problem`.
+    /// When the early write of the note is not done, for example after the
+    /// first Save gave the note a new early write in the storage folder, the
+    /// job of that write starts. When the save waits for the early write and
+    /// the write is done already, its job ended before the runner recorded
+    /// the wait. The job then runs again: it writes nothing, and its end
+    /// puts the waiting notes back in line ([`ProcessingManager::retry_awaiting`]).
+    /// The runner records the wait before it sends this event, so that retry
+    /// finds the note. The retry runs on the job thread, not in the run of
+    /// the note that sends this event, so the run ends first.
+    fn start_unfinished_early_write(&self, id: &str, problem: &str) {
+        let unfinished = {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            pipeline::early_home::unfinished(&store, id)
+        };
+        // Only for these causes: another cause can stay, and a retry for it
+        // would repeat at once.
+        let waits_for_write = problem == pipeline::save::WAITS_FOR_EARLY_WRITE
+            || problem == pipeline::save::WAITS_FOR_NEW_EARLY_WRITE;
+        match unfinished {
+            Ok(unfinished) if unfinished || waits_for_write => self.early_homes.start(id),
+            Ok(_) => {}
+            Err(e) => log::error!("could not read the early write state of {id}: {e}"),
+        }
+    }
+
+    /// True while the runner works on the note `id` now.
+    pub fn runs(&self, id: &str) -> bool {
+        self.runner.runs(id)
+    }
+
+    /// Each note that has had no first save and whose home folder is not in
+    /// the storage folder gets a new early write in the storage folder, and
+    /// its job starts. Its first Save then publishes there, and the library
+    /// keeps it. The old home folder goes after the new write is done.
+    /// While a Move is open, nothing changes. A note whose folder cannot be
+    /// read now tries again at the next call.
+    fn rehome_outside(&self) {
+        let Some(current) = self.storage_folder() else {
+            return;
+        };
+        match pipeline::early_home::rehome_outside(&self.store, &current) {
+            Ok(ids) => {
+                for id in ids {
+                    self.early_homes.start(&id);
+                }
+            }
+            Err(e) => log::error!(
+                "could not give the notes that are not saved a home folder in the storage folder: {e}"
+            ),
+        }
+    }
+
     fn start_library(&self, reconciler: library::reconcile::Reconciler) {
         let store = Arc::clone(&self.store);
         let claims = self.runner.claims().clone();
@@ -1526,6 +1600,10 @@ impl ProcessingManager {
 
     /// The destination changed: sessions waiting for one go back in line.
     pub fn retry_awaiting(&self) {
+        // First the rule of a change of storage folder: a note whose home
+        // folder is outside the storage folder waits for its new early
+        // write, not for that folder.
+        self.rehome_outside();
         // The early writes wait for the same storage folder (R5).
         self.early_homes.wake();
         match self.runner.retry_awaiting() {

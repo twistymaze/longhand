@@ -25,6 +25,16 @@ fn unpredictable() -> u64 {
     h.finish()
 }
 
+/// The name of the file that `file` replaces, when `file` is the temporary
+/// file of a write in this module: `.<name>.<16 hex digits>.tmp`. A write
+/// that stopped leaves one.
+pub fn temp_target(file: &str) -> Option<&str> {
+    let rest = file.strip_prefix('.')?.strip_suffix(".tmp")?;
+    let (name, hex) = rest.rsplit_once('.')?;
+    (!name.is_empty() && hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(name)
+}
+
 /// Replace `dir/name` with `contents` atomically.
 pub fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> io::Result<()> {
     let temp = format!(".{name}.{:016x}.tmp", unpredictable());
@@ -46,7 +56,40 @@ pub fn write_atomic_via(dir: &Path, name: &str, temp: &str, contents: &[u8]) -> 
     fill_atomic(dir, name, temp, |file| file.write_all(contents))
 }
 
+/// Replace `dir/name` with what `fill` writes, through a new temporary file
+/// in `dir` that is synced and renamed over the target. Returns after the
+/// rename, without the folder sync: the rename is the commit, and the
+/// caller decides what a folder sync error means.
+pub fn replace_with(
+    dir: &Path,
+    name: &str,
+    fill: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    let temp = format!(".{name}.{:016x}.tmp", unpredictable());
+    replace_via(dir, name, &temp, fill)
+}
+
+/// [`replace_with`], then the folder sync.
+pub fn fill_atomic_with(
+    dir: &Path,
+    name: &str,
+    fill: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    replace_with(dir, name, fill)?;
+    sync_dir(dir)
+}
+
 fn fill_atomic(
+    dir: &Path,
+    name: &str,
+    temp: &str,
+    fill: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
+) -> io::Result<()> {
+    replace_via(dir, name, temp, fill)?;
+    sync_dir(dir)
+}
+
+fn replace_via(
     dir: &Path,
     name: &str,
     temp: &str,
@@ -67,5 +110,28 @@ fn fill_atomic(
         let _ = std::fs::remove_file(&temp_path);
         return Err(e);
     }
-    sync_dir(dir)
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_temporary_name_gives_its_target_and_other_names_give_none() {
+        let temp = format!(".settings.json.{:016x}.tmp", unpredictable());
+        assert_eq!(temp_target(&temp), Some("settings.json"));
+        assert_eq!(
+            temp_target(".1.0.10.tar.gz.0123456789abcdef.tmp"),
+            Some("1.0.10.tar.gz")
+        );
+        for other in [
+            "settings.json",
+            ".settings.json.tmp",
+            ".x.123.tmp",
+            "a.0123456789abcdef.tmp",
+        ] {
+            assert_eq!(temp_target(other), None, "{other}");
+        }
+    }
 }

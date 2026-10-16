@@ -415,8 +415,10 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
 /// `longhand.json`. This run's own marker goes first. A marker of one of the `earlier_runs` on this
 /// computer is an old marker, also when it is fresh. `removing` is true
 /// when an earlier removal of this note started to delete the files of
-/// this folder: a missing `notes.md` then does not keep the note.
-fn check_folder(
+/// this folder: a missing `notes.md` then does not keep the note. The
+/// removal of an early home folder in an old storage folder uses the same check,
+/// with the fingerprints from before the change of storage folder.
+pub(crate) fn check_folder(
     folder: &Path,
     written: &WrittenFingerprints,
     removing: bool,
@@ -506,7 +508,7 @@ fn check_folder(
 /// the last file: until it goes, the folder is still a note. A file that came
 /// after the check stays, with the folder. When a file cannot be deleted,
 /// the row keeps its [`REMOVING`] record, and the next removal continues.
-fn remove_folder(folder: &Path, files: &[PathBuf]) -> Result<(), StageError> {
+pub(crate) fn remove_folder(folder: &Path, files: &[PathBuf]) -> Result<(), StageError> {
     for file in files {
         match std::fs::remove_file(file) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => {

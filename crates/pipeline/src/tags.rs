@@ -119,17 +119,31 @@ fn write_tags(
     session_id: &str,
     edit: &dyn Fn(&[String]) -> Vec<String>,
 ) -> Result<Vec<String>, StageError> {
-    let has_home = lock(store)
-        .session(session_id)?
-        .ok_or_else(|| no_session(session_id))?
-        .home_path
-        .is_some();
     // A note with a home folder needs no guard: the early write is done,
     // and each later writer reads the tags of the file under the store
     // lock.
-    let _guard = (!has_home).then(|| early_home::guard(session_id));
-    let guard = crate::move_notes::lock_unheld(store, claims, session_id);
-    write_locked(&guard, session_id, edit)
+    let has_home = |store: &Store| -> Result<bool, StageError> {
+        let record = store
+            .session(session_id)?
+            .ok_or_else(|| no_session(session_id))?;
+        Ok(home_to_write(store, session_id, record.home_path.as_deref())?.is_some())
+    };
+    let home_first = has_home(&lock(store))?;
+    let mut note_guard = (!home_first).then(|| early_home::guard(session_id));
+    let mut guard = crate::move_notes::lock_unheld(store, claims, session_id);
+    // A rehome between the first check and the store lock makes the home
+    // folder one that gets no write: the edit then needs the note guard, so
+    // that it does not overlap the new early write. The guard comes before
+    // the store lock.
+    if note_guard.is_none() && !has_home(&guard)? {
+        drop(guard);
+        note_guard = Some(early_home::guard(session_id));
+        guard = crate::move_notes::lock_unheld(store, claims, session_id);
+    }
+    let edited = write_locked(&guard, session_id, edit);
+    drop(guard);
+    drop(note_guard);
+    edited
 }
 
 /// [`write_tags`] with the store lock held.
@@ -141,7 +155,7 @@ fn write_locked(
     let record = store
         .session(session_id)?
         .ok_or_else(|| no_session(session_id))?;
-    let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
+    let Some(home) = home_to_write(store, session_id, record.home_path.as_deref())? else {
         let tags = edit(&record.tags);
         // A staging folder that is complete becomes the home folder with
         // its `session.md` as it is: that file gets the tags too.
@@ -159,6 +173,24 @@ fn write_locked(
         store.set_tags(session_id, &tags)?;
     }
     Ok(tags)
+}
+
+/// The home folder `home` of `session_id` when a tag edit writes into it.
+/// An old home folder of a note that gets a new early write is not
+/// written: the new early write takes the tags from the row
+/// ([`early_home::rehoming`]).
+fn home_to_write(
+    store: &Store,
+    session_id: &str,
+    home: Option<&str>,
+) -> Result<Option<PathBuf>, StageError> {
+    let Some(home) = home.map(PathBuf::from) else {
+        return Ok(None);
+    };
+    if early_home::rehoming(store, session_id, &home)? {
+        return Ok(None);
+    }
+    Ok(Some(home))
 }
 
 /// Read the tags of `session.md` in `folder`, apply `edit` to them and

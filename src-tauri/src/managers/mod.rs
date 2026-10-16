@@ -5,6 +5,7 @@ pub mod capture;
 pub mod destination;
 pub mod library;
 pub mod live;
+pub mod local_store;
 pub mod models;
 pub mod processing;
 pub mod secrets;

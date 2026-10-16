@@ -20,6 +20,9 @@ use tauri::Manager;
 pub const QUIT: &str = "Quit";
 /// The button that moves the database aside and makes a new one (R8).
 pub const REBUILD: &str = "Rebuild";
+/// The button that keeps a settings file that can't be read under another
+/// name and starts with the default settings.
+pub const USE_DEFAULT_SETTINGS: &str = "Use Default Settings";
 
 /// What the launch does after the inspection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +78,8 @@ impl std::error::Error for Failure {
 /// The R9 description when the error has no specific description.
 pub const DEFAULT_FAILURE: &str = "An error stopped Longhand from starting.";
 const REBUILD_FAILURE: &str = "Longhand could not make a new notes list.";
+/// The description when the settings file can't be read or kept aside.
+pub const SETTINGS_FAILURE: &str = "Longhand could not read its settings file.";
 const BACKUP_UNDO_FAILURE: &str =
     "Longhand could not put back the files of a backup that it did not finish.";
 
@@ -192,6 +197,51 @@ pub fn failure_text(description: &str, log_file: Option<&Path>, error: &str) -> 
         "Longhand can't start".to_string(),
         format!("{description}\n\n{next_step}\n\nDetails: {error}"),
     )
+}
+
+/// The title and the body of the alert for a settings file that can't be
+/// read.
+pub fn settings_question_text(path: &Path, error: &str) -> (String, String) {
+    (
+        "Longhand can't read its settings".to_string(),
+        format!(
+            "The settings file can't be read: {}\n\n\
+             Use Default Settings starts Longhand with the default settings and the \
+             default storage folder. The old file is kept as a copy in the same folder.\n\n\
+             Quit closes Longhand and changes no file. You can open Longhand again later.\n\n\
+             Details: {error}",
+            path.display()
+        ),
+    )
+}
+
+/// Whether an alert result for a settings file is Use Default Settings.
+/// Every other result, such as a closed alert, is Quit.
+pub fn uses_default_settings(result: &MessageDialogResult) -> bool {
+    matches!(result, MessageDialogResult::Custom(text) if text == USE_DEFAULT_SETTINGS)
+}
+
+/// Show the alert for a settings file that can't be read, on the main
+/// thread. Quit exits with code 0 and changes no file; the function returns
+/// only for Use Default Settings. The first button is the default button,
+/// so Quit is first.
+pub fn ask_about_settings(path: &Path, error: &str) {
+    let (title, body) = settings_question_text(path, error);
+    let result = MessageDialog::new()
+        .set_level(MessageLevel::Warning)
+        .set_title(title)
+        .set_description(body)
+        .set_buttons(MessageButtons::OkCancelCustom(
+            QUIT.to_string(),
+            USE_DEFAULT_SETTINGS.to_string(),
+        ))
+        .show();
+    if !uses_default_settings(&result) {
+        log::info!("the user chose Quit; no file changed");
+        log::logger().flush();
+        std::process::exit(0);
+    }
+    log::info!("the user chose Use Default Settings");
 }
 
 /// The choice that an alert result means. Every result other than the
@@ -600,6 +650,32 @@ mod tests {
         assert!(
             body.contains("Open Longhand again. If the problem continues, send the log file.\n\n")
         );
+    }
+
+    #[test]
+    fn the_settings_alert_names_the_file_both_choices_and_the_error() {
+        let (title, body) =
+            settings_question_text(Path::new("/data/settings.json"), "the file is damaged");
+        assert_eq!(title, "Longhand can't read its settings");
+        assert!(body.starts_with("The settings file can't be read: /data/settings.json"));
+        assert!(body.contains("Use Default Settings starts Longhand with the default settings"));
+        assert!(body.contains("The old file is kept as a copy"));
+        assert!(body.contains("Quit closes Longhand and changes no file."));
+        assert!(body.ends_with("Details: the file is damaged"));
+    }
+
+    #[test]
+    fn only_the_use_default_settings_button_uses_the_defaults() {
+        assert!(uses_default_settings(&MessageDialogResult::Custom(
+            USE_DEFAULT_SETTINGS.to_string()
+        )));
+        for other in [
+            MessageDialogResult::Custom(QUIT.to_string()),
+            MessageDialogResult::Ok,
+            MessageDialogResult::Cancel,
+        ] {
+            assert!(!uses_default_settings(&other));
+        }
     }
 
     #[test]

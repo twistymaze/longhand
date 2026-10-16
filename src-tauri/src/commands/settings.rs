@@ -806,6 +806,35 @@ fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf,
     Ok(folder)
 }
 
+/// The cause that Settings shows when a change with Leave them waits for a
+/// note that is saved now.
+const NOTE_SAVING: &str =
+    "A note is being saved to the current storage folder. Try again in a moment.";
+
+/// The check before a change with Leave them from the storage folder
+/// `current`: no early write of a note that is not saved yet is between
+/// its staging folder and its rename in `current`, and no first Save into
+/// `current` runs now (`running`). These steps end in a few seconds. After
+/// the change, a note that has had no first save gets a new home folder in
+/// the new storage folder.
+///
+/// A first Save that began and does not run now (it stopped, failed or
+/// waits for its folder) does not stop the change. When it continues and
+/// its publication has not begun, the note gets a new home folder in the
+/// new storage folder. Known limit: a publication that has begun finishes
+/// in its home folder in `current`.
+fn check_leave(
+    store: &pipeline::SharedStore,
+    current: &str,
+    running: &dyn Fn(&str) -> bool,
+) -> Result<(), String> {
+    match pipeline::early_home::saving_into(store, Path::new(current), running) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(NOTE_SAVING.into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Make `folder` the storage folder (R4, R21). The shared settings of the
 /// new folder apply, and this computer's custom prompts merge into them,
 /// or this computer's shared settings go into a folder that has none
@@ -838,6 +867,12 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     let current = settings::get_settings(app).storage_folder;
     let move_open = processing.as_ref().is_some_and(|p| p.move_open());
     let new = check_change(&current, folder, move_open)?;
+    let moving = old_notes == OldNotes::Move;
+    if !moving && let Some(processing) = &processing {
+        check_leave(processing.shared_store(), &current, &|id| {
+            processing.runs(id)
+        })?;
+    }
     let shared = app.try_state::<Arc<SharedSettingsManager>>();
     if let Some(shared) = &shared {
         shared.change_folder(Some(new.clone()));
@@ -851,7 +886,6 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     };
     // The journal opens before the folder changes, so the library keeps
     // the notes of the old folder in the meantime (KTD10).
-    let moving = old_notes == OldNotes::Move;
     if moving && let Some(processing) = &processing {
         let opened = processing.open_move(Path::new(&current), &new);
         if let Err(e) = opened {
@@ -874,6 +908,10 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     }
     log::info!("the storage folder changed");
     if let Some(processing) = &processing {
+        // Before the forget: the retry first gives each note that has had
+        // no first save a new home folder in the new storage folder, so its
+        // first Save publishes there and the library keeps it. With Move,
+        // the open Move handles these notes.
         processing.retry_awaiting();
         processing.forget_outside_roots();
         processing.roots_changed();
@@ -1167,6 +1205,83 @@ mod tests {
         // The read wrote nothing (rule 1), and a second read has no change.
         assert_eq!(std::fs::read(settings_path(folder.path())).unwrap(), file);
         assert_eq!(reread_removal_delay(&a), (false, Some(90)));
+    }
+
+    /// Leave them waits while a note that is not saved yet
+    /// is written into the current storage folder.
+    #[test]
+    fn leave_them_is_refused_while_a_note_is_saved_to_the_current_folder() {
+        use pipeline::early_home;
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        std::fs::create_dir_all(&current).unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        {
+            let mut s = store.lock().unwrap();
+            s.create_session("s", chrono::Local::now().fixed_offset(), None)
+                .unwrap();
+            early_home::begin(&s, "s").unwrap();
+        }
+        let check = || check_leave(&store, current.to_str().unwrap(), &|_| false);
+        assert_eq!(check(), Ok(()));
+
+        // The early write is between its staging folder and its rename.
+        let next = early_home::step(
+            &store,
+            "s",
+            &early_home::EarlyState::Begun,
+            Some(&current),
+            "run",
+            &session_save::RealFs,
+        )
+        .unwrap();
+        early_home::record(&store, "s", &next).unwrap();
+
+        assert_eq!(check(), Err(NOTE_SAVING.to_string()));
+        early_home::write(&store, "s", Some(&current), "run", &session_save::RealFs).unwrap();
+        assert_eq!(check(), Ok(()));
+    }
+
+    /// Leave them waits for a first Save into the current storage folder
+    /// that runs now, and not for one that stopped.
+    #[test]
+    fn leave_them_waits_only_for_a_first_save_that_runs_now() {
+        use pipeline::early_home;
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        std::fs::create_dir_all(&current).unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        {
+            let mut s = store.lock().unwrap();
+            s.create_session("s", chrono::Local::now().fixed_offset(), None)
+                .unwrap();
+            early_home::begin(&s, "s").unwrap();
+        }
+        early_home::write(&store, "s", Some(&current), "run", &session_save::RealFs).unwrap();
+        // The first Save began to publish into the home folder.
+        store
+            .lock()
+            .unwrap()
+            .put_checkpoint(
+                "s",
+                session_core::Stage::Save,
+                pipeline::save::STATE,
+                &serde_json::to_string(&session_save::SaveState::Working).unwrap(),
+            )
+            .unwrap();
+        let current = current.to_str().unwrap();
+
+        // The Save stopped: it does not run now.
+        assert_eq!(check_leave(&store, current, &|_| false), Ok(()));
+        // The Save runs now.
+        assert_eq!(
+            check_leave(&store, current, &|id| id == "s"),
+            Err(NOTE_SAVING.to_string())
+        );
     }
 
     /// KTD11: Change is not available while a Move runs or is paused.
