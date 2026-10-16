@@ -94,6 +94,14 @@ pub enum CaptureError {
     Timeline(#[from] session_core::TimelineError),
     #[error("this session is already moving to its destination and can no longer be resumed")]
     Save,
+    /// The audio of the note `id` stays with no segment row, because of
+    /// `cause`. `interrupted` is true when this made the note Interrupted.
+    #[error("the audio of {id} could not be registered ({cause}); it stays")]
+    Unregistered {
+        id: String,
+        cause: String,
+        interrupted: bool,
+    },
     #[error("{0}")]
     Other(String),
 }
@@ -284,10 +292,12 @@ fn settle_stop(
             Err(e) => e.to_string(),
             Ok(()) => "a partial chunk could not be repaired".into(),
         };
-        keep_unregistered(&mut guard, id, at)?;
-        return Err(CaptureError::Other(format!(
-            "the audio of {id} could not be registered ({cause}); it stays"
-        )));
+        let interrupted = keep_unregistered(&mut guard, id, at)?;
+        return Err(CaptureError::Unregistered {
+            id: id.to_string(),
+            cause,
+            interrupted,
+        });
     }
     if let Err(e) = registered {
         log::warn!("registering the chunks of {id} failed, but no audio is left out: {e}");
@@ -302,17 +312,19 @@ fn settle_stop(
 
 /// The note `id` keeps audio with no segment row. A note that records
 /// becomes Interrupted (disk) as of the end of its last stored segment, or
-/// `at` when it has none. An Interrupted note does not change.
+/// `at` when it has none. An Interrupted note does not change. Returns true
+/// when the note became Interrupted: the caller raises the failed-capture
+/// alert.
 fn keep_unregistered(
     store: &mut Store,
     id: &str,
     at: DateTime<FixedOffset>,
-) -> Result<(), CaptureError> {
+) -> Result<bool, CaptureError> {
     let Some(record) = store.session(id)? else {
-        return Ok(());
+        return Ok(false);
     };
     if record.state != SessionState::Capturing {
-        return Ok(());
+        return Ok(false);
     }
     let since = store
         .segments(id)?
@@ -327,7 +339,7 @@ fn keep_unregistered(
         },
     )?;
     log::warn!("session {id} keeps audio with no segment row and is interrupted");
-    Ok(())
+    Ok(true)
 }
 
 /// Put the type `note_type` in the new row of `id`, and begin its early
@@ -416,7 +428,7 @@ fn abandon_start(
 /// keep audio with no segment row. Of these, a note that records becomes
 /// Interrupted (disk), and a later launch registers its audio. The caller
 /// holds no store guard.
-fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Vec<String> {
+fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Hold {
     let mut ids = Vec::new();
     for name in ["capturing", "interrupted"] {
         match pipeline::lock(store).sessions_in(name) {
@@ -424,28 +436,68 @@ fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Vec<
             Err(e) => log::warn!("could not list the {name} notes: {e}"),
         }
     }
-    let mut held = Vec::new();
+    let mut held = Hold::default();
     for id in ids {
         let session_dir = working_root.join(&id);
-        if let Err(e) = pipeline::recover::register_chunks(store, &id, &session_dir, None) {
+        let registered = pipeline::recover::register_chunks(store, &id, &session_dir, None);
+        if let Err(e) = &registered {
             log::error!("could not register the chunks of {id}: {e}");
         }
         let mut guard = pipeline::lock(store);
-        let unregistered = match guard.segments(&id) {
-            Ok(segments) => pipeline::recover::unregistered_audio(&session_dir, &segments),
-            Err(e) => {
-                log::warn!("could not read the segments of {id} ({e}); its audio stays");
-                true
+        let cause =
+            match guard.segments(&id) {
+                Ok(segments) => pipeline::recover::unregistered_audio(&session_dir, &segments)
+                    .then(|| match &registered {
+                        Err(e) => e.to_string(),
+                        Ok(()) => "a partial chunk could not be repaired".into(),
+                    }),
+                Err(e) => {
+                    log::warn!("could not read the segments of {id} ({e}); its audio stays");
+                    Some(e.to_string())
+                }
+            };
+        if let Some(cause) = cause {
+            match keep_unregistered(&mut guard, &id, now()) {
+                Ok(true) => held.interrupted.push((id.clone(), cause)),
+                Ok(false) => {}
+                Err(e) => {
+                    log::error!("could not interrupt {id}, which keeps unregistered audio: {e}")
+                }
             }
-        };
-        if unregistered {
-            if let Err(e) = keep_unregistered(&mut guard, &id, now()) {
-                log::error!("could not interrupt {id}, which keeps unregistered audio: {e}");
-            }
-            held.push(id);
+            held.ids.push(id);
         }
     }
     held
+}
+
+/// The notes that a Start leaves as they are, because they keep audio with
+/// no segment row (see [`hold_unregistered`]).
+#[derive(Default)]
+struct Hold {
+    ids: Vec<String>,
+    /// The notes that the Start made Interrupted, each with the cause.
+    interrupted: Vec<(String, String)>,
+}
+
+/// Raise the failed-capture alert for the note `id`, which the app made
+/// Interrupted (disk) because its audio has no segment row (R8 of the
+/// capture recovery plan). The notification gives `cause`.
+fn alert_unregistered(app: &AppHandle, id: &str, cause: &str) {
+    let (Some(alerts), Some(capture)) = (
+        app.try_state::<Arc<AlertsManager>>(),
+        app.try_state::<Arc<CaptureManager>>(),
+    ) else {
+        return;
+    };
+    let detail = format!("Some recorded audio could not be added to the note ({cause})");
+    alerts.raise(
+        app,
+        &capture,
+        id,
+        InterruptReason::Disk,
+        Some(&detail),
+        true,
+    );
 }
 
 /// The notes that record or are interrupted and have no segment, which a
@@ -849,6 +901,101 @@ impl Loss {
                 restartable: true,
             }),
         }
+    }
+}
+
+/// Whether the open error `e` is the disk floor.
+fn low_disk(e: &CaptureError) -> bool {
+    matches!(
+        e,
+        CaptureError::Recorder(recorder::RecorderError::LowDisk { .. })
+    )
+}
+
+/// Why a note stops when the open of its next segment failed with `e`
+/// (KTD7 of the capture recovery plan). The disk floor stops it for the
+/// disk: a full disk stays full, so no restart and no device watch. Every
+/// other error stops it for the microphone.
+fn open_loss(e: &CaptureError) -> Loss {
+    if low_disk(e) {
+        return Loss {
+            reason: InterruptReason::Disk,
+            message: e.to_string(),
+            restartable: false,
+        };
+    }
+    Loss {
+        reason: InterruptReason::Device,
+        message: format!("the microphone could not be opened: {e}"),
+        restartable: false,
+    }
+}
+
+/// Why a note stops when the restart attempts for `loss` ran out.
+/// `last_low_disk` is true when the last open failed on the disk floor:
+/// the note then stops for the disk (KTD7).
+fn exhausted_loss(loss: Loss, last_low_disk: bool) -> Loss {
+    if !last_low_disk {
+        return loss;
+    }
+    Loss {
+        reason: InterruptReason::Disk,
+        restartable: false,
+        ..loss
+    }
+}
+
+/// What [`CaptureManager::interrupt`] does after the store write.
+struct InterruptSteps {
+    alert: bool,
+    watch_device: bool,
+}
+
+/// The steps after the store write of an interrupt for `loss`. `written`
+/// tells whether the write succeeded. The alert does not depend on the
+/// write (KTD6). The device watch waits for an Interrupted (device) note,
+/// so it starts only after the write.
+fn interrupt_steps(loss: &Loss, written: bool) -> InterruptSteps {
+    InterruptSteps {
+        alert: loss.reason != InterruptReason::Sleep,
+        watch_device: written && loss.reason == InterruptReason::Device,
+    }
+}
+
+/// Interrupt the note `id` in the store for `loss`, and return the steps
+/// that follow.
+fn record_loss(store: &mut Store, id: &str, loss: &Loss) -> InterruptSteps {
+    let lost = Event::CaptureLost {
+        reason: loss.reason,
+        at: now(),
+    };
+    #[cfg(test)]
+    let applied = if faults::take(&faults::LOST) {
+        Err(CaptureError::Other(
+            "test: the interrupt write failed".into(),
+        ))
+    } else {
+        store.apply(id, &lost).map_err(CaptureError::from)
+    };
+    #[cfg(not(test))]
+    let applied = store.apply(id, &lost);
+    if let Err(e) = &applied {
+        log::error!("interrupting {id} failed: {e}");
+    }
+    interrupt_steps(loss, applied.is_ok())
+}
+
+/// The cause to give in the failed-capture alert when the error `e` of a
+/// Stop made its note Interrupted. A note that was Interrupted before has
+/// had its alert.
+fn unregistered_alert(e: &CaptureError) -> Option<&str> {
+    match e {
+        CaptureError::Unregistered {
+            cause,
+            interrupted: true,
+            ..
+        } => Some(cause),
+        _ => None,
     }
 }
 
@@ -1780,7 +1927,10 @@ impl CaptureManager {
         // A note that keeps audio with no segment row stays as it is: no
         // decision from its rows deletes that audio (KTD3).
         let held = hold_unregistered(&self.store, &self.working_root);
-        let open = open_with_no_segments(&self.store(), &held);
+        for (other, cause) in &held.interrupted {
+            alert_unregistered(app, other, cause);
+        }
+        let open = open_with_no_segments(&self.store(), &held.ids);
         let mut emptied = Vec::new();
         for other in open {
             match self.stop_in_store(app, &other) {
@@ -1798,7 +1948,7 @@ impl CaptureManager {
                 &model,
                 &capture,
                 Some(&snapshot),
-                &held,
+                &held.ids,
             ) {
                 Ok(stopped) => stopped,
                 Err(e) => {
@@ -1984,6 +2134,11 @@ impl CaptureManager {
         id: &str,
         outcome: Result<StopOutcome, CaptureError>,
     ) -> Result<StopOutcome, CaptureError> {
+        if let Err(e) = &outcome
+            && let Some(cause) = unregistered_alert(e)
+        {
+            alert_unregistered(app, id, cause);
+        }
         let outcome = outcome?;
         if let StopOutcome::Recorded { .. } = outcome {
             self.record_model_at_stop(app, id);
@@ -2317,12 +2472,7 @@ impl CaptureManager {
             return Err(e);
         }
         drop(inner);
-        let loss = Loss {
-            reason: InterruptReason::Device,
-            message: format!("the microphone could not be opened: {e}"),
-            restartable: false,
-        };
-        Arc::clone(self).interrupt(app, id, &loss, None);
+        Arc::clone(self).interrupt(app, id, &open_loss(&e), None);
         Err(e)
     }
 
@@ -3010,7 +3160,8 @@ impl CaptureManager {
 
     /// The system woke (U13). A session paused for sleep resumes as its next
     /// segment under the same budget as a lost device (U14), so a microphone
-    /// that did not come back ends in Interrupted(device) and its alert.
+    /// that did not come back ends in Interrupted(device) and its alert. When
+    /// the last open failed on the disk floor, it ends in Interrupted(disk).
     pub fn did_wake(self: Arc<Self>, app: &AppHandle) {
         let (id, cancel, restarts) = {
             let mut inner = self.inner();
@@ -3082,6 +3233,7 @@ impl CaptureManager {
 
         let backoff = Backoff(&cancel);
         let mut open_was_cancelled = false;
+        let mut last_low_disk = false;
         let recovery = supervisor::recover(&mut restarts, &SOURCE_RESTART_BUDGET, &backoff, || {
             let mut inner = self.inner();
             if cancel.is_cancelled() {
@@ -3089,6 +3241,7 @@ impl CaptureManager {
             }
             let reopened = self.reopen(app, &mut inner, id, false, None);
             open_was_cancelled = reopened.as_ref().is_err_and(open_cancelled);
+            last_low_disk = reopened.as_ref().is_err_and(low_disk);
             reopened
         });
 
@@ -3113,23 +3266,18 @@ impl CaptureManager {
             }
             supervisor::Recovery::Exhausted(last) => {
                 drop(inner);
-                self.interrupt(app, id, &loss, last);
+                self.interrupt(app, id, &exhausted_loss(loss, last_low_disk), last);
             }
             supervisor::Recovery::Cancelled => {}
         }
     }
 
     /// Capture cannot go on by itself: interrupt the session, say why, and
-    /// for a lost microphone watch for its return.
+    /// for a lost microphone watch for its return. When the store write
+    /// fails, the user still gets the alert, and a Stop settles the note
+    /// (KTD6 of the capture recovery plan).
     fn interrupt(self: Arc<Self>, app: &AppHandle, id: &str, loss: &Loss, last: Option<String>) {
-        let lost = Event::CaptureLost {
-            reason: loss.reason,
-            at: now(),
-        };
-        if let Err(e) = self.store().apply(id, &lost) {
-            log::error!("interrupting {id} failed: {e}");
-            return;
-        }
+        let steps = record_loss(&mut self.store(), id, loss);
         let reason = match last {
             Some(last) => format!("{}; reopening it failed: {last}", loss.message),
             None => loss.message.clone(),
@@ -3142,7 +3290,7 @@ impl CaptureManager {
             reason: reason.clone(),
         }
         .emit(app);
-        if loss.reason != InterruptReason::Sleep {
+        if steps.alert {
             app.state::<Arc<AlertsManager>>().raise(
                 app,
                 &self,
@@ -3152,7 +3300,7 @@ impl CaptureManager {
                 true,
             );
         }
-        if loss.reason == InterruptReason::Device {
+        if steps.watch_device {
             let manager = Arc::clone(&self);
             let app = app.clone();
             let id = id.to_string();
@@ -3803,6 +3951,8 @@ mod faults {
         pub static STEREO: Cell<bool> = const { Cell::new(false) };
         /// The next [`super::segment_end`] fails.
         pub static END: Cell<bool> = const { Cell::new(false) };
+        /// The store write of the next [`super::record_loss`] fails.
+        pub static LOST: Cell<bool> = const { Cell::new(false) };
     }
 
     pub fn set(fault: &'static LocalKey<Cell<bool>>) {
@@ -5532,8 +5682,8 @@ mod tests {
         chunk_mode(&dir, 0o000);
 
         let held = hold_unregistered(&store, root.path());
-        assert_eq!(held, vec!["s".to_string()]);
-        assert!(open_with_no_segments(&store.lock().unwrap(), &held).is_empty());
+        assert_eq!(held.ids, vec!["s".to_string()]);
+        assert!(open_with_no_segments(&store.lock().unwrap(), &held.ids).is_empty());
         let r = recognition();
         let stopped = store
             .lock()
@@ -5545,7 +5695,7 @@ mod tests {
                 &r.model,
                 &CaptureChoice::default(),
                 Some(&r.snapshot),
-                &held,
+                &held.ids,
             )
             .unwrap();
 
@@ -5746,8 +5896,8 @@ mod tests {
         std::fs::write(&part, b"not a wav file").unwrap();
 
         let held = hold_unregistered(&store, root.path());
-        assert_eq!(held, vec!["s".to_string()]);
-        assert!(open_with_no_segments(&store.lock().unwrap(), &held).is_empty());
+        assert_eq!(held.ids, vec!["s".to_string()]);
+        assert!(open_with_no_segments(&store.lock().unwrap(), &held.ids).is_empty());
         let r = recognition();
         store
             .lock()
@@ -5759,7 +5909,7 @@ mod tests {
                 &r.model,
                 &CaptureChoice::default(),
                 Some(&r.snapshot),
-                &held,
+                &held.ids,
             )
             .unwrap();
         assert!(matches!(
@@ -5830,5 +5980,154 @@ mod tests {
                 session_id: "s".into()
             }
         );
+    }
+
+    fn low_disk_error() -> CaptureError {
+        CaptureError::Recorder(recorder::RecorderError::LowDisk {
+            available: 1,
+            floor: 2,
+        })
+    }
+
+    // Covers C59.
+    #[test]
+    fn an_open_that_fails_on_the_disk_floor_interrupts_for_the_disk() {
+        let disk = open_loss(&low_disk_error());
+        assert_eq!(disk.reason, InterruptReason::Disk);
+        assert!(!disk.restartable);
+        assert!(!interrupt_steps(&disk, true).watch_device);
+
+        let device = open_loss(&CaptureError::Audio(audio::Error::MicOpenFailed));
+        assert_eq!(device.reason, InterruptReason::Device);
+        assert!(!device.restartable);
+        assert!(interrupt_steps(&device, true).watch_device);
+        assert_eq!(
+            alerts::headline(disk.reason),
+            "Recording stopped: the disk is nearly full"
+        );
+        assert_eq!(
+            alerts::headline(device.reason),
+            "The microphone stopped and could not be reopened"
+        );
+    }
+
+    // Covers C59: the restart after a wake or a lost device.
+    #[test]
+    fn a_restart_whose_last_open_failed_on_the_disk_floor_interrupts_for_the_disk() {
+        let device = || Loss {
+            reason: InterruptReason::Device,
+            message: "the microphone did not come back after sleep".into(),
+            restartable: true,
+        };
+        assert!(low_disk(&low_disk_error()));
+        let disk = exhausted_loss(device(), true);
+        assert_eq!(disk.reason, InterruptReason::Disk);
+        assert!(!disk.restartable);
+        assert!(!interrupt_steps(&disk, true).watch_device);
+
+        let other = CaptureError::Audio(audio::Error::MicOpenFailed);
+        assert!(!low_disk(&other));
+        assert_eq!(
+            exhausted_loss(device(), false).reason,
+            InterruptReason::Device
+        );
+    }
+
+    // Covers C60.
+    #[test]
+    fn a_failed_interrupt_write_still_raises_the_alert_and_a_stop_settles_the_note() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        let store = shared(store);
+        let loss = Loss {
+            reason: InterruptReason::Disk,
+            message: "the disk is full".into(),
+            restartable: false,
+        };
+        faults::set(&faults::LOST);
+
+        let steps = record_loss(&mut store.lock().unwrap(), "s", &loss);
+
+        assert!(steps.alert);
+        assert!(!steps.watch_device);
+        assert_eq!(state_of(&store, "s"), SessionState::Capturing);
+        let id = stop_target(&store, root.path(), &mut Inner::default(), None).unwrap();
+        assert_eq!(id, "s");
+        let outcome = settle_stop(&store, &root.path().join("s"), &id, at(70)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_written_interrupt_raises_the_alert() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let loss = Loss {
+            reason: InterruptReason::Device,
+            message: "microphone: gone".into(),
+            restartable: false,
+        };
+
+        let steps = record_loss(&mut store, "s", &loss);
+
+        assert!(steps.alert);
+        assert!(steps.watch_device);
+        assert!(matches!(
+            store.session("s").unwrap().unwrap().state,
+            SessionState::Interrupted {
+                reason: InterruptReason::Device,
+                ..
+            }
+        ));
+    }
+
+    // Covers R8: a Stop that leaves the audio with no row raises the alert
+    // one time.
+    #[cfg(unix)]
+    #[test]
+    fn a_stop_that_interrupts_the_note_for_its_audio_raises_the_alert_once() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        chunk_mode(&dir, 0o000);
+
+        let first = settle_stop(&store, &dir, "s", at(70)).unwrap_err();
+        assert!(unregistered_alert(&first).is_some());
+        // The note is already Interrupted: no second alert.
+        let second = settle_stop(&store, &dir, "s", at(80)).unwrap_err();
+        assert!(unregistered_alert(&second).is_none());
+        chunk_mode(&dir, 0o644);
+    }
+
+    // Covers R8: a Start that leaves the audio of a note with no row
+    // raises the alert one time.
+    #[cfg(unix)]
+    #[test]
+    fn a_start_that_interrupts_a_note_for_its_audio_raises_the_alert_once() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        chunk_mode(&dir, 0o000);
+
+        let first = hold_unregistered(&store, root.path());
+        assert_eq!(first.ids, vec!["s".to_string()]);
+        assert_eq!(first.interrupted.len(), 1);
+        assert_eq!(first.interrupted[0].0, "s");
+        let second = hold_unregistered(&store, root.path());
+        assert_eq!(second.ids, vec!["s".to_string()]);
+        assert!(second.interrupted.is_empty());
+        chunk_mode(&dir, 0o644);
     }
 }
