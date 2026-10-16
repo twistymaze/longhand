@@ -46,8 +46,10 @@ impl Drop for Permit {
 /// frees the permit and then sends the result. When the thread ends with
 /// no report, the drop frees the permit and the wait gets an error.
 pub(crate) struct Starting<T> {
-    report: SyncSender<Result<T, Error>>,
+    // Rust drops fields in declaration order. The permit is first, so it
+    // is free before the closed channel ends the wait.
     permit: Permit,
+    report: SyncSender<Result<T, Error>>,
 }
 
 impl<T> Starting<T> {

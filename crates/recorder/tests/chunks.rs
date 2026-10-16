@@ -810,6 +810,7 @@ fn a_stereo_writer_refuses_a_part_frame() {
 }
 
 /// The `.part` files in `dir`.
+#[cfg(unix)]
 fn parts(dir: &Path) -> Vec<std::path::PathBuf> {
     let mut parts: Vec<_> = std::fs::read_dir(dir)
         .unwrap()
