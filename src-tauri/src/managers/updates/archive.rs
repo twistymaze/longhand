@@ -25,7 +25,10 @@ fn temp_path(path: &Path) -> PathBuf {
     let time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |t| t.as_nanos());
-    path.with_file_name(format!(".{name}.{}-{time}{TEMP_SUFFIX}", std::process::id()))
+    path.with_file_name(format!(
+        ".{name}.{}-{time}{TEMP_SUFFIX}",
+        std::process::id()
+    ))
 }
 
 const TEMP_SUFFIX: &str = ".tmp";
@@ -51,7 +54,9 @@ pub fn verify(bytes: &[u8], signature: &str, pubkey: &str) -> Result<(), String>
 
 /// Save a verified archive and its signature.
 pub fn save(dir: &Path, version: &str, bytes: &[u8], signature: &str) -> Result<(), String> {
-    save_with(dir, version, bytes, signature, |file, bytes| file.write_all(bytes))
+    save_with(dir, version, bytes, signature, |file, bytes| {
+        file.write_all(bytes)
+    })
 }
 
 /// [`save`] with the function that writes the bytes into each file.
