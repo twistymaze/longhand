@@ -98,10 +98,32 @@ pub fn write(path: &Path, map: &Map<String, Value>) -> io::Result<()> {
     let bytes = serde_json::to_vec_pretty(map).map_err(io::Error::other)?;
     std::fs::create_dir_all(dir)?;
     session_save::home_write::replace_with(dir, &name, |file| file.write_all(&bytes))?;
-    if let Err(e) = std::fs::File::open(dir).and_then(|d| d.sync_all()) {
+    if let Err(e) = session_save::fsync::sync_dir(dir) {
         log::warn!("could not sync the folder of the settings file: {e}");
     }
     Ok(())
+}
+
+/// Remove the temporary files that a write of the file at `path` left when
+/// it stopped before its rename.
+pub fn remove_temp_files(path: &Path) {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file = entry.file_name();
+        if file
+            .to_str()
+            .and_then(session_save::home_write::temp_target)
+            == Some(name)
+            && let Err(e) = std::fs::remove_file(entry.path())
+        {
+            log::warn!("could not remove {}: {e}", entry.path().display());
+        }
+    }
 }
 
 /// Move the file to `settings.unreadable-<UTC time>.json` in the same
@@ -230,6 +252,28 @@ mod tests {
         assert_eq!(
             std::fs::read(&path).unwrap(),
             serde_json::to_vec_pretty(&earlier).unwrap()
+        );
+    }
+
+    #[test]
+    fn the_temporary_file_of_a_stopped_write_is_removed_and_other_files_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        write(&path, &map(json!({ "settings": {} }))).unwrap();
+        std::fs::write(
+            dir.path().join(".settings.json.0123456789abcdef.tmp"),
+            b"cut",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".updates.json.0123456789abcdef.tmp"),
+            b"other",
+        )
+        .unwrap();
+        remove_temp_files(&path);
+        assert_eq!(
+            names(dir.path()),
+            [".updates.json.0123456789abcdef.tmp", FILE_NAME]
         );
     }
 

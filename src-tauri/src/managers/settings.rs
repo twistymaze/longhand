@@ -1519,6 +1519,7 @@ pub fn load_at_launch(app: &AppHandle) -> Result<LocalSettings, crate::startup::
         source: e.into(),
     };
     let path = local_store_path(app).map_err(failure)?;
+    local_store::remove_temp_files(&path);
     let read = local_store::read(&path, local_store::LAUNCH_TRIES, local_store::LAUNCH_DELAY);
     let values = match launch_read(read) {
         LaunchRead::Values(values) => values,
@@ -1606,9 +1607,11 @@ pub fn read_settings(app: &AppHandle) -> LocalSettings {
 /// touches (R15, KTD7). The local fields go to the local store. The shared
 /// fields that changed go to the shared settings file as a patch of only
 /// those values. A store with no changed field is not written. Nothing is
-/// written when `change` refuses, or when the change sets a shared field
-/// while the shared settings are read-only. The prompts have their own
-/// commands: a change of `summary_prompts` here is not saved.
+/// written when `change` refuses. The local part of a change that also sets
+/// a shared field is written first; when the shared save refuses (for
+/// example while the shared settings are read-only), the local part is put
+/// back and the error is returned. The prompts have their own commands: a
+/// change of `summary_prompts` here is not saved.
 pub fn update_settings(
     app: &AppHandle,
     change: impl FnOnce(&mut Settings) -> Result<(), String>,
@@ -1651,10 +1654,14 @@ struct Updates {
 }
 
 /// The turns of the shared changes: `given` turns were given, and the turns
-/// before `current` have ended.
+/// before `current` have ended. `pending` holds the patch of each turn that
+/// has not ended: a change made while an earlier shared save waits starts
+/// from the values that the earlier change chose, not from the values in
+/// the file.
 struct Turns {
     given: u64,
     current: u64,
+    pending: Vec<(u64, Vec<SharedValue>)>,
     #[cfg(test)]
     waiting: u64,
 }
@@ -1668,6 +1675,7 @@ impl Updates {
             turns: Mutex::new(Turns {
                 given: 0,
                 current: 0,
+                pending: Vec::new(),
                 #[cfg(test)]
                 waiting: 0,
             }),
@@ -1675,11 +1683,25 @@ impl Updates {
         }
     }
 
-    /// Give the next turn. Call this with `lock` held.
-    fn give_turn(&self) -> u64 {
+    /// Give the next turn to a change with `patch`. Call this with `lock`
+    /// held.
+    fn give_turn(&self, patch: &[SharedValue]) -> u64 {
         let mut turns = self.turns.lock().unwrap_or_else(|e| e.into_inner());
+        let turn = turns.given;
         turns.given += 1;
-        turns.given - 1
+        turns.pending.push((turn, patch.to_vec()));
+        turn
+    }
+
+    /// Put the patches of the turns that have not ended onto `settings`, in
+    /// the order of the turns. Call this with `lock` held.
+    fn with_pending(&self, settings: &mut Settings) {
+        let turns = self.turns.lock().unwrap_or_else(|e| e.into_inner());
+        for (_, patch) in &turns.pending {
+            for value in patch {
+                apply_shared(settings, value);
+            }
+        }
     }
 
     /// Wait until `turn` is the current turn. The turn ends when the result
@@ -1712,14 +1734,44 @@ struct TurnGuard<'a> {
 impl Drop for TurnGuard<'_> {
     fn drop(&mut self) {
         let mut turns = self.updates.turns.lock().unwrap_or_else(|e| e.into_inner());
+        let ended = turns.current;
+        turns.pending.retain(|(turn, _)| *turn != ended);
         turns.current += 1;
         self.updates.turn_ended.notify_all();
     }
 }
 
-/// `current` with each top-level field that differs between `before` and
-/// `after` set to its value in `after`.
-fn with_local_changes(
+/// Set the value of one shared setting in `settings`, as [`shared_patch`]
+/// reads it. A value that [`shared_patch`] never gives changes nothing.
+fn apply_shared(settings: &mut Settings, value: &SharedValue) {
+    let chosen = &mut settings.chosen_recognition;
+    match value {
+        SharedValue::ActiveSummaryPrompt(id) => settings.active_summary_prompt = id.clone(),
+        SharedValue::DefaultSpeakerCount(count) => {
+            chosen.default_speaker_count = count.map(Into::into)
+        }
+        SharedValue::AsrModel(model) => chosen.asr_model = model.clone(),
+        SharedValue::LiveTranscript(on) => chosen.live_transcript = *on,
+        SharedValue::SpeakerSource(source) => chosen.speaker_source = *source,
+        SharedValue::SpeakerProcessingMode(mode) => chosen.speaker_processing_mode = *mode,
+        SharedValue::RecognitionLanguage(language) => {
+            chosen.recognition_language = language.clone()
+        }
+        SharedValue::CheckUpdatesAutomatically(on) => settings.check_updates_automatically = *on,
+        SharedValue::AudioRemoval(removal) => settings.audio_removal = (*removal).into(),
+        SharedValue::ShowRecordingWidget(on) => settings.show_recording_widget = *on,
+        SharedValue::NewNoteRecords(on) => settings.new_note_records = *on,
+        SharedValue::NoteTypes(_)
+        | SharedValue::DefaultNoteType(_)
+        | SharedValue::NoteTypePrompts(_) => {}
+    }
+}
+
+/// `current` with each top-level field that a change set from its value in
+/// `before` to its value in `after` put back to its value in `before`. A
+/// field that no longer has the value in `after` keeps its value in
+/// `current`: another change set it.
+fn without_local_changes(
     current: &LocalSettings,
     before: &LocalSettings,
     after: &LocalSettings,
@@ -1730,13 +1782,13 @@ fn with_local_changes(
         Err(e) => Err(e.to_string()),
     };
     let (before, after) = (as_map(before)?, as_map(after)?);
-    let mut merged = as_map(current)?;
-    for (key, value) in after {
-        if before.get(&key) != Some(&value) {
-            merged.insert(key, value);
+    let mut reverted = as_map(current)?;
+    for (key, value) in before {
+        if after.get(&key) != Some(&value) && reverted.get(&key) == after.get(&key) {
+            reverted.insert(key, value);
         }
     }
-    serde_json::from_value(Value::Object(merged)).map_err(|e| e.to_string())
+    serde_json::from_value(Value::Object(reverted)).map_err(|e| e.to_string())
 }
 
 /// The steps of [`update_settings`], with the stores as arguments. Returns
@@ -1749,7 +1801,8 @@ fn update_with(
     let guard = updates.lock.lock().unwrap_or_else(|e| e.into_inner());
     let local = (stores.read_local)();
     let shared = (stores.snapshot)();
-    let before = Settings::from_parts(local.clone(), &shared);
+    let mut before = Settings::from_parts(local.clone(), &shared);
+    updates.with_pending(&mut before);
     let mut after = before.clone();
     change(&mut after)?;
     let patch = shared_patch(&before, &after);
@@ -1763,7 +1816,7 @@ fn update_with(
     // The local part is written, in the order of the lock. The shared save
     // can wait for the storage folder, so it runs without the lock, in the
     // order of the turns.
-    let turn = updates.give_turn();
+    let turn = updates.give_turn(&patch);
     drop(guard);
     let _turn = updates.wait_for(turn);
     let saved = (stores.save_shared)(&patch);
@@ -1772,12 +1825,15 @@ fn update_with(
     match saved {
         Ok(shared) => Ok((current, shared)),
         Err(e) => {
-            // Nothing of a refused change is kept: put back the local
-            // fields that this change changed. A change of other fields
-            // during the shared save stays.
-            let reverted = with_local_changes(&current, &changed_local, &local)?;
-            if reverted != current {
-                (stores.write_local)(&reverted)?;
+            // Nothing of a refused change is kept: put back each local
+            // field that this change changed and that still has this
+            // change's value. A change that another command made during
+            // the shared save stays.
+            let reverted = without_local_changes(&current, &local, &changed_local)?;
+            if reverted != current
+                && let Err(write) = (stores.write_local)(&reverted)
+            {
+                log::error!("could not put back the local settings of a refused change: {write}");
             }
             Err(e)
         }
@@ -2971,25 +3027,30 @@ mod tests {
     }
 
     /// Wait until `count` changes wait for their turn.
+    /// Only a failure reaches the time limit.
     fn wait_for_waiting(updates: &Updates, count: u64) {
-        let mut turns = updates.turns.lock().unwrap();
-        while turns.waiting != count {
-            turns = updates.turn_ended.wait(turns).unwrap();
-        }
+        let (turns, _) = updates
+            .turn_ended
+            .wait_timeout_while(
+                updates.turns.lock().unwrap(),
+                std::time::Duration::from_secs(30),
+                |turns| turns.waiting != count,
+            )
+            .unwrap();
+        assert_eq!(turns.waiting, count, "no change waited for its turn");
     }
 
     #[test]
     fn shared_changes_take_effect_in_the_order_that_they_were_made() {
         let updates = new_updates();
         let (stores, on_start, release) = MemoryStores::new();
-        // Each change sets a shared field (the test's shared view always
-        // reads its default) and a local field.
-        let change = |alert_sound: bool| {
+        // Each change sets a shared field and a local field to one value.
+        let change = |value: bool| {
             let stores = Arc::clone(&stores);
             std::thread::spawn(move || {
                 stores.update(updates, move |s| {
-                    s.new_note_records = false;
-                    s.alert_sound = alert_sound;
+                    s.new_note_records = value;
+                    s.alert_sound = value;
                     Ok(())
                 })
             })
@@ -3004,9 +3065,111 @@ mod tests {
         on_start.recv().unwrap();
         release.send(Ok(())).unwrap();
         assert!(second.join().unwrap().unwrap().alert_sound);
-        assert_eq!(stores.saves.lock().unwrap().len(), 2);
+        assert_eq!(
+            *stores.saves.lock().unwrap(),
+            [
+                vec![SharedValue::NewNoteRecords(false)],
+                vec![SharedValue::NewNoteRecords(true)],
+            ]
+        );
         // The local part of the later change is the one that stays.
         assert!(stores.local.lock().unwrap().alert_sound);
+    }
+
+    #[test]
+    fn a_change_back_during_a_shared_save_is_saved_after_it() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        let set = |value: bool| {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, move |s| {
+                    s.new_note_records = value;
+                    Ok(())
+                })
+            })
+        };
+        // The user turns the setting off, and on again while the first
+        // save waits for the storage folder.
+        let off = set(false);
+        assert_eq!(
+            on_start.recv().unwrap(),
+            [SharedValue::NewNoteRecords(false)]
+        );
+        let on = set(true);
+        wait_for_waiting(updates, 1);
+        release.send(Ok(())).unwrap();
+        assert!(off.join().unwrap().is_ok());
+        assert_eq!(
+            on_start.recv().unwrap(),
+            [SharedValue::NewNoteRecords(true)]
+        );
+        release.send(Ok(())).unwrap();
+        assert!(on.join().unwrap().is_ok());
+        assert_eq!(
+            *stores.saves.lock().unwrap(),
+            [
+                vec![SharedValue::NewNoteRecords(false)],
+                vec![SharedValue::NewNoteRecords(true)],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_shared_save_keeps_the_local_changes_of_other_commands() {
+        let updates = new_updates();
+        let (stores, on_start, release) = MemoryStores::new();
+        let failing = {
+            let stores = Arc::clone(&stores);
+            std::thread::spawn(move || {
+                stores.update(updates, |s| {
+                    s.new_note_records = false;
+                    s.alert_sound = false;
+                    s.endpoint_model = "refused".into();
+                    Ok(())
+                })
+            })
+        };
+        on_start.recv().unwrap();
+        // During the shared save, other commands change a field of the
+        // refused change and a field that it did not change.
+        stores
+            .update(updates, |s| {
+                s.endpoint_model = "later".into();
+                s.live_transcript = false;
+                Ok(())
+            })
+            .unwrap();
+        release.send(Err("the folder is gone".into())).unwrap();
+        assert!(failing.join().unwrap().is_err());
+        let local = stores.local.lock().unwrap().clone();
+        // The refused change's own field goes back; the others stay.
+        assert!(local.alert_sound);
+        assert_eq!(local.endpoint_model, "later");
+        assert!(!local.live_transcript);
+    }
+
+    #[test]
+    fn each_shared_value_reads_back_as_the_same_patch() {
+        let before = Settings::default();
+        let mut after = before.clone();
+        after.active_summary_prompt = "custom".into();
+        after.chosen_recognition.default_speaker_count =
+            Some(SpeakerCountSetting::Exact { count: 3 });
+        after.chosen_recognition.asr_model = "whisper-large-v3-turbo-q5km".into();
+        after.chosen_recognition.live_transcript = !before.chosen_recognition.live_transcript;
+        after.chosen_recognition.recognition_language = Some("de".into());
+        after.check_updates_automatically = !before.check_updates_automatically;
+        after.show_recording_widget = !before.show_recording_widget;
+        after.new_note_records = !before.new_note_records;
+        let patch = shared_patch(&before, &after);
+        assert_eq!(patch.len(), 8);
+        let mut applied = before.clone();
+        for value in &patch {
+            apply_shared(&mut applied, value);
+        }
+        assert_eq!(shared_patch(&before, &applied), patch);
+        assert!(shared_patch(&after, &applied).is_empty());
     }
 
     #[test]

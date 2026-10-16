@@ -25,6 +25,16 @@ fn unpredictable() -> u64 {
     h.finish()
 }
 
+/// The name of the file that `file` replaces, when `file` is the temporary
+/// file of a write in this module: `.<name>.<16 hex digits>.tmp`. A write
+/// that stopped leaves one.
+pub fn temp_target(file: &str) -> Option<&str> {
+    let rest = file.strip_prefix('.')?.strip_suffix(".tmp")?;
+    let (name, hex) = rest.rsplit_once('.')?;
+    (!name.is_empty() && hex.len() == 16 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then_some(name)
+}
+
 /// Replace `dir/name` with `contents` atomically.
 pub fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> io::Result<()> {
     let temp = format!(".{name}.{:016x}.tmp", unpredictable());
@@ -101,4 +111,27 @@ fn replace_via(
         return Err(e);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_temporary_name_gives_its_target_and_other_names_give_none() {
+        let temp = format!(".settings.json.{:016x}.tmp", unpredictable());
+        assert_eq!(temp_target(&temp), Some("settings.json"));
+        assert_eq!(
+            temp_target(".1.0.10.tar.gz.0123456789abcdef.tmp"),
+            Some("1.0.10.tar.gz")
+        );
+        for other in [
+            "settings.json",
+            ".settings.json.tmp",
+            ".x.123.tmp",
+            "a.0123456789abcdef.tmp",
+        ] {
+            assert_eq!(temp_target(other), None, "{other}");
+        }
+    }
 }

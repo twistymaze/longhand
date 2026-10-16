@@ -18,10 +18,6 @@ fn signature_path(dir: &Path, version: &str) -> PathBuf {
     dir.join(format!("{version}.tar.gz.sig"))
 }
 
-/// The end of the name of the temporary file that a save writes
-/// (`session_save::home_write`).
-const TEMP_SUFFIX: &str = ".tmp";
-
 fn decode_base64_text(value: &str, what: &str) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value.trim())
@@ -105,7 +101,8 @@ pub fn newest_saved(dir: &Path, current: &str) -> Option<String> {
         // large, so remove it.
         if name
             .to_str()
-            .is_some_and(|n| n.starts_with('.') && n.ends_with(TEMP_SUFFIX))
+            .and_then(session_save::home_write::temp_target)
+            .is_some_and(|target| target.ends_with(".tar.gz") || target.ends_with(".tar.gz.sig"))
         {
             let _ = std::fs::remove_file(entry.path());
             continue;
