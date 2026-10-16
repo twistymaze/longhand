@@ -450,6 +450,27 @@ fn a_target_type_folder_with_other_case_is_used() {
     assert_eq!(entries(&root), ["pathfinder"]);
 }
 
+/// The note files cannot be read now: the move waits, and the note shows
+/// the new type at once, as it does while the storage folder is not
+/// available.
+#[test]
+fn a_note_whose_files_cannot_be_read_shows_the_new_type_while_the_move_waits() {
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("s", &root, "Standup");
+    let record = home.join(session_core::note_record::NOTE_RECORD_FILE);
+    let good = fs::read(&record).unwrap();
+    fs::write(&record, "{ not json").unwrap();
+
+    assert_eq!(b.change("s", Some("One on One")), TypeChange::Later);
+    assert!(b.owes("s"));
+    assert_eq!(shown_type(&b.record("s")).0.as_deref(), Some("One on One"));
+
+    fs::write(&record, good).unwrap();
+    assert_eq!(b.run(now()), ["s"]);
+    assert!(root.join("One on One").join(name_of(&home)).exists());
+}
+
 #[test]
 fn an_unavailable_storage_folder_pauses_the_move_and_keeps_the_row() {
     let (_dir, root) = storage();
@@ -799,6 +820,37 @@ fn a_type_edit_that_waits_keeps_a_later_type_change(edit: BulkEdit) {
         Some(root.join("Pathfinder").as_path())
     );
     assert!(b.store.lock().unwrap().bulk_edits().unwrap().is_empty());
+}
+
+/// A type rename waits for a note whose session.md cannot be read. The
+/// user then gives that note another type while the file still cannot be
+/// read. The next pass of the rename keeps the user's type.
+#[test]
+fn a_type_edit_that_waits_keeps_a_type_the_user_chose_for_the_waiting_note() {
+    let (_dir, root) = storage();
+    let b = computer();
+    let stuck = b.save_typed("stuck", &root, "Pathfinder", "Session 12");
+    let text = fs::read(stuck.join("session.md")).unwrap();
+    fs::write(stuck.join("session.md"), b"not a session file").unwrap();
+    let edit = BulkEdit::RenameType {
+        from: "Pathfinder".into(),
+        to: "D&D".into(),
+    };
+    let id = {
+        let store = b.store.lock().unwrap();
+        let notes = type_move::matching_notes(&store, &edit).unwrap();
+        store.add_bulk_edit(&edit, &notes).unwrap()
+    };
+    assert!(!continue_recorded(&b, &root, id).done);
+    assert_eq!(b.change("stuck", Some("Standup")), TypeChange::Later);
+    assert_eq!(shown_type(&b.record("stuck")).0.as_deref(), Some("Standup"));
+
+    // The note is the user's now: the edit has nothing left.
+    assert!(continue_recorded(&b, &root, id).done);
+    assert_eq!(shown_type(&b.record("stuck")).0.as_deref(), Some("Standup"));
+    fs::write(stuck.join("session.md"), &text).unwrap();
+    b.run(now());
+    assert_eq!(b.record("stuck").note_type.as_deref(), Some("Standup"));
 }
 
 #[test]

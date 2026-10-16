@@ -242,10 +242,14 @@ fn pause_for(e: &io::Error, folder: &Path) -> MoveError {
 /// `longhand.json`, or an old-layout `session.md`, has the note id), so a
 /// second copy is never placed.
 fn is_ours(path: &Path, session_id: &str) -> bool {
-    if std::fs::read_to_string(path.join(MARKER)).is_ok_and(|m| m.trim() == session_id) {
-        return true;
-    }
-    NoteFiles::read(path).is_ok_and(|files| files.doc.session_id == session_id)
+    moving_copy(path, session_id)
+        || NoteFiles::read(path).is_ok_and(|files| files.doc.session_id == session_id)
+}
+
+/// Whether `path` has the Move's marker with the note id: it is a copy
+/// that this Move made and has not homed yet.
+fn moving_copy(path: &Path, session_id: &str) -> bool {
+    std::fs::read_to_string(path.join(MARKER)).is_ok_and(|m| m.trim() == session_id)
 }
 
 /// The note's folder in the new folder, among the names that a rename
@@ -285,6 +289,25 @@ fn folder_name(path: &Path) -> String {
     path.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+/// Remove a copy that this Move made, its marker last. A removal that
+/// stops part way keeps the marker, so the next step still knows the
+/// folder as this Move's copy and removes the rest; it is never taken for
+/// a finished note.
+fn remove_copy(dir: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == MARKER {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    std::fs::remove_dir_all(dir)
 }
 
 fn write_marker(dir: &Path, session_id: &str) -> io::Result<()> {
@@ -600,13 +623,16 @@ impl Mover<'_> {
     }
 
     /// The folder rename that a rename during the Move owes the note: the
-    /// folder takes the name its title gives now.
+    /// folder takes the name its title gives now. A summary regeneration or
+    /// a delete can claim the note after the Move releases its hold; the
+    /// rename then waits for it (KTD8). The Move's own claim does not count.
     fn rename_owed(&self, id: &str) {
         let store = lock(self.store);
         let owed = store
             .owed_renames()
             .is_ok_and(|ids| ids.iter().any(|owed| owed == id));
-        if owed && let Err(e) = folder_rename::reconcile(&store, id, false, true, self.fs) {
+        let claimed = self.claims.is_regenerating_or_deleting(id);
+        if owed && let Err(e) = folder_rename::reconcile(&store, id, claimed, true, self.fs) {
             log::warn!("move: could not rename the folder of {id}: {e}");
         }
     }
@@ -685,6 +711,22 @@ impl Mover<'_> {
                         }
                         None => Taken::Dropped,
                     });
+                }
+                if let Some(source) = source
+                    && !exists(source)
+                    && moving_copy(path, id)
+                {
+                    // The source went after the copy: a person or another
+                    // computer deleted or moved it, and an edit after the
+                    // copy can be gone with it. The copy is not homed
+                    // without the final check. A folder with no marker is
+                    // not this Move's copy: it is a finished note that
+                    // another computer moved here, and it is homed.
+                    check_old(old)?;
+                    remove_copy(path).map_err(|e| pause_for(&e, new))?;
+                    fsync::sync_dir(path.parent().unwrap_or(new))
+                        .map_err(|e| pause_for(&e, new))?;
+                    return Ok(Taken::Dropped);
                 }
                 if let Some(source) = source
                     && exists(source)
@@ -835,5 +877,69 @@ impl Mover<'_> {
         Err(io::Error::other(format!(
             "the new folder has no free name for {name} after {MAX_NAMES} tries"
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// A saved note "a" with no audio whose folder in a storage folder has
+    /// the name of its first title, and a rename to "Review" that the Move
+    /// owes it. Returns the store, the storage folder and the home folder.
+    fn owed_rename() -> (tempfile::TempDir, SharedStore, PathBuf) {
+        let dest = tempfile::tempdir().unwrap();
+        let store: SharedStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
+        {
+            let mut s = lock(&store);
+            let at = chrono::DateTime::parse_from_rfc3339("2026-09-27T00:00:00Z").unwrap();
+            s.create_notes_only("a", at, None).unwrap();
+            s.set_title("a", "Budget", session_core::TitleSource::User)
+                .unwrap();
+            crate::early_home::begin(&s, "a").unwrap();
+        }
+        let home =
+            crate::early_home::write(&store, "a", Some(dest.path()), "run", &session_save::RealFs)
+                .unwrap()
+                .unwrap();
+        let s = lock(&store);
+        s.set_title("a", "Review", session_core::TitleSource::User)
+            .unwrap();
+        s.set_rename_owed("a", true).unwrap();
+        drop(s);
+        (dest, store, home)
+    }
+
+    fn mover<'a>(store: &'a SharedStore, claims: &'a Claims) -> Mover<'a> {
+        Mover {
+            store,
+            claims,
+            fs: &session_save::RealFs,
+            copy: &copy_note,
+        }
+    }
+
+    /// A summary regeneration that started after the Move released its
+    /// hold keeps the folder name: the rename waits for it (KTD8).
+    #[test]
+    fn the_owed_rename_waits_for_a_summary_regeneration() {
+        let (_dest, store, home) = owed_rename();
+        let claims = Claims::default();
+        let _regenerating = claims.regenerate("a").unwrap();
+        mover(&store, &claims).rename_owed("a");
+        assert!(home.is_dir(), "the folder keeps its name");
+        assert_eq!(lock(&store).owed_renames().unwrap(), ["a"]);
+    }
+
+    #[test]
+    fn the_owed_rename_renames_a_free_note() {
+        let (_dest, store, home) = owed_rename();
+        let claims = Claims::default();
+        mover(&store, &claims).rename_owed("a");
+        assert!(!home.exists());
+        let record = lock(&store).session("a").unwrap().unwrap();
+        assert!(record.home_path.unwrap().ends_with("Review"));
     }
 }

@@ -103,7 +103,8 @@ fn recover_summary_publication(store: &mut Store, session_id: &str) -> Result<()
     let local: PathBuf = serde_json::from_value(value)?;
     if let Some(publication) = Publication::load(&local)? {
         let home = run_home(store, session_id)?;
-        match publication.publish(&home, &local)? {
+        // The caller holds the store lock already.
+        match publication.publish(&home, &local, || ())? {
             Outcome::Committed => {
                 log::info!("finished the summary publication of {session_id}");
                 let segments = store.segments(session_id)?.len();
@@ -453,7 +454,7 @@ fn update_home(
         // The library reconcile moves the home path when a sync delivers a
         // renamed folder (KTD6), so the publication reads it again.
         let home = run_home(&lock(store), session_id)?;
-        if publication.publish(&home, working)? == Outcome::Conflict {
+        if publication.publish(&home, working, || lock(store))? == Outcome::Conflict {
             return Err(drop_publication(store, session_id, working));
         }
         let done = SaveState::Done { path: home };
@@ -1041,10 +1042,10 @@ pub enum NotesSave {
     /// wrote it. The file and the row keep that text, and the document is
     /// in the draft file at `draft`, beside `notes.md`.
     Conflict { draft: PathBuf },
-    /// The note has no audio, and its home folder is not at its home path:
-    /// another computer can have removed it (R24). The store holds the
-    /// document, and no folder is made. [`rescue_notes`] finds out what
-    /// happened to the folder.
+    /// The note is saved, and its home folder is not at its home path:
+    /// another app can have renamed it, or another computer removed it
+    /// (R24). The store holds the document, and no folder is made.
+    /// [`rescue_notes`] finds out what happened to the folder.
     FolderGone,
 }
 
@@ -1098,12 +1099,10 @@ pub fn save_notes(
         .home_path
         .map(PathBuf::from)
         .filter(|home| saved || home.is_dir());
-    // A saved note with no audio whose folder is gone keeps the edit in the
-    // store and makes no folder (R24).
-    if saved
-        && home.as_ref().is_some_and(|home| !home.is_dir())
-        && store.segments(session_id)?.is_empty()
-    {
+    // A saved note whose folder is not at its home path keeps the edit in
+    // the store and makes no folder (R24). Another app can have renamed
+    // the folder, with or without audio: the rescue then finds it.
+    if saved && home.as_ref().is_some_and(|home| !home.is_dir()) {
         store.set_notes(session_id, document)?;
         return Ok(NotesSave::FolderGone);
     }
@@ -1323,7 +1322,10 @@ fn summarize_again(
         let summary_fingerprint = fingerprint_of(&home, SUMMARY_FILE)?;
         // A result of another computer can reach `longhand.json` after the
         // read above. Read it again just before the write, and refuse when
-        // its records changed, as the publication does.
+        // its records changed, as the publication does. The store lock
+        // keeps a title or a type written on this computer from being
+        // undone.
+        let _guard = lock(store);
         let mut now = note_files::new_layout_record(&home)?;
         if now.run_fingerprint() != current.run_fingerprint() {
             return Err(changed());
@@ -1442,7 +1444,7 @@ fn summarize_again(
     // From here on the publication only rolls forward: after an error, the
     // record stays, and the recovery at the next launch or the next
     // regeneration finishes it.
-    let outcome = publication.publish(&path, &local)?;
+    let outcome = publication.publish(&path, &local, || lock(store))?;
     let mut guard = lock(store);
     if outcome == Outcome::Conflict {
         log::warn!("{session_id}: {CHANGED_ELSEWHERE} The regenerated summary was dropped.");

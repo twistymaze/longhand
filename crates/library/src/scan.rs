@@ -23,7 +23,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
 use std::time::{Duration, SystemTime};
 
 use chrono::{Local, TimeDelta};
@@ -90,8 +89,7 @@ pub fn storage_place(home: &Path) -> Option<Place> {
     })
 }
 
-/// The default time limit of one file read.
-pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+pub use session_core::note_folder::{READ_TIMEOUT, Read, read_timed};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanOptions {
@@ -1015,34 +1013,6 @@ pub(crate) fn removed_audio(dir: &Path, doc: &SessionDoc) -> Vec<String> {
 /// Whether `path` exists. This reads metadata only and opens no file.
 fn exists(path: &Path) -> bool {
     path.try_exists().unwrap_or(false)
-}
-
-/// The result of [`read_timed`].
-pub enum Read {
-    Missing,
-    Bytes(Vec<u8>),
-    /// The read failed or did not finish in time.
-    Failed(String),
-}
-
-/// Read `path` on a separate thread, and stop waiting after `timeout`. A
-/// read that does not finish keeps its thread until the read returns.
-pub fn read_timed(path: PathBuf, timeout: Duration) -> Read {
-    let (tx, rx) = mpsc::channel();
-    let spawned = std::thread::Builder::new()
-        .name("library-read".into())
-        .spawn(move || {
-            let _ = tx.send(std::fs::read(&path));
-        });
-    if let Err(e) = spawned {
-        return Read::Failed(format!("cannot start the read: {e}"));
-    }
-    match rx.recv_timeout(timeout) {
-        Ok(Ok(bytes)) => Read::Bytes(bytes),
-        Ok(Err(e)) if e.kind() == io::ErrorKind::NotFound => Read::Missing,
-        Ok(Err(e)) => Read::Failed(e.to_string()),
-        Err(_) => Read::Failed(format!("the read did not finish in {timeout:?}")),
-    }
 }
 
 /// Keep one folder for each note id (KTD5): the one folder whose name is

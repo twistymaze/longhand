@@ -245,6 +245,11 @@ fn settle(
         return Ok(TypeChange::Unchanged);
     }
     let Some(files) = read_files(&home) else {
+        // The files cannot be read now: the move waits. The app shows the
+        // new type, and a later pass writes it into the files.
+        if claim {
+            store.set_pending_type(session_id, Some(&pending))?;
+        }
         return Ok(TypeChange::Later);
     };
     if !claim {
@@ -335,6 +340,8 @@ fn settle(
             log::warn!("could not move the folder of {session_id}: {e}");
             if let Some(files) = read_files(&home) {
                 write_pending(store, session_id, &home, files, &pending, &mut owed)?;
+            } else if claim {
+                store.set_pending_type(session_id, Some(&pending))?;
             }
             Ok(TypeChange::Kept(e.to_string()))
         }
@@ -756,18 +763,29 @@ pub fn apply_recorded(
     }
     let old = Some(from.to_string());
     let roots = [root.to_path_buf()];
-    let shows_old = |record: &SessionRecord| {
+    let new = to.map(str::to_string);
+    let in_root = |record: &SessionRecord| {
         record.state != SessionState::Discarded
             && record
                 .home_path
                 .as_deref()
                 .is_some_and(|home| scan::place_in(Path::new(home), &roots).is_some())
-            && same_optional_type(&shown_type(record).0, &old)
     };
     let mut pass = EditPass::default();
     for id in notes {
         let mut guard = crate::move_notes::lock_unheld(store, ctx.claims, id);
-        if !guard.session(id)?.is_some_and(|r| shows_old(&r)) {
+        // A note whose files could not be read shows the new type already,
+        // but this edit's move is only in the row: the edit tries it again.
+        // A move that the user chose later has another target, and stays.
+        let waits_for_edit = guard.type_move(id)?.is_some_and(|w| {
+            !w.field_written
+                && w.remove_empty_from
+                && same_optional_type(&w.from, &old)
+                && same_optional_type(&w.to, &new)
+        });
+        if !guard.session(id)?.is_some_and(|r| {
+            in_root(&r) && (same_optional_type(&shown_type(&r).0, &old) || waits_for_edit)
+        }) {
             continue;
         }
         match change_type_locked(&mut guard, id, to, true, ctx) {

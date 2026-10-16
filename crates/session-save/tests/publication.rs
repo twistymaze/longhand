@@ -118,7 +118,7 @@ fn the_result_set_writes_the_timed_text_then_the_documents_then_longhand_json() 
     publication.record(&local).unwrap();
     let mut written = Vec::new();
     let outcome = publication
-        .publish_with(&home, &local, &mut |name| {
+        .publish_with(&home, &local, || (), &mut |name| {
             written.push(name.to_string());
             Ok(())
         })
@@ -144,7 +144,7 @@ fn the_result_set_writes_the_timed_text_then_the_documents_then_longhand_json() 
 fn a_save_keeps_the_body_and_the_unknown_keys_of_session_md() {
     let (_root, home, local, publication) = fixture(WriteSet::Result);
     publication.record(&local).unwrap();
-    publication.publish(&home, &local).unwrap();
+    publication.publish(&home, &local, || ()).unwrap();
     assert_eq!(read(&home, SESSION_FILE), AGENT_SESSION_MD);
 }
 
@@ -155,7 +155,7 @@ fn a_missing_session_md_is_written_before_longhand_json() {
     publication.record(&local).unwrap();
     let mut written = Vec::new();
     publication
-        .publish_with(&home, &local, &mut |name| {
+        .publish_with(&home, &local, || (), &mut |name| {
             written.push(name.to_string());
             Ok(())
         })
@@ -169,6 +169,124 @@ fn a_missing_session_md_is_written_before_longhand_json() {
     assert_eq!(files.doc.title_source, Some(TitleSource::Proposed));
 }
 
+/// A guard that tells while it is held.
+struct Held(std::rc::Rc<std::cell::Cell<bool>>);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
+}
+
+/// The caller's guard is held from the last read of `longhand.json` to
+/// its write, so a title or type writer that holds the same lock cannot
+/// write between them. The staged files are written without it.
+#[test]
+fn the_records_are_read_and_written_while_the_caller_holds_its_guard() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    // With no `session.md`, a write happens between the read and the
+    // write of `longhand.json`.
+    std::fs::remove_file(home.join(SESSION_FILE)).unwrap();
+    publication.record(&local).unwrap();
+    let held = std::rc::Rc::new(std::cell::Cell::new(false));
+    let mut seen = Vec::new();
+    publication
+        .publish_with(
+            &home,
+            &local,
+            || {
+                held.set(true);
+                Held(held.clone())
+            },
+            &mut |name| {
+                seen.push((name.to_string(), held.get()));
+                Ok(())
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        seen,
+        [
+            (ARTIFACT_FILE.to_string(), false),
+            ("transcript.md".to_string(), false),
+            ("summary.md".to_string(), false),
+            (SESSION_FILE.to_string(), true),
+            (NOTE_RECORD_FILE.to_string(), true),
+        ]
+    );
+    assert!(!held.get(), "the guard is released after the write");
+}
+
+/// A writer that held the lock just before the publication took it wrote
+/// a title and a pending type. The publication reads the records after it
+/// takes the lock, so both stay.
+#[test]
+fn records_written_before_the_guard_is_taken_stay() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    publication.record(&local).unwrap();
+    let title = Title {
+        text: "New title".into(),
+        source: TitleSource::User,
+    };
+    let outcome = publication
+        .publish(&home, &local, || {
+            let mut record = records(&home);
+            record.written_title = Some(title.clone());
+            record.pending_type = Some(pending_type());
+            note_files::write_record(&home, &record).unwrap();
+        })
+        .unwrap();
+    assert_eq!(outcome, Outcome::Committed);
+    let record = records(&home);
+    assert_eq!(record.written_title, Some(title));
+    assert_eq!(record.pending_type, Some(pending_type()));
+    assert_eq!(
+        record.transcript_fingerprint,
+        Some(fingerprint(b"new transcript"))
+    );
+}
+
+/// A type writer on another thread reads the records under the lock while
+/// the publication writes its files, and writes them back with a pending
+/// type when the publication waits for the lock. The publication reads
+/// the records after the writer releases the lock, so the result and the
+/// pending type both stay.
+#[test]
+fn a_record_writer_that_holds_the_lock_is_not_undone() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    publication.record(&local).unwrap();
+    let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let (locking_tx, locking_rx) = std::sync::mpsc::channel::<()>();
+    let (read_tx, read_rx) = std::sync::mpsc::channel::<()>();
+    let writer = {
+        let (lock, home) = (lock.clone(), home.clone());
+        std::thread::spawn(move || {
+            let _held = lock.lock().unwrap();
+            let mut record = records(&home);
+            read_tx.send(()).unwrap();
+            // The publication is about to take the lock.
+            locking_rx.recv().unwrap();
+            record.pending_type = Some(pending_type());
+            note_files::write_record(&home, &record).unwrap();
+        })
+    };
+    read_rx.recv().unwrap();
+    let outcome = publication
+        .publish(&home, &local, || {
+            locking_tx.send(()).unwrap();
+            lock.lock().unwrap()
+        })
+        .unwrap();
+    writer.join().unwrap();
+    assert_eq!(outcome, Outcome::Committed);
+    let record = records(&home);
+    assert_eq!(record.pending_type, Some(pending_type()));
+    assert_eq!(
+        record.transcript_fingerprint,
+        Some(fingerprint(b"new transcript"))
+    );
+}
+
 #[test]
 fn a_crash_before_longhand_json_leaves_the_note_waiting_for_a_sync() {
     let (_root, home, local, publication) = fixture(WriteSet::Result);
@@ -177,7 +295,7 @@ fn a_crash_before_longhand_json_leaves_the_note_waiting_for_a_sync() {
     // `longhand.json`.
     assert!(
         publication
-            .publish_with(&home, &local, &mut crash_after(3))
+            .publish_with(&home, &local, || (), &mut crash_after(3))
             .is_err()
     );
     let record = records(&home);
@@ -192,7 +310,7 @@ fn a_crash_before_longhand_json_leaves_the_note_waiting_for_a_sync() {
 fn a_rerun_after_each_boundary_reaches_the_same_end_state() {
     let (_root, home, local, publication) = fixture(WriteSet::Result);
     publication.record(&local).unwrap();
-    publication.publish(&home, &local).unwrap();
+    publication.publish(&home, &local, || ()).unwrap();
     let files = [
         SESSION_FILE,
         NOTE_RECORD_FILE,
@@ -210,14 +328,14 @@ fn a_rerun_after_each_boundary_reaches_the_same_end_state() {
         if stop > 0 {
             assert!(
                 publication
-                    .publish_with(&home, &local, &mut crash_after(stop))
+                    .publish_with(&home, &local, || (), &mut crash_after(stop))
                     .is_err()
             );
         }
         // The launch after the crash reads the record again.
         let recorded = Publication::load(&local).unwrap().expect("the record");
         assert_eq!(
-            recorded.publish(&home, &local).unwrap(),
+            recorded.publish(&home, &local, || ()).unwrap(),
             Outcome::Committed,
             "stop {stop}"
         );
@@ -226,7 +344,7 @@ fn a_rerun_after_each_boundary_reaches_the_same_end_state() {
         // A second rerun changes nothing.
         let mut written = Vec::new();
         recorded
-            .publish_with(&home, &local, &mut |name| {
+            .publish_with(&home, &local, || (), &mut |name| {
                 written.push(name.to_string());
                 Ok(())
             })
@@ -243,7 +361,7 @@ fn a_title_change_between_two_writes_stays() {
     publication.record(&local).unwrap();
     assert!(
         publication
-            .publish_with(&home, &local, &mut crash_after(2))
+            .publish_with(&home, &local, || (), &mut crash_after(2))
             .is_err()
     );
     // A rename writes the title and the last-written title.
@@ -256,7 +374,7 @@ fn a_title_change_between_two_writes_stays() {
     note_files::write_record(&home, &renamed).unwrap();
 
     assert_eq!(
-        publication.publish(&home, &local).unwrap(),
+        publication.publish(&home, &local, || ()).unwrap(),
         Outcome::Committed
     );
     let files = NoteFiles::read(&home).unwrap();
@@ -285,7 +403,7 @@ fn user_fields_written_during_the_writes_stay(set: WriteSet) {
     let (_root, home, local, publication) = fixture(set);
     publication.record(&local).unwrap();
     let outcome = publication
-        .publish_with(&home, &local, &mut |name| {
+        .publish_with(&home, &local, || (), &mut |name| {
             if name == "summary.md" {
                 let tags = vec!["Topic::Security".to_string()];
                 note_files::patch_session_md(
@@ -329,7 +447,7 @@ fn a_pending_type_that_another_computer_removed_stays_removed() {
     let publication = Publication::new(&home, after, WriteSet::Result).unwrap();
     publication.record(&local).unwrap();
     assert_eq!(
-        publication.publish(&home, &local).unwrap(),
+        publication.publish(&home, &local, || ()).unwrap(),
         Outcome::Committed
     );
     assert_eq!(records(&home).pending_type, None);
@@ -341,7 +459,7 @@ fn another_result_between_two_writes_is_a_conflict_and_nothing_is_written() {
     publication.record(&local).unwrap();
     assert!(
         publication
-            .publish_with(&home, &local, &mut crash_after(2))
+            .publish_with(&home, &local, || (), &mut crash_after(2))
             .is_err()
     );
     let mut other = records(&home);
@@ -351,7 +469,7 @@ fn another_result_between_two_writes_is_a_conflict_and_nothing_is_written() {
 
     let mut written = Vec::new();
     let outcome = publication
-        .publish_with(&home, &local, &mut |name| {
+        .publish_with(&home, &local, || (), &mut |name| {
             written.push(name.to_string());
             Ok(())
         })
@@ -369,7 +487,7 @@ fn another_result_during_the_writes_stops_the_next_write() {
     let other_home = home.clone();
     let mut written = Vec::new();
     let outcome = publication
-        .publish_with(&home, &local, &mut |name| {
+        .publish_with(&home, &local, || (), &mut |name| {
             written.push(name.to_string());
             // The other computer's `longhand.json` arrives after the first
             // write.
@@ -397,7 +515,7 @@ fn equal_result_fields_still_replace_a_hand_edited_file() {
     publication.record(&local).unwrap();
 
     assert_eq!(
-        publication.publish(&home, &local).unwrap(),
+        publication.publish(&home, &local, || ()).unwrap(),
         Outcome::Committed
     );
     assert_eq!(read(&home, "transcript.md"), "old transcript");
@@ -409,7 +527,7 @@ fn the_summary_set_writes_only_summary_md_and_longhand_json() {
     publication.record(&local).unwrap();
     let mut written = Vec::new();
     let outcome = publication
-        .publish_with(&home, &local, &mut |name| {
+        .publish_with(&home, &local, || (), &mut |name| {
             written.push(name.to_string());
             Ok(())
         })
@@ -438,7 +556,7 @@ fn the_summary_set_drops_the_reference_to_a_timed_text_that_is_gone() {
     std::fs::remove_file(home.join(ARTIFACT_FILE)).unwrap();
 
     assert_eq!(
-        publication.publish(&home, &local).unwrap(),
+        publication.publish(&home, &local, || ()).unwrap(),
         Outcome::Committed
     );
     assert!(!home.join(ARTIFACT_FILE).exists());
@@ -447,7 +565,7 @@ fn the_summary_set_drops_the_reference_to_a_timed_text_that_is_gone() {
     assert_eq!(record.recognition_audio, None);
     // The dropped reference does not make a rerun a conflict.
     assert_eq!(
-        publication.publish(&home, &local).unwrap(),
+        publication.publish(&home, &local, || ()).unwrap(),
         Outcome::Committed
     );
 }

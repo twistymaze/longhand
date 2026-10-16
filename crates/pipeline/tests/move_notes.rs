@@ -12,7 +12,7 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset};
 use library::reconcile::{Reconciler, Target};
 use library::scan::{Known, ScanOptions};
-use pipeline::move_notes::{self, MARKER, Mover, PassEnd, STAGING_PREFIX, Taken};
+use pipeline::move_notes::{self, MARKER, MoveError, Mover, PassEnd, STAGING_PREFIX, Taken};
 use pipeline::{SharedStore, StageError};
 use session_core::jobs::Claims;
 use session_core::{Event, MoveJournal, MovePause, MoveStep, Segment, SessionState, Stage, Store};
@@ -601,6 +601,82 @@ fn an_old_folder_with_no_marker_pauses_the_move() {
         PassEnd::Paused(MovePause::NotReachable { .. })
     ));
     assert_eq!(f.step("a"), Some(MoveStep::Pending));
+}
+
+fn placed_copy(f: &Folders, m: &Mover, j: &MoveJournal) -> (MoveStep, PathBuf) {
+    let step = drive(f, m, j, "a", &|s| is_placed(s));
+    let MoveStep::Placed { path, .. } = &step else {
+        unreachable!();
+    };
+    let path = path.clone();
+    (step, path)
+}
+
+/// Across volumes, the source goes after the copy is placed and before
+/// the final check: another computer deleted the note. The Move drops it
+/// and removes its own copy, so the deleted note does not come back.
+#[test]
+fn a_source_that_goes_before_the_final_check_drops_the_note_and_its_copy() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    let (step, path) = placed_copy(&f, &m, &j);
+    std::fs::remove_dir_all(f.home("a")).unwrap();
+
+    assert!(matches!(m.step(&j, "a", &step).unwrap(), Taken::Dropped));
+    assert!(!path.exists(), "the copy of the Move is removed");
+}
+
+/// The source and the library marker of the old folder go before the
+/// final check: the old folder is not reachable, so the Move pauses and
+/// keeps its copy.
+#[test]
+fn a_source_that_goes_with_the_old_folder_pauses_the_final_check() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    let (step, path) = placed_copy(&f, &m, &j);
+    std::fs::remove_dir_all(f.home("a")).unwrap();
+    std::fs::remove_file(library::scan::marker(&f.old)).unwrap();
+
+    let paused = m.step(&j, "a", &step);
+    assert!(
+        matches!(
+            paused,
+            Err(MoveError::Paused(MovePause::NotReachable { .. }))
+        ),
+        "{paused:?}"
+    );
+    assert!(path.exists(), "the copy stays");
+}
+
+/// The folder in the new folder has no move marker: it is a finished note
+/// that another computer moved there, and its source is gone. The Move
+/// takes it as the home folder and does not delete it.
+#[test]
+fn a_finished_note_in_the_new_folder_is_homed_when_the_source_is_gone() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    let (step, path) = placed_copy(&f, &m, &j);
+    std::fs::remove_file(path.join(MARKER)).unwrap();
+    std::fs::remove_dir_all(f.home("a")).unwrap();
+
+    assert!(matches!(
+        m.step(&j, "a", &step).unwrap(),
+        Taken::Next(MoveStep::Homed { .. })
+    ));
+    assert!(path.join("session.md").is_file());
+    assert_eq!(f.home("a"), path);
 }
 
 /// The old folder goes away during a pass (a removed disk or a lost
