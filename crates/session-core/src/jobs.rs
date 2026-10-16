@@ -1159,11 +1159,22 @@ impl Store {
     /// Run `event` through the state machine and persist the result with its
     /// queue side effects.
     pub fn apply(&mut self, id: &str, event: &Event) -> Result<SessionState> {
+        self.apply_with(id, event, |_| Ok(()))
+    }
+
+    /// [`Store::apply`], with the writes of `also` in the same transaction.
+    fn apply_with(
+        &mut self,
+        id: &str,
+        event: &Event,
+        also: impl FnOnce(&Transaction) -> Result<()>,
+    ) -> Result<SessionState> {
         let current = self.require(id)?;
         let next = current.state.transition(event)?;
         let tx = self.conn.transaction()?;
         write_state(&tx, id, &next)?;
         apply_queue_effects(&tx, id, &current.state, &next, event)?;
+        also(&tx)?;
         // A resume puts a new segment after the last one, so the last
         // segment does not end in a pause now. An earlier segment keeps its
         // flag: a Continue followed it (KTD4 of the pause plan).
@@ -1919,17 +1930,13 @@ impl Store {
         };
         // The state and the claim are one transaction. A Processing note
         // with no claim is never taken back at launch.
-        let current = self.require(&id)?;
-        let event = Event::Dequeued;
-        let next = current.state.transition(&event)?;
-        let tx = self.conn.transaction()?;
-        write_state(&tx, &id, &next)?;
-        apply_queue_effects(&tx, &id, &current.state, &next, &event)?;
-        tx.execute(
-            "UPDATE jobs SET claim_owner = ?2, claimed_at = ?3, heartbeat_at = ?3 WHERE session_id = ?1",
-            params![id, owner, now.to_rfc3339()],
-        )?;
-        tx.commit()?;
+        self.apply_with(&id, &Event::Dequeued, |tx| {
+            tx.execute(
+                "UPDATE jobs SET claim_owner = ?2, claimed_at = ?3, heartbeat_at = ?3 WHERE session_id = ?1",
+                params![id, owner, now.to_rfc3339()],
+            )?;
+            Ok(())
+        })?;
         Ok(Some(id))
     }
 

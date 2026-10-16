@@ -543,12 +543,6 @@ fn stage_publication(
     // Under the store lock: the checks see the folder and the notes that
     // this computer holds now. They run once, before the record (KTD3).
     follow_run(&mut guard, session_id)?;
-    // `result` is set while the folder holds no result yet (a first save
-    // into the early folder). Absent, the folder holds a saved result.
-    let replaces_result = NoteFiles::read_timed(&home, READ_TIMEOUT)?
-        .doc
-        .result_flag()
-        .is_none();
     let summary_notes: Option<String> = guard
         .checkpoints(session_id, Stage::Summarize)?
         .into_iter()
@@ -556,13 +550,19 @@ fn stage_publication(
         .map(|(_, value)| serde_json::from_str(&value))
         .transpose()?;
     let current_notes = folder::fingerprint(guard.notes(session_id)?.as_bytes());
+    let notes_changed = summary_notes
+        .as_ref()
+        .is_some_and(|hash| *hash != current_notes);
     // A first save has no previous result to keep: it saves the summary
     // made from the notes at the start (R36), and the write of `notes.md`
-    // after the save writes the current notes (R22e).
-    if replaces_result
-        && summary_notes
-            .as_ref()
-            .is_some_and(|hash| *hash != current_notes)
+    // after the save writes the current notes (R22e). `result` is set
+    // while the folder holds no result yet (a first save into the early
+    // folder); absent, the folder holds a saved result.
+    if notes_changed
+        && NoteFiles::read_timed(&home, READ_TIMEOUT)?
+            .doc
+            .result_flag()
+            .is_none()
     {
         // Retry must produce a summary from the current notes. Keep the
         // recognition checkpoints and the previous result.
@@ -622,14 +622,14 @@ fn stage_publication(
 
 /// The error of a run that the check of the folder's records refuses
 /// before its publication. When the run wrote nothing into the note
-/// folder, the run's marker goes: the runner then ends the Transcribe
+/// folder, its `HOME_CHANGED` checkpoint goes: the runner then ends the Transcribe
 /// Again run and the note is saved again with the error, as for any
 /// Transcribe Again run that fails (R19). Otherwise each Retry would meet
 /// the same records and fail the same way. The caller holds the store
 /// lock.
 fn refuse_replacement(store: &Store, session_id: &str, wrote: bool, why: &str) -> StageError {
     if !wrote && let Err(e) = store.delete_checkpoint(session_id, Stage::Save, HOME_CHANGED) {
-        log::warn!("could not clear the publication mark of {session_id}: {e}");
+        log::warn!("could not clear the home_changed checkpoint of {session_id}: {e}");
     }
     StageError::Failed(why.into())
 }

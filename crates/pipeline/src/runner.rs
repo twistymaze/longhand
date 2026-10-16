@@ -1549,10 +1549,6 @@ impl Runner {
         }
     }
 
-    /// Return a failed Transcribe Again run to Saved with its previous
-    /// checkpoints, record the error for the note page, and remove the
-    /// working directory that the run made. When a resume took the session
-    /// first, the resume owns the working directory and nothing changes.
     /// Whether the save of `id` has begun to replace the documents in its
     /// folder: then the run must finish, and a failure keeps its record for
     /// a retry.
@@ -1592,6 +1588,10 @@ impl Runner {
         Outcome::Failed { stage, message }
     }
 
+    /// Return a failed Transcribe Again run to Saved with its previous
+    /// checkpoints, record the error for the note page, and remove the
+    /// working directory that the run made. When a resume took the session
+    /// first, the resume owns the working directory and nothing changes.
     fn fail_transcribe_again(&self, id: &str, stage: Stage, message: String) -> Outcome {
         log::error!("transcribing {id} again failed at {stage:?}: {message}");
         match lock(&self.env.store).fail_transcribe_again(id, &message) {

@@ -82,6 +82,7 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
 /// A rename that is refused because the folder is in use is tried again
 /// this many times, after [`IN_USE_DELAY`] each time.
 pub const IN_USE_RETRIES: usize = 3;
+/// The wait before each of these tries.
 pub const IN_USE_DELAY: Duration = Duration::from_millis(200);
 
 /// [`Fs::rename_new`], tried again while the folder is in use
