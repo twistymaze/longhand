@@ -281,10 +281,7 @@ fn settle_stop(
     let registered = pipeline::recover::register_chunks(store, id, session_dir, None);
     let mut guard = pipeline::lock(store);
     if pipeline::recover::unregistered_audio(session_dir, &guard.segments(id)?) {
-        let cause = match registered {
-            Err(e) => e.to_string(),
-            Ok(()) => "a partial chunk could not be repaired".into(),
-        };
+        let cause = unregistered_cause(&registered);
         let interrupted = keep_unregistered(&mut guard, id, at)?;
         return Err(CaptureError::Unregistered {
             id: id.to_string(),
@@ -319,11 +316,7 @@ fn keep_unregistered(
     if record.state != SessionState::Capturing {
         return Ok(false);
     }
-    let since = store
-        .segments(id)?
-        .iter()
-        .max_by_key(|s| s.index)
-        .map_or(at, |s| s.wall_end);
+    let since = pipeline::recover::last_segment_end(&store.segments(id)?).unwrap_or(at);
     store.apply(
         id,
         &Event::CaptureLost {
@@ -437,18 +430,14 @@ fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Hold
             log::error!("could not register the chunks of {id}: {e}");
         }
         let mut guard = pipeline::lock(store);
-        let cause =
-            match guard.segments(&id) {
-                Ok(segments) => pipeline::recover::unregistered_audio(&session_dir, &segments)
-                    .then(|| match &registered {
-                        Err(e) => e.to_string(),
-                        Ok(()) => "a partial chunk could not be repaired".into(),
-                    }),
-                Err(e) => {
-                    log::warn!("could not read the segments of {id} ({e}); its audio stays");
-                    Some(e.to_string())
-                }
-            };
+        let cause = match guard.segments(&id) {
+            Ok(segments) => pipeline::recover::unregistered_audio(&session_dir, &segments)
+                .then(|| unregistered_cause(&registered)),
+            Err(e) => {
+                log::warn!("could not read the segments of {id} ({e}); its audio stays");
+                Some(e.to_string())
+            }
+        };
         if let Some(cause) = cause {
             match keep_unregistered(&mut guard, &id, now()) {
                 Ok(true) => held.interrupted.push((id.clone(), cause)),
@@ -967,20 +956,32 @@ fn record_loss(store: &mut Store, id: &str, loss: &Loss) -> InterruptSteps {
         reason: loss.reason,
         at: now(),
     };
-    #[cfg(test)]
-    let applied = if faults::take(&faults::LOST) {
-        Err(CaptureError::Other(
-            "test: the interrupt write failed".into(),
-        ))
-    } else {
-        store.apply(id, &lost).map_err(CaptureError::from)
-    };
-    #[cfg(not(test))]
-    let applied = store.apply(id, &lost);
+    let applied = apply_lost(store, id, &lost);
     if let Err(e) = &applied {
         log::error!("interrupting {id} failed: {e}");
     }
     interrupt_steps(loss, applied.is_ok())
+}
+
+/// Apply the interrupt `event` of [`record_loss`] to the note `id`.
+fn apply_lost(store: &mut Store, id: &str, event: &Event) -> Result<(), CaptureError> {
+    #[cfg(test)]
+    if faults::take(&faults::LOST) {
+        return Err(CaptureError::Other(
+            "test: the interrupt write failed".into(),
+        ));
+    }
+    store.apply(id, event)?;
+    Ok(())
+}
+
+/// The cause of audio that stays with no segment row, from the result
+/// `registered` of the chunk registration.
+fn unregistered_cause(registered: &Result<(), pipeline::StageError>) -> String {
+    match registered {
+        Err(e) => e.to_string(),
+        Ok(()) => "a partial chunk could not be repaired".into(),
+    }
 }
 
 /// The cause to give in the failed-capture alert when the error `e` of a
@@ -1966,7 +1967,7 @@ impl CaptureManager {
             Ok(active) => active,
             Err(e) => {
                 let cancelled = open_cancelled(&e);
-                self.abandon_start(app, inner, &id, ended, cancelled);
+                self.finish_failed_start(app, inner, &id, ended, cancelled);
                 return Err(e);
             }
         };
@@ -2004,7 +2005,7 @@ impl CaptureManager {
                 Err(e) => {
                     drop(store);
                     abandon(active);
-                    self.abandon_start(app, inner, &id, ended, false);
+                    self.finish_failed_start(app, inner, &id, ended, false);
                     return Err(e.into());
                 }
             };
@@ -2163,7 +2164,7 @@ impl CaptureManager {
     /// See [`abandon_start`]. When a Stop or a new start `cancelled` the
     /// open, the Start leaves its result for that Stop (KTD8). `inner` is
     /// released before the change event.
-    fn abandon_start(
+    fn finish_failed_start(
         &self,
         app: &AppHandle,
         mut inner: std::sync::MutexGuard<'_, Inner>,

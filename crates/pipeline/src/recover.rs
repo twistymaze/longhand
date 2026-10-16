@@ -134,6 +134,12 @@ fn remove_working_folder(state: &SessionState, session_dir: &Path) {
     }
 }
 
+/// The wall-clock end of the segment with the highest index, or `None` when
+/// there is no segment.
+pub fn last_segment_end(segments: &[Segment]) -> Option<DateTime<FixedOffset>> {
+    segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end)
+}
+
 /// Make a session whose recovery failed Interrupted(crash), as of the end
 /// of its last stored segment, or its creation when it has none. When the
 /// store cannot write it, the session stays Capturing, and the next launch
@@ -143,7 +149,7 @@ fn interrupt_failed(store: &SharedStore, id: &str, created_at: DateTime<FixedOff
     let at = store
         .segments(id)
         .ok()
-        .and_then(|segments| segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end))
+        .and_then(|segments| last_segment_end(&segments))
         .unwrap_or(created_at);
     let event = Event::CaptureLost {
         reason: InterruptReason::Crash,
@@ -167,7 +173,7 @@ fn recover_one(
     // and a later launch tries it again (R6).
     let unregistered = unregistered_audio(session_dir, &segments);
     // The last segment is the one that was recording.
-    let ended = segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end);
+    let ended = last_segment_end(&segments);
     if ended.is_none() && !unregistered {
         // Nothing survived R35: the note is a note with no audio again, as
         // after a Stop with no segment (R19). A note that existed before
@@ -234,7 +240,7 @@ pub fn register_chunks(
         // its length is when the last sample was written.
         let wall_start = match wall(first.capture_started_at) {
             Some(at) => at,
-            None => created_at(store, id)?,
+            None => session_created_at(store, id)?,
         };
         // The open segment has no row, so its channel count comes from the
         // first chunk's WAV header (KTD6 of the system audio plan).
@@ -285,15 +291,7 @@ pub fn unregistered_audio(session_dir: &Path, segments: &[Segment]) -> bool {
                 return true;
             }
         };
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Some(stem) = name
-            .strip_suffix(".wav")
-            .or_else(|| name.strip_suffix(".part"))
-        else {
-            continue;
-        };
-        let Some(Ok(index)) = stem.split('-').next().map(str::parse::<u32>) else {
+        let Some(index) = recorder::chunk_segment_of(&entry.file_name().to_string_lossy()) else {
             continue;
         };
         if !segments.iter().any(|s| s.index == index) {
@@ -304,7 +302,7 @@ pub fn unregistered_audio(session_dir: &Path, segments: &[Segment]) -> bool {
 }
 
 /// When the session was created.
-fn created_at(store: &SharedStore, id: &str) -> Result<DateTime<FixedOffset>, StageError> {
+fn session_created_at(store: &SharedStore, id: &str) -> Result<DateTime<FixedOffset>, StageError> {
     lock(store)
         .session(id)?
         .map(|record| record.created_at)

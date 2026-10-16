@@ -395,6 +395,17 @@ pub fn chunk_channels(chunk: &ChunkInfo) -> std::io::Result<u16> {
     wav::read_format(&chunk.path).map(|(_, channels)| channels)
 }
 
+/// The segment index of a chunk file name: the first `-` field of a `.wav`
+/// or `.part` name. Only that field is read, so a name with other fields
+/// that do not parse still gives its segment. Returns `None` for another
+/// file.
+pub fn chunk_segment_of(file_name: &str) -> Option<u32> {
+    let stem = file_name
+        .strip_suffix(".wav")
+        .or_else(|| file_name.strip_suffix(".part"))?;
+    stem.split('-').next()?.parse().ok()
+}
+
 /// Remove every chunk of `segment`, closed or open (R35).
 pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
