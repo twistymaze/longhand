@@ -2055,7 +2055,9 @@ message: string }
  */
 export type RecognitionState = { 
 /**
- * The chosen configuration differs from the configuration in use.
+ * The chosen configuration differs from the configuration in use. A
+ * chosen configuration with a value that this version does not know
+ * always differs, so Settings tells the user to update.
  */
 differs: boolean; 
 /**
