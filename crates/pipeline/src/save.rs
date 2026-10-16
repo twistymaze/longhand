@@ -1042,10 +1042,10 @@ pub enum NotesSave {
     /// wrote it. The file and the row keep that text, and the document is
     /// in the draft file at `draft`, beside `notes.md`.
     Conflict { draft: PathBuf },
-    /// The note has no audio, and its home folder is not at its home path:
-    /// another computer can have removed it (R24). The store holds the
-    /// document, and no folder is made. [`rescue_notes`] finds out what
-    /// happened to the folder.
+    /// The note is saved, and its home folder is not at its home path:
+    /// another app can have renamed it, or another computer removed it
+    /// (R24). The store holds the document, and no folder is made.
+    /// [`rescue_notes`] finds out what happened to the folder.
     FolderGone,
 }
 
@@ -1099,12 +1099,10 @@ pub fn save_notes(
         .home_path
         .map(PathBuf::from)
         .filter(|home| saved || home.is_dir());
-    // A saved note with no audio whose folder is gone keeps the edit in the
-    // store and makes no folder (R24).
-    if saved
-        && home.as_ref().is_some_and(|home| !home.is_dir())
-        && store.segments(session_id)?.is_empty()
-    {
+    // A saved note whose folder is not at its home path keeps the edit in
+    // the store and makes no folder (R24). Another app can have renamed
+    // the folder, with or without audio: the rescue then finds it.
+    if saved && home.as_ref().is_some_and(|home| !home.is_dir()) {
         store.set_notes(session_id, document)?;
         return Ok(NotesSave::FolderGone);
     }

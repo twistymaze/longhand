@@ -749,14 +749,20 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
     // note counts as not available (an empty mount point), not as empty.
     let known = Known::from_records(&lock(store).sessions()?);
     let found = scan::scan(std::slice::from_ref(&root), &known, &ScanOptions::default());
-    if !found.is_available(&root) || !found.unreadable.is_empty() {
+    if !found.is_available(&root) {
         return Ok(Location::Unknown);
     }
+    // A folder that holds the note shows where it is, also when another
+    // folder cannot be read.
     if let Some(note) = found.notes.iter().find(|note| note.doc.session_id == id) {
         let guard = lock(store);
         guard.set_home_path(id, &note.path.to_string_lossy())?;
         guard.set_note_type(id, note.note_type.as_deref())?;
         return Ok(Location::Moved);
+    }
+    // A folder that cannot be read can hold the note.
+    if !found.unreadable.is_empty() {
+        return Ok(Location::Unknown);
     }
     Ok(Location::Gone)
 }

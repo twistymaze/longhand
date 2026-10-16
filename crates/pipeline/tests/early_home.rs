@@ -865,6 +865,72 @@ fn a_notes_save_follows_a_folder_that_has_another_name() {
     );
 }
 
+/// The note "n" of [`placed_notes_only_note`] with one recorded segment:
+/// a note with audio.
+fn with_audio(store: &SharedStore) {
+    let audio = tempfile::tempdir().unwrap();
+    let segment = write_segment(audio.path(), 0, 0, 16_000, &[0.0; 16_000], false);
+    store.lock().unwrap().put_segment("n", &segment).unwrap();
+}
+
+/// An agent renamed the folder of a note with audio, and the user typed
+/// before the library scan found it. The save goes into the renamed
+/// folder, so the scan does not replace the edit with the older notes.
+#[test]
+fn a_notes_save_of_a_note_with_audio_follows_a_folder_that_has_another_name() {
+    use pipeline::save::{NotesRescue, NotesSave, rescue_notes, save_notes};
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    with_audio(&store);
+    let moved = dest.path().join("Renamed");
+    std::fs::rename(&path, &moved).unwrap();
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::FolderGone);
+    assert_eq!(store.lock().unwrap().notes("n").unwrap(), "Second\n");
+    assert_eq!(
+        rescue_notes(&store, "n", "m", at(100)).unwrap(),
+        NotesRescue::Moved
+    );
+    assert_eq!(home(&store, "n"), Some(moved.clone()));
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::Saved { written: true });
+    assert_eq!(
+        std::fs::read_to_string(moved.join("notes.md")).unwrap(),
+        "Second\n"
+    );
+}
+
+/// A folder that holds the note is found also when another note folder
+/// in the storage folder cannot be read, for example a cloud file that
+/// is not downloaded.
+#[cfg(unix)]
+#[test]
+fn a_renamed_folder_is_found_when_another_note_folder_cannot_be_read() {
+    use pipeline::save::{NotesRescue, NotesSave, rescue_notes, save_notes};
+    use std::os::unix::fs::PermissionsExt;
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    with_audio(&store);
+    let moved = dest.path().join("Renamed");
+    std::fs::rename(&path, &moved).unwrap();
+    let other = dest.path().join("Other");
+    std::fs::create_dir(&other).unwrap();
+    let blocked = other.join(session_core::note_folder::SESSION_FILE);
+    std::fs::write(&blocked, "---\ntitle: Other\n---\n").unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let saved = save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    assert_eq!(saved, NotesSave::FolderGone);
+    let rescued = rescue_notes(&store, "n", "m", at(100)).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(rescued, NotesRescue::Moved);
+    assert_eq!(home(&store, "n"), Some(moved));
+}
+
 #[test]
 fn a_notes_save_while_the_storage_folder_is_not_available_makes_no_new_note() {
     use pipeline::save::{NotesRescue, rescue_notes, save_notes};
