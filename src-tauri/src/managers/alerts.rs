@@ -73,6 +73,26 @@ fn failed(state: &SessionState) -> bool {
     )
 }
 
+/// Whether the alert of a note holds, from its stored `state` and `open`,
+/// which is true while the capture manager holds the note open. The alert
+/// holds while the note is failed. It also holds while the store says
+/// Capturing and nothing records the note: the interrupt write failed, and
+/// a Stop settles the note (KTD6 of the capture recovery plan).
+pub(crate) fn alert_holds(state: Option<&SessionState>, open: bool) -> bool {
+    match state {
+        Some(SessionState::Capturing) => !open,
+        Some(state) => failed(state),
+        None => false,
+    }
+}
+
+/// The notification text of an alert that the launch restores. A note
+/// whose launch recovery failed (`recovery_failed`) says so; the log has
+/// the error.
+fn restore_detail(recovery_failed: bool) -> Option<&'static str> {
+    recovery_failed.then_some("Some recorded audio could not be recovered")
+}
+
 impl AlertsManager {
     /// Raise the alert for a session whose capture stopped. `cue` is false
     /// when nothing was in progress to hear, as after a relaunch. The cue
@@ -117,7 +137,7 @@ impl AlertsManager {
                 let raised_at = Instant::now();
                 let mut cues = cues;
                 while !cancel.is_cancelled() {
-                    if !capture.session_state(&id).is_some_and(|s| failed(&s)) {
+                    if !capture.alert_holds(&id) {
                         break;
                     }
                     if let Some((next, rest)) = cues.split_first()
@@ -162,7 +182,8 @@ impl AlertsManager {
         let Some((id, reason)) = capture.failed_session() else {
             return;
         };
-        self.raise(app, capture, &id, reason, None, false);
+        let detail = restore_detail(capture.recovery_failed(&id));
+        self.raise(app, capture, &id, reason, detail, false);
     }
 }
 
@@ -219,5 +240,33 @@ mod tests {
         assert!(!failed(&interrupted(true)));
         assert!(!failed(&SessionState::Capturing));
         assert!(!failed(&SessionState::Queued { stopped_at: since }));
+    }
+
+    // A failed interrupt write leaves the note Capturing with nothing that
+    // records it: the alert holds until a Stop or a Resume.
+    #[test]
+    fn the_alert_holds_for_a_capturing_note_that_nothing_records() {
+        let since = chrono::Local::now().fixed_offset();
+        assert!(alert_holds(Some(&SessionState::Capturing), false));
+        assert!(!alert_holds(Some(&SessionState::Capturing), true));
+        let interrupted = SessionState::Interrupted {
+            reason: InterruptReason::Disk,
+            since,
+            acknowledged: false,
+        };
+        assert!(alert_holds(Some(&interrupted), false));
+        assert!(!alert_holds(
+            Some(&SessionState::Queued { stopped_at: since }),
+            false
+        ));
+        assert!(!alert_holds(None, false));
+    }
+
+    // Covers R5: a restored alert says when the launch recovery failed.
+    #[test]
+    fn a_restored_alert_says_that_the_recovery_failed() {
+        let detail = restore_detail(true).unwrap();
+        assert!(!detail.contains("chunk"));
+        assert!(restore_detail(false).is_none());
     }
 }

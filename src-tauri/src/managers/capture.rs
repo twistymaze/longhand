@@ -94,14 +94,12 @@ pub enum CaptureError {
     Timeline(#[from] session_core::TimelineError),
     #[error("this session is already moving to its destination and can no longer be resumed")]
     Save,
-    /// The audio of the note `id` stays with no segment row, because of
-    /// `cause`. `interrupted` is true when this made the note Interrupted.
-    #[error("the audio of {id} could not be registered ({cause}); it stays")]
-    Unregistered {
-        id: String,
-        cause: String,
-        interrupted: bool,
-    },
+    /// Audio of the note stays with no segment row. `interrupted` is true
+    /// when this made the note Interrupted. The text goes to the UI, so it
+    /// has no note id and no raw cause: the code that makes this error
+    /// logs them.
+    #[error("Some recorded audio could not be added to the note. It is kept.")]
+    Unregistered { interrupted: bool },
     #[error("{0}")]
     Other(String),
 }
@@ -231,6 +229,10 @@ pub enum StopOutcome {
     /// The Stop cancelled the microphone open of a new note. No note was
     /// made, and no note stopped.
     Cancelled,
+    /// Some audio could not be added to the note, so the note is
+    /// Interrupted with its audio, and a later Stop or launch tries again.
+    /// The failed-capture alert tells the user: the page shows nothing.
+    Interrupted { session_id: String },
 }
 
 /// Stop the note `id` in the store at `at`: queued for processing when it
@@ -281,13 +283,12 @@ fn settle_stop(
     let registered = pipeline::recover::register_chunks(store, id, session_dir, None);
     let mut guard = pipeline::lock(store);
     if pipeline::recover::unregistered_audio(session_dir, &guard.segments(id)?) {
-        let cause = unregistered_cause(&registered);
+        log::error!(
+            "the audio of {id} could not be registered at stop ({}); it stays",
+            unregistered_cause(&registered)
+        );
         let interrupted = keep_unregistered(&mut guard, id, at)?;
-        return Err(CaptureError::Unregistered {
-            id: id.to_string(),
-            cause,
-            interrupted,
-        });
+        return Err(CaptureError::Unregistered { interrupted });
     }
     if let Err(e) = registered {
         log::warn!("registering the chunks of {id} failed, but no audio is left out: {e}");
@@ -439,8 +440,9 @@ fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Hold
             }
         };
         if let Some(cause) = cause {
+            log::error!("the audio of {id} could not be registered at a start ({cause}); it stays");
             match keep_unregistered(&mut guard, &id, now()) {
-                Ok(true) => held.interrupted.push((id.clone(), cause)),
+                Ok(true) => held.interrupted.push(id.clone()),
                 Ok(false) => {}
                 Err(e) => {
                     log::error!("could not interrupt {id}, which keeps unregistered audio: {e}")
@@ -457,27 +459,30 @@ fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Hold
 #[derive(Default)]
 struct Hold {
     ids: Vec<String>,
-    /// The notes that the Start made Interrupted, each with the cause.
-    interrupted: Vec<(String, String)>,
+    /// The notes that the Start made Interrupted.
+    interrupted: Vec<String>,
 }
+
+/// The notification text of the failed-capture alert for audio with no
+/// segment row. It has no raw error text: the code logs the cause.
+const UNREGISTERED_DETAIL: &str = "Some recorded audio could not be added to the note";
 
 /// Raise the failed-capture alert for the note `id`, which the app made
 /// Interrupted (disk) because its audio has no segment row (R8 of the
-/// capture recovery plan). The notification gives `cause`.
-fn alert_unregistered(app: &AppHandle, id: &str, cause: &str) {
+/// capture recovery plan).
+fn alert_unregistered(app: &AppHandle, id: &str) {
     let (Some(alerts), Some(capture)) = (
         app.try_state::<Arc<AlertsManager>>(),
         app.try_state::<Arc<CaptureManager>>(),
     ) else {
         return;
     };
-    let detail = format!("Some recorded audio could not be added to the note ({cause})");
     alerts.raise(
         app,
         &capture,
         id,
         InterruptReason::Disk,
-        Some(&detail),
+        Some(UNREGISTERED_DETAIL),
         true,
     );
 }
@@ -984,18 +989,50 @@ fn unregistered_cause(registered: &Result<(), pipeline::StageError>) -> String {
     }
 }
 
-/// The cause to give in the failed-capture alert when the error `e` of a
-/// Stop made its note Interrupted. A note that was Interrupted before has
-/// had its alert.
-fn unregistered_alert(e: &CaptureError) -> Option<&str> {
-    match e {
-        CaptureError::Unregistered {
-            cause,
-            interrupted: true,
-            ..
-        } => Some(cause),
-        _ => None,
+/// The result of a Stop of the note `id` after [`settle_stop`] gave
+/// `outcome`, and whether the Stop raises the failed-capture alert. When
+/// the Stop made the note Interrupted, the alert tells the user, and the
+/// Stop returns [`StopOutcome::Interrupted`], so the page shows no second
+/// message. A note that was Interrupted before had its alert: the error
+/// goes to the page, and no alert is raised.
+fn stop_result(
+    id: &str,
+    outcome: Result<StopOutcome, CaptureError>,
+) -> (bool, Result<StopOutcome, CaptureError>) {
+    match outcome {
+        Err(CaptureError::Unregistered { interrupted: true }) => (
+            true,
+            Ok(StopOutcome::Interrupted {
+                session_id: id.to_string(),
+            }),
+        ),
+        outcome => (false, outcome),
     }
+}
+
+/// Before a Resume of the note `id`, whose working folder is
+/// `session_dir`: register its chunks that have no segment row, so that
+/// the next segment gets an index that no audio has. While audio stays
+/// with no row, the Resume is refused and the note does not change. The
+/// caller holds no store guard.
+fn register_before_resume(
+    store: &pipeline::SharedStore,
+    session_dir: &Path,
+    id: &str,
+) -> Result<(), CaptureError> {
+    let registered = pipeline::recover::register_chunks(store, id, session_dir, None);
+    let segments = pipeline::lock(store).segments(id)?;
+    if pipeline::recover::unregistered_audio(session_dir, &segments) {
+        log::error!(
+            "the audio of {id} could not be registered at resume ({}); the resume is refused",
+            unregistered_cause(&registered)
+        );
+        return Err(CaptureError::Unregistered { interrupted: false });
+    }
+    if let Err(e) = registered {
+        log::warn!("registering the chunks of {id} failed, but no audio is left out: {e}");
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -1092,6 +1129,14 @@ impl Inner {
     /// the caller takes no store lock first.
     fn note_open(&self) -> bool {
         self.active.is_some() || self.recovering.is_some() || self.paused.is_some()
+    }
+
+    /// Whether the note `id` is open here: its segment records, its lost
+    /// segment restarts, or it is paused.
+    fn holds(&self, id: &str) -> bool {
+        self.active.as_ref().is_some_and(|a| a.session_id == id)
+            || self.recovering.as_ref().is_some_and(|p| p.session_id == id)
+            || self.paused.as_deref() == Some(id)
     }
 
     /// The part of the status that [`CaptureManager::status`] reads under
@@ -1558,6 +1603,8 @@ pub struct CaptureManager {
     opens: OpenCancel,
     /// See [`CaptureManager::take_recovered_without_audio`].
     recovered_without_audio: Mutex<Vec<String>>,
+    /// See [`CaptureManager::recovery_failed`].
+    recovery_failed: Mutex<Vec<String>>,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -1764,6 +1811,7 @@ impl CaptureManager {
             inner: Mutex::new(Inner::default()),
             opens: OpenCancel::default(),
             recovered_without_audio: Mutex::default(),
+            recovery_failed: Mutex::default(),
         })
     }
 
@@ -1801,6 +1849,10 @@ impl CaptureManager {
                         failed.session_id,
                         failed.error
                     );
+                    self.recovery_failed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(failed.session_id);
                 }
                 for session in report.recovered {
                     log::warn!(
@@ -1818,6 +1870,25 @@ impl CaptureManager {
             }
             Err(e) => log::error!("crash recovery at launch failed: {e}"),
         }
+    }
+
+    /// Whether the launch recovery of the note `id` failed. The restored
+    /// failed-capture alert then says that some audio could not be
+    /// recovered (R5).
+    pub fn recovery_failed(&self, id: &str) -> bool {
+        self.recovery_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|failed| failed == id)
+    }
+
+    /// Whether the failed-capture alert of the note `id` holds (see
+    /// [`alerts::alert_holds`]). It reads `inner` first, then the store,
+    /// and holds no lock while it takes the other.
+    pub fn alert_holds(&self, id: &str) -> bool {
+        let open = self.inner().holds(id);
+        alerts::alert_holds(self.session_state(id).as_ref(), open)
     }
 
     /// The notes that the launch recovery made notes with no audio again.
@@ -1978,8 +2049,8 @@ impl CaptureManager {
         // A note that keeps audio with no segment row stays as it is: no
         // decision from its rows deletes that audio (KTD3).
         let held = hold_unregistered(&self.store, &self.working_root);
-        for (other, cause) in &held.interrupted {
-            alert_unregistered(app, other, cause);
+        for other in &held.interrupted {
+            alert_unregistered(app, other);
         }
         let open = open_with_no_segments(&self.store(), &held.ids);
         let mut emptied = Vec::new();
@@ -2090,7 +2161,11 @@ impl CaptureManager {
             }
         };
         drop(inner);
-        app.state::<Arc<AlertsManager>>().clear(&id);
+        // A note that this Stop made Interrupted keeps the alert that the
+        // Stop raised.
+        if !matches!(outcome, StopOutcome::Interrupted { .. }) {
+            app.state::<Arc<AlertsManager>>().clear(&id);
+        }
         changed(app, None);
         Ok(outcome)
     }
@@ -2199,21 +2274,25 @@ impl CaptureManager {
         id: &str,
         outcome: Result<StopOutcome, CaptureError>,
     ) -> Result<StopOutcome, CaptureError> {
-        if let Err(e) = &outcome
-            && let Some(cause) = unregistered_alert(e)
-        {
-            alert_unregistered(app, id, cause);
+        let (alert, outcome) = stop_result(id, outcome);
+        if alert {
+            alert_unregistered(app, id);
         }
         let outcome = outcome?;
-        if let StopOutcome::Recorded { .. } = outcome {
-            self.record_model_at_stop(app, id);
-        } else {
-            // Nothing survived R35. The folder gets the flag "no recording"
-            // again, and this run's in-use marker goes.
-            log::info!("session {id} kept no audio and is a note with no audio");
-            if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
-                processing.early_homes().mark_pending(id);
-                processing.in_use_changed();
+        match outcome {
+            StopOutcome::Recorded { .. } => self.record_model_at_stop(app, id),
+            // The note keeps its audio and its working folder.
+            StopOutcome::Interrupted { .. } => {}
+            StopOutcome::NotesOnly { .. }
+            | StopOutcome::EmptyNote { .. }
+            | StopOutcome::Cancelled => {
+                // Nothing survived R35. The folder gets the flag "no
+                // recording" again, and this run's in-use marker goes.
+                log::info!("session {id} kept no audio and is a note with no audio");
+                if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+                    processing.early_homes().mark_pending(id);
+                    processing.in_use_changed();
+                }
             }
         }
         Ok(outcome)
@@ -2276,6 +2355,10 @@ impl CaptureManager {
     ) -> Result<SessionState, CaptureError> {
         let inner = self.inner();
         may_capture(&inner)?;
+        // The next segment takes its index from the segment rows, so audio
+        // with no row must get its row first. Nothing records now, so no
+        // writer runs on the folder.
+        register_before_resume(&self.store, &self.session_dir(id), id)?;
         let space_ok = recorder::storage::check(
             recorder::storage::available_space(&self.working_root),
             DISK_RESERVE_BYTES,
@@ -5634,6 +5717,21 @@ mod tests {
         }
     }
 
+    /// Make every chunk of `session_dir` unreadable. Returns false, with
+    /// the chunks readable again, when the process ignores permissions
+    /// (root): the caller cannot test then.
+    #[cfg(unix)]
+    fn lock_chunks(session_dir: &Path) -> bool {
+        chunk_mode(session_dir, 0o000);
+        let readable = std::fs::read_dir(session_dir.join(RECOVERY_DIR))
+            .unwrap()
+            .any(|entry| std::fs::read(entry.unwrap().path()).is_ok());
+        if readable {
+            chunk_mode(session_dir, 0o644);
+        }
+        !readable
+    }
+
     /// A note `id` that records segment `index` with the clock `timeline`,
     /// whose open segment is `index`.
     fn recording_segment(id: &str, timeline: Timeline, index: u32) -> Inner {
@@ -5705,7 +5803,9 @@ mod tests {
         let dir = root.path().join("s");
         write_chunks(&dir, 0, 0, 3_000);
         // The write fails, and the rebuild cannot read the chunk.
-        chunk_mode(&dir, 0o000);
+        if !lock_chunks(&dir) {
+            return;
+        }
         let mut inner = recording_segment("s", open_timeline(), 0);
         faults::set(&faults::WRITE);
 
@@ -5749,7 +5849,9 @@ mod tests {
         // The close of segment 0 failed: its chunks have no row, and they
         // cannot be read now.
         write_chunks(&dir, 0, 0, 3_000);
-        chunk_mode(&dir, 0o000);
+        if !lock_chunks(&dir) {
+            return;
+        }
 
         let held = hold_unregistered(&store, root.path());
         assert_eq!(held.ids, vec!["s".to_string()]);
@@ -5851,7 +5953,9 @@ mod tests {
         let store = shared(store);
         let dir = root.path().join("s");
         write_chunks(&dir, 0, 0, 3_000);
-        chunk_mode(&dir, 0o000);
+        if !lock_chunks(&dir) {
+            return;
+        }
         let mut inner = recording_segment("s", open_timeline(), 0);
         let closing = inner.active.take().unwrap();
         faults::set(&faults::END);
@@ -6280,14 +6384,100 @@ mod tests {
         let store = shared(store);
         let dir = root.path().join("s");
         write_chunks(&dir, 0, 0, 3_000);
-        chunk_mode(&dir, 0o000);
+        if !lock_chunks(&dir) {
+            return;
+        }
 
-        let first = settle_stop(&store, &dir, "s", at(70)).unwrap_err();
-        assert!(unregistered_alert(&first).is_some());
-        // The note is already Interrupted: no second alert.
-        let second = settle_stop(&store, &dir, "s", at(80)).unwrap_err();
-        assert!(unregistered_alert(&second).is_none());
+        // The alert tells the user, and the page shows no second message.
+        let (alert, first) = stop_result("s", settle_stop(&store, &dir, "s", at(70)));
+        assert!(alert);
+        assert_eq!(
+            first.unwrap(),
+            StopOutcome::Interrupted {
+                session_id: "s".into()
+            }
+        );
+        // The note is already Interrupted: no second alert. The page shows
+        // the error, because nothing else tells the user.
+        let (alert, second) = stop_result("s", settle_stop(&store, &dir, "s", at(80)));
+        assert!(!alert);
+        assert!(matches!(
+            second,
+            Err(CaptureError::Unregistered { interrupted: false })
+        ));
         chunk_mode(&dir, 0o644);
+    }
+
+    // Covers #5: the text of the error goes to the page, so it has no note
+    // id and no raw cause.
+    #[test]
+    fn the_unregistered_error_text_is_plain() {
+        let text = CaptureError::Unregistered { interrupted: false }.to_string();
+        assert_eq!(
+            text,
+            "Some recorded audio could not be added to the note. It is kept."
+        );
+        assert!(!UNREGISTERED_DETAIL.contains("chunk"));
+    }
+
+    // Covers #3: a Resume registers the audio with no row first, so the
+    // next segment does not take the index of that audio.
+    #[test]
+    fn a_resume_registers_the_chunks_that_have_no_row() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        interrupted_note(&mut store, "s");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+
+        register_before_resume(&store, &dir, "s").unwrap();
+
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+    }
+
+    // Covers #3: audio that stays with no row refuses the Resume, and the
+    // note and its audio do not change.
+    #[cfg(unix)]
+    #[test]
+    fn a_resume_is_refused_while_audio_has_no_row() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        interrupted_note(&mut store, "s");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        if !lock_chunks(&dir) {
+            return;
+        }
+
+        let refused = register_before_resume(&store, &dir, "s");
+        chunk_mode(&dir, 0o644);
+
+        assert!(matches!(
+            refused,
+            Err(CaptureError::Unregistered { interrupted: false })
+        ));
+        assert!(segment_rows(&store, "s").is_empty());
+        assert_eq!(chunk_segments(&dir), vec![0]);
+        assert!(matches!(
+            state_of(&store, "s"),
+            SessionState::Interrupted { .. }
+        ));
+    }
+
+    // Covers #7: only the note's own open state counts for the alert.
+    #[test]
+    fn inner_holds_only_the_note_that_it_records_or_pauses() {
+        let inner = recording_segment("s", open_timeline(), 0);
+        assert!(inner.holds("s"));
+        assert!(!inner.holds("t"));
+        let paused = Inner {
+            paused: Some("p".into()),
+            ..Inner::default()
+        };
+        assert!(paused.holds("p"));
+        assert!(!Inner::default().holds("s"));
     }
 
     // Covers R8: a Start that leaves the audio of a note with no row
@@ -6301,12 +6491,14 @@ mod tests {
         let store = shared(store);
         let dir = root.path().join("s");
         write_chunks(&dir, 0, 0, 3_000);
-        chunk_mode(&dir, 0o000);
+        if !lock_chunks(&dir) {
+            return;
+        }
 
         let first = hold_unregistered(&store, root.path());
         assert_eq!(first.ids, vec!["s".to_string()]);
         assert_eq!(first.interrupted.len(), 1);
-        assert_eq!(first.interrupted[0].0, "s");
+        assert_eq!(first.interrupted[0], "s");
         let second = hold_unregistered(&store, root.path());
         assert_eq!(second.ids, vec!["s".to_string()]);
         assert!(second.interrupted.is_empty());

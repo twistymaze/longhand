@@ -2661,7 +2661,13 @@ export type StopOutcome =
  * The Stop cancelled the microphone open of a new note. No note was
  * made, and no note stopped.
  */
-{ kind: "cancelled" }
+{ kind: "cancelled" } | 
+/**
+ * Some audio could not be added to the note, so the note is
+ * Interrupted with its audio, and a later Stop or launch tries again.
+ * The failed-capture alert tells the user: the page shows nothing.
+ */
+{ kind: "interrupted"; session_id: string }
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.
