@@ -264,8 +264,10 @@ pub fn run(
         folder_name: &folder_name,
     };
     if state == SaveState::Working && working.exists() {
-        render(store, session_id, working, segments)?;
-        if let Err(e) = check_room(working, destination) {
+        // Nothing moved yet, so a failure here releases the claim.
+        if let Err(e) = render(store, session_id, working, segments)
+            .and_then(|()| check_room(working, destination))
+        {
             release(store, session_id);
             return Err(e);
         }

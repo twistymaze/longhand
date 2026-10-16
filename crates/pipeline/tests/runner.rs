@@ -1088,6 +1088,54 @@ fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
     assert!(working.join(TRANSCRIPT_FILE).is_file());
 }
 
+#[test]
+fn a_first_save_whose_files_cannot_be_written_releases_its_claim() {
+    // Nothing moved, so Resume works again, and the next claim names the
+    // folder from the title at that time.
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    assert!(library::scan::write_marker(dest.path()));
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .dequeue_session("s", "test", common::at(100))
+        .unwrap();
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let working = root.path().join("s");
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    // A folder where `notes.md` goes: the render cannot write it.
+    std::fs::create_dir_all(working.join("notes.md").join("x")).unwrap();
+
+    let saved = pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    );
+
+    assert!(saved.is_err(), "{saved:?}");
+    let begun = pipeline::save::begun(&store.lock().unwrap(), "s").unwrap();
+    assert!(!begun, "the claim is released");
+    let folder_name: Option<String> =
+        checkpoint::get(&store, "s", Stage::Save, pipeline::save::FOLDER_NAME).unwrap();
+    assert_eq!(folder_name, None);
+}
+
 /// The speaker progress events, in order.
 fn speaker_progress(r: &Rig) -> Vec<SpeakerProgress> {
     r.events
