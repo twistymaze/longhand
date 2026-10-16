@@ -114,23 +114,24 @@ export function parseMarkdown(text: string): Block[] {
   return blocks;
 }
 
+// Groups: 1 and 2 strong, 3 and 4 em, 5 code. An `_` or `__` inside a word
+// is text: it opens only after a character that is not a letter or number,
+// and closes only before one.
+const INLINE_PATTERN = new RegExp(
+  [
+    String.raw`\*\*(.+?)\*\*`,
+    String.raw`(?<![\p{L}\p{N}])__(.+?)__(?![\p{L}\p{N}])`,
+    String.raw`\*(?!\s)(.+?)(?<!\s)\*`,
+    String.raw`(?<![\p{L}\p{N}_])_(?!\s)(.+?)(?<!\s)_(?![\p{L}\p{N}_])`,
+    "`([^`]+)`",
+  ].join("|"),
+  "gu",
+);
+
 export function parseInline(text: string): Inline[] {
   const out: Inline[] = [];
-  // Groups: 1 and 2 strong, 3 and 4 em, 5 code. An `_` or `__` inside a
-  // word is text: it opens only after a character that is not a letter or
-  // number, and closes only before one.
-  const pattern = new RegExp(
-    [
-      String.raw`\*\*(.+?)\*\*`,
-      String.raw`(?<![\p{L}\p{N}])__(.+?)__(?![\p{L}\p{N}])`,
-      String.raw`\*(?!\s)(.+?)(?<!\s)\*`,
-      String.raw`(?<![\p{L}\p{N}_])_(?!\s)(.+?)(?<!\s)_(?![\p{L}\p{N}_])`,
-      "`([^`]+)`",
-    ].join("|"),
-    "gu",
-  );
   let last = 0;
-  for (const m of text.matchAll(pattern)) {
+  for (const m of text.matchAll(INLINE_PATTERN)) {
     const at = m.index ?? 0;
     if (at > last) out.push({ kind: "text", text: text.slice(last, at) });
     const strong = m[1] ?? m[2];

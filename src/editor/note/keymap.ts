@@ -341,12 +341,12 @@ function markInputRule(pattern: RegExp, markType: MarkType, delimLen: number) {
 export function taskListWith(
   content: Fragment,
   checked = false,
-  blocks: readonly PMNode[] = [],
+  blocks: Fragment = Fragment.empty,
 ): PMNode {
   const paragraph = schema.nodes.paragraph.create(null, content);
   return schema.nodes.taskList.create(
     null,
-    schema.nodes.taskItem.create({ checked }, [paragraph, ...blocks]),
+    schema.nodes.taskItem.create({ checked }, Fragment.from(paragraph).append(blocks)),
   );
 }
 
@@ -369,27 +369,20 @@ function taskListRule() {
       $start.index(depth - 1) === 0;
     if (inItem && $start.node(depth - 2).type === schema.nodes.bulletList) {
       const list = $start.node(depth - 2);
-      const index = $start.index(depth - 2);
-      const item = list.child(index);
-      const blocks: PMNode[] = [];
-      item.forEach((child, _offset, i) => {
-        if (i > 0) blocks.push(child);
-      });
-      const items = (from: number, to: number) => {
-        const nodes: PMNode[] = [];
-        for (let i = from; i < to; i++) nodes.push(list.child(i));
-        return nodes;
-      };
-      const before = items(0, index);
-      const after = items(index + 1, list.childCount);
+      const item = $start.node(depth - 1);
+      // The items before and after this one, as offsets in the list.
+      const listContentStart = $start.start(depth - 2);
+      const before = list.content.cut(0, $start.before(depth - 1) - listContentStart);
+      const after = list.content.cut($start.after(depth - 1) - listContentStart);
+      const blocks = item.content.cut(item.firstChild!.nodeSize);
       const nodes: PMNode[] = [];
-      if (before.length) nodes.push(list.type.create(list.attrs, before));
+      if (before.size) nodes.push(list.type.create(list.attrs, before));
       nodes.push(taskListWith(rest, checked, blocks));
-      if (after.length) nodes.push(list.type.create(list.attrs, after));
+      if (after.size) nodes.push(list.type.create(list.attrs, after));
 
       const listStart = $start.before(depth - 2);
       const tr = state.tr.replaceWith(listStart, $start.after(depth - 2), nodes);
-      const taskStart = listStart + (before.length ? nodes[0].nodeSize : 0);
+      const taskStart = listStart + (before.size ? nodes[0].nodeSize : 0);
       // The text starts three levels into taskList > taskItem > paragraph.
       return tr.setSelection(TextSelection.create(tr.doc, taskStart + 3));
     }
@@ -583,7 +576,8 @@ export function buildKeymap() {
     const nodeType = state.schema.nodes[itemName];
     if (!nodeType) return true;
     // The first item cannot go in: Tab still stays in the editor.
-    return sinkListItem(nodeType)(state, dispatch) || true;
+    sinkListItem(nodeType)(state, dispatch);
+    return true;
   };
 
   // Check or clear the task at the cursor: the keyboard way to the checkbox.

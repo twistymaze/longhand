@@ -87,6 +87,15 @@ function listsBefore(parent: PMNode, index: number): number {
   return count;
 }
 
+// Fields of the serializer state that its type declarations omit.
+function internals(state: MarkdownSerializerState) {
+  return state as unknown as {
+    atBlockStart: boolean;
+    closed: PMNode | null;
+    flushClose: (size: number) => void;
+  };
+}
+
 // Write the list, with one blank line after a list of the same type before
 // it. The base serializer writes two, which the parser reads as an empty
 // paragraph.
@@ -96,10 +105,7 @@ function renderList(
   delim: string,
   firstDelim: (index: number) => string,
 ) {
-  const s = state as unknown as {
-    closed: PMNode | null;
-    flushClose: (size: number) => void;
-  };
+  const s = internals(state);
   if (s.closed && s.closed.type === node.type) s.flushClose(2);
   state.renderList(node, delim, firstDelim);
 }
@@ -201,7 +207,7 @@ export function getSerializer(): MarkdownSerializer {
         // Text after a line break starts a new line of the file, where
         // block syntax applies as at the start of the block.
         const atBlockStart =
-          (state as unknown as { atBlockStart: boolean }).atBlockStart ||
+          internals(state).atBlockStart ||
           (index > 0 && parent.child(index - 1).type.name === "hardBreak");
         const next = index + 1 < parent.childCount ? parent.child(index + 1) : null;
         const lineContinues = next !== null && next.type.name !== "hardBreak";
