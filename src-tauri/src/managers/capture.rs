@@ -1437,8 +1437,15 @@ impl CaptureManager {
     /// its folder (U16, R23).
     pub fn recover_at_launch(&self) {
         match pipeline::recover::recover_crashed(&self.store, &self.working_root) {
-            Ok(recovered) => {
-                for session in recovered {
+            Ok(report) => {
+                for failed in report.failed {
+                    log::error!(
+                        "crash recovery of {} at launch failed: {}",
+                        failed.session_id,
+                        failed.error
+                    );
+                }
+                for session in report.recovered {
                     log::warn!(
                         "recovered {} after a crash: {}",
                         session.session_id,

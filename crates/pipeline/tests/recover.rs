@@ -37,7 +37,7 @@ fn a_crash_mid_segment_becomes_an_interrupted_session_with_the_segment_rebuilt()
     // Two closed chunks and a 37 s `.part` with a stale header.
     write_segment(&root.path().join("s"), 0, 0, RATE, &tone(157.0), true);
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     assert_eq!(recovered.len(), 1);
     let segments = store.lock().unwrap().segments("s").unwrap();
@@ -82,7 +82,7 @@ fn a_crash_in_a_stereo_segment_rebuilds_a_two_channel_row_and_the_stereo_mark() 
     // The stereo second segment was recording when the process died.
     write_stereo_segment(&dir, 1, 20_030, RATE, &tone(75.0), &tone(75.0), true);
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     interrupted_since(&recovered[0].state);
     let store = store.lock().unwrap();
@@ -107,7 +107,12 @@ fn a_crash_in_a_mono_note_sets_no_stereo_mark() {
         .create_session("s", common::at(0), None)
         .unwrap();
     write_segment(&root.path().join("s"), 0, 0, RATE, &tone(5.0), true);
-    recover_crashed(&store, root.path()).unwrap();
+    assert!(
+        recover_crashed(&store, root.path())
+            .unwrap()
+            .failed
+            .is_empty()
+    );
     let store = store.lock().unwrap();
     assert_eq!(store.segments("s").unwrap()[0].channels, 1);
     assert_eq!(store.stereo_from("s").unwrap(), None);
@@ -133,7 +138,7 @@ fn a_crash_that_kept_under_a_second_leaves_a_note_with_no_audio() {
         .unwrap();
     write_segment(&root.path().join("s"), 0, 0, RATE, &tone(0.5), true);
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     assert_note_with_no_audio(&store, &recovered[0].state);
     assert!(!root.path().join("s").exists());
@@ -151,7 +156,7 @@ fn a_crash_under_a_second_in_a_note_with_notes_text_keeps_the_note() {
     }
     write_segment(&root.path().join("s"), 0, 0, RATE, &tone(0.5), true);
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     assert_note_with_no_audio(&store, &recovered[0].state);
     assert_eq!(store.lock().unwrap().notes("s").unwrap(), "Agenda\n");
@@ -184,7 +189,7 @@ fn a_crash_under_a_second_in_a_note_that_existed_before_keeps_the_note() {
     }
     write_segment(&root.path().join("s"), 0, 0, RATE, &tone(0.5), true);
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     assert_note_with_no_audio(&store, &recovered[0].state);
     let record = store.lock().unwrap().session("s").unwrap().unwrap();
@@ -206,7 +211,7 @@ fn a_resumed_session_keeps_its_closed_segments_and_gains_the_crashed_one() {
     // Three hours into the session's timeline.
     write_segment(&dir, 1, 3 * 3_600_000, RATE, &tone(12.0), true);
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     let segments = store.lock().unwrap().segments("s").unwrap();
     assert_eq!(segments.len(), 2);
@@ -229,7 +234,7 @@ fn a_crash_45_minutes_ago_is_queued_and_5_minutes_ago_is_offered_for_resume() {
             .create_session("s", common::at(0), None)
             .unwrap();
         write_segment(&root.path().join("s"), 0, 0, RATE, &tone(30.0), true);
-        let recovered = recover_crashed(&store, root.path()).unwrap();
+        let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
         let since = interrupted_since(&recovered[0].state);
 
         let now = since + TimeDelta::minutes(minutes);
@@ -245,7 +250,12 @@ fn sessions_not_left_recording_are_untouched() {
     let store = store();
     common::queue_session(&store, root.path(), "q", 100, None, &[(RATE, tone(5.0))]);
 
-    assert!(recover_crashed(&store, root.path()).unwrap().is_empty());
+    assert!(
+        recover_crashed(&store, root.path())
+            .unwrap()
+            .recovered
+            .is_empty()
+    );
     let state = store.lock().unwrap().session("q").unwrap().unwrap().state;
     assert!(matches!(state, SessionState::Queued { .. }));
 }
@@ -314,7 +324,7 @@ fn a_crash_during_a_resumed_recording_keeps_the_old_audio_copy_until_the_note_en
     let store = store();
     let working = resumed_note(&store, root.path(), "s");
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
     interrupted_since(&recovered[0].state);
     assert!(
         working.join(OLD).is_file(),
@@ -325,7 +335,12 @@ fn a_crash_during_a_resumed_recording_keeps_the_old_audio_copy_until_the_note_en
     // The note is saved, and the process stops before the save deletes the
     // working location. The next launch deletes the copy.
     apply(&store, "s", &saved_events());
-    recover_crashed(&store, root.path()).unwrap();
+    assert!(
+        recover_crashed(&store, root.path())
+            .unwrap()
+            .failed
+            .is_empty()
+    );
     assert!(!working.join(OLD).exists());
     assert!(!working.join(OLD_TOO).exists());
     assert!(!working.join(pipeline::old_audio::LIST_FILE).exists());
@@ -339,7 +354,12 @@ fn launch_recovery_deletes_the_old_audio_copy_of_a_note_that_is_gone() {
     let working = resumed_note(&store, root.path(), "s");
     apply(&store, "s", &saved_events());
     assert!(store.lock().unwrap().forget("s").unwrap());
-    recover_crashed(&store, root.path()).unwrap();
+    assert!(
+        recover_crashed(&store, root.path())
+            .unwrap()
+            .failed
+            .is_empty()
+    );
     assert!(!working.join(OLD).exists());
     assert!(!working.join(OLD_TOO).exists());
 }
@@ -368,7 +388,12 @@ fn launch_recovery_of_a_failed_note_deletes_only_the_copies_of_marked_old_audio(
         session_core::folder::REMOVAL_MARKER_TEXT,
     )
     .unwrap();
-    recover_crashed(&store, root.path()).unwrap();
+    assert!(
+        recover_crashed(&store, root.path())
+            .unwrap()
+            .failed
+            .is_empty()
+    );
     assert!(!working.join(OLD).exists(), "the marked copy stayed");
     assert!(working.join(OLD_TOO).is_file(), "the unmarked copy went");
 }
@@ -401,7 +426,7 @@ fn a_recording_whose_home_folder_another_computer_deleted_is_discarded_at_launch
     let home = recording_with_home(&store, root.path(), dest.path());
     std::fs::remove_dir_all(&home).unwrap();
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     assert_eq!(recovered[0].state, SessionState::Discarded);
     assert!(
@@ -430,7 +455,7 @@ fn a_recording_whose_home_folder_moved_keeps_its_audio_and_follows_the_folder() 
     let moved = dest.path().join("Renamed");
     std::fs::rename(&home, &moved).unwrap();
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     interrupted_since(&recovered[0].state);
     let record = store.lock().unwrap().session("s").unwrap().unwrap();
@@ -447,7 +472,7 @@ fn a_recording_whose_storage_folder_is_an_empty_mount_point_keeps_its_audio() {
     std::fs::remove_dir_all(&home).unwrap();
     std::fs::remove_dir_all(dest.path().join(library::scan::LONGHAND_FOLDER)).unwrap();
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     interrupted_since(&recovered[0].state);
     assert!(root.path().join("s").exists());
@@ -463,8 +488,54 @@ fn a_recording_whose_storage_folder_is_not_available_keeps_its_audio() {
     recording_with_home(&store, root.path(), &storage);
     std::fs::rename(&storage, dest.path().join("away")).unwrap();
 
-    let recovered = recover_crashed(&store, root.path()).unwrap();
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
     interrupted_since(&recovered[0].state);
     assert!(root.path().join("s").exists());
+}
+
+#[test]
+fn one_session_that_cannot_be_recovered_does_not_stop_the_others_or_the_sweep() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("a", common::at(0), None).unwrap();
+        s.create_session("b", common::at(10), None).unwrap();
+    }
+    // The open segment of "a" has a closed chunk whose header cannot be
+    // read, so its channel count is not known.
+    let bad = root.path().join("a").join(RECOVERY_DIR);
+    std::fs::create_dir_all(&bad).unwrap();
+    let bad_chunk = bad.join("0-1800000000000-0-5000-0.wav");
+    std::fs::write(&bad_chunk, b"not a wav file").unwrap();
+    write_segment(&root.path().join("b"), 0, 0, RATE, &tone(5.0), true);
+    // The old audio copy of a note that is gone.
+    let gone = root.path().join("gone");
+    pipeline::old_audio::begin(&gone, &[]).unwrap();
+
+    let report = recover_crashed(&store, root.path()).unwrap();
+
+    let ids: Vec<&str> = report
+        .recovered
+        .iter()
+        .map(|r| r.session_id.as_str())
+        .collect();
+    assert_eq!(ids, ["b"]);
+    interrupted_since(&report.recovered[0].state);
+    let failed: Vec<&str> = report
+        .failed
+        .iter()
+        .map(|f| f.session_id.as_str())
+        .collect();
+    assert_eq!(failed, ["a"]);
+    // The session that failed becomes Interrupted(crash) and keeps its
+    // files, so the failed-capture alert shows at launch.
+    let state = store.lock().unwrap().session("a").unwrap().unwrap().state;
+    interrupted_since(&state);
+    assert!(bad_chunk.is_file());
+    assert!(
+        !gone.join(pipeline::old_audio::LIST_FILE).exists(),
+        "the old audio sweep runs"
+    );
 }

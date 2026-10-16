@@ -418,18 +418,25 @@ pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
 /// and give it the closed name its audio supports (R8). A partial holding
 /// nothing past its lookback duplicates the previous chunk and is removed.
 /// Call only while no writer is running on `dir`.
-pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
+///
+/// An error on one file does not stop the others: the file stays in place,
+/// a warning is logged, and the report names it in `left`. Only an error
+/// that reads the folder itself is returned.
+pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<PartialRecovery> {
+    let mut report = PartialRecovery::default();
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(report),
         Err(e) => return Err(e),
     };
-    let mut recovered = Vec::new();
     for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::warn!("could not read an entry of {}: {e}", dir.display());
+                continue;
+            }
+        };
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let Some(stem) = name.strip_suffix(".part") else {
@@ -438,23 +445,41 @@ pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
         let Some([segment, capture, start, audio_start]) = parse_numbers::<4>(stem) else {
             continue;
         };
-        let repaired = match wav::repair(&entry.path()) {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(kind) if kind.is_file() => {}
+            Ok(_) => continue,
+            Err(e) => {
+                log::warn!("could not read the type of partial chunk {name} ({e}); left in place");
+                report.left.push(path);
+                continue;
+            }
+        }
+        let repaired = match wav::repair(&path) {
             Ok(repaired) => repaired,
             Err(e) => {
                 log::warn!("partial chunk {name} is unreadable ({e}); left in place");
+                report.left.push(path);
                 continue;
             }
         };
         let end = audio_start + repaired.frames * 1000 / repaired.sample_rate.max(1) as u64;
         if end <= start {
-            std::fs::remove_file(entry.path())?;
+            if let Err(e) = std::fs::remove_file(&path) {
+                log::warn!("could not remove partial chunk {name} ({e}); left in place");
+                report.left.push(path);
+            }
             continue;
         }
         let closed = dir.join(format!(
             "{segment}-{capture}-{start}-{end}-{audio_start}.wav"
         ));
-        std::fs::rename(entry.path(), &closed)?;
-        recovered.push(ChunkInfo {
+        if let Err(e) = std::fs::rename(&path, &closed) {
+            log::warn!("could not close partial chunk {name} ({e}); left in place");
+            report.left.push(path);
+            continue;
+        }
+        report.recovered.push(ChunkInfo {
             path: closed,
             segment: segment as u32,
             capture_started_at: capture,
@@ -463,8 +488,19 @@ pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<Vec<ChunkInfo>> {
             audio_start_ms: audio_start,
         });
     }
-    if !recovered.is_empty() {
-        sync_dir(dir)?;
+    if !report.recovered.is_empty()
+        && let Err(e) = sync_dir(dir)
+    {
+        log::warn!("could not sync {} after chunk recovery: {e}", dir.display());
     }
-    Ok(recovered)
+    Ok(report)
+}
+
+/// What [`recover_partial_chunks`] did in one folder.
+#[derive(Debug, Default)]
+pub struct PartialRecovery {
+    /// The chunks that it closed.
+    pub recovered: Vec<ChunkInfo>,
+    /// The `.part` files that it could not close. Each stays in place.
+    pub left: Vec<PathBuf>,
 }

@@ -28,32 +28,47 @@ pub struct Recovered {
     pub state: SessionState,
 }
 
+/// A session that the sweep could not recover. It keeps its files.
+#[derive(Debug)]
+pub struct Failed {
+    pub session_id: String,
+    pub error: StageError,
+}
+
+/// What [`recover_crashed`] did at one launch.
+#[derive(Debug, Default)]
+pub struct Recovery {
+    /// The sessions that the sweep recovered.
+    pub recovered: Vec<Recovered>,
+    /// The sessions that the sweep could not recover, each with its error.
+    pub failed: Vec<Failed>,
+}
+
 /// Recover every session left Capturing. Run at launch, before any writer
 /// starts, while nothing in this process is recording. Then delete the old
 /// audio copies that ended sessions left ([`crate::old_audio::sweep`]).
-pub fn recover_crashed(
-    store: &SharedStore,
-    working_root: &Path,
-) -> Result<Vec<Recovered>, StageError> {
+///
+/// An error in one session does not stop the others or the sweep. That
+/// session keeps its files and becomes Interrupted(crash) when the store
+/// can write it, so the failed-capture alert shows at launch. Only an error
+/// that reads the list of sessions is returned.
+pub fn recover_crashed(store: &SharedStore, working_root: &Path) -> Result<Recovery, StageError> {
     let capturing = lock(store).sessions_in("capturing")?;
-    let mut recovered = Vec::new();
+    let mut report = Recovery::default();
     for record in capturing {
         let id = record.id;
         let session_dir = working_root.join(&id);
-        let state = if crate::early_home::home_deleted(store, &id)? {
-            // Another computer deleted the note while this one recorded
-            // into it: a person's Delete wins, and the recording goes
-            // (R23). No folder is made again.
-            log::warn!("the folder of {id} was deleted on another computer");
-            lock(store).apply(
-                &id,
-                &Event::UserStop {
-                    at: record.created_at,
-                    retained_audio: false,
-                },
-            )?
-        } else {
-            recover_one(store, &id, &session_dir, record.created_at)?
+        let state = match recover_session(store, &id, &session_dir, record.created_at) {
+            Ok(state) => state,
+            Err(error) => {
+                log::error!("could not recover session {id} after a crash: {error}");
+                interrupt_failed(store, &id, record.created_at);
+                report.failed.push(Failed {
+                    session_id: id,
+                    error,
+                });
+                continue;
+            }
         };
         // A discarded recording and a note with no audio keep no working
         // folder.
@@ -64,15 +79,59 @@ pub fn recover_crashed(
             "session {id} was recording when Longhand stopped; now {}",
             state.name()
         );
-        recovered.push(Recovered {
+        report.recovered.push(Recovered {
             session_id: id,
             state,
         });
     }
     // A session that ended while Longhand was stopped keeps no copy of its
     // old audio (KTD8 of the audio removal plan).
-    crate::old_audio::sweep(store, working_root)?;
-    Ok(recovered)
+    if let Err(e) = crate::old_audio::sweep(store, working_root) {
+        log::error!("the old audio sweep at launch failed: {e}");
+    }
+    Ok(report)
+}
+
+fn recover_session(
+    store: &SharedStore,
+    id: &str,
+    session_dir: &Path,
+    created_at: DateTime<FixedOffset>,
+) -> Result<SessionState, StageError> {
+    if crate::early_home::home_deleted(store, id)? {
+        // Another computer deleted the note while this one recorded into
+        // it: a person's Delete wins, and the recording goes (R23). No
+        // folder is made again.
+        log::warn!("the folder of {id} was deleted on another computer");
+        return Ok(lock(store).apply(
+            id,
+            &Event::UserStop {
+                at: created_at,
+                retained_audio: false,
+            },
+        )?);
+    }
+    recover_one(store, id, session_dir, created_at)
+}
+
+/// Make a session whose recovery failed Interrupted(crash), as of the end
+/// of its last stored segment, or its creation when it has none. When the
+/// store cannot write it, the session stays Capturing, and the next launch
+/// tries to recover it again.
+fn interrupt_failed(store: &SharedStore, id: &str, created_at: DateTime<FixedOffset>) {
+    let mut store = lock(store);
+    let at = store
+        .segments(id)
+        .ok()
+        .and_then(|segments| segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end))
+        .unwrap_or(created_at);
+    let event = Event::CaptureLost {
+        reason: InterruptReason::Crash,
+        at,
+    };
+    if let Err(e) = store.apply(id, &event) {
+        log::error!("could not interrupt session {id} after its recovery failed: {e}");
+    }
 }
 
 fn recover_one(
