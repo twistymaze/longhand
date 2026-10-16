@@ -55,6 +55,7 @@ These rules come from building this feature. Each rule guards against a fault th
 
 - Reads have no timeout. An online-only iCloud file can block a read. Run every read off the main thread. Do not hold the manager lock during a read (`reread` takes the lock only to start and to finish).
 - Writes (`SharedSettingsManager::change` and `join`) take the `writer` lock, not the `inner` lock. They lock `inner` only for short steps, so a slow save does not make `snapshot` wait. A slow save can make other shared changes wait.
+- `update_settings` does not hold its lock during the shared save: the local part is written first, and shared saves run in turn order. See `docs/solutions/performance-issues/settings-lock-held-across-a-slow-shared-save.md`.
 - After a change of storage folder, the join uses `ChangeOfFolder`. It can fill the new folder from the cache of the old folder only when the new folder has no settings.
 
 ## Prevention
