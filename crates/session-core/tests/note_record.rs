@@ -4,7 +4,9 @@ use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
     FolderError, PendingType, ResultFlag, SegmentRecord, SummaryMeta, fingerprint,
 };
-use session_core::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead};
+use session_core::note_record::{
+    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, session_id_of,
+};
 use session_core::recognition::ArtifactReference;
 use session_core::{SpeakerCount, Title, TitleSource};
 
@@ -16,7 +18,7 @@ fn wall(minutes: i64) -> DateTime<FixedOffset> {
 fn full_record() -> NoteRecord {
     NoteRecord {
         layout: LAYOUT,
-        session_id: "01J8Z".into(),
+        session_id: "01j8z".into(),
         started: wall(0),
         written_title: Some(Title {
             text: "Budget review: Q3 \"plan\"".into(),
@@ -146,7 +148,7 @@ fn a_record_with_every_field_round_trips_and_two_writes_give_the_same_bytes() {
 
 #[test]
 fn a_record_with_only_the_required_fields_round_trips() {
-    let record = NoteRecord::new("01J8Z", wall(0));
+    let record = NoteRecord::new("01j8z", wall(0));
     let text = record.render();
     assert_eq!(
         keys_at(&text, 2),
@@ -183,7 +185,7 @@ fn a_record_that_does_not_parse_gives_the_line_and_the_column() {
 
 #[test]
 fn a_record_with_a_wrong_field_type_gives_the_line() {
-    let text = "{\n  \"layout\": 1,\n  \"session_id\": \"01J8Z\",\n  \"started\": 5,\n  \"segments\": []\n}\n";
+    let text = "{\n  \"layout\": 1,\n  \"session_id\": \"01j8z\",\n  \"started\": 5,\n  \"segments\": []\n}\n";
     match NoteRecord::parse(text) {
         Err(FolderError::At { file, line, .. }) => {
             assert_eq!(file, "longhand.json");
@@ -191,4 +193,49 @@ fn a_record_with_a_wrong_field_type_gives_the_line() {
         }
         other => panic!("expected a parse error, got {other:?}"),
     }
+}
+
+#[test]
+fn a_record_whose_session_id_is_not_a_plain_note_id_does_not_parse() {
+    // The id becomes a folder name under the working root, so a path, a
+    // parent reference, an empty id, uppercase (file systems that ignore
+    // case) or a long id is refused.
+    let long = "a".repeat(65);
+    for id in [
+        "/tmp/x",
+        "../..",
+        "",
+        "a/b",
+        "a\\b",
+        "C:",
+        "..",
+        "01J8Z",
+        long.as_str(),
+        // Windows device names: no folder can have such a name there.
+        "con",
+        "nul",
+        "aux",
+        "prn",
+        "com1",
+        "lpt9",
+    ] {
+        let text = NoteRecord::new(id, wall(0)).render();
+        assert!(NoteRecord::parse(&text).is_err(), "{id:?} parsed");
+        assert_eq!(session_id_of(&text), None, "{id:?}");
+    }
+    for id in [
+        "s1",
+        "note-budget-review",
+        "6f1c0e1a-3b7d-4c2e-9a51-0d2f4b8e7c10",
+        "a_b",
+    ] {
+        let text = NoteRecord::new(id, wall(0)).render();
+        assert!(NoteRecord::parse(&text).is_ok(), "{id:?} did not parse");
+    }
+}
+
+#[test]
+fn a_newer_record_with_a_bad_session_id_gives_no_id() {
+    let text = "{\n  \"layout\": 9,\n  \"session_id\": \"../..\"\n}\n";
+    assert_eq!(session_id_of(text), None);
 }

@@ -85,15 +85,12 @@ impl Coverage {
     }
 
     /// Whether a wait for the note folder `folder`, which `scan` did not
-    /// find, stays after the scan. A targeted scan keeps the wait of a
-    /// folder that it did not read. A full scan keeps no such wait: it read
-    /// each folder in its Destinations, and a folder in no Destination of
-    /// the scan cannot give a note now.
+    /// find, stays after the scan: the scan did not read the folder. A full
+    /// scan of some Destinations says nothing about the folders in the
+    /// others. When a Destination is removed,
+    /// [`Reconciler::retain_roots`] drops the waits of its folders.
     pub(crate) fn keeps_wait(&self, scan: &LibraryScan, folder: &Path) -> bool {
-        match self {
-            Coverage::Full => false,
-            Coverage::Folders(_) => !self.read(scan, folder),
-        }
+        !self.read(scan, folder)
     }
 }
 
@@ -237,6 +234,9 @@ pub struct Reconciler {
     own_runs: Vec<String>,
     /// What the scans of [`Reconciler::run`] found (KTD10).
     status: Arc<LibraryStatus>,
+    /// [`Reconciler::retain_roots`] dropped notices that the next run has
+    /// not reported yet.
+    notices_dropped: bool,
 }
 
 impl Default for Reconciler {
@@ -255,6 +255,7 @@ impl Reconciler {
             read_timeout: options.read_timeout,
             own_runs: options.own_runs.clone(),
             status: Arc::default(),
+            notices_dropped: false,
         }
     }
 
@@ -319,6 +320,23 @@ impl Reconciler {
         self.run_at(store, target, claimed, Instant::now())
     }
 
+    /// Drop the waits and the status of each note folder in none of
+    /// `roots`, the Destinations of the library after a change. A scan
+    /// keeps the waits of the folders that it did not read, so the waits
+    /// of a removed Destination stay until this call. Rows are not
+    /// changed: [`forget_outside`] forgets them.
+    pub fn retain_roots(&mut self, roots: &[PathBuf]) {
+        let inside = |folder: &Path| scan::place_in(folder, roots).is_some();
+        self.mismatches
+            .retain(|_, mismatch| inside(&mismatch.folder));
+        self.titles.retain(|_, wait| inside(&wait.folder));
+        let notices = self.status.notices_revision();
+        self.status.retain_roots(roots);
+        // The next run reports the change, so the interface reads the
+        // notices again.
+        self.notices_dropped |= self.status.notices_revision() != notices;
+    }
+
     /// [`Reconciler::run`] with `now` as the time of the scan.
     pub fn run_at(
         &mut self,
@@ -364,7 +382,8 @@ impl Reconciler {
             &hand_edits,
             now,
         );
-        changes.notices = self.status.notices_revision() != notices;
+        changes.notices =
+            self.status.notices_revision() != notices || std::mem::take(&mut self.notices_dropped);
         // A file that changed in a note folder can leave the row as it is,
         // for example a new summary.md. The note is reported as changed, so
         // an open note page reads its documents again.
@@ -560,6 +579,15 @@ impl Reconciler {
         Ok(stale)
     }
 
+    /// Whether the folder of `note` still holds that note now: its files
+    /// read, and give the same id. A note that has no row is adopted only
+    /// then. The caller holds the store lock. This read is for new notes
+    /// only, and a later scan adopts a note whose folder cannot be read now.
+    fn still_holds(&self, note: &NoteFolder) -> bool {
+        scan::read_note_files(&note.path, self.read_timeout)
+            .is_some_and(|files| files.doc.session_id == note.doc.session_id)
+    }
+
     /// Read the folder of each stale row again. The caller does not hold
     /// the store lock.
     fn read_again(&self, stale: Vec<Stale>) -> HashMap<String, Reread> {
@@ -603,6 +631,11 @@ impl Reconciler {
             let id = &note.doc.session_id;
             self.pending.remove(id);
             let updated = match records.get(id) {
+                // The scan read the folder without the lock. A delete removes
+                // the folder before it deletes the row under the lock, so a
+                // folder that is gone now, or that now holds another note, is
+                // a deleted note, not a new one.
+                None if !self.still_holds(note) => false,
                 None => adopt(store, note)?,
                 Some(_) if intents.contains(id) => false,
                 Some(record) => follow(store, record, note, claimed, rereads.get(id))?,
@@ -625,15 +658,16 @@ impl Reconciler {
                     .filter_map(|problem| problem.known_id.as_deref()),
             )
             .collect();
-        // A folder that waits for its `longhand.json`, or that is not
-        // valid, and has no id can be the moved folder of any row of its
-        // Destination: a rename moves the folder, and the sync can deliver
-        // `session.md` first. While such a folder is there, no row of that
-        // Destination is forgotten.
+        // A folder that waits for its `longhand.json`, that is not valid, or
+        // that cannot be read, and has no id can be the moved folder of any
+        // row of its Destination: a rename moves the folder, and the sync can
+        // deliver `session.md` first or not deliver the files yet. While such
+        // a folder is there, no row of that Destination is forgotten.
         let unidentified: HashSet<&Path> = scan
             .invalid
             .iter()
             .chain(&scan.waiting_for_record)
+            .chain(&scan.unreadable)
             .filter(|problem| problem.known_id.is_none())
             .map(|problem| problem.root.as_path())
             .collect();
@@ -915,14 +949,14 @@ mod tests {
         };
         let folder = root.path().join("2026-09-25 0900 Planning");
         fs::create_dir(&folder).unwrap();
-        let doc = SessionDoc::new("A1", None, &[segment]).unwrap();
+        let doc = SessionDoc::new("a1", None, &[segment]).unwrap();
         session_save::note_files::write_doc(&folder, &doc).unwrap();
         fs::write(folder.join("notes.md"), "first\n").unwrap();
         let store = Mutex::new(Store::open_in_memory().unwrap());
         let mut reconciler = Reconciler::default();
         let target = Target::Full(vec![root.path().to_path_buf()]);
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
-        assert_eq!(changes.changed, vec!["A1".to_string()]);
+        assert_eq!(changes.changed, vec!["a1".to_string()]);
         (root, folder, store, reconciler)
     }
 
@@ -975,20 +1009,20 @@ mod tests {
         // lock, as `save_notes` does.
         {
             let s = store.lock().unwrap();
-            s.set_notes("A1", "mine\n").unwrap();
+            s.set_notes("a1", "mine\n").unwrap();
             fs::write(folder.join("notes.md"), "mine\n").unwrap();
         }
 
         let mut s = store.lock().unwrap();
         let changes = apply(&mut s, &mut reconciler, &result, &rereads);
         assert!(changes.is_empty(), "{changes:?}");
-        assert_eq!(s.notes("A1").unwrap(), "mine\n");
+        assert_eq!(s.notes("a1").unwrap(), "mine\n");
         drop(s);
 
         // The next scan reads the folder with this computer's notes.
         let target = Target::Full(vec![root.path().to_path_buf()]);
         reconciler.run(&store, &target, &never_claimed).unwrap();
-        assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "mine\n");
+        assert_eq!(store.lock().unwrap().notes("a1").unwrap(), "mine\n");
     }
 
     #[test]
@@ -1004,13 +1038,13 @@ mod tests {
         {
             let s = store.lock().unwrap();
             fs::rename(&synced, &renamed).unwrap();
-            s.set_home_path("A1", &renamed.to_string_lossy()).unwrap();
+            s.set_home_path("a1", &renamed.to_string_lossy()).unwrap();
         }
 
         let mut s = store.lock().unwrap();
         let changes = apply(&mut s, &mut reconciler, &result, &rereads);
         assert!(changes.changed.is_empty(), "{changes:?}");
-        let home = s.session("A1").unwrap().unwrap().home_path.unwrap();
+        let home = s.session("a1").unwrap().unwrap().home_path.unwrap();
         assert_eq!(PathBuf::from(home), renamed);
     }
 
@@ -1020,8 +1054,8 @@ mod tests {
         fs::write(folder.join("notes.md"), "theirs\n").unwrap();
         let target = Target::Full(vec![root.path().to_path_buf()]);
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
-        assert_eq!(changes.changed, vec!["A1".to_string()]);
-        assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "theirs\n");
+        assert_eq!(changes.changed, vec!["a1".to_string()]);
+        assert_eq!(store.lock().unwrap().notes("a1").unwrap(), "theirs\n");
     }
 
     /// KTD10: during a Move the note is in both folders for a time. The
@@ -1048,9 +1082,9 @@ mod tests {
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
         assert!(changes.is_empty(), "{changes:?}");
         let s = store.lock().unwrap();
-        let record = s.session("A1").unwrap().unwrap();
+        let record = s.session("a1").unwrap().unwrap();
         assert_eq!(record.home_path.map(PathBuf::from), Some(folder.clone()));
-        assert_eq!(s.notes("A1").unwrap(), "first\n");
+        assert_eq!(s.notes("a1").unwrap(), "first\n");
         drop(s);
 
         // The pending delete of the old folder does not forget the row.
@@ -1070,7 +1104,7 @@ mod tests {
             .reconcile(&mut s, &result, &Coverage::Full, later, &never_claimed)
             .unwrap();
         assert!(changes.removed.is_empty(), "{changes:?}");
-        assert!(s.session("A1").unwrap().is_some());
+        assert!(s.session("a1").unwrap().is_some());
     }
 
     #[test]
@@ -1083,7 +1117,7 @@ mod tests {
         )
         .unwrap();
         assert!(removed.is_empty());
-        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+        assert!(store.lock().unwrap().session("a1").unwrap().is_some());
     }
 
     /// Leave them (R7): the library forgets the notes of the old folder and
@@ -1098,8 +1132,8 @@ mod tests {
             &never_claimed,
         )
         .unwrap();
-        assert_eq!(removed, vec!["A1".to_string()]);
-        assert!(store.lock().unwrap().session("A1").unwrap().is_none());
+        assert_eq!(removed, vec!["a1".to_string()]);
+        assert!(store.lock().unwrap().session("a1").unwrap().is_none());
         assert!(folder.join("session.md").exists());
         assert!(folder.join("notes.md").exists());
     }
@@ -1111,9 +1145,9 @@ mod tests {
         let roots = [other.path().to_path_buf()];
         let removed = forget_outside(&mut store.lock().unwrap(), &roots, &|_| true).unwrap();
         assert!(removed.is_empty());
-        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+        assert!(store.lock().unwrap().session("a1").unwrap().is_some());
         let removed = forget_outside(&mut store.lock().unwrap(), &roots, &never_claimed).unwrap();
-        assert_eq!(removed, vec!["A1".to_string()]);
+        assert_eq!(removed, vec!["a1".to_string()]);
     }
 
     #[test]
@@ -1134,7 +1168,7 @@ mod tests {
             &never_claimed,
         )
         .unwrap();
-        assert_eq!(removed, vec!["A1".to_string()]);
+        assert_eq!(removed, vec!["a1".to_string()]);
         assert!(
             store
                 .lock()
@@ -1143,5 +1177,176 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// Covers C18: a scan that read the folder before a delete must not
+    /// adopt the note again after the delete.
+    #[test]
+    fn a_note_deleted_after_the_scan_read_it_is_not_adopted_again() {
+        let (root, folder, store, mut reconciler) = adopted();
+        let result = scan_of(root.path(), &store);
+        // The delete removes the folder, then the row under the lock.
+        fs::remove_dir_all(&folder).unwrap();
+        assert!(store.lock().unwrap().forget("a1").unwrap());
+
+        let mut s = store.lock().unwrap();
+        let changes = apply(&mut s, &mut reconciler, &result, &HashMap::new());
+        assert!(changes.changed.is_empty(), "{changes:?}");
+        assert!(s.session("a1").unwrap().is_none());
+    }
+
+    /// Covers C19: a renamed folder that cannot be read and has no id can
+    /// be the folder of any row of its Destination, so no row is forgotten.
+    #[cfg(unix)]
+    #[test]
+    fn a_renamed_folder_that_cannot_be_read_keeps_the_rows_of_its_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        let (root, folder, store, mut reconciler) = adopted();
+        let renamed = root.path().join("2026-09-25 0900 Budget");
+        fs::rename(&folder, &renamed).unwrap();
+        let files = [renamed.join("session.md"), renamed.join("longhand.json")];
+        for file in &files {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        // A process that ignores the permissions (root) reads the files, and
+        // the test cannot make them unreadable.
+        let ignores_permissions = fs::read(&files[0]).is_ok();
+        let result = scan_of(root.path(), &store);
+        for file in &files {
+            fs::set_permissions(file, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        if ignores_permissions {
+            return;
+        }
+        assert_eq!(result.unreadable.len(), 1, "{result:?}");
+        assert_eq!(result.unreadable[0].known_id, None);
+
+        let mut s = store.lock().unwrap();
+        let now = Instant::now();
+        for at in [now, now + DELETE_WAIT * 2] {
+            let changes = reconciler
+                .reconcile(&mut s, &result, &Coverage::Full, at, &never_claimed)
+                .unwrap();
+            assert!(changes.removed.is_empty(), "{changes:?}");
+        }
+        assert!(s.session("a1").unwrap().is_some());
+    }
+
+    /// A note folder in `root` named `name` with the id `id`, no `notes.md`
+    /// (the status waits for it) and a title in `session.md` that differs
+    /// from the title that Longhand last wrote (a title wait).
+    fn waiting_note(root: &Path, name: &str, id: &str) -> PathBuf {
+        let folder = root.join(name);
+        fs::create_dir(&folder).unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let mut doc = SessionDoc::at(id, start, None, &[]);
+        doc.title = Some("Planning".into());
+        session_save::note_files::write_doc(&folder, &doc).unwrap();
+        fs::write(folder.join("session.md"), "---\ntitle: Budget\n---\n").unwrap();
+        folder
+    }
+
+    /// Covers C89: a full scan of one Destination keeps the waits and the
+    /// status of the notes in another, and a change of the Destinations
+    /// drops them.
+    #[test]
+    fn a_full_scan_of_one_destination_keeps_the_waits_of_another() {
+        let (root, _folder, store, mut reconciler) = adopted();
+        let other = tempfile::tempdir().unwrap();
+        crate::scan::write_marker(other.path());
+        waiting_note(other.path(), "2026-09-25 0900 Budget", "b1");
+        let both = Target::Full(vec![root.path().to_path_buf(), other.path().to_path_buf()]);
+        reconciler.run(&store, &both, &never_claimed).unwrap();
+        assert!(reconciler.titles.contains_key("b1"));
+        assert!(!reconciler.status.note("b1").waiting.is_empty());
+
+        let one = Target::Full(vec![root.path().to_path_buf()]);
+        reconciler.run(&store, &one, &never_claimed).unwrap();
+        assert!(reconciler.titles.contains_key("b1"));
+        assert!(!reconciler.status.note("b1").waiting.is_empty());
+
+        reconciler.retain_roots(&[root.path().to_path_buf()]);
+        assert!(!reconciler.titles.contains_key("b1"));
+        assert!(reconciler.status.note("b1").waiting.is_empty());
+    }
+
+    /// A folder whose `longhand.json` a newer build wrote: a problem that is
+    /// reported at once.
+    fn newer_folder(root: &Path, name: &str) {
+        let folder = root.join(name);
+        fs::create_dir(&folder).unwrap();
+        fs::write(
+            folder.join("longhand.json"),
+            "{\"layout\": 9, \"session_id\": \"zz\"}\n",
+        )
+        .unwrap();
+    }
+
+    /// The scan after a change of the Destinations reports the notices that
+    /// the change dropped, so the interface reads them again.
+    #[test]
+    fn the_scan_after_a_removed_destination_reports_its_dropped_notices() {
+        let (root, _folder, store, mut reconciler) = adopted();
+        let other = tempfile::tempdir().unwrap();
+        crate::scan::write_marker(other.path());
+        newer_folder(other.path(), "Newer");
+        let both = Target::Full(vec![root.path().to_path_buf(), other.path().to_path_buf()]);
+        let changes = reconciler.run(&store, &both, &never_claimed).unwrap();
+        assert!(changes.notices);
+        assert_eq!(reconciler.status.problems().len(), 1);
+
+        let one = vec![root.path().to_path_buf()];
+        reconciler.retain_roots(&one);
+        assert!(reconciler.status.problems().is_empty());
+        let changes = reconciler
+            .run(&store, &Target::Full(one.clone()), &never_claimed)
+            .unwrap();
+        assert!(changes.notices, "{changes:?}");
+        // The report is made one time.
+        let changes = reconciler
+            .run(&store, &Target::Full(one), &never_claimed)
+            .unwrap();
+        assert!(!changes.notices, "{changes:?}");
+    }
+
+    /// Another version of a note in a removed Destination is dropped, so
+    /// its wait does not wake the watcher again.
+    #[test]
+    fn a_removed_destination_drops_the_other_versions_in_it() {
+        let (root, folder, store, mut reconciler) = adopted();
+        let other = tempfile::tempdir().unwrap();
+        crate::scan::write_marker(other.path());
+        let copy = other.path().join("2026-09-25 0900 Planning");
+        fs::create_dir(&copy).unwrap();
+        for file in ["session.md", "longhand.json", "notes.md"] {
+            fs::copy(folder.join(file), copy.join(file)).unwrap();
+        }
+        let both = Target::Full(vec![root.path().to_path_buf(), other.path().to_path_buf()]);
+        reconciler.run(&store, &both, &never_claimed).unwrap();
+        // The wait for the other version gives a deadline.
+        assert!(reconciler.status.next_due().is_some());
+
+        reconciler.retain_roots(&[root.path().to_path_buf()]);
+        assert_eq!(reconciler.status.next_due(), None);
+    }
+
+    /// The folder of a note that was deleted after the scan read it can hold
+    /// another note when the reconcile writes. The deleted note is not
+    /// adopted with the folder of the other note.
+    #[test]
+    fn a_deleted_note_is_not_adopted_from_a_folder_that_now_holds_another_note() {
+        let (root, folder, store, mut reconciler) = adopted();
+        let result = scan_of(root.path(), &store);
+        fs::remove_dir_all(&folder).unwrap();
+        assert!(store.lock().unwrap().forget("a1").unwrap());
+        fs::create_dir(&folder).unwrap();
+        let start = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let other = SessionDoc::at("b1", start, None, &[]);
+        session_save::note_files::write_doc(&folder, &other).unwrap();
+
+        let mut s = store.lock().unwrap();
+        let changes = apply(&mut s, &mut reconciler, &result, &HashMap::new());
+        assert!(changes.changed.is_empty(), "{changes:?}");
+        assert!(s.session("a1").unwrap().is_none());
     }
 }

@@ -2308,7 +2308,7 @@ mod tests {
         };
         let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
         let summary = "# Summary\n\nHello.\n";
-        let mut doc = SessionDoc::new("A1", None, &[segment]).unwrap();
+        let mut doc = SessionDoc::new("a1", None, &[segment]).unwrap();
         doc.transcript_fingerprint = Some(fingerprint(transcript.as_bytes()));
         doc.summary_fingerprint = Some(fingerprint(summary.as_bytes()));
         session_save::note_files::write_doc(&home, &doc).unwrap();
@@ -2339,7 +2339,7 @@ mod tests {
         let start = std::time::Instant::now();
         let (dir, home, store, mut reconciler) = scanned_note(start);
         let status = Arc::clone(reconciler.status());
-        assert_eq!(refuse_while_syncing(&status, "A1"), Ok(()));
+        assert_eq!(refuse_while_syncing(&status, "a1"), Ok(()));
 
         std::fs::write(home.join("summary.md"), "# Summary\n\nEdited.\n").unwrap();
         let target = Target::Full(vec![dir.path().canonicalize().unwrap()]);
@@ -2347,14 +2347,14 @@ mod tests {
             .run_at(&store, &target, &|_| false, start)
             .unwrap();
         assert_eq!(
-            refuse_while_syncing(&status, "A1"),
+            refuse_while_syncing(&status, "a1"),
             Err("Wait until the note finishes syncing.".to_string())
         );
 
         reconciler
             .run_at(&store, &target, &|_| false, start + HAND_EDIT_WAIT)
             .unwrap();
-        assert_eq!(refuse_while_syncing(&status, "A1"), Ok(()));
+        assert_eq!(refuse_while_syncing(&status, "a1"), Ok(()));
     }
 
     // Covers R6: a `session.md` that does not parse holds the writes at
@@ -2379,14 +2379,14 @@ mod tests {
             .unwrap();
         let reason =
             "session.md has an error on line 3. Correct the file to change this note.".to_string();
-        assert_eq!(refuse_with_problem(&status, "A1"), Err(reason.clone()));
-        assert_eq!(refuse_while_syncing(&status, "A1"), Err(reason));
+        assert_eq!(refuse_with_problem(&status, "a1"), Err(reason.clone()));
+        assert_eq!(refuse_while_syncing(&status, "a1"), Err(reason));
 
         std::fs::write(home.join("session.md"), good).unwrap();
         reconciler
             .run_at(&store, &target, &|_| false, start)
             .unwrap();
-        assert_eq!(refuse_with_problem(&status, "A1"), Ok(()));
+        assert_eq!(refuse_with_problem(&status, "a1"), Ok(()));
     }
 
     // Covers R6, KTD6: a `longhand.json` that is not valid JSON, or that a
@@ -2420,12 +2420,12 @@ mod tests {
                 .run_at(&store, &target, &|_| false, start)
                 .unwrap();
             assert_eq!(
-                refuse_with_problem(&status, "A1"),
+                refuse_with_problem(&status, "a1"),
                 Err(reason.to_string()),
                 "{text}"
             );
             assert_eq!(
-                refuse_while_syncing(&status, "A1"),
+                refuse_while_syncing(&status, "a1"),
                 Err(reason.to_string()),
                 "{text}"
             );
@@ -2434,7 +2434,7 @@ mod tests {
             reconciler
                 .run_at(&store, &target, &|_| false, start)
                 .unwrap();
-            assert_eq!(refuse_with_problem(&status, "A1"), Ok(()), "{text}");
+            assert_eq!(refuse_with_problem(&status, "a1"), Ok(()), "{text}");
         }
     }
 }

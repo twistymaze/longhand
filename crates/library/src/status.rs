@@ -269,6 +269,29 @@ impl LibraryStatus {
             .unwrap_or_default()
     }
 
+    /// Drop what this holds for each folder in none of `roots`, the
+    /// Destinations of the library after a change. A scan keeps the status
+    /// of the folders that it did not read.
+    pub fn retain_roots(&self, roots: &[PathBuf]) {
+        let inside = |folder: &Path| crate::scan::place_in(folder, roots).is_some();
+        let mut inner = self.lock();
+        let problems = inner.reported_problems();
+        let old_layout = inner.old_layout_notes();
+        inner.notes.retain(|_, (path, _)| inside(path));
+        // Another version in a removed Destination is dropped too, also when
+        // the note is in a Destination that stays.
+        inner.seen.retain(|_, (path, versions)| {
+            versions.retain(|version, _| inside(version));
+            inside(path) && !versions.is_empty()
+        });
+        inner.problems.retain(|path, _| inside(path));
+        inner.old_layout.retain(|_, path| inside(path));
+        inner.unavailable.retain(|root| roots.contains(root));
+        if inner.reported_problems() != problems || inner.old_layout_notes() != old_layout {
+            inner.notices_revision += 1;
+        }
+    }
+
     /// The work on the note of `record` on another computer, as the latest
     /// scan found it (KTD5, R12, R20, R21, R23). Only a Saved row can show
     /// it: a row that records, processes or waits on this computer does
@@ -414,9 +437,10 @@ impl LibraryStatus {
         apply_old_layout(&mut inner, scan, coverage);
 
         // A folder that the scan read and that gave no note has nothing to
-        // show now. A full scan also drops a folder outside its roots, for
-        // example in a removed Destination. A note that the scan found, or
-        // that cannot be read, has the other versions of this scan only.
+        // show now. A folder that the scan did not read keeps its status;
+        // `retain_roots` drops the folders of a removed Destination. A note
+        // that the scan found, or that cannot be read, has the other
+        // versions of this scan only.
         inner.notes.retain(|id, (path, _)| {
             let keep = found.contains_key(id) || coverage.keeps_wait(scan, path);
             if !keep {

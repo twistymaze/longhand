@@ -1834,10 +1834,11 @@ fn a_targeted_scan_of_the_home_folder_keeps_the_wait_of_a_duplicate_folder() {
     assert_eq!(a.other_versions("n1"), std::slice::from_ref(&copy));
 }
 
-/// A full scan without the Destination of a note drops the wait of its
-/// other version: no scan can read that folder now, so no deadline stays.
+/// A full scan of the other Destination keeps the wait of the other
+/// version: it did not read that folder. When the Destination of the note
+/// is removed, no scan can read that folder, so no deadline stays.
 #[test]
-fn a_full_scan_without_the_destination_of_a_waiting_other_version_drops_the_wait() {
+fn a_removed_destination_of_a_waiting_other_version_drops_the_wait() {
     let (_dir, root) = shared_root();
     let (_other_dir, other) = shared_root();
     let mut a = computer();
@@ -1850,15 +1851,19 @@ fn a_full_scan_without_the_destination_of_a_waiting_other_version_drops_the_wait
     assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
 
     a.sync_roots_at(&[&other], start);
+    assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
+    a.reconciler.retain_roots(&[other.to_path_buf()]);
+    a.sync_roots_at(&[&other], start);
     assert_eq!(a.reconciler.next_due(), None);
     a.sync_roots_at(&[&other], start + OTHER_VERSION_WAIT);
     assert!(a.other_versions("n1").is_empty());
 }
 
-/// A full scan without the Destination of a note drops the wait for the
-/// sync of its documents.
+/// A full scan of the other Destination keeps the wait for the sync of the
+/// documents of a note, and a removal of the Destination of the note drops
+/// it.
 #[test]
-fn a_full_scan_without_the_destination_of_a_mismatch_drops_the_wait() {
+fn a_removed_destination_of_a_mismatch_drops_the_wait() {
     let (_dir, root) = shared_root();
     let (_other_dir, other) = shared_root();
     let mut a = computer();
@@ -1870,6 +1875,9 @@ fn a_full_scan_without_the_destination_of_a_mismatch_drops_the_wait() {
     a.sync_roots_at(&[&root, &other], start);
     assert_eq!(a.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
 
+    a.sync_roots_at(&[&other], start);
+    assert_eq!(a.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
+    a.reconciler.retain_roots(&[other.to_path_buf()]);
     a.sync_roots_at(&[&other], start);
     assert_eq!(a.reconciler.next_due(), None);
 }

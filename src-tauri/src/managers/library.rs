@@ -387,10 +387,12 @@ impl Worker {
         })
     }
 
-    /// A new set of Destinations: start the watches again on it, and scan
-    /// every Destination. The change of folder already read the shared
-    /// settings of the new storage folder.
+    /// A new set of Destinations: drop the waits of the notes in a removed
+    /// Destination, start the watches again on the new set, and scan every
+    /// Destination. The change of folder already read the shared settings
+    /// of the new storage folder.
     fn set_roots(&mut self, roots: Vec<PathBuf>, storage: Option<PathBuf>) {
+        self.reconciler.retain_roots(&roots);
         self.roots = roots;
         self.storage = storage;
         self.watches.clear();
@@ -797,7 +799,7 @@ mod tests {
     #[test]
     fn an_event_in_a_typed_home_folder_marks_that_home_folder() {
         let root = marked_root();
-        let home = note(&root.path().join("Pathfinder"), "Session 12", "A1");
+        let home = note(&root.path().join("Pathfinder"), "Session 12", "a1");
         let w = watched_dir(root.path());
         let b = batch(
             &w,
@@ -815,7 +817,7 @@ mod tests {
             BTreeSet::from([home.clone()])
         );
         // A home folder at the root still marks only itself.
-        let top = note(root.path(), "Standup", "B1");
+        let top = note(root.path(), "Standup", "b1");
         let b = batch(
             &w,
             vec![event(
@@ -834,7 +836,7 @@ mod tests {
     #[test]
     fn an_event_in_a_home_folder_with_only_longhand_json_marks_that_folder() {
         let root = marked_root();
-        let top = note(root.path(), "Standup", "B1");
+        let top = note(root.path(), "Standup", "b1");
         std::fs::remove_file(top.join("session.md")).unwrap();
         let w = watched_dir(root.path());
         let b = batch(
@@ -860,9 +862,9 @@ mod tests {
         worker.emit = Box::new(move |changes| {
             let _ = sent.send(changes);
         });
-        note(&root.path().join("Pathfinder"), "Session 12", "A1");
+        note(&root.path().join("Pathfinder"), "Session 12", "a1");
         worker.full_scan();
-        assert_eq!(emitted.try_recv().unwrap().changed, ["A1"]);
+        assert_eq!(emitted.try_recv().unwrap().changed, ["a1"]);
 
         let (old, new) = (root.path().join("Pathfinder"), root.path().join("D&D"));
         std::fs::rename(&old, &new).unwrap();
@@ -885,7 +887,7 @@ mod tests {
                 .iter()
                 .all(|t| matches!(t, Target::Folders { .. }))
         );
-        assert_eq!(emitted.try_recv().unwrap().changed, ["A1"]);
+        assert_eq!(emitted.try_recv().unwrap().changed, ["a1"]);
     }
 
     #[test]
@@ -1062,7 +1064,7 @@ mod tests {
         // it reports nothing. Write `session.md` again until a change
         // arrives, but never run a full scan.
         std::thread::sleep(Duration::from_millis(500));
-        let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+        let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
         let mut changes = None;
         for _ in 0..5 {
             match emitted.recv_timeout(Duration::from_secs(2)) {
@@ -1071,13 +1073,13 @@ mod tests {
                     break;
                 }
                 Ok(_) => {}
-                Err(_) => session_save::note_files::write_doc(&dir, &doc("A1")).unwrap(),
+                Err(_) => session_save::note_files::write_doc(&dir, &doc("a1")).unwrap(),
             }
         }
         let changes = changes.expect("no LibraryChanged in 10 seconds");
-        assert_eq!(changes.changed, ["A1"]);
+        assert_eq!(changes.changed, ["a1"]);
         assert!(changes.removed.is_empty());
-        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+        assert!(store.lock().unwrap().session("a1").unwrap().is_some());
         watcher.stop();
         // Do not assert the target kind here. A busy system makes FSEvents
         // drop events and send a rescan flag, which correctly asks for a
@@ -1093,9 +1095,9 @@ mod tests {
         worker.emit = Box::new(move |changes| {
             let _ = sent.send(changes);
         });
-        note(root.path(), "Planning", "A1");
+        note(root.path(), "Planning", "a1");
         worker.full_scan();
-        assert_eq!(emitted.try_recv().unwrap().changed, ["A1"]);
+        assert_eq!(emitted.try_recv().unwrap().changed, ["a1"]);
         worker.full_scan();
         assert!(emitted.try_recv().is_err());
     }
@@ -1145,6 +1147,33 @@ mod tests {
         assert_eq!(targets.lock().unwrap().len(), 1);
     }
 
+    /// A change of the Destinations drops the problems of the removed one
+    /// and emits a change, so the interface reads the notices again.
+    #[test]
+    fn a_removed_destination_drops_its_notices_and_emits_a_change() {
+        let first = marked_root();
+        let second = marked_root();
+        let newer = second.path().join("Newer");
+        std::fs::create_dir(&newer).unwrap();
+        std::fs::write(
+            newer.join("longhand.json"),
+            "{\"layout\": 9, \"session_id\": \"zz\"}\n",
+        )
+        .unwrap();
+        let both = vec![first.path().to_path_buf(), second.path().to_path_buf()];
+        let (mut worker, _targets, _) = worker(both, fast());
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&emitted);
+        worker.emit = Box::new(move |changes| sink.lock().unwrap().push(changes));
+        worker.full_scan();
+        assert_eq!(worker.reconciler.status().problems().len(), 1);
+        emitted.lock().unwrap().clear();
+
+        worker.set_roots(vec![first.path().to_path_buf()], None);
+        assert!(worker.reconciler.status().problems().is_empty());
+        assert_eq!(emitted.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn a_root_that_appears_later_gets_a_watch_at_the_next_full_scan() {
         let parent = tempfile::tempdir().unwrap();
@@ -1173,7 +1202,7 @@ mod tests {
     fn a_pending_delete_wakes_the_watcher_when_it_is_due() {
         let root = marked_root();
         let (mut worker, _, _) = worker(vec![root.path().to_path_buf()], fast());
-        let dir = note(root.path(), "Planning", "A1");
+        let dir = note(root.path(), "Planning", "a1");
         worker.full_scan();
         assert_eq!(worker.deadline(), worker.next_full);
 
@@ -1188,7 +1217,7 @@ mod tests {
     fn a_pending_delete_that_stays_due_waits_between_scans() {
         let root = marked_root();
         let (mut worker, _, _) = worker(vec![root.path().to_path_buf()], fast());
-        let dir = note(root.path(), "Planning", "A1");
+        let dir = note(root.path(), "Planning", "a1");
         worker.full_scan();
         std::fs::remove_dir_all(&dir).unwrap();
         worker.full_scan();

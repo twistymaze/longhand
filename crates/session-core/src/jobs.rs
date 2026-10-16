@@ -2391,6 +2391,12 @@ pub enum DeleteError {
         path: std::path::PathBuf,
         message: String,
     },
+    /// The id is not in the form that Longhand writes
+    /// ([`crate::note_record::valid_session_id`]): the working directory
+    /// that the caller joins to it can be outside the working root.
+    /// Nothing changed.
+    #[error("the note id is not valid")]
+    InvalidId,
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -2563,6 +2569,12 @@ impl Claims {
         ClaimSet::has(&self.set().regenerating, session_id)
     }
 
+    /// True while a delete holds a claim on the session. Record and Resume
+    /// are then refused.
+    pub fn is_deleting(&self, session_id: &str) -> bool {
+        ClaimSet::has(&self.set().deleting, session_id)
+    }
+
     /// True while a regeneration or a delete holds a claim on the session.
     /// The Move then waits, and Transcribe Again is refused.
     pub fn is_regenerating_or_deleting(&self, session_id: &str) -> bool {
@@ -2636,6 +2648,9 @@ pub fn delete_session<R>(
 where
     R: FnMut(&Path) -> std::result::Result<(), String>,
 {
+    if !crate::note_record::valid_session_id(id) {
+        return Err(DeleteError::InvalidId);
+    }
     let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
     // The claim comes before the home folder is read. A rename that holds
     // the store lock now completes first, and the read gets its new path.

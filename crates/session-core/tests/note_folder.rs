@@ -15,7 +15,7 @@ fn record() -> NoteRecord {
             source: TitleSource::Proposed,
         }),
         transcript_fingerprint: Some("t1".into()),
-        ..NoteRecord::new("01J8Z", started())
+        ..NoteRecord::new("01j8z", started())
     }
 }
 
@@ -24,7 +24,7 @@ fn a_new_layout_note_takes_its_identity_from_the_record_and_its_title_from_sessi
     let session_md = "---\ntitle: Budget\nlonghand_tags:\n- Person::Nathan\n- person :: nathan\n- Follow-up\nsource: agent\n---\nAgent text.\n";
     let files = NoteFiles::parse(Some(session_md), Some(&record().render())).unwrap();
     assert_eq!(files.layout, Layout::New);
-    assert_eq!(files.doc.session_id, "01J8Z");
+    assert_eq!(files.doc.session_id, "01j8z");
     assert_eq!(files.doc.title.as_deref(), Some("Budget"));
     assert_eq!(files.doc.title_source, Some(TitleSource::Proposed));
     // R8: two tags with one key count as one tag.
@@ -46,7 +46,7 @@ fn a_title_that_differs_from_the_last_written_title_is_the_users() {
 
 #[test]
 fn a_session_md_that_holds_session_id_is_the_old_layout_also_with_a_record() {
-    let mut doc = SessionDoc::at("01J8Z", started(), None, &[]);
+    let mut doc = SessionDoc::at("01j8z", started(), None, &[]);
     doc.title = Some("Old".into());
     doc.title_source = Some(TitleSource::User);
     doc.transcript_fingerprint = Some("old".into());
@@ -121,4 +121,13 @@ fn the_written_fingerprint_covers_both_files() {
         written_fingerprint(b"a", b"b"),
         written_fingerprint(b"x", b"b")
     );
+}
+
+#[test]
+fn an_old_layout_session_md_with_a_path_as_its_id_is_invalid() {
+    let doc = SessionDoc::at("../..", started(), None, &[]);
+    assert!(matches!(
+        NoteFiles::parse(Some(&doc.render()), None),
+        Err(NoteFilesError::Invalid(_))
+    ));
 }

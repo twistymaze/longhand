@@ -819,6 +819,38 @@ fn a_session_never_saved_deletes_its_working_directory_only() {
 }
 
 #[test]
+fn a_session_whose_id_is_not_a_plain_note_id_removes_nothing() {
+    // The caller joins the id to the working root, so `..` would point the
+    // delete above it.
+    let d = saved_session();
+    {
+        let mut store = d.store.lock().unwrap();
+        store.create_session("../n", t(40), None).unwrap();
+        store
+            .apply(
+                "../n",
+                &Event::UserStop {
+                    at: t(41),
+                    retained_audio: false,
+                },
+            )
+            .unwrap();
+    }
+    let mut calls = Vec::new();
+    let err = delete_session(
+        &d.store,
+        "../n",
+        &d.working,
+        &Claims::default(),
+        recording(&mut calls),
+    )
+    .unwrap_err();
+    assert!(matches!(err, DeleteError::InvalidId), "{err:?}");
+    assert!(calls.is_empty());
+    assert!(d.working.exists());
+}
+
+#[test]
 fn a_retry_after_a_crash_with_both_directories_gone_deletes_the_rows() {
     let d = saved_session();
     std::fs::remove_dir_all(&d.home).unwrap();
