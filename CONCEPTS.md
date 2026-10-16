@@ -29,6 +29,9 @@ The app's own storage, where a session lives while it records and processes: its
 
 Some of what it holds never leaves it: the processing audio and the raw recovery chunks stay behind when the session moves to the storage folder.
 
+### Unregistered audio
+Recovery chunks of a session that no segment row includes: a closed chunk whose segment index has no row, or any `.part` file that recovery could not repair. While a session has unregistered audio, Longhand keeps its folder in the Working location, keeps the session Interrupted, and refuses to save or resume it. Longhand first tries to add the chunks as segments, at each Stop, Start, Resume, processing claim and launch. A `.part` no longer than a WAV header holds no audio and is removed.
+
 ### Storage folder
 The one folder that holds all saved sessions of the library and the shared settings. It can be on another volume or in a synced cloud folder that several computers share. A new install uses a default folder in the local app data folder, so a new install records with no setup. A new note appears in it at once with its notes, `session.md` and `longhand.json`; audio and results appear in it only when they are complete. New Note is unavailable while the storage folder is unavailable. The user changes it in Settings > Storage. The UI calls it "Storage". "Destination" is the older term for the same folder, in older code and docs. The storage folder has a hidden `.longhand` folder for the library marker and the shared settings.
 
