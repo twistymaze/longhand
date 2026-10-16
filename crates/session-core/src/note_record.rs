@@ -130,7 +130,10 @@ impl NoteRecord {
                     layout: record.layout,
                 });
             }
-            Ok(record) => return Ok(NoteRecordRead::Current(Box::new(record))),
+            Ok(record) => {
+                check_session_id(NOTE_RECORD_FILE, &record.session_id)?;
+                return Ok(NoteRecordRead::Current(Box::new(record)));
+            }
             Err(e) => e,
         };
         // A newer layout can have other fields. A file that has no valid
@@ -162,9 +165,37 @@ pub fn session_id_of(text: &str) -> Option<String> {
         NoteRecordRead::Current(record) => Some(record.session_id),
         NoteRecordRead::Newer { .. } => {
             let value: serde_json::Value = serde_json::from_str(text).ok()?;
-            value.get("session_id")?.as_str().map(str::to_string)
+            value
+                .get("session_id")?
+                .as_str()
+                .filter(|id| valid_session_id(id))
+                .map(str::to_string)
         }
     }
+}
+
+/// Whether `id` is a note id in the form that Longhand writes: 1 to 64
+/// characters, each a lowercase ASCII letter, a digit, `-` or `_`. The id
+/// comes from a synced file, and the app uses it as a folder name under
+/// the working root. So a path, `..`, an empty id and uppercase (a file
+/// system that ignores case gives two such ids one folder) are refused.
+pub fn valid_session_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+}
+
+/// An error for the file `file` when `id` is not a valid note id
+/// ([`valid_session_id`]).
+pub(crate) fn check_session_id(file: &'static str, id: &str) -> Result<(), FolderError> {
+    if valid_session_id(id) {
+        return Ok(());
+    }
+    Err(FolderError::Yaml {
+        file,
+        message: format!("session_id {id:?} is not a valid note id"),
+    })
 }
 
 fn json_error(e: serde_json::Error) -> FolderError {

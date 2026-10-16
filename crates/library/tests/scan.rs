@@ -69,14 +69,14 @@ fn root_state(result: &LibraryScan) -> &RootState {
 #[test]
 fn a_complete_folder_lists_with_nothing_waiting() {
     let root = marked_root();
-    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
     let result = run(root.path(), &Known::default());
     assert_eq!(root_state(&result), &RootState::Available);
     assert_eq!(result.notes.len(), 1);
     let found = &result.notes[0];
     assert_eq!(found.path, dir);
     assert_eq!(found.root, root.path());
-    assert_eq!(found.doc.session_id, "A1");
+    assert_eq!(found.doc.session_id, "a1");
     assert!(found.waiting.is_empty(), "{:?}", found.waiting);
     assert!(found.conflict_copies.is_empty());
     assert!(found.duplicate_folders.is_empty());
@@ -89,10 +89,10 @@ fn a_complete_folder_lists_with_nothing_waiting() {
 #[test]
 fn a_note_with_old_result_copies_reads_only_its_note_files() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     // An older build named a copy of the result in `session.md`. The scan
     // reads the note files and ignores the copies.
-    let session = doc("A1").render().replacen(
+    let session = doc("a1").render().replacen(
         "---\n",
         &format!("---\nresult_generation:\n  id: committed-1\n  files:\n    transcript.md: {}\n    summary.md: {}\n",
             fingerprint(b"other transcript"), fingerprint(b"other summary")),
@@ -128,7 +128,7 @@ fn a_note_with_old_result_copies_reads_only_its_note_files() {
 #[test]
 fn a_folder_without_notes_md_lists_with_notes_waiting() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     fs::remove_file(dir.join("notes.md")).unwrap();
     let result = run(root.path(), &Known::default());
     assert_eq!(result.notes.len(), 1);
@@ -138,7 +138,7 @@ fn a_folder_without_notes_md_lists_with_notes_waiting() {
 #[test]
 fn missing_documents_and_audio_are_waiting() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     fs::remove_file(dir.join("transcript.md")).unwrap();
     fs::remove_file(dir.join("summary.md")).unwrap();
     fs::remove_file(dir.join("audio/segment-01.opus")).unwrap();
@@ -156,7 +156,7 @@ fn missing_documents_and_audio_are_waiting() {
 #[test]
 fn a_transcript_with_another_fingerprint_is_waiting() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     fs::write(dir.join("transcript.md"), "# Transcript\n\nOther text.\n").unwrap();
     fs::write(dir.join("summary.md"), "another summary").unwrap();
     let result = run(root.path(), &Known::default());
@@ -171,7 +171,7 @@ fn a_transcript_with_another_fingerprint_is_waiting() {
 #[test]
 fn the_scan_reports_the_state_of_each_result_document() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     let result = run(root.path(), &Known::default());
     assert_eq!(result.notes[0].transcript, DocumentState::Matches);
     assert_eq!(result.notes[0].summary, DocumentState::Matches);
@@ -196,8 +196,8 @@ fn the_scan_reports_the_state_of_each_result_document() {
 #[test]
 fn a_session_md_without_fingerprints_accepts_any_transcript() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
-    let mut older = doc("A1");
+    let dir = note(root.path(), "Planning", "a1");
+    let mut older = doc("a1");
     older.transcript_fingerprint = None;
     older.summary_fingerprint = None;
     session_save::note_files::write_doc(&dir, &older).unwrap();
@@ -221,7 +221,7 @@ fn a_folder_with_only_audio_is_not_listed() {
 #[test]
 fn a_folder_with_an_invalid_session_md_is_not_a_note() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     fs::write(dir.join("session.md"), "---\nsession_id: [\n---\n").unwrap();
     let result = run(root.path(), &Known::default());
     assert!(result.notes.is_empty());
@@ -230,15 +230,27 @@ fn a_folder_with_an_invalid_session_md_is_not_a_note() {
 }
 
 #[test]
+fn a_folder_whose_id_is_a_path_is_not_a_note() {
+    // The app joins the id to its working root, for example at a delete.
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "../..");
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes.is_empty());
+    assert_eq!(result.invalid.len(), 1);
+    assert_eq!(result.invalid[0].path, dir);
+    assert_eq!(result.invalid[0].known_id, None);
+}
+
+#[test]
 fn hidden_folders_and_files_are_skipped() {
     let root = marked_root();
-    note(root.path(), &session_save::naming::staging_name("S1"), "S1");
+    note(root.path(), &session_save::naming::staging_name("s1"), "s1");
     note(
         root.path(),
-        &session_save::rename_home::temp_name("R1"),
-        "R1",
+        &session_save::rename_home::temp_name("r1"),
+        "r1",
     );
-    note(root.path(), ".Planning.tmp", "T1");
+    note(root.path(), ".Planning.tmp", "t1");
     fs::write(root.path().join(".DS_Store"), "").unwrap();
     fs::write(root.path().join("loose.md"), "not a folder").unwrap();
     let result = run(root.path(), &Known::default());
@@ -260,7 +272,7 @@ fn each_services_conflict_copy_gives_a_notice() {
     ];
     for copy in copies {
         let root = marked_root();
-        let dir = note(root.path(), "Planning", "A1");
+        let dir = note(root.path(), "Planning", "a1");
         fs::write(dir.join(copy), "other version").unwrap();
         let result = run(root.path(), &Known::default());
         assert_eq!(
@@ -274,7 +286,7 @@ fn each_services_conflict_copy_gives_a_notice() {
 #[test]
 fn other_files_are_not_conflict_copies() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     for name in [
         "notes.txt",
         "agenda.md",
@@ -295,10 +307,10 @@ fn other_files_are_not_conflict_copies() {
 #[test]
 fn a_duplicate_id_prefers_the_home_path() {
     let root = marked_root();
-    let first = note(root.path(), "Planning", "A1");
-    let second = note(root.path(), "Planning (1)", "A1");
+    let first = note(root.path(), "Planning", "a1");
+    let second = note(root.path(), "Planning (1)", "a1");
     let mut known = Known::default();
-    known.add("A1", &second);
+    known.add("a1", &second);
     let result = run(root.path(), &known);
     assert_eq!(result.notes.len(), 1);
     assert_eq!(result.notes[0].path, second);
@@ -310,10 +322,10 @@ fn a_duplicate_id_prefers_the_name_that_session_md_gives_over_the_home_path() {
     // The conflict copy synced first and became the home folder. The real
     // folder has the name that its start time and title give.
     let root = marked_root();
-    let copy = note(root.path(), "2026-09-25 0900 Planning (1)", "A1");
-    let real = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let copy = note(root.path(), "2026-09-25 0900 Planning (1)", "a1");
+    let real = note(root.path(), "2026-09-25 0900 Planning", "a1");
     let mut known = Known::default();
-    known.add("A1", &copy);
+    known.add("a1", &copy);
     let result = run(root.path(), &known);
     assert_eq!(result.notes.len(), 1);
     assert_eq!(result.notes[0].path, real);
@@ -326,10 +338,10 @@ fn a_duplicate_id_prefers_the_name_without_a_conflict_pattern() {
     let copy = note(
         root.path(),
         "Planning (Erv's conflicted copy 2026-09-25)",
-        "A1",
+        "a1",
     );
     std::thread::sleep(Duration::from_millis(50));
-    let real = note(root.path(), "Planning", "A1");
+    let real = note(root.path(), "Planning", "a1");
     let result = run(root.path(), &Known::default());
     assert_eq!(result.notes.len(), 1);
     assert_eq!(result.notes[0].path, real);
@@ -339,9 +351,9 @@ fn a_duplicate_id_prefers_the_name_without_a_conflict_pattern() {
 #[test]
 fn a_duplicate_id_otherwise_prefers_the_older_folder() {
     let root = marked_root();
-    let older = note(root.path(), "Planning", "A1");
+    let older = note(root.path(), "Planning", "a1");
     std::thread::sleep(Duration::from_millis(50));
-    let newer = note(root.path(), "Retro", "A1");
+    let newer = note(root.path(), "Retro", "a1");
     let result = run(root.path(), &Known::default());
     assert_eq!(result.notes.len(), 1);
     assert_eq!(result.notes[0].path, older);
@@ -351,8 +363,8 @@ fn a_duplicate_id_otherwise_prefers_the_older_folder() {
 #[test]
 fn different_ids_are_different_notes_whatever_the_name() {
     let root = marked_root();
-    note(root.path(), "Planning", "A1");
-    note(root.path(), "Planning (1)", "B2");
+    note(root.path(), "Planning", "a1");
+    note(root.path(), "Planning (1)", "b2");
     let result = run(root.path(), &Known::default());
     assert_eq!(result.notes.len(), 2);
     assert!(result.notes.iter().all(|n| n.duplicate_folders.is_empty()));
@@ -386,7 +398,7 @@ fn a_root_that_is_a_file_is_unavailable() {
 fn a_root_without_its_marker_and_with_saved_rows_is_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let mut known = Known::default();
-    known.add("A1", &root.path().join("Planning"));
+    known.add("a1", &root.path().join("Planning"));
     let result = run(root.path(), &known);
     assert_eq!(
         root_state(&result),
@@ -398,9 +410,9 @@ fn a_root_without_its_marker_and_with_saved_rows_is_unavailable() {
 #[test]
 fn a_root_without_its_marker_and_with_note_folders_gets_the_marker() {
     let root = tempfile::tempdir().unwrap();
-    note(root.path(), "Planning", "A1");
+    note(root.path(), "Planning", "a1");
     let mut known = Known::default();
-    known.add("A1", &root.path().join("Planning"));
+    known.add("a1", &root.path().join("Planning"));
     let result = run(root.path(), &known);
     assert_eq!(root_state(&result), &RootState::Available);
     assert!(result.roots[0].marker_written);
@@ -414,7 +426,7 @@ fn a_root_without_its_marker_and_without_saved_rows_gets_the_marker() {
     let other = tempfile::tempdir().unwrap();
     let mut known = Known::default();
     // A row in another Destination does not count.
-    known.add("A1", &other.path().join("Planning"));
+    known.add("a1", &other.path().join("Planning"));
     let result = run(root.path(), &known);
     assert!(result.roots[0].marker_written);
     assert_eq!(root_state(&result), &RootState::Available);
@@ -425,7 +437,7 @@ fn a_root_without_its_marker_and_without_saved_rows_gets_the_marker() {
 fn a_root_with_its_marker_and_no_note_folders_is_available_and_empty() {
     let root = marked_root();
     let mut known = Known::default();
-    known.add("A1", &root.path().join("Planning"));
+    known.add("a1", &root.path().join("Planning"));
     let result = run(root.path(), &known);
     assert_eq!(root_state(&result), &RootState::Available);
     assert!(!result.roots[0].marker_written);
@@ -437,10 +449,10 @@ fn a_root_with_its_marker_and_no_note_folders_is_available_and_empty() {
 fn a_duplicate_id_across_two_roots_gives_one_note() {
     let a = marked_root();
     let b = marked_root();
-    let home = note(a.path(), "Planning", "A1");
-    let other = note(b.path(), "Planning", "A1");
+    let home = note(a.path(), "Planning", "a1");
+    let other = note(b.path(), "Planning", "a1");
     let mut known = Known::default();
-    known.add("A1", &home);
+    known.add("a1", &home);
     let result = scan(
         &[a.path().to_path_buf(), b.path().to_path_buf()],
         &known,
@@ -456,17 +468,17 @@ fn a_duplicate_id_across_two_roots_gives_one_note() {
 fn a_session_md_that_cannot_be_read_is_unreadable_not_missing() {
     use std::os::unix::fs::PermissionsExt;
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     let session = dir.join("session.md");
     fs::set_permissions(&session, fs::Permissions::from_mode(0o000)).unwrap();
     let mut known = Known::default();
-    known.add("A1", &dir);
+    known.add("a1", &dir);
     let result = run(root.path(), &known);
     fs::set_permissions(&session, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(result.notes.is_empty());
     assert_eq!(result.unreadable.len(), 1);
     assert_eq!(result.unreadable[0].path, dir);
-    assert_eq!(result.unreadable[0].known_id.as_deref(), Some("A1"));
+    assert_eq!(result.unreadable[0].known_id.as_deref(), Some("a1"));
 }
 
 /// A root that lists its entries but cannot tell what one of them is gives
@@ -476,9 +488,9 @@ fn a_session_md_that_cannot_be_read_is_unreadable_not_missing() {
 fn a_root_whose_entries_cannot_be_read_is_unreadable() {
     use std::os::unix::fs::PermissionsExt;
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     let mut known = Known::default();
-    known.add("A1", &dir);
+    known.add("a1", &dir);
     // Read but no search permission: the list works, the metadata does not.
     fs::set_permissions(root.path(), fs::Permissions::from_mode(0o444)).unwrap();
     let with_row = run(root.path(), &known);
@@ -544,7 +556,7 @@ fn a_session_md_read_that_blocks_times_out_as_unreadable() {
 #[test]
 fn no_audio_file_is_opened() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     let audio = dir.join("audio/segment-01.opus");
     fs::remove_file(&audio).unwrap();
     // An open of a FIFO with no writer blocks, so a scan that opens the
@@ -563,9 +575,9 @@ fn folders(paths: &[&Path]) -> HashSet<PathBuf> {
 #[test]
 fn a_targeted_scan_reads_only_the_folders_it_names() {
     let root = marked_root();
-    let planning = note(root.path(), "Planning", "A1");
-    note(root.path(), "Budget", "B1");
-    let staging = note(root.path(), ".staging-C1", "C1");
+    let planning = note(root.path(), "Planning", "a1");
+    note(root.path(), "Budget", "b1");
+    let staging = note(root.path(), ".staging-C1", "c1");
     let gone = root.path().join("Gone");
     let (result, read) = scan_folders(
         root.path(),
@@ -580,17 +592,17 @@ fn a_targeted_scan_reads_only_the_folders_it_names() {
         .iter()
         .map(|n| n.doc.session_id.as_str())
         .collect();
-    assert_eq!(ids, ["A1"]);
+    assert_eq!(ids, ["a1"]);
     assert_eq!(read, folders(&[&planning, &staging, &gone]));
 }
 
 #[test]
 fn a_targeted_scan_of_a_duplicate_also_reads_the_home_folder() {
     let root = marked_root();
-    let home = note(root.path(), "Planning", "A1");
-    let copy = note(root.path(), "Planning (1)", "A1");
+    let home = note(root.path(), "Planning", "a1");
+    let copy = note(root.path(), "Planning (1)", "a1");
     let mut known = Known::default();
-    known.add("A1", &home);
+    known.add("a1", &home);
     let (result, read) = scan_folders(root.path(), &folders(&[&copy]), &known, &options()).unwrap();
     assert_eq!(result.notes.len(), 1);
     assert_eq!(result.notes[0].path, home);
@@ -601,7 +613,7 @@ fn a_targeted_scan_of_a_duplicate_also_reads_the_home_folder() {
 #[test]
 fn a_targeted_scan_of_a_root_without_its_marker_gives_no_scan() {
     let root = tempfile::tempdir().unwrap();
-    let planning = note(root.path(), "Planning", "A1");
+    let planning = note(root.path(), "Planning", "a1");
     let targeted = scan_folders(
         root.path(),
         &folders(&[&planning]),
@@ -638,14 +650,14 @@ fn a_note_in_a_type_folder_and_a_note_at_the_root_both_list_with_their_types() {
     let typed_home = note(
         &root.path().join("Pathfinder"),
         "2026-10-02 1900 Session 12",
-        "A1",
+        "a1",
     );
-    let untyped = note(root.path(), "2026-10-07 0900 Standup", "B1");
+    let untyped = note(root.path(), "2026-10-07 0900 Standup", "b1");
     let result = run(root.path(), &Known::default());
     assert_eq!(root_state(&result), &RootState::Available);
     assert_eq!(
         types(&result),
-        [typed("A1", Some("Pathfinder")), typed("B1", None)]
+        [typed("a1", Some("Pathfinder")), typed("b1", None)]
     );
     let a1 = result.notes.iter().find(|n| n.path == typed_home).unwrap();
     assert_eq!(a1.root, root.path());
@@ -668,26 +680,26 @@ fn a_folder_with_only_system_files_lists_no_note_and_gets_no_marker() {
 #[test]
 fn a_home_folder_two_levels_deep_or_in_a_hidden_folder_is_ignored() {
     let root = marked_root();
-    note(&root.path().join("Pathfinder/Archive"), "Session 1", "A1");
-    note(&root.path().join(".hidden"), "Session 2", "B1");
+    note(&root.path().join("Pathfinder/Archive"), "Session 1", "a1");
+    note(&root.path().join(".hidden"), "Session 2", "b1");
     // A folder inside a home folder is not a home folder.
-    let home = note(root.path(), "Planning", "C1");
-    note(&home, "Inner", "D1");
+    let home = note(root.path(), "Planning", "c1");
+    note(&home, "Inner", "d1");
     let result = run(root.path(), &Known::default());
-    assert_eq!(types(&result), [typed("C1", None)]);
+    assert_eq!(types(&result), [typed("c1", None)]);
 }
 
 // Covers R29 (KTD1).
 #[test]
 fn a_home_folder_that_a_person_moves_to_another_type_folder_gets_that_type() {
     let root = marked_root();
-    let home = note(&root.path().join("Pathfinder"), "Session 12", "A1");
+    let home = note(&root.path().join("Pathfinder"), "Session 12", "a1");
     let before = fs::read(home.join("session.md")).unwrap();
     fs::create_dir(root.path().join("One on One")).unwrap();
     let moved = root.path().join("One on One/Session 12");
     fs::rename(&home, &moved).unwrap();
     let result = run(root.path(), &Known::default());
-    assert_eq!(types(&result), [typed("A1", Some("One on One"))]);
+    assert_eq!(types(&result), [typed("a1", Some("One on One"))]);
     assert_eq!(fs::read(moved.join("session.md")).unwrap(), before);
 }
 
@@ -695,7 +707,7 @@ fn a_home_folder_that_a_person_moves_to_another_type_folder_gets_that_type() {
 fn a_root_without_its_marker_and_with_typed_rows_is_unavailable() {
     let root = tempfile::tempdir().unwrap();
     let mut known = Known::default();
-    known.add("A1", &root.path().join("Pathfinder/Planning"));
+    known.add("a1", &root.path().join("Pathfinder/Planning"));
     let result = run(root.path(), &known);
     assert_eq!(
         root_state(&result),
@@ -707,8 +719,8 @@ fn a_root_without_its_marker_and_with_typed_rows_is_unavailable() {
 #[test]
 fn a_targeted_scan_reads_a_typed_home_folder() {
     let root = marked_root();
-    let home = note(&root.path().join("Pathfinder"), "Session 12", "A1");
-    note(&root.path().join("Pathfinder"), "Session 13", "B1");
+    let home = note(&root.path().join("Pathfinder"), "Session 12", "a1");
+    note(&root.path().join("Pathfinder"), "Session 13", "b1");
     let (result, read) = scan_folders(
         root.path(),
         &folders(&[&home]),
@@ -716,7 +728,7 @@ fn a_targeted_scan_reads_a_typed_home_folder() {
         &options(),
     )
     .unwrap();
-    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(types(&result), [typed("a1", Some("Pathfinder"))]);
     assert_eq!(read, folders(&[&home]));
 }
 
@@ -724,8 +736,8 @@ fn a_targeted_scan_reads_a_typed_home_folder() {
 fn a_targeted_scan_of_a_type_folder_reads_its_notes() {
     let root = marked_root();
     let folder = root.path().join("D&D");
-    let first = note(&folder, "Session 12", "A1");
-    let second = note(&folder, "Session 13", "B1");
+    let first = note(&folder, "Session 12", "a1");
+    let second = note(&folder, "Session 13", "b1");
     let (result, read) = scan_folders(
         root.path(),
         &folders(&[&folder]),
@@ -735,7 +747,7 @@ fn a_targeted_scan_of_a_type_folder_reads_its_notes() {
     .unwrap();
     assert_eq!(
         types(&result),
-        [typed("A1", Some("D&D")), typed("B1", Some("D&D"))]
+        [typed("a1", Some("D&D")), typed("b1", Some("D&D"))]
     );
     assert_eq!(read, folders(&[&folder, &first, &second]));
     assert!(!folder.join(".longhand").exists());
@@ -748,12 +760,12 @@ fn a_targeted_scan_of_a_type_folder_reads_its_notes() {
 fn a_targeted_scan_of_a_type_folder_and_its_home_folder_reads_the_note_once() {
     let root = marked_root();
     let folder = root.path().join("Work");
-    let home = note(&folder, "Session 12", "A1");
+    let home = note(&folder, "Session 12", "a1");
     let mut known = Known::default();
-    known.add("A1", &home);
+    known.add("a1", &home);
     let (result, read) =
         scan_folders(root.path(), &folders(&[&folder, &home]), &known, &options()).unwrap();
-    assert_eq!(types(&result), [typed("A1", Some("Work"))]);
+    assert_eq!(types(&result), [typed("a1", Some("Work"))]);
     assert_eq!(result.notes[0].path, home);
     assert!(result.notes[0].duplicate_folders.is_empty());
     assert_eq!(read, folders(&[&folder, &home]));
@@ -765,11 +777,11 @@ fn a_targeted_scan_of_a_type_folder_and_its_home_folder_reads_the_note_once() {
 fn a_type_folder_with_an_invalid_session_md_still_lists_its_notes() {
     let root = marked_root();
     let folder = root.path().join("Pathfinder");
-    note(&folder, "Session 12", "A1");
+    note(&folder, "Session 12", "a1");
     fs::write(folder.join("session.md"), "not a session document").unwrap();
     let result = run(root.path(), &Known::default());
     assert_eq!(root_state(&result), &RootState::Available);
-    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(types(&result), [typed("a1", Some("Pathfinder"))]);
     assert_eq!(result.invalid.len(), 1);
     assert_eq!(result.invalid[0].path, folder);
 }
@@ -781,13 +793,13 @@ fn a_type_folder_with_an_unreadable_session_md_still_lists_its_notes() {
     use std::os::unix::fs::PermissionsExt;
     let root = marked_root();
     let folder = root.path().join("Pathfinder");
-    note(&folder, "Session 12", "A1");
+    note(&folder, "Session 12", "a1");
     let session = folder.join("session.md");
-    fs::write(&session, doc("X1").render()).unwrap();
+    fs::write(&session, doc("x1").render()).unwrap();
     fs::set_permissions(&session, fs::Permissions::from_mode(0o000)).unwrap();
     let result = run(root.path(), &Known::default());
     fs::set_permissions(&session, fs::Permissions::from_mode(0o644)).unwrap();
-    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(types(&result), [typed("a1", Some("Pathfinder"))]);
     assert_eq!(result.unreadable.len(), 1);
     assert_eq!(result.unreadable[0].path, folder);
 }
@@ -796,7 +808,7 @@ fn a_type_folder_with_an_unreadable_session_md_still_lists_its_notes() {
 fn a_targeted_scan_of_a_type_folder_with_an_invalid_session_md_reads_its_notes() {
     let root = marked_root();
     let folder = root.path().join("Pathfinder");
-    let home = note(&folder, "Session 12", "A1");
+    let home = note(&folder, "Session 12", "a1");
     fs::write(folder.join("session.md"), "not a session document").unwrap();
     let (result, read) = scan_folders(
         root.path(),
@@ -805,7 +817,7 @@ fn a_targeted_scan_of_a_type_folder_with_an_invalid_session_md_reads_its_notes()
         &options(),
     )
     .unwrap();
-    assert_eq!(types(&result), [typed("A1", Some("Pathfinder"))]);
+    assert_eq!(types(&result), [typed("a1", Some("Pathfinder"))]);
     assert_eq!(read, folders(&[&folder, &home]));
 }
 
@@ -866,7 +878,7 @@ fn add_second_segment(dir: &Path) {
 #[test]
 fn a_marker_and_no_audio_scans_as_complete_with_the_segment_removed() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     mark(&dir, AUDIO);
     fs::remove_file(dir.join(AUDIO)).unwrap();
     let result = run(root.path(), &Known::default());
@@ -882,7 +894,7 @@ fn a_marker_and_no_audio_scans_as_complete_with_the_segment_removed() {
 #[test]
 fn a_marker_with_the_audio_still_present_scans_as_removed() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     mark(&dir, AUDIO);
     let result = run(root.path(), &Known::default());
     assert!(result.notes[0].waiting.is_empty());
@@ -892,7 +904,7 @@ fn a_marker_with_the_audio_still_present_scans_as_removed() {
 #[test]
 fn a_missing_audio_file_with_no_marker_still_waits() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     fs::remove_file(dir.join(AUDIO)).unwrap();
     let result = run(root.path(), &Known::default());
     assert_eq!(result.notes[0].waiting, [Waiting::Audio(AUDIO.into())]);
@@ -902,7 +914,7 @@ fn a_missing_audio_file_with_no_marker_still_waits() {
 #[test]
 fn a_complete_folder_has_no_removed_audio() {
     let root = marked_root();
-    note(root.path(), "Planning", "A1");
+    note(root.path(), "Planning", "a1");
     let result = run(root.path(), &Known::default());
     assert!(result.notes[0].removed_audio.is_empty());
 }
@@ -910,7 +922,7 @@ fn a_complete_folder_has_no_removed_audio() {
 #[test]
 fn only_the_marked_segment_stops_waiting() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     add_second_segment(&dir);
     mark(&dir, AUDIO);
     fs::remove_file(dir.join(AUDIO)).unwrap();
@@ -924,7 +936,7 @@ fn only_the_marked_segment_stops_waiting() {
 #[test]
 fn a_marker_is_not_a_conflict_copy() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     mark(&dir, AUDIO);
     let result = run(root.path(), &Known::default());
     assert!(result.notes[0].conflict_copies.is_empty());
@@ -933,7 +945,7 @@ fn a_marker_is_not_a_conflict_copy() {
 #[test]
 fn a_targeted_scan_reports_the_removed_audio() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     mark(&dir, AUDIO);
     fs::remove_file(dir.join(AUDIO)).unwrap();
     let (result, _) = scan_folders(
@@ -951,7 +963,7 @@ fn a_targeted_scan_reports_the_removed_audio() {
 #[test]
 fn no_removal_marker_is_opened() {
     let root = marked_root();
-    let dir = note(root.path(), "Planning", "A1");
+    let dir = note(root.path(), "Planning", "a1");
     fs::remove_file(dir.join(AUDIO)).unwrap();
     // An open of a FIFO with no writer blocks, so a scan that opens the
     // marker does not finish.
@@ -1196,7 +1208,7 @@ mod result_flag {
     #[test]
     fn a_saved_note_with_a_fresh_marker_of_another_run_is_in_use() {
         let root = marked_root();
-        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "A1");
+        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "a1");
         assert_eq!(remote(root.path(), Some("run-b")), None);
         assert!(write_marker(&dir, "run-a", now()).unwrap());
         assert_eq!(remote(root.path(), Some("run-b")), Some(RemoteState::InUse));
@@ -1209,7 +1221,7 @@ mod result_flag {
     #[test]
     fn a_fresh_marker_of_an_earlier_run_on_this_computer_does_not_count() {
         let root = marked_root();
-        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "A1");
+        let dir = super::note(root.path(), "2026-09-25 0900 Planning", "a1");
         assert!(write_marker(&dir, "run-a", now()).unwrap());
         assert_eq!(remote_with_runs(root.path(), vec!["run-b", "run-a"]), None);
 
@@ -1260,7 +1272,7 @@ mod result_flag {
 #[test]
 fn a_note_takes_its_identity_from_longhand_json_and_its_title_from_session_md() {
     let root = marked_root();
-    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
     assert!(
         !fs::read_to_string(dir.join("session.md"))
             .unwrap()
@@ -1273,7 +1285,7 @@ fn a_note_takes_its_identity_from_longhand_json_and_its_title_from_session_md() 
     .unwrap();
     let result = run(root.path(), &Known::default());
     let found = &result.notes[0];
-    assert_eq!(found.doc.session_id, "A1");
+    assert_eq!(found.doc.session_id, "a1");
     assert_eq!(found.layout, session_core::note_folder::Layout::New);
     assert_eq!(found.doc.title.as_deref(), Some("Agent title"));
     assert_eq!(found.doc.tags, vec!["follow-up".to_string()]);
@@ -1285,7 +1297,7 @@ fn a_note_takes_its_identity_from_longhand_json_and_its_title_from_session_md() 
 #[test]
 fn a_new_session_md_with_no_longhand_json_waits_for_a_sync_and_is_not_a_note() {
     let root = marked_root();
-    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
     fs::remove_file(dir.join("longhand.json")).unwrap();
     let result = run(root.path(), &Known::default());
     assert!(result.notes.is_empty());
@@ -1294,9 +1306,9 @@ fn a_new_session_md_with_no_longhand_json_waits_for_a_sync_and_is_not_a_note() {
     assert_eq!(result.waiting_for_record[0].path, dir);
     // A known folder keeps its id.
     let mut known = Known::default();
-    known.add("A1", &dir);
+    known.add("a1", &dir);
     let result = run(root.path(), &known);
-    assert_eq!(result.waiting_for_record[0].known_id.as_deref(), Some("A1"));
+    assert_eq!(result.waiting_for_record[0].known_id.as_deref(), Some("a1"));
 }
 
 // Covers KTD1: a folder with only `longhand.json` is a note folder, not a
@@ -1304,12 +1316,12 @@ fn a_new_session_md_with_no_longhand_json_waits_for_a_sync_and_is_not_a_note() {
 #[test]
 fn a_folder_with_only_longhand_json_is_a_note_not_a_type_folder() {
     let root = marked_root();
-    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
     fs::remove_file(dir.join("session.md")).unwrap();
     // A folder inside it is not a note of a type.
-    note(&dir, "Inner", "B1");
+    note(&dir, "Inner", "b1");
     let result = run(root.path(), &Known::default());
-    assert_eq!(types(&result), [typed("A1", None)]);
+    assert_eq!(types(&result), [typed("a1", None)]);
     assert_eq!(result.notes[0].doc.title.as_deref(), Some("Planning"));
     let (targeted, _) = scan_folders(
         root.path(),
@@ -1325,8 +1337,8 @@ fn a_folder_with_only_longhand_json_is_a_note_not_a_type_folder() {
 #[test]
 fn a_conflict_copy_of_longhand_json_has_no_effect() {
     let root = marked_root();
-    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
-    let mut other = doc("B1");
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
+    let mut other = doc("b1");
     other.title = Some("Other".into());
     fs::write(
         dir.join("longhand 2.json"),
@@ -1334,7 +1346,7 @@ fn a_conflict_copy_of_longhand_json_has_no_effect() {
     )
     .unwrap();
     let result = run(root.path(), &Known::default());
-    assert_eq!(types(&result), [typed("A1", None)]);
+    assert_eq!(types(&result), [typed("a1", None)]);
     assert_eq!(
         result.notes[0].conflict_copies,
         [dir.join("longhand 2.json")]
@@ -1346,8 +1358,8 @@ fn a_conflict_copy_of_longhand_json_has_no_effect() {
 #[test]
 fn an_old_layout_session_md_gives_the_records_also_with_a_longhand_json() {
     let root = marked_root();
-    let dir = note(root.path(), "2026-09-25 0900 Planning", "A1");
-    let mut old = doc("A1");
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
+    let mut old = doc("a1");
     old.title = Some("Old".into());
     old.transcript_fingerprint = Some(fingerprint(b"another transcript"));
     fs::write(dir.join("session.md"), old.render()).unwrap();

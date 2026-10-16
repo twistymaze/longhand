@@ -2391,6 +2391,12 @@ pub enum DeleteError {
         path: std::path::PathBuf,
         message: String,
     },
+    /// The id is not in the form that Longhand writes
+    /// ([`crate::note_record::valid_session_id`]): the working directory
+    /// that the caller joins to it can be outside the working root.
+    /// Nothing changed.
+    #[error("the note id is not valid")]
+    InvalidId,
     #[error(transparent)]
     Store(#[from] StoreError),
 }
@@ -2636,6 +2642,9 @@ pub fn delete_session<R>(
 where
     R: FnMut(&Path) -> std::result::Result<(), String>,
 {
+    if !crate::note_record::valid_session_id(id) {
+        return Err(DeleteError::InvalidId);
+    }
     let lock = || store.lock().unwrap_or_else(|e| e.into_inner());
     // The claim comes before the home folder is read. A rename that holds
     // the store lock now completes first, and the read gets its new path.

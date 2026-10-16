@@ -915,14 +915,14 @@ mod tests {
         };
         let folder = root.path().join("2026-09-25 0900 Planning");
         fs::create_dir(&folder).unwrap();
-        let doc = SessionDoc::new("A1", None, &[segment]).unwrap();
+        let doc = SessionDoc::new("a1", None, &[segment]).unwrap();
         session_save::note_files::write_doc(&folder, &doc).unwrap();
         fs::write(folder.join("notes.md"), "first\n").unwrap();
         let store = Mutex::new(Store::open_in_memory().unwrap());
         let mut reconciler = Reconciler::default();
         let target = Target::Full(vec![root.path().to_path_buf()]);
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
-        assert_eq!(changes.changed, vec!["A1".to_string()]);
+        assert_eq!(changes.changed, vec!["a1".to_string()]);
         (root, folder, store, reconciler)
     }
 
@@ -975,20 +975,20 @@ mod tests {
         // lock, as `save_notes` does.
         {
             let s = store.lock().unwrap();
-            s.set_notes("A1", "mine\n").unwrap();
+            s.set_notes("a1", "mine\n").unwrap();
             fs::write(folder.join("notes.md"), "mine\n").unwrap();
         }
 
         let mut s = store.lock().unwrap();
         let changes = apply(&mut s, &mut reconciler, &result, &rereads);
         assert!(changes.is_empty(), "{changes:?}");
-        assert_eq!(s.notes("A1").unwrap(), "mine\n");
+        assert_eq!(s.notes("a1").unwrap(), "mine\n");
         drop(s);
 
         // The next scan reads the folder with this computer's notes.
         let target = Target::Full(vec![root.path().to_path_buf()]);
         reconciler.run(&store, &target, &never_claimed).unwrap();
-        assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "mine\n");
+        assert_eq!(store.lock().unwrap().notes("a1").unwrap(), "mine\n");
     }
 
     #[test]
@@ -1004,13 +1004,13 @@ mod tests {
         {
             let s = store.lock().unwrap();
             fs::rename(&synced, &renamed).unwrap();
-            s.set_home_path("A1", &renamed.to_string_lossy()).unwrap();
+            s.set_home_path("a1", &renamed.to_string_lossy()).unwrap();
         }
 
         let mut s = store.lock().unwrap();
         let changes = apply(&mut s, &mut reconciler, &result, &rereads);
         assert!(changes.changed.is_empty(), "{changes:?}");
-        let home = s.session("A1").unwrap().unwrap().home_path.unwrap();
+        let home = s.session("a1").unwrap().unwrap().home_path.unwrap();
         assert_eq!(PathBuf::from(home), renamed);
     }
 
@@ -1020,8 +1020,8 @@ mod tests {
         fs::write(folder.join("notes.md"), "theirs\n").unwrap();
         let target = Target::Full(vec![root.path().to_path_buf()]);
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
-        assert_eq!(changes.changed, vec!["A1".to_string()]);
-        assert_eq!(store.lock().unwrap().notes("A1").unwrap(), "theirs\n");
+        assert_eq!(changes.changed, vec!["a1".to_string()]);
+        assert_eq!(store.lock().unwrap().notes("a1").unwrap(), "theirs\n");
     }
 
     /// KTD10: during a Move the note is in both folders for a time. The
@@ -1048,9 +1048,9 @@ mod tests {
         let changes = reconciler.run(&store, &target, &never_claimed).unwrap();
         assert!(changes.is_empty(), "{changes:?}");
         let s = store.lock().unwrap();
-        let record = s.session("A1").unwrap().unwrap();
+        let record = s.session("a1").unwrap().unwrap();
         assert_eq!(record.home_path.map(PathBuf::from), Some(folder.clone()));
-        assert_eq!(s.notes("A1").unwrap(), "first\n");
+        assert_eq!(s.notes("a1").unwrap(), "first\n");
         drop(s);
 
         // The pending delete of the old folder does not forget the row.
@@ -1070,7 +1070,7 @@ mod tests {
             .reconcile(&mut s, &result, &Coverage::Full, later, &never_claimed)
             .unwrap();
         assert!(changes.removed.is_empty(), "{changes:?}");
-        assert!(s.session("A1").unwrap().is_some());
+        assert!(s.session("a1").unwrap().is_some());
     }
 
     #[test]
@@ -1083,7 +1083,7 @@ mod tests {
         )
         .unwrap();
         assert!(removed.is_empty());
-        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+        assert!(store.lock().unwrap().session("a1").unwrap().is_some());
     }
 
     /// Leave them (R7): the library forgets the notes of the old folder and
@@ -1098,8 +1098,8 @@ mod tests {
             &never_claimed,
         )
         .unwrap();
-        assert_eq!(removed, vec!["A1".to_string()]);
-        assert!(store.lock().unwrap().session("A1").unwrap().is_none());
+        assert_eq!(removed, vec!["a1".to_string()]);
+        assert!(store.lock().unwrap().session("a1").unwrap().is_none());
         assert!(folder.join("session.md").exists());
         assert!(folder.join("notes.md").exists());
     }
@@ -1111,9 +1111,9 @@ mod tests {
         let roots = [other.path().to_path_buf()];
         let removed = forget_outside(&mut store.lock().unwrap(), &roots, &|_| true).unwrap();
         assert!(removed.is_empty());
-        assert!(store.lock().unwrap().session("A1").unwrap().is_some());
+        assert!(store.lock().unwrap().session("a1").unwrap().is_some());
         let removed = forget_outside(&mut store.lock().unwrap(), &roots, &never_claimed).unwrap();
-        assert_eq!(removed, vec!["A1".to_string()]);
+        assert_eq!(removed, vec!["a1".to_string()]);
     }
 
     #[test]
@@ -1134,7 +1134,7 @@ mod tests {
             &never_claimed,
         )
         .unwrap();
-        assert_eq!(removed, vec!["A1".to_string()]);
+        assert_eq!(removed, vec!["a1".to_string()]);
         assert!(
             store
                 .lock()

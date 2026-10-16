@@ -1447,6 +1447,9 @@ fn delete_error(error: session_core::DeleteError, removal: Removal) -> DeleteSes
         DeleteError::Remove { path, message } => DeleteSessionError::Failed {
             message: format!("Could not delete {}: {message}", path.display()),
         },
+        DeleteError::InvalidId => DeleteSessionError::Failed {
+            message: "This note cannot be deleted in Longhand.".to_string(),
+        },
         DeleteError::Store(e) => DeleteSessionError::Failed {
             message: e.to_string(),
         },
