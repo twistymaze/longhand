@@ -150,6 +150,9 @@ function without<T>(map: Record<string, T>, id: string): Record<string, T> {
   return rest;
 }
 
+/// A copy of `map` with no entry for any of `ids`.
+const withoutAll = <T,>(map: Record<string, T>, ids: string[]) => ids.reduce((acc, id) => without(acc, id), map);
+
 export function SummaryPrompts({
   onSettings,
   readOnly = null,
@@ -197,8 +200,9 @@ export function SummaryPrompts({
   // The typed text of the Name field of each prompt that differs from its
   // name.
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
-  // The prompts with unsaved text that another computer deleted (R6), the
-  // ids of all such prompts, and the ids of the prompts that this window
+  // The prompts with unsaved text that another computer deleted (R6). The
+  // ids of the prompts that another computer deleted: a late save error of
+  // such a prompt does not show. The ids of the prompts that this window
   // deleted.
   const [deleted, setDeleted] = useState<DeletedPrompt[]>([]);
   const gone = useRef(new Set<string>());
@@ -391,8 +395,8 @@ export function SummaryPrompts({
       for (const p of lost) gone.current.add(p.id);
       if (pending.current && gone.current.has(pending.current.id)) cancel();
       for (const key of keys) failed.current.delete(key);
-      setDrafts((m) => keys.reduce((acc, key) => without(acc, key), m));
-      setSaveErrors((m) => keys.reduce((acc, key) => without(acc, key), m));
+      setDrafts((m) => withoutAll(m, keys));
+      setSaveErrors((m) => withoutAll(m, keys));
       setNameDrafts((m) => lost.reduce((acc, p) => without(acc, p.id), m));
       setDeleted((d) => [...d, ...entries]);
     }
@@ -473,7 +477,7 @@ export function SummaryPrompts({
       .filter(([f, key]) => key in drafts && !valid(f, drafts[key]))
       .map(([, key]) => key);
     for (const key of dropped) failed.current.delete(key);
-    if (dropped.length > 0) setDrafts((m) => dropped.reduce((acc, key) => without(acc, key), m));
+    if (dropped.length > 0) setDrafts((m) => withoutAll(m, dropped));
     void flush();
     show(id);
   };
@@ -519,8 +523,8 @@ export function SummaryPrompts({
     const done = await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => {
       const keys = keysOf(id);
       for (const key of keys) failed.current.delete(key);
-      setDrafts((m) => keys.reduce((acc, key) => without(acc, key), m));
-      setSaveErrors((m) => keys.reduce((acc, key) => without(acc, key), m));
+      setDrafts((m) => withoutAll(m, keys));
+      setSaveErrors((m) => withoutAll(m, keys));
       setNameDrafts((m) => without(m, id));
       show(null);
     });

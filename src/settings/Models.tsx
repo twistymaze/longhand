@@ -104,10 +104,9 @@ export function Models({
   const readOnly = readOnlyReason(settings);
   // A chosen configuration that this pane did not send, for example from
   // another computer, shows in new choices (R20). The pane's own choice
-  // keeps the choices, and the focus, where they are.
-  // A configuration that this pane sent counts as its own only until the
-  // settings show it, so a later change back to it from another computer
-  // shows too.
+  // keeps the choices, and the focus, where they are. A configuration that
+  // this pane sent counts as its own only until the settings show it, so a
+  // later change back to it from another computer shows too.
   const chosenKey = configKey(recognitionDefaults(settings));
   const ownSaves = useRef(new OwnSaves<string>());
   const [optionsKey, setOptionsKey] = useState(chosenKey);

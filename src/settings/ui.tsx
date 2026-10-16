@@ -166,27 +166,39 @@ export function ChangedElsewhereNotice({
   onReload: () => void;
 }) {
   return (
+    <CautionNotice
+      title={`The ${name} changed on another computer.`}
+      detail="Reload shows the new text. Keep My Text saves your text."
+    >
+      <Button onClick={onKeep}>
+        Keep My Text{suffix}
+      </Button>
+      <Button prominent onClick={onReload}>
+        Reload{suffix}
+      </Button>
+    </CautionNotice>
+  );
+}
+
+/// The row of a notice about unsaved text: a caution line, a line that
+/// says what each button does, and the buttons.
+function CautionNotice({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
+  return (
     <div className="settings-row px-4">
       <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
         <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-          <p className="font-medium text-caution">{`The ${name} changed on another computer.`}</p>
-          <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
+          <p className="font-medium text-caution">{title}</p>
+          <p className="text-label-secondary">{detail}</p>
         </div>
-        <Button onClick={onKeep}>
-          Keep My Text{suffix}
-        </Button>
-        <Button prominent onClick={onReload}>
-          Reload{suffix}
-        </Button>
+        {children}
       </div>
     </div>
   );
 }
 
 /// The notice of a summary prompt with unsaved text that another computer
-/// deleted (R6). Its layout is the layout of `ChangedElsewhereNotice`. The
-/// buttons name the prompt for screen readers, because more than one such
-/// notice can show.
+/// deleted (R6). The buttons name the prompt for screen readers, because
+/// more than one such notice can show.
 export function DeletedPromptNotice({
   name,
   busy,
@@ -202,20 +214,17 @@ export function DeletedPromptNotice({
 }) {
   const suffix = <span className="sr-only"> {name}</span>;
   return (
-    <div className="settings-row px-4">
-      <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
-        <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-          <p className="font-medium text-caution">{`“${name}” was deleted on another computer.`}</p>
-          <p className="text-label-secondary">Save as New Prompt keeps your text. Discard removes it.</p>
-        </div>
-        <Button disabled={busy} onClick={onDiscard}>
-          Discard{suffix}
-        </Button>
-        <Button prominent disabled={saveDisabled} onClick={onSave}>
-          Save as New Prompt{suffix}
-        </Button>
-      </div>
-    </div>
+    <CautionNotice
+      title={`“${name}” was deleted on another computer.`}
+      detail="Save as New Prompt keeps your text. Discard removes it."
+    >
+      <Button disabled={busy} onClick={onDiscard}>
+        Discard{suffix}
+      </Button>
+      <Button prominent disabled={saveDisabled} onClick={onSave}>
+        Save as New Prompt{suffix}
+      </Button>
+    </CautionNotice>
   );
 }
 
