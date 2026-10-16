@@ -430,7 +430,9 @@ pub struct RecognitionFailure {
 /// use, for the Settings window (R18, R19).
 #[derive(Serialize, Type, Debug, Clone, PartialEq, Eq, Default)]
 pub struct RecognitionState {
-    /// The chosen configuration differs from the configuration in use.
+    /// The chosen configuration differs from the configuration in use. A
+    /// chosen configuration with a value that this version does not know
+    /// always differs, so Settings tells the user to update.
     pub differs: bool,
     /// The chosen configuration has a value that this version does not
     /// know, for example a model from a newer version. The configuration in
@@ -753,7 +755,7 @@ impl Settings {
             speaker_processing_mode: local.speaker_processing_mode,
             recognition_language: local.recognition_language,
             recognition: RecognitionState {
-                differs: chosen_recognition != in_use,
+                differs: chosen_not_known || chosen_recognition != in_use,
                 chosen_not_known,
                 ..RecognitionState::default()
             },
@@ -855,7 +857,8 @@ impl Settings {
         self.speaker_processing_mode = choice.speaker_processing_mode;
         self.recognition_language = choice.recognition_language.clone();
         self.default_speaker_count = choice.default_speaker_count;
-        self.recognition.differs = self.chosen_recognition != *choice;
+        self.recognition.differs =
+            self.recognition.chosen_not_known || self.chosen_recognition != *choice;
     }
 
     /// Choose the usual microphone, or `None` for "System default" (R1).
@@ -2632,6 +2635,35 @@ mod tests {
         let mut after = settings.clone();
         after.endpoint_model = "gpt-4o".into();
         assert!(shared_patch(&settings, &after).is_empty());
+    }
+
+    #[test]
+    fn a_model_from_a_newer_version_differs_when_the_other_chosen_values_are_in_use() {
+        use shared_settings::view::{self, Availability};
+        let in_use = LocalSettings::default();
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert("asr_model".into(), json!("model-from-the-future"));
+        let cache = shared_settings::cache::Cache {
+            source: PathBuf::from("/vault"),
+            settings: raw,
+            prompts: Vec::new(),
+            active_prompt: None,
+            type_prompts: Vec::new(),
+            background: String::new(),
+        };
+        let shared = SharedSnapshot {
+            view: view::cached(Some(&cache), Availability::Available),
+            ..SharedSnapshot::default()
+        };
+        let mut settings = Settings::from_parts(in_use, &shared);
+        assert_eq!(settings.chosen_recognition, settings.in_use());
+        // Settings shows "Chosen in a newer version of Longhand" only when
+        // the choice differs (Models.tsx).
+        assert!(settings.recognition.chosen_not_known);
+        assert!(settings.recognition.differs);
+        let in_use = settings.in_use();
+        settings.set_in_use(&in_use);
+        assert!(settings.recognition.differs);
     }
 
     #[test]
