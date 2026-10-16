@@ -167,9 +167,30 @@ export function FormatToolbar() {
     }
   });
 
+  // The view keeps its selection when the focus leaves it. The toolbar shows
+  // only while the editor or the toolbar's link field has the focus, so it
+  // never acts on text that the user no longer edits.
+  const [hasFocus, setHasFocus] = useState(false);
+  const editorDom = useRef<HTMLElement | null>(null);
+  useEditorEffect((view) => {
+    editorDom.current = view?.dom ?? null;
+    if (view?.hasFocus() && !hasFocus) setHasFocus(true);
+  });
+  useEditorEventListener("focus", () => {
+    setHasFocus(true);
+    return false;
+  });
+  useEditorEventListener("blur", (_view, event) => {
+    const next = (event as FocusEvent).relatedTarget;
+    if (!(next instanceof Node && toolbarRef.current?.contains(next))) {
+      setHasFocus(false);
+    }
+    return false;
+  });
+
   const editorState = useEditorState();
   const shouldShowToolbar = editorState
-    ? !editorState.selection.empty && !isComposing
+    ? hasFocus && !editorState.selection.empty && !isComposing
     : false;
 
   if (!shouldShowToolbar && linkDraft !== null) {
@@ -308,9 +329,13 @@ export function FormatToolbar() {
               cancelLink();
             }
           }}
-          onBlur={() => {
+          onBlur={(e) => {
             setLinkDraft(null);
             setLinkInvalid(false);
+            const next = e.relatedTarget;
+            if (!(next instanceof Node && editorDom.current?.contains(next))) {
+              setHasFocus(false);
+            }
           }}
         />
       )}
