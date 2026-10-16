@@ -59,6 +59,34 @@ fn queue_is_fifo_by_stop_and_resume_removes_from_it() {
 }
 
 #[test]
+fn a_claim_that_cannot_be_written_leaves_the_session_queued() {
+    // The state and the claim are one transaction: a crash or a failed
+    // write between them cannot leave a Processing note with no claim,
+    // which no launch takes back.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = Store::open(&path).unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    stop(&mut store, "s1", 5);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch(
+            "CREATE TRIGGER no_claim BEFORE UPDATE OF claim_owner ON jobs
+             WHEN NEW.claim_owner IS NOT NULL
+             BEGIN SELECT RAISE(ABORT, 'the claim cannot be written'); END;",
+        )
+        .unwrap();
+
+    assert!(store.dequeue_session("s1", "run-a", t(10)).is_err());
+    assert!(matches!(
+        store.session("s1").unwrap().unwrap().state,
+        SessionState::Queued { .. }
+    ));
+    assert_eq!(store.queue().unwrap(), ["s1"]);
+    assert_eq!(store.claim_owner("s1").unwrap(), None);
+}
+
+#[test]
 fn a_dead_runs_claim_is_reclaimed_with_checkpoints_intact() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();

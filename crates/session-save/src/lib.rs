@@ -147,6 +147,24 @@ pub fn sweep_staging(root: &Path, completed: impl Fn(&str) -> bool) -> io::Resul
     Ok(removed)
 }
 
+/// Remove the folder `dir`, with the file `marker` in it removed last. A
+/// removal that stops part way keeps the marker, so the folder still names
+/// its owner, and the next step removes the rest.
+pub fn remove_marker_last(dir: &Path, marker: &str) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == marker {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    std::fs::remove_dir_all(dir)
+}
+
 fn is_ours(staging: &Path, session_id: &str) -> bool {
     std::fs::read_to_string(staging.join(MARKER)).is_ok_and(|m| m.trim() == session_id)
 }
@@ -175,7 +193,16 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
             }
             check_destination(job.destination)?;
             if exists(&staging) {
-                return Err(SaveError::StagingTaken(staging));
+                if !is_ours(&staging, job.session_id) {
+                    return Err(SaveError::StagingTaken(staging));
+                }
+                // A copy of this session whose removal failed. The working
+                // copy is whole, so the staging is not the only copy.
+                log::info!(
+                    "removing the staging that an earlier save of {} left",
+                    job.session_id
+                );
+                remove_marker_last(&staging, MARKER)?;
             }
             std::fs::write(job.working.join(MARKER), job.session_id)?;
             fsync::sync_tree(job.working)?;
@@ -202,11 +229,18 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
         SaveState::Copying { staging } => {
             // Whatever a crash left here is this session's partial copy.
             if exists(staging) {
-                std::fs::remove_dir_all(staging)?;
+                remove_marker_last(staging, MARKER)?;
             }
             check_destination(job.destination)?;
-            if let Err(e) = stage::copy_verified(job.working, staging, LEFT_BEHIND) {
-                let _ = std::fs::remove_dir_all(staging);
+            if let Err(e) = stage::copy_staging(job.working, staging, job.session_id, LEFT_BEHIND) {
+                // A staging that stays has the marker, and the next save
+                // removes it.
+                if let Err(removal) = remove_marker_last(staging, MARKER) {
+                    log::warn!(
+                        "could not remove the partial copy at {}: {removal}",
+                        staging.display()
+                    );
+                }
                 return Err(e.into());
             }
             fsync::sync_dir(job.destination)?;
@@ -250,7 +284,7 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
             // goes with it and is removed once `Saved` is recorded.
             for attempt in 1..=MAX_NAMES {
                 let target = root.join(naming::candidate(job.folder_name, attempt));
-                match fs.rename_new(staging, &target) {
+                match rename::rename_new_waiting(fs, staging, &target) {
                     Ok(()) => {
                         fsync::sync_dir(root)?;
                         return Ok(SaveState::Saved {
@@ -258,7 +292,11 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
                             working_retained: *copied,
                         });
                     }
-                    Err(e) if rename::is_taken(&e) => continue,
+                    Err(e) if rename::is_name_taken(&e) => continue,
+                    // A folder in use is not a taken name (KTD8).
+                    Err(e) if rename::is_in_use(&e) => {
+                        return Err(rename::in_use_error(staging, &e).into());
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }

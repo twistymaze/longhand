@@ -1088,6 +1088,54 @@ fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
     assert!(working.join(TRANSCRIPT_FILE).is_file());
 }
 
+#[test]
+fn a_first_save_whose_files_cannot_be_written_releases_its_claim() {
+    // Nothing moved, so Resume works again, and the next claim names the
+    // folder from the title at that time.
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    assert!(library::scan::write_marker(dest.path()));
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .dequeue_session("s", "test", common::at(100))
+        .unwrap();
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let working = root.path().join("s");
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    // A folder where `notes.md` goes: the render cannot write it.
+    std::fs::create_dir_all(working.join("notes.md").join("x")).unwrap();
+
+    let saved = pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    );
+
+    assert!(saved.is_err(), "{saved:?}");
+    let begun = pipeline::save::begun(&store.lock().unwrap(), "s").unwrap();
+    assert!(!begun, "the claim is released");
+    let folder_name: Option<String> =
+        checkpoint::get(&store, "s", Stage::Save, pipeline::save::FOLDER_NAME).unwrap();
+    assert_eq!(folder_name, None);
+}
+
 /// The speaker progress events, in order.
 fn speaker_progress(r: &Rig) -> Vec<SpeakerProgress> {
     r.events
@@ -3769,6 +3817,82 @@ async fn a_notes_only_note_that_records_publishes_its_result_into_the_same_folde
     assert_eq!(std::fs::read(folder.join("session.md")).unwrap(), before);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_during_the_summary_does_not_stop_the_first_save() {
+    // The summary uses the notes from when it started (R36). The folder has
+    // no result to keep, so the save goes on and writes the new notes.
+    use pipeline::early_home;
+    use session_core::Event;
+    let r = rig().await;
+    {
+        let mut s = r.store.lock().unwrap();
+        s.create_notes_only("n", common::at(-600), None).unwrap();
+        early_home::begin(&s, "n").unwrap();
+    }
+    add_notes(&r.store, "n");
+    let early = early_home::write(&r.store, "n", Some(&r.dest), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap();
+    {
+        let mut s = r.store.lock().unwrap();
+        s.apply(
+            "n",
+            &Event::UserRecord {
+                has_segments: false,
+            },
+        )
+        .unwrap();
+        let segment = common::write_segment(&r.root.join("n"), 0, 0, 16_000, &speech(), false);
+        s.put_segment("n", &segment).unwrap();
+        s.set_asr_model("n", "m").unwrap();
+    }
+    early_home::sync(&r.store, "n", "run").unwrap();
+    common::stop_session(&r.store, "n", 100);
+    r.store
+        .lock()
+        .unwrap()
+        .dequeue_session("n", "test", common::at(100))
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("n").unwrap();
+    let working = r.root.join("n");
+    // The files that Assemble and Join make.
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    checkpoint::mark_complete(&r.store, "n", Stage::Verify, 1).unwrap();
+    // The summary started with the notes typed before the recording...
+    checkpoint::put(
+        &r.store,
+        "n",
+        Stage::Summarize,
+        "source-notes",
+        &session_core::folder::fingerprint(NOTES.as_bytes()),
+    )
+    .unwrap();
+    // ...and the user types more while it runs. The editor writes the
+    // store and the early folder.
+    let typed = format!("{NOTES}- one more thing\n");
+    assert!(pipeline::save::set_notes(&mut r.store.lock().unwrap(), "n", &typed).unwrap());
+
+    let saved = pipeline::save::run(
+        &r.store,
+        "n",
+        &working,
+        &segments,
+        Some(&r.dest),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    assert_eq!(saved.path, early);
+    assert_eq!(session_md(&early).result, None, "the result is saved");
+    assert!(early.join(TRANSCRIPT_FILE).is_file());
+    assert_eq!(
+        std::fs::read_to_string(early.join("notes.md")).unwrap(),
+        typed
+    );
+}
+
 // ------------------------------------------------------- folder names (U7)
 
 /// A filesystem whose first final rename fails: before the rename, or after
@@ -6069,6 +6193,36 @@ async fn a_second_confirmation_queues_nothing_and_says_the_run_is_queued() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_during_the_summary_of_a_saved_note_keeps_its_previous_result() {
+    // The folder has a result, so the run does not replace it with a
+    // summary of old notes (R5 of the remove-result-copies plan).
+    let r = rig().await;
+    let home = saved_note(&r, None).await;
+    let summary = read(&home, "summary.md");
+    let store = Arc::clone(&r.store);
+    let typed = format!("{NOTES}- one more thing\n");
+    let edit = typed.clone();
+    let reply = http::Reply::With(Arc::new(move |_| {
+        // The user types while the summary call runs.
+        pipeline::save::set_notes(&mut store.lock().unwrap(), "s", &edit).unwrap();
+        (200, http::completion("A new summary."))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    confirm_again(&r).unwrap();
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    match outcome {
+        Outcome::Failed {
+            stage: Stage::Save,
+            message,
+        } => assert!(message.contains("notes changed"), "{message}"),
+        outcome => panic!("{outcome:?}"),
+    }
+    assert_eq!(read(&home, "summary.md"), summary);
+    assert_eq!(read(&home, "notes.md"), typed, "the edit is kept");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_save_refused_because_another_computer_changed_the_records_keeps_the_previous_result() {
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
@@ -6103,12 +6257,30 @@ async fn a_save_refused_because_another_computer_changed_the_records_keeps_the_p
         "the other computer's change stays"
     );
     assert_eq!(asr_model(&r).as_deref(), Some("m"));
-    // The save had started, so the run keeps its staged result for a retry.
-    assert!(matches!(
-        state(&r.store, "s"),
-        SessionState::ProcessingFailed { .. }
-    ));
-    assert!(r.root.join("s").exists());
+    // Nothing of the run reached the folder, so the run fails as a
+    // Transcribe Again run does: the note is saved again with the error,
+    // and a new Transcribe Again can start. A Retry would fail the same
+    // way each time.
+    assert_eq!(state(&r.store, "s"), SessionState::Saved);
+    let marks = r.store.lock().unwrap().transcribe_again_marks("s").unwrap();
+    assert_eq!(marks.model, None);
+    assert!(
+        marks
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("the note changed during processing")),
+        "{marks:?}"
+    );
+    assert_eq!(
+        r.store
+            .lock()
+            .unwrap()
+            .result_state("s", "replacement-base")
+            .unwrap(),
+        None
+    );
+    assert!(!r.root.join("s").exists(), "the run's working copy goes");
+    confirm_again(&r).unwrap();
 }
 
 /// An agent writes `session.md` with a new title, its own YAML style, an
@@ -6807,6 +6979,132 @@ async fn a_replacement_with_an_unwritable_summary_rolls_forward_on_retry() {
     assert_eq!(asr_model(&r).as_deref(), Some(MODEL));
     assert_eq!(marks(&r), Default::default());
     assert!(!r.root.join("s").exists(), "the working copy is gone");
+}
+
+/// A recognition snapshot that this build refuses, as after an update
+/// that changed a runtime revision.
+fn historic_snapshot() -> serde_json::Value {
+    let mut spec = models::recognition::resolve(&settings()).unwrap();
+    spec.runtimes[0].revision = "historic-runtime".into();
+    serde_json::to_value(&spec).unwrap()
+}
+
+fn set_pending_snapshot(r: &Rig, id: &str, value: serde_json::Value) {
+    r.store
+        .lock()
+        .unwrap()
+        .set_result_state(id, "pending-snapshot", &value)
+        .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_snapshot_refused_at_the_claim_fails_the_note_with_its_reason() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    set_pending_snapshot(&r, "s", historic_snapshot());
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            Outcome::Failed {
+                stage: Stage::Transcribe,
+                ..
+            }
+        ),
+        "{outcome:?}"
+    );
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    // The note shows why it failed, and the interface hears of it.
+    let reason = pipeline::progress::error(&r.store, "s", Stage::Transcribe).unwrap();
+    assert!(
+        reason
+            .as_deref()
+            .is_some_and(|e| e.contains("different runtime revision")),
+        "{reason:?}"
+    );
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::StageFailed { session_id, stage: Stage::Transcribe, .. } if session_id == "s"
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_transcribe_again_whose_snapshot_is_refused_at_the_claim_keeps_the_saved_note() {
+    for snapshot in [historic_snapshot(), serde_json::json!("not a snapshot")] {
+        let r = rig().await;
+        let folder = saved_note(&r, None).await;
+        let transcript = read(&folder, TRANSCRIPT_FILE);
+        confirm_again(&r).unwrap();
+        set_pending_snapshot(&r, "s", snapshot);
+
+        let (_, outcome) = r.runner.run_next().await.unwrap();
+        assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+        assert_eq!(state(&r.store, "s"), SessionState::Saved);
+        assert_eq!(marks(&r).model, None);
+        assert!(marks(&r).error.is_some(), "{:?}", marks(&r));
+        assert_eq!(
+            r.store
+                .lock()
+                .unwrap()
+                .result_state("s", "pending-snapshot")
+                .unwrap(),
+            None
+        );
+        assert_eq!(read(&folder, TRANSCRIPT_FILE), transcript);
+        assert!(r.events.lock().unwrap().iter().any(
+            |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+        ));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_recorded_publication_is_kept_when_its_snapshot_is_refused() {
+    // The publication wrote files into the folder: a refused snapshot
+    // fails the run but must not drop the record that rolls it forward.
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let folder = saved_note(&r, None).await;
+    confirm_again(&r).unwrap();
+    std::fs::remove_file(folder.join("summary.md")).unwrap();
+    std::fs::create_dir_all(folder.join("summary.md/blocked")).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    let replaced = read(&folder, TRANSCRIPT_FILE);
+    assert!(
+        r.root
+            .join("s")
+            .join(session_save::publication::RECORD)
+            .exists()
+    );
+    set_pending_snapshot(&r, "s", historic_snapshot());
+
+    r.runner.retry("s", false).unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert!(matches!(outcome, Outcome::Failed { .. }), "{outcome:?}");
+    assert!(matches!(
+        state(&r.store, "s"),
+        SessionState::ProcessingFailed { .. }
+    ));
+    assert!(
+        r.root
+            .join("s")
+            .join(session_save::publication::RECORD)
+            .exists(),
+        "the record stays for a retry"
+    );
+    assert_eq!(marks(&r).model.as_deref(), Some(MODEL));
+    assert_eq!(read(&folder, TRANSCRIPT_FILE), replaced);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -7573,7 +7871,18 @@ async fn a_rename_from_another_computer_during_reprocessing_preserves_the_previo
     let doc = session_md(&renamed);
     assert_eq!(doc.title.as_deref(), Some("Budget review"));
     assert_eq!(doc.asr_model.as_deref(), Some("m"));
-    assert!(a.root.join("s").exists(), "staged work remains recoverable");
+    // Nothing of the run reached the folder: the note is saved again with
+    // the error, and a new Transcribe Again can start.
+    assert_eq!(state(&a.store, "s"), SessionState::Saved);
+    let marks = a.store.lock().unwrap().transcribe_again_marks("s").unwrap();
+    assert!(
+        marks
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("the note folder moved during processing")),
+        "{marks:?}"
+    );
+    confirm_again(&a).unwrap();
     assert_eq!(
         title_of(&a),
         Some(Title {

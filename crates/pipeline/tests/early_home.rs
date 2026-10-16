@@ -131,6 +131,82 @@ fn a_recording_note_gets_a_home_folder_with_its_notes_and_the_pending_flag() {
     );
 }
 
+/// Refuses each rename to a note name (not a hidden name) as in use
+/// (`PermissionDenied`, as Windows does while another app holds a file)
+/// `refusals` times, and counts those renames.
+struct InUse {
+    refusals: std::cell::Cell<usize>,
+    tries: std::cell::Cell<usize>,
+}
+
+impl InUse {
+    fn new(refusals: usize) -> Self {
+        Self {
+            refusals: std::cell::Cell::new(refusals),
+            tries: std::cell::Cell::new(0),
+        }
+    }
+}
+
+impl session_save::Fs for InUse {
+    fn rename(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        session_save::Fs::rename(&RealFs, from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> std::io::Result<()> {
+        let hidden = to
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        if !hidden {
+            self.tries.set(self.tries.get() + 1);
+            if self.refusals.get() > 0 {
+                self.refusals.set(self.refusals.get() - 1);
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
+        }
+        session_save::Fs::rename_new(&RealFs, from, to)
+    }
+}
+
+#[test]
+fn a_folder_in_use_for_a_moment_gets_its_own_name() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    recording_note(&store, "s", "Agenda\n");
+    let fs = InUse::new(2);
+
+    let path = early_home::write(&store, "s", Some(dest.path()), RUN, &fs)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        folders(dest.path()),
+        vec!["2027-01-15 0800 Longhand session"],
+        "in use is not a taken name"
+    );
+    assert_eq!(home(&store, "s"), Some(path));
+    assert_eq!(fs.tries.get(), 3);
+}
+
+#[test]
+fn a_folder_that_stays_in_use_waits_saying_so_and_tries_no_other_name() {
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    recording_note(&store, "s", "Agenda\n");
+    let fs = InUse::new(usize::MAX);
+
+    let error = early_home::write(&store, "s", Some(dest.path()), RUN, &fs).unwrap_err();
+
+    match error {
+        StageError::NoDestination(message) => {
+            assert!(message.contains("in use"), "{message}");
+            assert!(!message.contains("no free name"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fs.tries.get(), 1 + session_save::rename::IN_USE_RETRIES);
+    assert!(folders(dest.path()).is_empty());
+}
+
 /// The value that the store records for the `session.md` and the
 /// `longhand.json` in `path`.
 fn files_written(path: &Path) -> String {

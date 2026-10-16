@@ -296,18 +296,7 @@ fn folder_name(path: &Path) -> String {
 /// folder as this Move's copy and removes the rest; it is never taken for
 /// a finished note.
 fn remove_copy(dir: &Path) -> io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_name() == MARKER {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
-        } else {
-            std::fs::remove_file(entry.path())?;
-        }
-    }
-    std::fs::remove_dir_all(dir)
+    session_save::remove_marker_last(dir, MARKER)
 }
 
 fn write_marker(dir: &Path, session_id: &str) -> io::Result<()> {
@@ -865,12 +854,14 @@ impl Mover<'_> {
     fn rename_into(&self, from: &Path, new: &Path, name: &str) -> io::Result<PathBuf> {
         for attempt in 1..=MAX_NAMES {
             let target = new.join(naming::candidate(name, attempt));
-            match self.fs.rename_new(from, &target) {
+            match rename::rename_new_waiting(self.fs, from, &target) {
                 Ok(()) => {
                     fsync::sync_dir(new)?;
                     return Ok(target);
                 }
-                Err(e) if rename::is_taken(&e) => continue,
+                Err(e) if rename::is_name_taken(&e) => continue,
+                // A folder in use is not a taken name (KTD8).
+                Err(e) if rename::is_in_use(&e) => return Err(rename::in_use_error(from, &e)),
                 Err(e) => return Err(e),
             }
         }

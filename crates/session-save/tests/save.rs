@@ -261,6 +261,63 @@ fn a_partial_copy_left_by_a_crash_is_this_sessions_and_is_redone() {
 }
 
 #[test]
+fn this_sessions_leftover_staging_does_not_stop_a_later_save() {
+    // A copy that failed, and whose cleanup failed too (a file held open on
+    // Windows, a share that went away), left this session's staging. The
+    // save then starts over from the working copy, which is whole.
+    let root = tempfile::tempdir().unwrap();
+    let (work, dest) = (working(root.path()), destination(root.path()));
+    let staging = dest.join(".longhand-staging-s1");
+    std::fs::create_dir_all(staging.join("audio")).unwrap();
+    std::fs::write(staging.join(MARKER), "s1").unwrap();
+    std::fs::write(staging.join("audio/segment-01.opus"), b"half").unwrap();
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &dest,
+        folder_name: NAME,
+    };
+    let fs = CrossDevice {
+        cross: Cell::new(true),
+    };
+    let states = run(&job, &fs, SaveState::Working);
+    assert_eq!(
+        states.last(),
+        Some(&SaveState::Done {
+            path: dest.join(NAME)
+        })
+    );
+    assert_eq!(
+        std::fs::read(dest.join(NAME).join("audio/segment-01.opus"))
+            .unwrap()
+            .len(),
+        300_000
+    );
+    assert!(!staging.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_copy_that_fails_part_way_leaves_staging_that_names_its_session() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let work = working(root.path());
+    let dest = destination(root.path());
+    // A working copy with no marker yet, and a file that cannot be read.
+    let locked = work.join("transcript.md");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let staging = dest.join(".longhand-staging-s1");
+    let copied = session_save::stage::copy_staging(&work, &staging, "s1", LEFT_BEHIND);
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(copied.is_err());
+    assert_eq!(
+        std::fs::read_to_string(staging.join(MARKER)).unwrap(),
+        "s1",
+        "a partial copy names its session"
+    );
+}
+
+#[test]
 fn a_rename_that_happened_before_its_record_is_recognised_by_its_marker() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
@@ -296,6 +353,79 @@ fn a_taken_name_gets_a_suffix_and_an_empty_folder_is_never_replaced() {
         })
     );
     assert!(std::fs::read_dir(dest.join(NAME)).unwrap().next().is_none());
+}
+
+/// Refuses the final rename as in use (`PermissionDenied`, as Windows does
+/// while another app holds a file in the folder) `refusals` times.
+struct InUse {
+    refusals: Cell<usize>,
+    calls: Cell<usize>,
+}
+
+impl InUse {
+    fn new(refusals: usize) -> Self {
+        Self {
+            refusals: Cell::new(refusals),
+            calls: Cell::new(0),
+        }
+    }
+}
+
+impl Fs for InUse {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.calls.set(self.calls.get() + 1);
+        if self.refusals.get() > 0 {
+            self.refusals.set(self.refusals.get() - 1);
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        RealFs.rename_new(from, to)
+    }
+}
+
+#[test]
+fn a_final_rename_refused_for_a_moment_as_in_use_keeps_the_name() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, dest) = (working(root.path()), destination(root.path()));
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &dest,
+        folder_name: NAME,
+    };
+    let fs = InUse::new(2);
+    let states = run(&job, &fs, SaveState::Working);
+    assert_eq!(
+        states.last(),
+        Some(&SaveState::Done {
+            path: dest.join(NAME)
+        }),
+        "a folder in use is not a taken name"
+    );
+    assert_eq!(fs.calls.get(), 3);
+}
+
+#[test]
+fn a_final_rename_that_stays_in_use_says_so_and_tries_no_other_name() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, dest) = (working(root.path()), destination(root.path()));
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &dest,
+        folder_name: NAME,
+    };
+    let staged = step(&SaveState::Working, &job, &RealFs).unwrap();
+    let fs = InUse::new(usize::MAX);
+    let err = step(&staged, &job, &fs).unwrap_err();
+    assert!(err.to_string().contains("in use"), "{err}");
+    assert!(!err.to_string().contains("no free name"), "{err}");
+    assert_eq!(
+        fs.calls.get(),
+        1 + session_save::rename_home::IN_USE_RETRIES
+    );
 }
 
 #[test]

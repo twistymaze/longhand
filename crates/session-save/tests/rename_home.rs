@@ -323,6 +323,122 @@ fn a_change_of_case_refused_at_the_second_move_puts_the_folder_back() {
     );
 }
 
+/// A folder that another computer makes during a change of case: on a
+/// case-insensitive volume it takes the new name and the old name, so
+/// both moves from the temporary name are refused as taken. `other` gives
+/// another error for the move back instead.
+struct BothNamesTaken {
+    temp: PathBuf,
+    names: [PathBuf; 2],
+    other: bool,
+}
+
+impl Fs for BothNamesTaken {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        if from == self.temp && to == self.names[0] {
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        if from == self.temp && to == self.names[1] {
+            if self.other {
+                return Err(io::Error::other("the disk went away"));
+            }
+            return Err(io::Error::from(io::ErrorKind::AlreadyExists));
+        }
+        RealFs.rename_new(from, to)
+    }
+}
+
+#[test]
+fn a_change_of_case_whose_names_are_both_taken_goes_to_a_free_name() {
+    let dest = tempfile::tempdir().unwrap();
+    let old = "2026-09-22 1400 budget review";
+    let from = home(dest.path(), old);
+    let temp = dest.path().join(temp_name("s1"));
+    let fs = BothNamesTaken {
+        temp: temp.clone(),
+        names: [dest.path().join(NEW), from.clone()],
+        other: false,
+    };
+    let (result, moves) = rename(&from, NEW, &fs);
+    let suffixed = dest.path().join(format!("{NEW}-2"));
+    assert_eq!(result.unwrap(), suffixed, "the folder gets a visible name");
+    assert_eq!(entries(dest.path()), [format!("{NEW}-2")]);
+    // The record of each move names the temporary name too.
+    let last = moves.last().unwrap();
+    assert_eq!(
+        (&last.from, &last.to, last.temp.as_ref()),
+        (&from, &suffixed, Some(&temp))
+    );
+}
+
+#[test]
+fn a_crash_after_a_change_of_case_reached_the_temporary_name_still_finds_the_folder() {
+    let dest = tempfile::tempdir().unwrap();
+    let old = "2026-09-22 1400 budget review";
+    let from = home(dest.path(), old);
+    let temp = dest.path().join(temp_name("s1"));
+    let fs = BothNamesTaken {
+        temp: temp.clone(),
+        names: [dest.path().join(NEW), from.clone()],
+        other: false,
+    };
+    let suffixed = dest.path().join(format!("{NEW}-2"));
+    let mut moves = Vec::new();
+    // The process stops after the move to the next name is recorded and
+    // before it is taken.
+    let stopped = catch_unwind(AssertUnwindSafe(|| {
+        rename_home::rename(&from, NEW, "s1", &fs, &mut |m| {
+            moves.push(m.clone());
+            if m.to == suffixed {
+                panic!("the process stops here");
+            }
+            Ok(())
+        })
+    }));
+    assert!(stopped.is_err());
+    assert_eq!(entries(dest.path()), [temp_name("s1")]);
+    // At the next launch, the last record finds the folder at the
+    // temporary name and finishes the move.
+    assert_eq!(
+        rename_home::resolve(moves.last().unwrap(), &RealFs).unwrap(),
+        Resolved::Moved(suffixed.clone())
+    );
+    assert_eq!(entries(dest.path()), [format!("{NEW}-2")]);
+}
+
+#[test]
+fn a_change_of_case_that_cannot_go_back_keeps_the_record_of_the_temporary_name() {
+    let dest = tempfile::tempdir().unwrap();
+    let old = "2026-09-22 1400 budget review";
+    let from = home(dest.path(), old);
+    let temp = dest.path().join(temp_name("s1"));
+    let fs = BothNamesTaken {
+        temp: temp.clone(),
+        names: [dest.path().join(NEW), from.clone()],
+        other: true,
+    };
+    let (result, moves) = rename(&from, NEW, &fs);
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains(&temp_name("s1")), "{error}");
+    assert_eq!(entries(dest.path()), [temp_name("s1")]);
+    let last = moves.last().unwrap();
+    assert_eq!(
+        last.temp.as_ref(),
+        Some(&temp),
+        "the record names the folder"
+    );
+    // While the names stay taken, the record stays.
+    assert!(rename_home::resolve(last, &fs).is_err());
+    // Once the block is gone, the folder goes to its new name.
+    assert_eq!(
+        rename_home::resolve(last, &RealFs).unwrap(),
+        Resolved::Moved(dest.path().join(NEW))
+    );
+}
+
 #[test]
 fn a_suffixed_folder_already_has_its_name() {
     assert!(has_name(NEW, NEW));

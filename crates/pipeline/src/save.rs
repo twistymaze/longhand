@@ -264,8 +264,10 @@ pub fn run(
         folder_name: &folder_name,
     };
     if state == SaveState::Working && working.exists() {
-        render(store, session_id, working, segments)?;
-        if let Err(e) = check_room(working, destination) {
+        // Nothing moved yet, so a failure here releases the claim.
+        if let Err(e) = render(store, session_id, working, segments)
+            .and_then(|()| check_room(working, destination))
+        {
             release(store, session_id);
             return Err(e);
         }
@@ -282,9 +284,10 @@ pub fn run(
         let next = match session_save::step(&state, &job, fs) {
             Ok(next) => next,
             Err(e) => {
-                // A failed copy removed its partial staging and left the
-                // working copy whole: start over from it, so a retry after
-                // choosing another folder goes there.
+                // A failed copy left the working copy whole: start over
+                // from it, so a retry after choosing another folder goes
+                // there. A partial staging that stays has this session's
+                // marker, and the Working step removes it.
                 if matches!(state, SaveState::Copying { .. }) && working.exists() {
                     checkpoint::put(store, session_id, Stage::Save, STATE, &SaveState::Working)?;
                     state = SaveState::Working;
@@ -521,8 +524,11 @@ fn stage_publication(
     // copied without the store lock; when the home path moved during
     // the copy, the copy runs again into the new folder.
     home = run_home(&lock(store), session_id)?;
+    // Whether this run wrote into the note folder. A Transcribe Again run
+    // copies no audio: each segment is in the folder already.
+    let mut wrote = false;
     let mut guard = loop {
-        add_audio(&home, working, segments)?;
+        wrote |= add_audio(&home, working, segments)?;
         // The last point where a cancel stops the run: the note folder
         // then has only the new audio.
         control.proceed()?;
@@ -544,9 +550,19 @@ fn stage_publication(
         .map(|(_, value)| serde_json::from_str(&value))
         .transpose()?;
     let current_notes = folder::fingerprint(guard.notes(session_id)?.as_bytes());
-    if summary_notes
+    let notes_changed = summary_notes
         .as_ref()
-        .is_some_and(|hash| *hash != current_notes)
+        .is_some_and(|hash| *hash != current_notes);
+    // A first save has no previous result to keep: it saves the summary
+    // made from the notes at the start (R36), and the write of `notes.md`
+    // after the save writes the current notes (R22e). `result` is set
+    // while the folder holds no result yet (a first save into the early
+    // folder); absent, the folder holds a saved result.
+    if notes_changed
+        && NoteFiles::read_timed(&home, READ_TIMEOUT)?
+            .doc
+            .result_flag()
+            .is_none()
     {
         // Retry must produce a summary from the current notes. Keep the
         // recognition checkpoints and the previous result.
@@ -575,15 +591,21 @@ fn stage_publication(
             note_files::new_layout_record(&home)?.run_fingerprint() != hash
         }
         Some(_) => {
-            return Err(StageError::Failed(
-                "the note folder moved during processing; the previous result was kept".into(),
+            return Err(refuse_replacement(
+                &guard,
+                session_id,
+                wrote,
+                "the note folder moved during processing; the previous result was kept",
             ));
         }
         None => false,
     };
     if changed {
-        return Err(StageError::Failed(
-            "the note changed during processing; the previous result was kept".into(),
+        return Err(refuse_replacement(
+            &guard,
+            session_id,
+            wrote,
+            "the note changed during processing; the previous result was kept",
         ));
     }
     let staged = with_summary(
@@ -596,6 +618,20 @@ fn stage_publication(
     // record. It does not prove that the publication committed.
     guard.put_checkpoint(session_id, Stage::Save, HOME_CHANGED, "true")?;
     Ok(publication)
+}
+
+/// The error of a run that the check of the folder's records refuses
+/// before its publication. When the run wrote nothing into the note
+/// folder, its `HOME_CHANGED` checkpoint goes: the runner then ends the Transcribe
+/// Again run and the note is saved again with the error, as for any
+/// Transcribe Again run that fails (R19). Otherwise each Retry would meet
+/// the same records and fail the same way. The caller holds the store
+/// lock.
+fn refuse_replacement(store: &Store, session_id: &str, wrote: bool, why: &str) -> StageError {
+    if !wrote && let Err(e) = store.delete_checkpoint(session_id, Stage::Save, HOME_CHANGED) {
+        log::warn!("could not clear the home_changed checkpoint of {session_id}: {e}");
+    }
+    StageError::Failed(why.into())
 }
 
 /// Another computer's result replaced the note's result before this
@@ -625,7 +661,8 @@ fn drop_publication(store: &SharedStore, session_id: &str, working: &Path) -> St
 /// when the Resume started, or that has a removal marker, is never put
 /// back, in any order in which a sync delivers a removal (KTD8 of the
 /// audio removal plan).
-fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), StageError> {
+/// Returns whether a file was copied.
+fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<bool, StageError> {
     if !home.is_dir() {
         return Err(StageError::NoDestination(format!(
             "the note's folder {} is missing; put it back to finish",
@@ -633,6 +670,7 @@ fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), St
         )));
     }
     let old = crate::old_audio::old_segments(working)?.unwrap_or_default();
+    let mut copied = false;
     for segment in segments {
         let target = home.join(&segment.audio_file);
         if target.exists()
@@ -651,8 +689,9 @@ fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<(), St
         };
         std::fs::create_dir_all(dir)?;
         home_write::copy_atomic(dir, name, &working.join(&segment.audio_file))?;
+        copied = true;
     }
-    Ok(())
+    Ok(copied)
 }
 
 /// The home folder of a session in a run that updates its folder, whatever
