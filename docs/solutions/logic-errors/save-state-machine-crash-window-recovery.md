@@ -234,7 +234,21 @@ The helpers (`working`, `destination`, `CrossDevice`, `run`, `saved_files`, `EXP
 
 For the routing class, add a pipeline test in the shape of `a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save`. For each recorded mid-flight `SaveState` (`Copying`, `Staged`, `Saved`), write that state and the side records that precede it, in the same order `run` writes them. Then call `runner.run_next()` and assert `Outcome::Finished` with the folder complete. Also cover the case where the side record is written but its state is not: the previous state is still recorded with the new side record already set. For example, `Staged` recorded with `home_path` already set is the crash between `save.rs:173` and `:175`.
 
+## A partial copy whose cleanup failed (PR #26)
+
+A copy to another volume that failed removed its staging folder with `let _ = remove_dir_all(...)`. When that removal also failed (a file held open on Windows, a share that went away), the staging folder stayed. The pipeline then recorded `Working` again, and the Working step refused the folder with `StagingTaken` ("was not made by this session"). Every later save to that storage folder failed until the user found the hidden folder. The copy did not always hold the marker, because `copy_dir` copied the working copy in `read_dir` order.
+
+The rules that the fix adds:
+
+- **A partial result names its owner from its first write.** `stage::copy_staging` makes the staging folder and writes the marker with the session id before it copies anything else. A copy that stops at any point then names its session.
+- **The next step removes only a folder with this session's marker, and only while the working copy is whole.** The Working step removes such a staging folder and goes on. A staging folder without the marker is still refused (R22d).
+- **Remove the marker last.** `session_save::remove_marker_last` removes every entry but the marker, then the folder. The Move's `remove_copy` uses the same function.
+- **A removal error is the error.** The Working step returns the error of the removal, which names the real cause. It does not return `StagingTaken`.
+
+When a cleanup can fail, ask what the next attempt finds. If the next attempt cannot tell the leftover from a folder that it must not touch, give the leftover an owner mark before the first write.
+
 ## Related Issues
 
+- [folder-in-use-taken-for-a-taken-name](folder-in-use-taken-for-a-taken-name.md): the rename that places the staged copy, and the other renames, while a folder is in use.
 - Archived PR 1: the walking skeleton, including this fix.
 - `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md`: R22b and R22d (the exactly-one-complete-copy and sweep rules, lines 163-165), KTD17 (line 321), U11's save approach (lines 932-952), and the resume approach (line 1001) whose "a home folder is updated in place" rule is the unqualified form of bug 2's routing. Historical record; its U11 note on the marker (line 952) predates the marker being kept through the final rename.

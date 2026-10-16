@@ -195,7 +195,19 @@ fn another_result_after_write_n_stops_write_n_plus_1() {
 
 Also test the caller: after `Outcome::Conflict`, `drop_publication` deletes the record, and the next run does not write into the home folder.
 
+## A refusal that each Retry meets again (PR #26)
+
+`stage_publication` puts the `HOME_CHANGED` checkpoint before its checks, so that a failure after the new audio of a Resume keeps the working copy. The records check and the folder check of a Transcribe Again (`replacement-base`) refuse after that point, but before any write of the run. The runner read `HOME_CHANGED` as "the publication began", took the generic failure path, and left the note in ProcessingFailed. Retry ran only Save, met the same stale `replacement-base`, and failed again. The note could not leave that state.
+
+The rules:
+
+- **A refusal before any write ends the run as a failed Transcribe Again.** `refuse_replacement` deletes `HOME_CHANGED` when the run wrote nothing into the note folder (`add_audio` returns whether it copied a file). The runner then calls `fail_transcribe_again`, which puts back the checkpoints from before the run and clears `replacement-base`.
+- **One guard decides "the publication began".** `Runner::publication_begun` (`HOME_CHANGED`, or a publication record in the working folder) is used by the Transcribe Again arm and by `fail_run`, so a failure before the stage loop (a refused recognition snapshot) cannot roll back a publication that wrote files.
+- **Before you leave a run failed, ask what Retry does.** If Retry reads the same inputs and takes the same check, the failure is permanent. End the run in a state that the user can leave, or change an input that the check reads.
+
 ## Related Issues
+
+- [folder-in-use-taken-for-a-taken-name](folder-in-use-taken-for-a-taken-name.md): other fixes of the same PR.
 
 - Archived PR 29: the removal of the result copies, the publication, and this fix.
 - `docs/plans/2026-09-30-0850-refactor-remove-result-copies-plan.md`: R2 to R5 and KTD1 to KTD5 (the publication), KTD7 (the one-minute wait), and the state diagram "Publication on the owner".
