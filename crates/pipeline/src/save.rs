@@ -540,6 +540,12 @@ fn stage_publication(
     // Under the store lock: the checks see the folder and the notes that
     // this computer holds now. They run once, before the record (KTD3).
     follow_run(&mut guard, session_id)?;
+    // `result` is set while the folder holds no result yet (a first save
+    // into the early folder). Absent, the folder holds a saved result.
+    let replaces_result = NoteFiles::read_timed(&home, READ_TIMEOUT)?
+        .doc
+        .result_flag()
+        .is_none();
     let summary_notes: Option<String> = guard
         .checkpoints(session_id, Stage::Summarize)?
         .into_iter()
@@ -547,9 +553,13 @@ fn stage_publication(
         .map(|(_, value)| serde_json::from_str(&value))
         .transpose()?;
     let current_notes = folder::fingerprint(guard.notes(session_id)?.as_bytes());
-    if summary_notes
-        .as_ref()
-        .is_some_and(|hash| *hash != current_notes)
+    // A first save has no previous result to keep: it saves the summary
+    // made from the notes at the start (R36), and the write of `notes.md`
+    // after the save writes the current notes (R22e).
+    if replaces_result
+        && summary_notes
+            .as_ref()
+            .is_some_and(|hash| *hash != current_notes)
     {
         // Retry must produce a summary from the current notes. Keep the
         // recognition checkpoints and the previous result.

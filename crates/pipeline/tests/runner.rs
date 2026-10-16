@@ -3817,6 +3817,82 @@ async fn a_notes_only_note_that_records_publishes_its_result_into_the_same_folde
     assert_eq!(std::fs::read(folder.join("session.md")).unwrap(), before);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_during_the_summary_does_not_stop_the_first_save() {
+    // The summary uses the notes from when it started (R36). The folder has
+    // no result to keep, so the save goes on and writes the new notes.
+    use pipeline::early_home;
+    use session_core::Event;
+    let r = rig().await;
+    {
+        let mut s = r.store.lock().unwrap();
+        s.create_notes_only("n", common::at(-600), None).unwrap();
+        early_home::begin(&s, "n").unwrap();
+    }
+    add_notes(&r.store, "n");
+    let early = early_home::write(&r.store, "n", Some(&r.dest), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap();
+    {
+        let mut s = r.store.lock().unwrap();
+        s.apply(
+            "n",
+            &Event::UserRecord {
+                has_segments: false,
+            },
+        )
+        .unwrap();
+        let segment = common::write_segment(&r.root.join("n"), 0, 0, 16_000, &speech(), false);
+        s.put_segment("n", &segment).unwrap();
+        s.set_asr_model("n", "m").unwrap();
+    }
+    early_home::sync(&r.store, "n", "run").unwrap();
+    common::stop_session(&r.store, "n", 100);
+    r.store
+        .lock()
+        .unwrap()
+        .dequeue_session("n", "test", common::at(100))
+        .unwrap();
+    let segments = r.store.lock().unwrap().segments("n").unwrap();
+    let working = r.root.join("n");
+    // The files that Assemble and Join make.
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    checkpoint::mark_complete(&r.store, "n", Stage::Verify, 1).unwrap();
+    // The summary started with the notes typed before the recording...
+    checkpoint::put(
+        &r.store,
+        "n",
+        Stage::Summarize,
+        "source-notes",
+        &session_core::folder::fingerprint(NOTES.as_bytes()),
+    )
+    .unwrap();
+    // ...and the user types more while it runs. The editor writes the
+    // store and the early folder.
+    let typed = format!("{NOTES}- one more thing\n");
+    assert!(pipeline::save::set_notes(&mut r.store.lock().unwrap(), "n", &typed).unwrap());
+
+    let saved = pipeline::save::run(
+        &r.store,
+        "n",
+        &working,
+        &segments,
+        Some(&r.dest),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    assert_eq!(saved.path, early);
+    assert_eq!(session_md(&early).result, None, "the result is saved");
+    assert!(early.join(TRANSCRIPT_FILE).is_file());
+    assert_eq!(
+        std::fs::read_to_string(early.join("notes.md")).unwrap(),
+        typed
+    );
+}
+
 // ------------------------------------------------------- folder names (U7)
 
 /// A filesystem whose first final rename fails: before the rename, or after
@@ -6114,6 +6190,36 @@ async fn a_second_confirmation_queues_nothing_and_says_the_run_is_queued() {
     assert_eq!(confirm_again(&r).unwrap_err(), expected);
     assert_eq!(check_with(&r, &settings()).unwrap_err(), expected);
     assert_eq!(r.store.lock().unwrap().queue().unwrap(), ["s"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notes_edit_during_the_summary_of_a_saved_note_keeps_its_previous_result() {
+    // The folder has a result, so the run does not replace it with a
+    // summary of old notes (R5 of the remove-result-copies plan).
+    let r = rig().await;
+    let home = saved_note(&r, None).await;
+    let summary = read(&home, "summary.md");
+    let store = Arc::clone(&r.store);
+    let typed = format!("{NOTES}- one more thing\n");
+    let edit = typed.clone();
+    let reply = http::Reply::With(Arc::new(move |_| {
+        // The user types while the summary call runs.
+        pipeline::save::set_notes(&mut store.lock().unwrap(), "s", &edit).unwrap();
+        (200, http::completion("A new summary."))
+    }));
+    let _mock = summaries_from(&r, reply, None).await;
+    confirm_again(&r).unwrap();
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    match outcome {
+        Outcome::Failed {
+            stage: Stage::Save,
+            message,
+        } => assert!(message.contains("notes changed"), "{message}"),
+        outcome => panic!("{outcome:?}"),
+    }
+    assert_eq!(read(&home, "summary.md"), summary);
+    assert_eq!(read(&home, "notes.md"), typed, "the edit is kept");
 }
 
 #[tokio::test(flavor = "multi_thread")]
