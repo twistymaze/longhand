@@ -822,6 +822,37 @@ fn a_type_edit_that_waits_keeps_a_later_type_change(edit: BulkEdit) {
     assert!(b.store.lock().unwrap().bulk_edits().unwrap().is_empty());
 }
 
+/// A type rename waits for a note whose session.md cannot be read. The
+/// user then gives that note another type while the file still cannot be
+/// read. The next pass of the rename keeps the user's type.
+#[test]
+fn a_type_edit_that_waits_keeps_a_type_the_user_chose_for_the_waiting_note() {
+    let (_dir, root) = storage();
+    let b = computer();
+    let stuck = b.save_typed("stuck", &root, "Pathfinder", "Session 12");
+    let text = fs::read(stuck.join("session.md")).unwrap();
+    fs::write(stuck.join("session.md"), b"not a session file").unwrap();
+    let edit = BulkEdit::RenameType {
+        from: "Pathfinder".into(),
+        to: "D&D".into(),
+    };
+    let id = {
+        let store = b.store.lock().unwrap();
+        let notes = type_move::matching_notes(&store, &edit).unwrap();
+        store.add_bulk_edit(&edit, &notes).unwrap()
+    };
+    assert!(!continue_recorded(&b, &root, id).done);
+    assert_eq!(b.change("stuck", Some("Standup")), TypeChange::Later);
+    assert_eq!(shown_type(&b.record("stuck")).0.as_deref(), Some("Standup"));
+
+    // The note is the user's now: the edit has nothing left.
+    assert!(continue_recorded(&b, &root, id).done);
+    assert_eq!(shown_type(&b.record("stuck")).0.as_deref(), Some("Standup"));
+    fs::write(stuck.join("session.md"), &text).unwrap();
+    b.run(now());
+    assert_eq!(b.record("stuck").note_type.as_deref(), Some("Standup"));
+}
+
 #[test]
 fn a_type_delete_that_waits_keeps_a_later_type_change() {
     a_type_edit_that_waits_keeps_a_later_type_change(BulkEdit::DeleteType {

@@ -603,6 +603,18 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
     {
         return Ok(());
     }
+    // The flag write and the notes sync read these files again under the
+    // store lock. A file that cannot be read in time (a cloud file that
+    // does not download) stops the job here, before the lock, so the lock
+    // does not wait for it.
+    for name in [SESSION_FILE, NOTE_RECORD_FILE, NOTES_FILE] {
+        if let Read::Failed(why) = read_timed(home.join(name), READ_TIMEOUT) {
+            return Err(StageError::NoDestination(format!(
+                "{} cannot be read: {why}",
+                home.join(name).display()
+            )));
+        }
+    }
     write_flag(&lock(store), id, &home, &root, flag)?;
     // The note does not record any more: a recording that kept no audio
     // went back to "no recording". This job wrote the marker, and the
@@ -753,11 +765,17 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
     // note counts as not available (an empty mount point), not as empty.
     let known = Known::from_records(&lock(store).sessions()?);
     let found = scan::scan(std::slice::from_ref(&root), &known, &ScanOptions::default());
-    if !found.is_available(&root) {
+    // A folder of this note that cannot be read can be the real one, and a
+    // readable folder with the same id then a copy of it.
+    let unreadable_here = found
+        .unreadable
+        .iter()
+        .any(|folder| folder.known_id.as_deref() == Some(id));
+    if !found.is_available(&root) || unreadable_here {
         return Ok(Location::Unknown);
     }
-    // A folder that holds the note shows where it is, also when another
-    // folder cannot be read.
+    // A folder that holds the note shows where it is, also when the
+    // folder of another note cannot be read.
     if let Some(note) = found.notes.iter().find(|note| note.doc.session_id == id) {
         let guard = lock(store);
         guard.set_home_path(id, &note.path.to_string_lossy())?;

@@ -931,6 +931,37 @@ fn a_renamed_folder_is_found_when_another_note_folder_cannot_be_read() {
     assert_eq!(home(&store, "n"), Some(moved));
 }
 
+/// The renamed folder cannot be read, and a readable copy of it has the
+/// same note id. The rescue cannot tell which folder is the note, so it
+/// changes nothing and does not follow the copy.
+#[cfg(unix)]
+#[test]
+fn a_rescue_does_not_follow_a_copy_while_a_folder_of_the_note_cannot_be_read() {
+    use pipeline::save::{NotesRescue, rescue_notes, save_notes};
+    use std::os::unix::fs::PermissionsExt;
+    let dest = tempfile::tempdir().unwrap();
+    let store = store();
+    let path = placed_notes_only_note(&store, dest.path());
+    with_audio(&store);
+    let moved = dest.path().join("Renamed");
+    std::fs::rename(&path, &moved).unwrap();
+    let copy = dest.path().join("Renamed copy");
+    std::fs::create_dir(&copy).unwrap();
+    for entry in std::fs::read_dir(&moved).unwrap().flatten() {
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+        }
+    }
+    let blocked = moved.join(session_core::note_folder::SESSION_FILE);
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    save_notes(&mut store.lock().unwrap(), "n", "Second\n", None).unwrap();
+    let rescued = rescue_notes(&store, "n", "m", at(100)).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(rescued, NotesRescue::Unavailable);
+    assert_eq!(home(&store, "n"), Some(path));
+}
+
 #[test]
 fn a_notes_save_while_the_storage_folder_is_not_available_makes_no_new_note() {
     use pipeline::save::{NotesRescue, rescue_notes, save_notes};

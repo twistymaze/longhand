@@ -291,6 +291,25 @@ fn folder_name(path: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Remove a copy that this Move made, its marker last. A removal that
+/// stops part way keeps the marker, so the next step still knows the
+/// folder as this Move's copy and removes the rest; it is never taken for
+/// a finished note.
+fn remove_copy(dir: &Path) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == MARKER {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(entry.path())?;
+        } else {
+            std::fs::remove_file(entry.path())?;
+        }
+    }
+    std::fs::remove_dir_all(dir)
+}
+
 fn write_marker(dir: &Path, session_id: &str) -> io::Result<()> {
     std::fs::write(dir.join(MARKER), session_id)?;
     fsync::sync_file(&dir.join(MARKER))?;
@@ -704,7 +723,7 @@ impl Mover<'_> {
                     // not this Move's copy: it is a finished note that
                     // another computer moved here, and it is homed.
                     check_old(old)?;
-                    std::fs::remove_dir_all(path).map_err(|e| pause_for(&e, new))?;
+                    remove_copy(path).map_err(|e| pause_for(&e, new))?;
                     fsync::sync_dir(path.parent().unwrap_or(new))
                         .map_err(|e| pause_for(&e, new))?;
                     return Ok(Taken::Dropped);
