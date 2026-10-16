@@ -51,6 +51,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_hide_from_dock,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
+            commands::settings::restore_summary_prompt,
             commands::settings::duplicate_summary_prompt,
             commands::settings::rename_summary_prompt,
             commands::settings::set_summary_prompt_text,

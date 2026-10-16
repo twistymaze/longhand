@@ -183,6 +183,42 @@ export function ChangedElsewhereNotice({
   );
 }
 
+/// The notice of a summary prompt with unsaved text that another computer
+/// deleted (R6). Its layout is the layout of `ChangedElsewhereNotice`. The
+/// buttons name the prompt for screen readers, because more than one such
+/// notice can show.
+export function DeletedPromptNotice({
+  name,
+  busy,
+  saveDisabled,
+  onDiscard,
+  onSave,
+}: {
+  name: string;
+  busy: boolean;
+  saveDisabled: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+}) {
+  const suffix = <span className="sr-only"> {name}</span>;
+  return (
+    <div className="settings-row px-4">
+      <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
+        <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
+          <p className="font-medium text-caution">{`“${name}” was deleted on another computer.`}</p>
+          <p className="text-label-secondary">Save as New Prompt keeps your text. Discard removes it.</p>
+        </div>
+        <Button disabled={busy} onClick={onDiscard}>
+          Discard{suffix}
+        </Button>
+        <Button prominent disabled={saveDisabled} onClick={onSave}>
+          Save as New Prompt{suffix}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /// A bar that fills. With `active`, a quiet sweep says that work continues
 /// that the fill does not show; `fraction` null has no fill yet.
 export function ProgressBar({

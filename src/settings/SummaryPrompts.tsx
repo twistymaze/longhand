@@ -7,12 +7,30 @@
 // notice of a change on another computer (KTD10). Each text shows in the
 // Markdown editor of My Notes (KTD7).
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type NoteTypeEntry, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import {
+  commands,
+  events,
+  type NoteTypeEntry,
+  type RestoredPrompt,
+  type Result,
+  type Settings,
+  type SummaryPromptEntry,
+  type SummaryPromptList,
+} from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
 import { OwnSaves } from "./ownSaves";
-import { Button, ChangedElsewhereNotice, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
+import {
+  Button,
+  ChangedElsewhereNotice,
+  CommitField,
+  DeletedPromptNotice,
+  ErrorText,
+  Group,
+  Row,
+  useConfirm,
+} from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
 const saveDelay = 1000;
@@ -112,6 +130,19 @@ const savedOf = (p: SummaryPromptEntry, field: Field) => (field === "text" ? p.t
 
 type Edit = { id: string; field: Field; text: string };
 
+/// A prompt with unsaved text that another computer deleted: the texts that
+/// the editor showed, and the saved texts of the prompt.
+type DeletedPrompt = {
+  id: string;
+  name: string;
+  text: string;
+  title: string;
+  savedText: string;
+  savedTitle: string;
+  busy: boolean;
+  error: string | null;
+};
+
 /// A copy of `map` with no entry for `id`.
 function without<T>(map: Record<string, T>, id: string): Record<string, T> {
   if (!(id in map)) return map;
@@ -163,6 +194,15 @@ export function SummaryPrompts({
   // The error of the last failed save of each field. The editor shows it
   // only for that prompt, under that field.
   const [saveErrors, setSaveErrors] = useState<Record<string, string>>({});
+  // The typed text of the Name field of each prompt that differs from its
+  // name.
+  const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
+  // The prompts with unsaved text that another computer deleted (R6), the
+  // ids of all such prompts, and the ids of the prompts that this window
+  // deleted.
+  const [deleted, setDeleted] = useState<DeletedPrompt[]>([]);
+  const gone = useRef(new Set<string>());
+  const ownDeletes = useRef(new Set<string>());
   const { ask, dialog } = useConfirm();
   // The valid text that waits for the timer, the timer, and the last save
   // that started. Each save waits for the save before it, so the saves apply
@@ -221,6 +261,8 @@ export function SummaryPrompts({
         // The error of the title text names the field, because the backend
         // error does not always name it.
         const fail = (reason: string | null) => {
+          // A prompt that another computer deleted shows its notice instead.
+          if (gone.current.has(sent.id)) return;
           const error =
             sent.field === "text"
               ? (reason ?? "The prompt text could not be saved.")
@@ -319,7 +361,41 @@ export function SummaryPrompts({
   const bump = (key: string) => setGenerations((m) => ({ ...m, [key]: (m[key] ?? 0) + 1 }));
   // The saved text of each field at the last check.
   const shownSaved = useRef(new Map<string, string>());
+  // The list at the last check.
+  const shownList = useRef<SummaryPromptList | null>(null);
   useEffect(() => {
+    // A prompt with unsaved text that is not in the new list was deleted on
+    // another computer. Its text stays in a deleted prompt entry, so that it
+    // is not lost with no notice (R6).
+    const ids = new Set(list?.prompts.map((p) => p.id));
+    const lost = (shownList.current?.prompts ?? []).filter(
+      (p) =>
+        !p.built_in &&
+        !ids.has(p.id) &&
+        !ownDeletes.current.has(p.id) &&
+        (p.id in nameDrafts || keysOf(p.id).some((k) => k in drafts || failed.current.has(k))),
+    );
+    shownList.current = list;
+    if (lost.length > 0) {
+      const entries = lost.map((p) => ({
+        id: p.id,
+        name: nameDrafts[p.id] ?? p.name,
+        text: drafts[keyOf(p.id, "text")] ?? p.text,
+        title: drafts[keyOf(p.id, "title")] ?? savedOf(p, "title"),
+        savedText: p.text,
+        savedTitle: savedOf(p, "title"),
+        busy: false,
+        error: null,
+      }));
+      const keys = lost.flatMap((p) => keysOf(p.id));
+      for (const p of lost) gone.current.add(p.id);
+      if (pending.current && gone.current.has(pending.current.id)) cancel();
+      for (const key of keys) failed.current.delete(key);
+      setDrafts((m) => keys.reduce((acc, key) => without(acc, key), m));
+      setSaveErrors((m) => keys.reduce((acc, key) => without(acc, key), m));
+      setNameDrafts((m) => lost.reduce((acc, p) => without(acc, p.id), m));
+      setDeleted((d) => [...d, ...entries]);
+    }
     for (const p of list?.prompts ?? []) {
       for (const field of ["text", "title"] as const) {
         const key = keyOf(p.id, field);
@@ -339,6 +415,12 @@ export function SummaryPrompts({
   // A selection that is gone (a deleted prompt) goes back to the default prompt.
   const selected =
     list?.prompts.find((p) => p.id === selectedId) ?? list?.prompts.find((p) => p.id === list.active) ?? null;
+  // The list and the selection of the last render, for commits that end
+  // after it or run at an unmount.
+  const listRef = useRef(list);
+  listRef.current = list;
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selected?.id ?? null;
   const limits: Record<Field, number> = { text: list?.text_limit ?? 0, title: list?.title_text_limit ?? 0 };
   const draftOf = (p: SummaryPromptEntry, field: Field) => {
     const key = keyOf(p.id, field);
@@ -432,13 +514,65 @@ export function SummaryPrompts({
     if (!yes) return;
     if (pending.current?.id === id) cancel();
     await saving.current;
-    await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => {
+    // The list without the prompt is not a delete on another computer.
+    ownDeletes.current.add(id);
+    const done = await run(() => commands.deleteSummaryPrompt(id), setEditorError, () => {
       const keys = keysOf(id);
       for (const key of keys) failed.current.delete(key);
       setDrafts((m) => keys.reduce((acc, key) => without(acc, key), m));
       setSaveErrors((m) => keys.reduce((acc, key) => without(acc, key), m));
+      setNameDrafts((m) => without(m, id));
       show(null);
     });
+    if (!done) ownDeletes.current.delete(id);
+  };
+  const updateDeleted = (gid: string, change: Partial<DeletedPrompt> | null) =>
+    setDeleted((d) =>
+      change === null ? d.filter((e) => e.id !== gid) : d.map((e) => (e.id === gid ? { ...e, ...change } : e)),
+    );
+  // Save as New Prompt makes a prompt with the texts of a deleted prompt
+  // entry, in one command. A text that a prompt can't have (empty, over the
+  // limit) is made with the saved text, and the kept text becomes the
+  // unsaved text of the new prompt, so that the user can correct it.
+  const restore = async (entry: DeletedPrompt) => {
+    updateDeleted(entry.id, { busy: true, error: null });
+    const textOk = valid("text", entry.text);
+    const titleOk = valid("title", entry.title);
+    let result: Result<RestoredPrompt, string>;
+    try {
+      result = await commands.restoreSummaryPrompt(
+        entry.name,
+        textOk ? entry.text : entry.savedText,
+        titleOk ? entry.title : entry.savedTitle,
+      );
+    } catch (e) {
+      console.error("The prompt could not be saved:", e);
+      result = { status: "error", error: "The prompt could not be saved." };
+    }
+    if (result.status === "error") {
+      updateDeleted(entry.id, { busy: false, error: result.error });
+      return;
+    }
+    const newId = result.data.id;
+    const kept: Edit[] = [
+      ...(textOk ? [] : [{ id: newId, field: "text" as const, text: entry.text }]),
+      ...(titleOk ? [] : [{ id: newId, field: "title" as const, text: entry.title }]),
+    ];
+    const savedOfField = (field: Field) => (field === "text" ? entry.savedText : entry.savedTitle);
+    setBases((m) => kept.reduce((acc, e) => ({ ...acc, [keyOf(e.id, e.field)]: savedOfField(e.field) }), m));
+    setDrafts((m) => kept.reduce((acc, e) => ({ ...acc, [keyOf(e.id, e.field)]: e.text }), m));
+    updateDeleted(entry.id, null);
+    onSettings(result.data.settings);
+    await load();
+    show(newId);
+  };
+  const discard = async (entry: DeletedPrompt) => {
+    const yes = await ask({
+      title: `Discard your changes to “${entry.name}”?`,
+      message: "This can’t be undone.",
+      action: "Discard",
+    });
+    if (yes) updateDeleted(entry.id, null);
   };
   // The key of the text that waits for the timer, or null.
   const waitingKey = () => (pending.current ? keyOf(pending.current.id, pending.current.field) : null);
@@ -536,13 +670,40 @@ export function SummaryPrompts({
       </Group>
 
       <Group>
+        {deleted.map((entry) => (
+          <Fragment key={entry.id}>
+            <DeletedPromptNotice
+              name={entry.name}
+              busy={entry.busy}
+              saveDisabled={entry.busy || locked}
+              onDiscard={() => void discard(entry)}
+              onSave={() => void restore(entry)}
+            />
+            {entry.error && <ErrorText>{entry.error}</ErrorText>}
+          </Fragment>
+        ))}
         <Row label="Name">
           <CommitField
             key={id}
             label="Name"
             value={name}
             disabled={selected.built_in || locked}
-            onCommit={(v) => run(() => commands.renameSummaryPrompt(id, v), setEditorError)}
+            onDraft={(d) => setNameDrafts((m) => (d === null ? without(m, id) : { ...m, [id]: d }))}
+            onCommit={async (v) => {
+              // A prompt that another computer deleted gets no rename: its
+              // deleted prompt entry keeps the name.
+              if (!listRef.current?.prompts.some((p) => p.id === id)) return false;
+              const done = await run(
+                () => commands.renameSummaryPrompt(id, v),
+                // The error of a rename that ends after a change of prompt
+                // does not show under the other prompt.
+                (e) => {
+                  if (selectedRef.current === id) setEditorError(e);
+                },
+              );
+              if (done) setNameDrafts((m) => without(m, id));
+              return done;
+            }}
           />
         </Row>
         {tooLarge && (

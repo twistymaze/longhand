@@ -1308,14 +1308,22 @@ describe("own saves of prompts", () => {
   /// go. `remote` changes the saved text on another computer and sends
   /// `settings-changed`.
   function heldBackend() {
-    const state = { text: "Sync text", fail: false };
+    const state = { text: "Sync text", fail: false, present: true };
+    const restored: { id: string; name: string; text: string; title_text: string }[] = [];
     const gates = { list: [] as (() => void)[], save: null as Promise<void> | null };
     const reads = { holdNext: false, done: 0 };
     const saves = { done: 0 };
+    const custom = (p: { id: string; name: string; text: string; title_text: string }) => ({
+      ...p,
+      built_in: false,
+      over_limit: false,
+      too_large: false,
+    });
     const list = () => ({
       prompts: [
         { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
-        { id: "c1", name: "Team sync", text: state.text, title_text: "Sync title", built_in: false, over_limit: false, too_large: false },
+        ...(state.present ? [custom({ id: "c1", name: "Team sync", text: state.text, title_text: "Sync title" })] : []),
+        ...restored.map(custom),
       ],
       active: "topic-summary",
       text_limit: 4000,
@@ -1336,11 +1344,21 @@ describe("own saves of prompts", () => {
       set_summary_prompt_text: async ({ text }) => {
         if (gates.save) await gates.save;
         saves.done += 1;
+        if (!state.present) throw "No such prompt.";
         if (state.fail) {
           state.fail = false;
           throw "The prompt file could not be written.";
         }
         state.text = text as string;
+        return baseSettings;
+      },
+      restore_summary_prompt: ({ name, text, titleText }) => {
+        const id = `r${restored.length + 1}`;
+        restored.push({ id, name: name as string, text: text as string, title_text: titleText as string });
+        return { id, settings: baseSettings };
+      },
+      delete_summary_prompt: () => {
+        state.present = false;
         return baseSettings;
       },
       "plugin:window|destroy": () => null,
@@ -1350,14 +1368,113 @@ describe("own saves of prompts", () => {
       state.text = text;
       await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
     };
+    // Another computer deletes the prompt "Team sync".
+    const remoteDelete = async () => {
+      state.present = false;
+      await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
+    };
     const holdSaves = () => {
       let release: () => void = () => {};
       gates.save = new Promise<void>((r) => (release = r));
       return () => act(async () => release());
     };
     const releaseRead = () => act(async () => gates.list.shift()?.());
-    return { tauri, state, reads, saves, remote, holdSaves, releaseRead };
+    return { tauri, state, reads, saves, remote, remoteDelete, holdSaves, releaseRead };
   }
+
+  const deletedNotice = "“Team sync” was deleted on another computer.";
+  const restoreCalls = (tauri: TauriMock) =>
+    tauri.calls.filter((c) => c.cmd === "restore_summary_prompt").map((c) => c.args);
+
+  test("a prompt deleted on another computer keeps the unsaved text, and Save as New Prompt saves it", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    await setText(textArea(), "Mine");
+    await b.remoteDelete();
+    expect(await screen.findByText(deletedNotice)).toBeTruthy();
+    expect(screen.getByText("Save as New Prompt keeps your text. Discard removes it.")).toBeTruthy();
+    await act(async () => void fireEvent.click(button(/^Save as New Prompt/)));
+    await waitFor(() => expect(restoreCalls(b.tauri)).toEqual([{ name: "Team sync", text: "Mine", titleText: "Sync title" }]));
+    await waitFor(() => expect(textArea().textContent).toBe("Mine"));
+    expect(row("Team sync").getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByText(deletedNotice)).toBeNull();
+    expect(textCalls(b.tauri)).toEqual([]);
+  });
+
+  test("a prompt deleted on another computer keeps an unsaved name", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await user.type(screen.getByRole("textbox", { name: "Name" }), " notes");
+    await b.remoteDelete();
+    expect(await screen.findByText("“Team sync notes” was deleted on another computer.")).toBeTruthy();
+    expect(called(b.tauri, "rename_summary_prompt")).toBe(0);
+    await act(async () => void fireEvent.click(button(/^Save as New Prompt/)));
+    await waitFor(() =>
+      expect(restoreCalls(b.tauri)).toEqual([{ name: "Team sync notes", text: "Sync text", titleText: "Sync title" }]),
+    );
+  });
+
+  test("an invalid unsaved text of a deleted prompt becomes the unsaved text of the new prompt", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    await setText(textArea(), "");
+    await b.remoteDelete();
+    expect(await screen.findByText(deletedNotice)).toBeTruthy();
+    await act(async () => void fireEvent.click(button(/^Save as New Prompt/)));
+    await waitFor(() => expect(restoreCalls(b.tauri)).toEqual([{ name: "Team sync", text: "Sync text", titleText: "Sync title" }]));
+    await waitFor(() => expect(row("Team sync").getAttribute("aria-checked")).toBe("true"));
+    expect(textArea().textContent).toBe("");
+    expect(screen.getByText("A prompt can’t be empty.")).toBeTruthy();
+  });
+
+  test("Discard asks first and then removes the unsaved text of a deleted prompt", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    await setText(textArea(), "Mine");
+    await b.remoteDelete();
+    expect(await screen.findByText(deletedNotice)).toBeTruthy();
+    await act(async () => void fireEvent.click(button(/^Discard/)));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toContain("Discard your changes to “Team sync”?");
+    await act(async () => void fireEvent.click(within(dialog).getByRole("button", { name: "Discard" })));
+    await waitFor(() => expect(screen.queryByText(deletedNotice)).toBeNull());
+    expect(restoreCalls(b.tauri)).toEqual([]);
+  });
+
+  test("a delete in this window shows no notice", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await setText(textArea(), "Mine");
+    await act(async () => void fireEvent.click(button("Delete")));
+    const dialog = await screen.findByRole("alertdialog");
+    await act(async () => void fireEvent.click(within(dialog).getByRole("button", { name: "Delete" })));
+    await waitFor(() => expect(called(b.tauri, "delete_summary_prompt")).toBe(1));
+    await waitFor(() => expect(screen.queryByRole("radio", { name: /^Team sync/ })).toBeNull());
+    expect(screen.queryByText(deletedNotice)).toBeNull();
+  });
+
+  test("a save that fails because another computer deleted the prompt shows no error", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    const release = b.holdSaves();
+    await setText(textArea(), "Mine");
+    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(1), { timeout: 1500 });
+    await b.remoteDelete();
+    expect(await screen.findByText(deletedNotice)).toBeTruthy();
+    await release();
+    await waitFor(() => expect(b.saves.done).toBe(1));
+    await act(async () => {});
+    expect(screen.queryByText("No such prompt.")).toBeNull();
+    expect(screen.getByText(deletedNotice)).toBeTruthy();
+  });
 
   // Types into the editor that has the focus, after the pasted text.
   const typeAtEnd = (text: string) => userEvent.setup().keyboard(text);

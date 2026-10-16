@@ -459,6 +459,32 @@ pub fn create_summary_prompt(
     Ok(settings::get_settings(&app))
 }
 
+/// The prompt that `restore_summary_prompt` added, and the settings after it.
+#[derive(Serialize, Type)]
+pub struct RestoredPrompt {
+    pub id: String,
+    pub settings: Settings,
+}
+
+/// Add a summary prompt with a name and texts, in one write. The Settings
+/// window keeps the unsaved texts of a prompt that another computer deleted
+/// with it.
+#[tauri::command(async)]
+#[specta::specta]
+pub fn restore_summary_prompt(
+    app: AppHandle,
+    shared: State<'_, Arc<SharedSettingsManager>>,
+    name: String,
+    text: String,
+    title_text: String,
+) -> Result<RestoredPrompt, String> {
+    let id = shared.restore_prompt(&name, &text, &title_text)?;
+    Ok(RestoredPrompt {
+        id,
+        settings: settings::get_settings(&app),
+    })
+}
+
 /// Add a copy of a summary prompt, named "X copy" (R3).
 #[tauri::command(async)]
 #[specta::specta]

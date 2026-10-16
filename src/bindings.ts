@@ -294,6 +294,19 @@ async createSummaryPrompt() : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * Add a summary prompt with a name and texts, in one write. The Settings
+ * window keeps the unsaved texts of a prompt that another computer deleted
+ * with it.
+ */
+async restoreSummaryPrompt(name: string, text: string, titleText: string) : Promise<Result<RestoredPrompt, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("restore_summary_prompt", { name, text, titleText }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Add a copy of a summary prompt, named "X copy" (R3).
  */
 async duplicateSummaryPrompt(id: string) : Promise<Result<Settings, string>> {
@@ -2241,6 +2254,10 @@ export type RemoveAudioFailure =
  * deletes its file (KTD2).
  */
 { kind: "failed"; message: string }
+/**
+ * The prompt that `restore_summary_prompt` added, and the settings after it.
+ */
+export type RestoredPrompt = { id: string; settings: Settings }
 export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**

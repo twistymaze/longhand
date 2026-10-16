@@ -513,6 +513,23 @@ impl SharedSettingsManager {
         })
     }
 
+    /// Add a prompt with the name `name`, or a free name made from it, and
+    /// the texts `text` and `title_text`, in one write. The Settings window
+    /// uses it to keep the unsaved texts of a prompt that another computer
+    /// deleted. Returns the id of the new prompt.
+    pub fn restore_prompt(
+        &self,
+        name: &str,
+        text: &str,
+        title_text: &str,
+    ) -> Result<String, String> {
+        self.change(|root| {
+            prompts::create_prompt_with_title(root, name, text, title_text)
+                .map(|p| p.id)
+                .map_err(Failure::from)
+        })
+    }
+
     /// Add a copy of the prompt `id`, named "X copy", or a free name made
     /// from it, with the texts of the source (R3). Returns the id of the
     /// copy.
@@ -1599,6 +1616,33 @@ mod tests {
         let written = file_of(folder.path());
         assert_eq!(written["live_transcript"], false);
         assert_eq!(written["check_updates_automatically"], false);
+    }
+
+    #[test]
+    fn restore_makes_one_prompt_with_the_texts_and_a_free_name() {
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        manager.join_at_launch();
+        let first = manager.create_prompt().unwrap();
+        manager.rename_prompt(&first, "Team sync").unwrap();
+
+        let id = manager
+            .restore_prompt("Team sync", "My recap text.", "My title text.")
+            .unwrap();
+        let settings = settings_of(&manager);
+        let restored = settings
+            .summary_prompts
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap();
+        assert_eq!(restored.name, "Team sync 2");
+        assert_eq!(restored.text, "My recap text.");
+        assert_eq!(restored.title_text, "My title text.");
+
+        // A text that a prompt can't have makes no prompt.
+        assert!(manager.restore_prompt("Empty", "  ", "").is_err());
+        assert_eq!(settings_of(&manager).summary_prompts.len(), 2);
     }
 
     #[test]
