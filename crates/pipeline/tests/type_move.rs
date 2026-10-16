@@ -450,6 +450,27 @@ fn a_target_type_folder_with_other_case_is_used() {
     assert_eq!(entries(&root), ["pathfinder"]);
 }
 
+/// The note files cannot be read now: the move waits, and the note shows
+/// the new type at once, as it does while the storage folder is not
+/// available.
+#[test]
+fn a_note_whose_files_cannot_be_read_shows_the_new_type_while_the_move_waits() {
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("s", &root, "Standup");
+    let record = home.join(session_core::note_record::NOTE_RECORD_FILE);
+    let good = fs::read(&record).unwrap();
+    fs::write(&record, "{ not json").unwrap();
+
+    assert_eq!(b.change("s", Some("One on One")), TypeChange::Later);
+    assert!(b.owes("s"));
+    assert_eq!(shown_type(&b.record("s")).0.as_deref(), Some("One on One"));
+
+    fs::write(&record, good).unwrap();
+    assert_eq!(b.run(now()), ["s"]);
+    assert!(root.join("One on One").join(name_of(&home)).exists());
+}
+
 #[test]
 fn an_unavailable_storage_folder_pauses_the_move_and_keeps_the_row() {
     let (_dir, root) = storage();

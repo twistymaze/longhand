@@ -245,6 +245,11 @@ fn settle(
         return Ok(TypeChange::Unchanged);
     }
     let Some(files) = read_files(&home) else {
+        // The files cannot be read now: the move waits. The app shows the
+        // new type, and a later pass writes it into the files.
+        if claim {
+            store.set_pending_type(session_id, Some(&pending))?;
+        }
         return Ok(TypeChange::Later);
     };
     if !claim {
@@ -335,6 +340,8 @@ fn settle(
             log::warn!("could not move the folder of {session_id}: {e}");
             if let Some(files) = read_files(&home) {
                 write_pending(store, session_id, &home, files, &pending, &mut owed)?;
+            } else if claim {
+                store.set_pending_type(session_id, Some(&pending))?;
             }
             Ok(TypeChange::Kept(e.to_string()))
         }
@@ -767,7 +774,16 @@ pub fn apply_recorded(
     let mut pass = EditPass::default();
     for id in notes {
         let mut guard = crate::move_notes::lock_unheld(store, ctx.claims, id);
-        if !guard.session(id)?.is_some_and(|r| shows_old(&r)) {
+        // A note whose files could not be read shows the new type already,
+        // but its move from the old type is only in the row: the edit
+        // tries it again.
+        let unwritten = guard
+            .type_move(id)?
+            .is_some_and(|w| !w.field_written && same_optional_type(&w.from, &old));
+        if !guard
+            .session(id)?
+            .is_some_and(|r| shows_old(&r) || (unwritten && r.state != SessionState::Discarded))
+        {
             continue;
         }
         match change_type_locked(&mut guard, id, to, true, ctx) {
