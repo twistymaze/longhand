@@ -832,10 +832,13 @@ impl ProcessingManager {
                 // folder in the storage folder: the write starts now. The
                 // job of a note that has one gets more work, which does no
                 // harm.
-                if let RunnerEvent::AwaitingDestination { session_id, .. } = &event
+                if let RunnerEvent::AwaitingDestination {
+                    session_id,
+                    problem,
+                } = &event
                     && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
                 {
-                    processing.start_unfinished_early_write(session_id);
+                    processing.start_unfinished_early_write(session_id, problem);
                 }
                 match Sent::from(event) {
                     Sent::Processing(update) => {
@@ -1409,17 +1412,28 @@ impl ProcessingManager {
         &self.store
     }
 
-    /// Start the job of the early write of `id` when that write is not
-    /// done, for example after the first Save gave the note a new early
-    /// write in the storage folder.
-    fn start_unfinished_early_write(&self, id: &str) {
+    /// The first Save of `id` waits for its folder because of `problem`.
+    /// When the early write of the note is not done, for example after the
+    /// first Save gave the note a new early write in the storage folder, the
+    /// job of that write starts. When the save waits for the early write and
+    /// the write is done already, its job ended before the runner recorded
+    /// the wait. The job then runs again: it writes nothing, and its end
+    /// puts the waiting notes back in line ([`ProcessingManager::retry_awaiting`]).
+    /// The runner records the wait before it sends this event, so that retry
+    /// finds the note. The retry runs on the job thread, not in the run of
+    /// the note that sends this event, so the run ends first.
+    fn start_unfinished_early_write(&self, id: &str, problem: &str) {
         let unfinished = {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             pipeline::early_home::unfinished(&store, id)
         };
+        // Only for these causes: another cause can stay, and a retry for it
+        // would repeat at once.
+        let waits_for_write = problem == pipeline::save::WAITS_FOR_EARLY_WRITE
+            || problem == pipeline::save::WAITS_FOR_NEW_EARLY_WRITE;
         match unfinished {
-            Ok(true) => self.early_homes.start(id),
-            Ok(false) => {}
+            Ok(unfinished) if unfinished || waits_for_write => self.early_homes.start(id),
+            Ok(_) => {}
             Err(e) => log::error!("could not read the early write state of {id}: {e}"),
         }
     }

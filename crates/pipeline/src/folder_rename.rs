@@ -131,7 +131,7 @@ fn retitle_locked(
 /// title, not the old one. A folder that is not there, or a `session.md`
 /// that cannot be read or written, is logged: the reconcile after the
 /// work writes the document.
-fn write_title(store: &Store, session_id: &str) {
+pub(crate) fn write_title(store: &Store, session_id: &str) {
     let Ok(Some(record)) = store.session(session_id) else {
         return;
     };

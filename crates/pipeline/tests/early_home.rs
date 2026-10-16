@@ -1797,3 +1797,55 @@ fn a_title_edit_while_the_note_is_rehomed_writes_nothing_into_the_old_home_folde
     assert_eq!(doc.title.as_deref(), Some("Budget"));
     assert_eq!(doc.tags, vec!["Person::Ann".to_string()]);
 }
+
+#[test]
+fn a_title_edit_after_the_new_write_began_is_in_the_new_home_folder() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_outside(&store, new.path()).unwrap();
+    // The staging folder in the new storage folder has the files, and then
+    // the user changes the title.
+    step(&store, "s", new.path());
+    pipeline::folder_rename::rename_session(&store, "s", "Budget", &|_| false, &RealFs).unwrap();
+
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(!first.exists(), "{}", first.display());
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Budget"));
+}
+
+#[test]
+fn a_filled_write_in_an_old_storage_folder_that_is_not_available_is_written_again() {
+    let parent = tempfile::tempdir().unwrap();
+    let old = parent.path().join("Old");
+    let away = parent.path().join("Away");
+    std::fs::create_dir(&old).unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let store = store();
+    recording_note(&store, "s", "Agenda\n");
+    // The staging folder is complete in the old storage folder, then the
+    // storage folder changes and the volume of the old one goes away.
+    step(&store, "s", &old);
+    std::fs::rename(&old, &away).unwrap();
+
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(path.starts_with(new.path()), "{}", path.display());
+    assert_eq!(
+        std::fs::read_to_string(path.join("notes.md")).unwrap(),
+        "Agenda\n"
+    );
+    // The volume is back: a later run removes the staging folder there.
+    std::fs::rename(&away, &old).unwrap();
+    assert!(old.join(staging_name("s")).exists());
+    let (homes, done) = launch_jobs(&store, new.path());
+    homes.resume();
+    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    homes.wait("s");
+    assert!(!old.join(staging_name("s")).exists());
+    assert_eq!(old_home_key(&store, "s"), None);
+}

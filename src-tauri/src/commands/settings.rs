@@ -818,9 +818,11 @@ const NOTE_SAVING: &str =
 /// the change, a note that has had no first save gets a new home folder in
 /// the new storage folder.
 ///
-/// Known limit: a first Save that began and does not run now (it stopped,
-/// failed or waits for its folder) does not stop the change. When it
-/// continues, it saves into its home folder in `current`.
+/// A first Save that began and does not run now (it stopped, failed or
+/// waits for its folder) does not stop the change. When it continues and
+/// its publication has not begun, the note gets a new home folder in the
+/// new storage folder. Known limit: a publication that has begun finishes
+/// in its home folder in `current`.
 fn check_leave(
     store: &pipeline::SharedStore,
     current: &str,

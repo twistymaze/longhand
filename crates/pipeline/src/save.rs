@@ -183,6 +183,67 @@ pub fn record_summary_failure(
     )
 }
 
+/// The cause of a first Save that waits for the early write of its home
+/// folder in the storage folder.
+pub const WAITS_FOR_EARLY_WRITE: &str = "the note's folder is not in the storage folder yet; the note is saved there when the folder is written";
+
+/// The cause of a first Save that waits for a new early write in the
+/// storage folder, after a change of storage folder.
+pub const WAITS_FOR_NEW_EARLY_WRITE: &str = "the note's folder is written in the storage folder first; the note is saved there when the folder is written";
+
+/// The cause of a first Save whose home folder outside the storage folder
+/// cannot be read now.
+const OLD_HOME_UNREADABLE: &str = "the note's folder outside the storage folder cannot be read now; the note is saved when the folder can be read";
+
+/// The routing of a first Save into the home folder `home` when `home` is
+/// not in the storage folder `root` and no Move is open: the save never
+/// publishes there while the rule of a change of storage folder can apply
+/// ([`crate::early_home::rehome`]). A first Save that took its claim and
+/// stopped before its publication gives the claim back first. A
+/// publication that has begun finishes where it began. Known limit: it
+/// then saves into the old storage folder. Returns an error when the save
+/// waits. The caller holds the note guard.
+fn first_save_outside(
+    store: &SharedStore,
+    session_id: &str,
+    working: &Path,
+    home: &Path,
+    root: &Path,
+    recorded: Option<&SaveState>,
+) -> Result<(), StageError> {
+    if home.starts_with(root) || lock(store).move_journal()?.is_some() {
+        return Ok(());
+    }
+    match recorded {
+        None => {}
+        Some(SaveState::Working) if !publication_begun(store, session_id, working)? => {
+            release(store, session_id);
+        }
+        Some(_) => return Ok(()),
+    }
+    match crate::early_home::rehome_guarded(store, session_id, root)? {
+        crate::early_home::Rehome::Rehomed => {
+            Err(StageError::NoDestination(WAITS_FOR_NEW_EARLY_WRITE.into()))
+        }
+        crate::early_home::Rehome::Unreadable => {
+            Err(StageError::NoDestination(OLD_HOME_UNREADABLE.into()))
+        }
+        crate::early_home::Rehome::NotApplicable => Ok(()),
+    }
+}
+
+/// Whether the publication of a save into the home folder of
+/// `session_id` has begun: its record is in `working`, or the save began
+/// to replace the documents of the folder.
+fn publication_begun(
+    store: &SharedStore,
+    session_id: &str,
+    working: &Path,
+) -> Result<bool, StageError> {
+    Ok(home_changed(&lock(store), session_id)?
+        || working.join(session_save::publication::RECORD).exists())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
@@ -218,10 +279,7 @@ pub fn run(
     // early write state, not the home path, which its last step records
     // before that state.
     if crate::early_home::unfinished(&lock(store), session_id)? {
-        return Err(StageError::NoDestination(
-            "the note's folder is not in the storage folder yet; the note is saved there when the folder is written"
-                .into(),
-        ));
+        return Err(StageError::NoDestination(WAITS_FOR_EARLY_WRITE.into()));
     }
     let record = lock(store)
         .session(session_id)?
@@ -238,18 +296,8 @@ pub fn run(
     if let Some(home) = home
         && !first_save_in_progress
     {
-        // A first save never publishes outside the storage folder: when the
-        // rule of a change of storage folder applies to the note, its home
-        // folder is written in the storage folder first, and the save waits
-        // for that write (R5).
-        if recorded.is_none()
-            && let Some(root) = destination
-            && crate::early_home::rehome_guarded(store, session_id, root)?
-        {
-            return Err(StageError::NoDestination(
-                "the note's folder is written in the storage folder first; the note is saved there when the folder is written"
-                    .into(),
-            ));
+        if let Some(root) = destination {
+            first_save_outside(store, session_id, working, &home, root, recorded.as_ref())?;
         }
         return update_home(store, session_id, working, segments, &home, fs, control);
     }

@@ -119,19 +119,31 @@ fn write_tags(
     session_id: &str,
     edit: &dyn Fn(&[String]) -> Vec<String>,
 ) -> Result<Vec<String>, StageError> {
-    let has_home = {
-        let guard = lock(store);
-        let record = guard
-            .session(session_id)?
-            .ok_or_else(|| no_session(session_id))?;
-        home_to_write(&guard, session_id, record.home_path.as_deref())?.is_some()
-    };
     // A note with a home folder needs no guard: the early write is done,
     // and each later writer reads the tags of the file under the store
     // lock.
-    let _guard = (!has_home).then(|| early_home::guard(session_id));
-    let guard = crate::move_notes::lock_unheld(store, claims, session_id);
-    write_locked(&guard, session_id, edit)
+    let has_home = |store: &Store| -> Result<bool, StageError> {
+        let record = store
+            .session(session_id)?
+            .ok_or_else(|| no_session(session_id))?;
+        Ok(home_to_write(store, session_id, record.home_path.as_deref())?.is_some())
+    };
+    let home_first = has_home(&lock(store))?;
+    let mut note_guard = (!home_first).then(|| early_home::guard(session_id));
+    let mut guard = crate::move_notes::lock_unheld(store, claims, session_id);
+    // A rehome between the first check and the store lock makes the home
+    // folder one that gets no write: the edit then needs the note guard, so
+    // that it does not overlap the new early write. The guard comes before
+    // the store lock.
+    if note_guard.is_none() && !has_home(&guard)? {
+        drop(guard);
+        note_guard = Some(early_home::guard(session_id));
+        guard = crate::move_notes::lock_unheld(store, claims, session_id);
+    }
+    let edited = write_locked(&guard, session_id, edit);
+    drop(guard);
+    drop(note_guard);
+    edited
 }
 
 /// [`write_tags`] with the store lock held.
