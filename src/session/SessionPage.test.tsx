@@ -8,6 +8,7 @@ import type {
   SessionDetail,
   SessionDocument,
   SessionEntry,
+  StopOutcome,
 } from "../bindings";
 import { sessionTitle } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
@@ -800,6 +801,22 @@ describe("SessionPage", () => {
     await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
     await userEvent.setup().click(stop);
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true);
+  });
+
+  test("a Stop that cancels a microphone open and names no note shows no message", async () => {
+    const e = entry("rec", { state: "capturing" });
+    const cancelled: StopOutcome = { kind: "cancelled" };
+    const tauri = mockPage(e, {}, { stop_recording: () => cancelled });
+    renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
+    const stop = screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement;
+    await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
+    const messages = () => screen.queryAllByRole("status").map((m) => m.textContent);
+    const before = messages();
+    await userEvent.setup().click(stop);
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true));
+    await waitFor(() => expect(stop.disabled).toBe(false));
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(messages()).toEqual(before);
   });
 
   describe("Pause and Continue", () => {

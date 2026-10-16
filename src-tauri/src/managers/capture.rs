@@ -228,16 +228,9 @@ pub enum StopOutcome {
     /// notes have no text. The note is a note with no audio now; the check
     /// of empty notes removes it when the user leaves it (U6).
     EmptyNote { session_id: String },
-}
-
-impl StopOutcome {
-    pub fn session_id(&self) -> &str {
-        match self {
-            Self::Recorded { session_id }
-            | Self::NotesOnly { session_id }
-            | Self::EmptyNote { session_id } => session_id,
-        }
-    }
+    /// The Stop cancelled the microphone open of a new note. No note was
+    /// made, and no note stopped.
+    Cancelled,
 }
 
 /// Stop the note `id` in the store at `at`: queued for processing when it
@@ -839,6 +832,11 @@ impl OpenCancel {
         let mut state = self.state();
         state.stops = state.stops.saturating_sub(1);
     }
+
+    /// Whether a Stop fired the token and waits for `inner`.
+    fn stop_waits(&self) -> bool {
+        self.state().stops > 0
+    }
 }
 
 /// Whether an open failed because a Stop or a new start cancelled it
@@ -1034,6 +1032,10 @@ struct Inner {
     /// microphone is closed, and `clock` keeps the note's timeline. The
     /// stored state stays Capturing.
     paused: Option<String>,
+    /// What a Start or a Record left when the Stop that waits for `inner`
+    /// cancelled its open (KTD8 of the capture recovery plan). That Stop
+    /// returns it.
+    cancelled_open: Option<StopOutcome>,
 }
 
 /// What [`CaptureManager::status`] reads under the inner lock.
@@ -1206,6 +1208,53 @@ fn stop_target(
         }
     }
     Err(CaptureError::NotCapturing)
+}
+
+/// What a Stop does after it takes `inner`.
+#[derive(Debug, PartialEq, Eq)]
+enum StopStep {
+    /// Settle this note in the store.
+    Settle(String),
+    /// The Stop cancelled a microphone open, and the opener left this
+    /// outcome (KTD8 of the capture recovery plan).
+    Done(StopOutcome),
+}
+
+/// The step of a Stop, after `supersede` gave `reconnecting`. When the
+/// Stop cancelled an open, it returns what the opener left and does not
+/// look for a different note (R11 of the capture recovery plan). The
+/// caller holds `inner` and no store guard.
+fn stop_step(
+    store: &pipeline::SharedStore,
+    working_root: &Path,
+    inner: &mut Inner,
+    reconnecting: Option<String>,
+) -> Result<StopStep, CaptureError> {
+    if let Some(outcome) = inner.cancelled_open.take() {
+        return Ok(StopStep::Done(outcome));
+    }
+    stop_target(store, working_root, inner, reconnecting).map(StopStep::Settle)
+}
+
+/// What an opener whose open was cancelled leaves for the Stop. `stopped`
+/// is the Stop of the note that the opener ended: the Record note, or the
+/// note that a Start ended. `None` is a Start that ended no note. When that
+/// Stop failed, the opener leaves nothing, and the Stop looks for the note
+/// in the store.
+fn left_for_stop(stopped: Option<&Result<StopOutcome, CaptureError>>) -> Option<StopOutcome> {
+    match stopped {
+        None => Some(StopOutcome::Cancelled),
+        Some(stopped) => stopped.as_ref().ok().cloned(),
+    }
+}
+
+/// The opener holds `inner`, and its open was cancelled. When a Stop waits
+/// for `inner`, that Stop cancelled the open, and it returns `left` (KTD8).
+/// A new start that cancelled the open leaves nothing.
+fn leave_for_stop(inner: &mut Inner, opens: &OpenCancel, left: Option<StopOutcome>) {
+    if opens.stop_waits() {
+        inner.cancelled_open = left;
+    }
 }
 
 /// Whether a background reopen (the device watch, a restart, the move back
@@ -1916,7 +1965,8 @@ impl CaptureManager {
         let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
             Err(e) => {
-                self.abandon_start(app, inner, &id, ended);
+                let cancelled = open_cancelled(&e);
+                self.abandon_start(app, inner, &id, ended, cancelled);
                 return Err(e);
             }
         };
@@ -1954,7 +2004,7 @@ impl CaptureManager {
                 Err(e) => {
                     drop(store);
                     abandon(active);
-                    self.abandon_start(app, inner, &id, ended);
+                    self.abandon_start(app, inner, &id, ended, false);
                     return Err(e.into());
                 }
             };
@@ -2023,7 +2073,11 @@ impl CaptureManager {
         let mut inner = self.inner();
         self.opens.stop_has_lock();
         let reconnecting = inner.supersede();
-        let id = stop_target(&self.store, &self.working_root, &mut inner, reconnecting)?;
+        let id = match stop_step(&self.store, &self.working_root, &mut inner, reconnecting)? {
+            StopStep::Settle(id) => id,
+            // The opener already ended its note, and sent the change.
+            StopStep::Done(outcome) => return Ok(outcome),
+        };
         let outcome = match self.stop_in_store(app, &id) {
             Ok(outcome) => outcome,
             Err(e) => {
@@ -2106,22 +2160,32 @@ impl CaptureManager {
         self.after_stop(app, id, outcome)
     }
 
-    /// See [`abandon_start`]. `inner` is released before the change event.
+    /// See [`abandon_start`]. When a Stop or a new start `cancelled` the
+    /// open, the Start leaves its result for that Stop (KTD8). `inner` is
+    /// released before the change event.
     fn abandon_start(
         &self,
         app: &AppHandle,
-        inner: std::sync::MutexGuard<'_, Inner>,
+        mut inner: std::sync::MutexGuard<'_, Inner>,
         id: &str,
         ended: Option<String>,
+        cancelled: bool,
     ) {
-        let Some((other, outcome)) =
-            abandon_start(&self.store, &self.working_root, id, ended.as_deref())
-        else {
+        let stopped = abandon_start(&self.store, &self.working_root, id, ended.as_deref()).map(
+            |(other, outcome)| {
+                let stopped = self.after_stop(app, &other, outcome);
+                match &stopped {
+                    Ok(_) => log::info!("session {other} stopped by a start that failed"),
+                    Err(stop) => log::error!("stopping {other} failed: {stop}"),
+                }
+                stopped
+            },
+        );
+        if cancelled {
+            leave_for_stop(&mut inner, &self.opens, left_for_stop(stopped.as_ref()));
+        }
+        if stopped.is_none() {
             return;
-        };
-        match self.after_stop(app, &other, outcome) {
-            Ok(_) => log::info!("session {other} stopped by a start that failed"),
-            Err(stop) => log::error!("stopping {other} failed: {stop}"),
         }
         drop(inner);
         changed(app, None);
@@ -2446,12 +2510,17 @@ impl CaptureManager {
         reopen: Reopen,
         e: CaptureError,
     ) -> Result<(), CaptureError> {
-        let after = after_failed_reopen(reopen, open_cancelled(&e));
+        let cancelled = open_cancelled(&e);
+        let after = after_failed_reopen(reopen, cancelled);
         if after == AfterFailedReopen::EndRecording {
-            drop(inner);
-            if let Err(stop) = self.stop_in_store(app, id) {
+            let stopped = self.stop_in_store(app, id);
+            if let Err(stop) = &stopped {
                 log::error!("could not end the recording of {id}: {stop}");
             }
+            if cancelled {
+                leave_for_stop(&mut inner, &self.opens, left_for_stop(Some(&stopped)));
+            }
+            drop(inner);
             changed(app, None);
             return Err(e);
         }
@@ -5980,6 +6049,118 @@ mod tests {
                 session_id: "s".into()
             }
         );
+    }
+
+    /// The note `id` that capture started at `at(0)`, Interrupted (device).
+    fn interrupted_note(store: &mut Store, id: &str) {
+        recording_note(store, id, "");
+        store
+            .apply(
+                id,
+                &Event::CaptureLost {
+                    reason: InterruptReason::Device,
+                    at: at(5),
+                },
+            )
+            .unwrap();
+    }
+
+    // Covers C122.
+    #[test]
+    fn a_stop_that_cancels_a_record_returns_its_note_and_leaves_an_interrupted_note() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        interrupted_note(&mut store, "a");
+        let r = recognition();
+        store
+            .start_session_with_recognition(
+                "b",
+                at(10),
+                r.speaker_count,
+                &r.model,
+                &CaptureChoice::default(),
+                Some(&r.snapshot),
+                &["a".to_string()],
+            )
+            .unwrap();
+        let store = shared(store);
+        let opens = OpenCancel::default();
+        let mut inner = Inner::default();
+
+        // The Stop cancels the open of b and waits for `inner`. The opener
+        // ends the recording of b, as `reopen_failed` does.
+        opens.stop_begins();
+        let ended = settle_stop(&store, &root.path().join("b"), "b", at(20));
+        let b = ended.as_ref().unwrap().clone();
+        leave_for_stop(&mut inner, &opens, left_for_stop(Some(&ended)));
+        opens.stop_has_lock();
+
+        let step = stop_step(&store, root.path(), &mut inner, None).unwrap();
+
+        assert_eq!(step, StopStep::Done(b));
+        assert!(matches!(
+            state_of(&store, "a"),
+            SessionState::Interrupted { .. }
+        ));
+    }
+
+    #[test]
+    fn a_stop_that_cancels_a_start_with_no_earlier_note_names_no_note() {
+        let root = tempfile::tempdir().unwrap();
+        let store = shared(Store::open_in_memory().unwrap());
+        let opens = OpenCancel::default();
+        let mut inner = Inner::default();
+
+        opens.stop_begins();
+        leave_for_stop(&mut inner, &opens, left_for_stop(None));
+        opens.stop_has_lock();
+
+        let step = stop_step(&store, root.path(), &mut inner, None).unwrap();
+
+        assert_eq!(step, StopStep::Done(StopOutcome::Cancelled));
+    }
+
+    #[test]
+    fn a_stop_that_cancels_a_start_returns_the_note_that_the_start_ended() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "a", "");
+        store.put_segment("a", &one_segment(1)).unwrap();
+        let store = shared(store);
+        let opens = OpenCancel::default();
+        let mut inner = Inner::default();
+
+        opens.stop_begins();
+        let stopped = abandon_start(&store, root.path(), "new", Some("a")).map(|(_, r)| r);
+        leave_for_stop(&mut inner, &opens, left_for_stop(stopped.as_ref()));
+        opens.stop_has_lock();
+
+        let step = stop_step(&store, root.path(), &mut inner, None).unwrap();
+
+        assert_eq!(
+            step,
+            StopStep::Done(StopOutcome::Recorded {
+                session_id: "a".into()
+            })
+        );
+    }
+
+    #[test]
+    fn an_open_that_a_start_cancelled_leaves_nothing_for_a_later_stop() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        interrupted_note(&mut store, "a");
+        let store = shared(store);
+        let opens = OpenCancel::default();
+        let mut inner = Inner::default();
+
+        // A new start fires the token; no Stop waits.
+        opens.fire();
+        leave_for_stop(&mut inner, &opens, left_for_stop(None));
+
+        let step = stop_step(&store, root.path(), &mut inner, None).unwrap();
+
+        assert_eq!(step, StopStep::Settle("a".into()));
     }
 
     fn low_disk_error() -> CaptureError {

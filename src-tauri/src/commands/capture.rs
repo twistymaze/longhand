@@ -125,7 +125,7 @@ pub async fn stop_recording(
     let outcome = blocking(move || {
         manager
             .stop_session(&app)
-            .inspect(|outcome| log::info!("stopped {}: {outcome:?}", outcome.session_id()))
+            .inspect(|outcome| log::info!("stopped: {outcome:?}"))
             .map_err(|e| e.to_string())
     })
     .await?;

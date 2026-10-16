@@ -2656,7 +2656,12 @@ export type StopOutcome =
  * notes have no text. The note is a note with no audio now; the check
  * of empty notes removes it when the user leaves it (U6).
  */
-{ kind: "empty_note"; session_id: string }
+{ kind: "empty_note"; session_id: string } | 
+/**
+ * The Stop cancelled the microphone open of a new note. No note was
+ * made, and no note stopped.
+ */
+{ kind: "cancelled" }
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.
