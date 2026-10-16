@@ -3758,7 +3758,7 @@ async fn the_first_save_waits_for_the_early_folder_and_then_publishes_into_it() 
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_note_that_records_during_a_change_with_leave_them_saves_into_the_new_folder() {
-    // The early folder is in the old storage folder, and the
+    // The early home folder is in the old storage folder, and the
     // user changes the storage folder with Leave them while the note
     // records.
     use pipeline::early_home;
@@ -3783,7 +3783,7 @@ async fn a_note_that_records_during_a_change_with_leave_them_saves_into_the_new_
     // The change: the new storage folder, the new early write, then the
     // library forgets the notes of the old folder.
     *r.script.destination.lock().unwrap() = Some(new.clone());
-    early_home::rehome_unsaved(&r.store, &old).unwrap();
+    early_home::rehome_outside(&r.store, &new).unwrap();
     early_home::write(&r.store, "s", Some(&new), "run", &session_save::RealFs).unwrap();
     common::stop_session(&r.store, "s", 100);
     r.runner.retry_awaiting().unwrap();
@@ -3794,7 +3794,7 @@ async fn a_note_that_records_during_a_change_with_leave_them_saves_into_the_new_
     assert!(folder.join("audio/segment-01.opus").exists());
     assert!(
         !early.exists(),
-        "the early folder in the old storage folder is gone"
+        "the early home folder in the old storage folder is gone"
     );
     let forgotten = library::reconcile::forget_outside(
         &mut r.store.lock().unwrap(),
@@ -3804,6 +3804,64 @@ async fn a_note_that_records_during_a_change_with_leave_them_saves_into_the_new_
     .unwrap();
     assert!(forgotten.is_empty(), "{forgotten:?}");
     assert!(r.store.lock().unwrap().session("s").unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_first_save_whose_home_folder_is_outside_the_storage_folder_waits_for_a_new_early_write()
+{
+    // The storage folder changed with Leave them, and no rehome ran before
+    // the first Save.
+    use pipeline::early_home;
+    let r = rig().await;
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    early_home::begin(&r.store.lock().unwrap(), "s").unwrap();
+    add_notes(&r.store, "s");
+    let old = r.dest.clone();
+    let early = early_home::write(&r.store, "s", Some(&old), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap();
+    let names = |dir: &std::path::Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = names(&early);
+    let new_dir = tempfile::tempdir().unwrap();
+    let new = new_dir.path().to_path_buf();
+    *r.script.destination.lock().unwrap() = Some(new.clone());
+    common::stop_session(&r.store, "s", 100);
+
+    let outcome = r.runner.run_next().await.unwrap().1;
+
+    assert!(
+        matches!(&outcome, Outcome::AwaitingDestination { problem } if problem.contains("written in the storage folder first")),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        names(&early),
+        before,
+        "nothing is published into the old folder"
+    );
+    assert!(early_home::unfinished(&r.store.lock().unwrap(), "s").unwrap());
+
+    // The early write job runs, and the note saves into the new folder.
+    early_home::write(&r.store, "s", Some(&new), "run", &session_save::RealFs).unwrap();
+    r.runner.retry_awaiting().unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&r, "s");
+    assert!(folder.starts_with(&new), "{}", folder.display());
+    assert!(folder.join("audio/segment-01.opus").exists());
+    assert!(!early.exists(), "the old home folder is gone");
 }
 
 #[tokio::test(flavor = "multi_thread")]

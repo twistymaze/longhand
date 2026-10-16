@@ -238,6 +238,19 @@ pub fn run(
     if let Some(home) = home
         && !first_save_in_progress
     {
+        // A first save never publishes outside the storage folder: when the
+        // rule of a change of storage folder applies to the note, its home
+        // folder is written in the storage folder first, and the save waits
+        // for that write (R5).
+        if recorded.is_none()
+            && let Some(root) = destination
+            && crate::early_home::rehome_guarded(store, session_id, root)?
+        {
+            return Err(StageError::NoDestination(
+                "the note's folder is written in the storage folder first; the note is saved there when the folder is written"
+                    .into(),
+            ));
+        }
         return update_home(store, session_id, working, segments, &home, fs, control);
     }
     let destination =

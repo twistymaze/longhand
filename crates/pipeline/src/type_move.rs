@@ -112,9 +112,14 @@ pub fn change_type_locked(
     let claimed = ctx.claims.busy(session_id);
     crate::follow::follow_folder(store, session_id, claimed)?;
     let record = require(store, session_id)?;
-    let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
-        // A type change before the early write is done changes only the
-        // row (U7 of the note types and tags plan).
+    // A type change before the early write is done changes only the row
+    // (U7 of the note types and tags plan). This is also true while a new
+    // early write replaces an old home folder: that folder gets no write.
+    let home = match record.home_path.as_deref().map(PathBuf::from) {
+        Some(home) if !crate::early_home::rehoming(store, session_id, &home)? => Some(home),
+        _ => None,
+    };
+    let Some(home) = home else {
         store.set_note_type(session_id, to.as_deref())?;
         return Ok(TypeChange::NoFolder);
     };
@@ -228,6 +233,11 @@ fn settle(
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         return Ok(TypeChange::Later);
     };
+    // An old home folder gets no write: the move waits for the new early
+    // write.
+    if crate::early_home::rehoming(store, session_id, &home)? {
+        return Ok(TypeChange::Later);
+    }
     let Some(place) = scan::storage_place(&home) else {
         // The storage folder is not available: the move waits (KTD6). The
         // app shows the new type.
@@ -469,6 +479,9 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         return Ok(false);
     };
+    if crate::early_home::rehoming(store, session_id, &home)? {
+        return Ok(false);
+    }
     let Some(place) = scan::storage_place(&home) else {
         return Ok(false);
     };
@@ -518,6 +531,9 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         return Ok(false);
     };
+    if crate::early_home::rehoming(store, session_id, &home)? {
+        return Ok(false);
+    }
     let Some(place) = scan::storage_place(&home) else {
         return Ok(false);
     };

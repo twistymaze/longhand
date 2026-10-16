@@ -416,7 +416,7 @@ fn kept_by_row(store: &Store, id: &str) -> Result<Option<Kept>, StageError> {
 /// computer is an old marker, also when it is fresh. `removing` is true
 /// when an earlier removal of this note started to delete the files of
 /// this folder: a missing `notes.md` then does not keep the note. The
-/// removal of an early folder in an old storage folder uses the same check,
+/// removal of an early home folder in an old storage folder uses the same check,
 /// with the fingerprints from before the change of storage folder.
 pub(crate) fn check_folder(
     folder: &Path,

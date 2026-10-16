@@ -121,8 +121,8 @@ pub fn unfinished(store: &Store, id: &str) -> Result<bool, StageError> {
 /// The notes whose early write the launch must start again: an early
 /// write that is not done, and a note that opened with no recording and
 /// has neither a home folder nor an early write (a crash lost its
-/// [`begin`]), and a note whose early folder in an old storage folder is
-/// not removed yet ([`OLD_HOME`]). Sorted by id.
+/// [`begin`]), and a note whose early home folder in an old storage folder
+/// is not removed yet ([`OLD_HOMES`]). Sorted by id.
 pub fn waiting(store: &Store) -> Result<Vec<String>, StageError> {
     let mut ids = Vec::new();
     for record in store.sessions()? {
@@ -132,7 +132,7 @@ pub fn waiting(store: &Store) -> Result<Vec<String>, StageError> {
         let pending = match state(store, &record.id)? {
             Some(state) => !matches!(state, EarlyState::Done { .. }),
             None => notes_only_without_home(store, &record)?,
-        } || store.result_state(&record.id, OLD_HOME)?.is_some();
+        } || store.result_state(&record.id, OLD_HOMES)?.is_some();
         if pending {
             ids.push(record.id);
         }
@@ -518,7 +518,11 @@ pub fn write(
 }
 
 /// [`write`] with the note guard held. `earlier_runs` are the earlier runs
-/// on this computer: their in-use markers do not keep an old early folder.
+/// on this computer: their in-use markers do not keep an old home folder.
+/// When the write is done outside the storage folder `destination`, for
+/// example because the storage folder changed between two steps, the rule
+/// of a change of storage folder applies ([`rehome`]), and the write
+/// continues in `destination`.
 fn write_guarded(
     store: &SharedStore,
     id: &str,
@@ -543,6 +547,9 @@ fn write_guarded(
             begin(&guard, id)?;
         }
     }
+    // At most one rehome for each call: the write after it is in
+    // `destination`.
+    let mut rehomed = false;
     loop {
         if cancelled() {
             return Err(StageError::Cancelled);
@@ -551,6 +558,13 @@ fn write_guarded(
             return Ok(None);
         };
         if let EarlyState::Done { .. } = state {
+            if !rehomed
+                && let Some(root) = destination
+                && rehome_guarded(store, id, root)?
+            {
+                rehomed = true;
+                continue;
+            }
             break;
         }
         let next = step(store, id, &state, destination, run_id, fs)?;
@@ -559,9 +573,9 @@ fn write_guarded(
     if cancelled() {
         return Err(StageError::Cancelled);
     }
-    // The new home path is recorded: the early folder in an old storage
-    // folder can go now.
-    remove_old_home(store, id, run_id, earlier_runs)?;
+    // The new home path is recorded: the early home folders in old storage
+    // folders can go now.
+    remove_old_homes(store, id, run_id, earlier_runs)?;
     sync_guarded(store, id, run_id)?;
     Ok(lock(store)
         .session(id)?
@@ -804,18 +818,23 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
 
 // After a change of storage folder with Leave them, the library forgets the
 // notes of the old folder. A note that has no first save yet has its early
-// folder in the old folder, and its first Save publishes into that folder.
-// So the change gives such a note a new early write in the new storage
-// folder ([`rehome`]). After that write is done, the early folder in the old
-// folder goes, with the checks of an empty note: a folder that another
-// computer changed stays.
+// home folder in the old folder, and its first Save publishes into that
+// folder. So this rule applies: a note that has had no first save, whose
+// home folder is not in the storage folder that is set now, gets a new early
+// write in that storage folder ([`rehome`]). Each trigger can apply the rule
+// again: the change, the launch, each retry of the notes that wait for a
+// folder, each early write and the first Save. So a stop or a race at any
+// moment does not lose the rule. While a Move is open, the rule does not
+// apply: the Move handles the notes of the old folder. After the new write
+// is done, the early home folder in the old folder goes, with the checks of
+// an empty note: a folder that another computer changed stays.
 
-/// The `result_state` key that records the early folder of a note in the
-/// old storage folder after a change of storage folder with Leave them. A
-/// launch continues the removal of a folder that this key records.
-pub const OLD_HOME: &str = "old-early-home";
+/// The `result_state` key that records the early home folders of a note in
+/// old storage folders after a change of storage folder with Leave them. A
+/// launch continues the removal of each folder that this key records.
+pub const OLD_HOMES: &str = "old-early-homes";
 
-/// The early folder of a note in the old storage folder, and the
+/// The early home folder of a note in an old storage folder, and the
 /// fingerprints of the files that this computer last wrote into it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct OldHome {
@@ -830,50 +849,80 @@ struct OldHome {
     removing: bool,
 }
 
-/// Whether `path` is in the storage folder `old`. An empty `old` is no
+/// Whether `path` is in the storage folder `root`. An empty `root` is no
 /// storage folder.
-fn is_in(path: &Path, old: &Path) -> bool {
-    !old.as_os_str().is_empty() && path.starts_with(old)
+fn is_in(path: &Path, root: &Path) -> bool {
+    !root.as_os_str().is_empty() && path.starts_with(root)
+}
+
+/// Whether a Move is open: it runs or is paused.
+fn move_open(store: &Store) -> Result<bool, StageError> {
+    Ok(store.move_journal()?.is_some())
 }
 
 /// Whether a note that is not saved yet writes into the storage folder
-/// `old` now: its early write is between the staging folder and the rename
-/// ([`EarlyState::Filled`]), or its first Save has begun to publish into its
-/// home folder there. These steps take a few seconds. A change of storage
-/// folder with Leave them waits for them.
-pub fn saving_into(store: &Store, old: &Path) -> Result<bool, StageError> {
-    for record in store.sessions()? {
-        if matches!(record.state, SessionState::Saved | SessionState::Discarded) {
-            continue;
-        }
-        let home_in = record
-            .home_path
-            .as_deref()
-            .is_some_and(|home| is_in(Path::new(home), old));
-        if let Some(EarlyState::Filled { root, .. }) = state(store, &record.id)?
-            && (is_in(&root, old) || home_in)
-        {
-            return Ok(true);
-        }
-        if home_in && crate::save::begun(store, &record.id)? {
-            return Ok(true);
+/// `old` at this moment: its early write is between the staging folder and
+/// the rename ([`EarlyState::Filled`]) and the folder of its staging copy is
+/// available, or its first Save into its home folder there runs now
+/// (`running` is true for the note). These steps end in a few seconds. A
+/// change of storage folder with Leave them waits for them.
+///
+/// Known limit: a first Save that began and does not run now (it stopped,
+/// failed or waits for its folder) does not stop the change. When it
+/// continues, it saves into its home folder in the old storage folder.
+pub fn saving_into(
+    store: &SharedStore,
+    old: &Path,
+    running: &dyn Fn(&str) -> bool,
+) -> Result<bool, StageError> {
+    let mut filled = Vec::new();
+    {
+        let guard = lock(store);
+        for record in guard.sessions()? {
+            if matches!(record.state, SessionState::Saved | SessionState::Discarded) {
+                continue;
+            }
+            let home_in = record
+                .home_path
+                .as_deref()
+                .is_some_and(|home| is_in(Path::new(home), old));
+            if let Some(EarlyState::Filled { root, .. }) = state(&guard, &record.id)?
+                && (is_in(&root, old) || home_in)
+            {
+                filled.push(root);
+            }
+            if home_in && crate::save::begun(&guard, &record.id)? && running(&record.id) {
+                return Ok(true);
+            }
         }
     }
-    Ok(false)
+    // The check of a folder has no store lock: a synced folder can be slow.
+    // A folder that is not available stops the early write, so the write
+    // does not end in a few seconds.
+    Ok(filled.iter().any(|root| check_root(root).is_ok()))
 }
 
-/// Give the note `id` a new early write in the storage folder that is set
-/// now, when its home folder is its early folder in the old storage folder
-/// `old`: the row is not saved, its early write is done, its first Save has
-/// not begun, and the `longhand.json` of the folder has the "recording not
-/// saved" flag. A note that was saved before (a Resume or a Transcribe
-/// Again) has no such flag and stays in the old folder. Returns whether the
-/// note gets the new write. The caller then starts its job
-/// ([`EarlyHomes::start`]). Takes the note guard, so an early write step
-/// or a Save in progress completes first.
-pub fn rehome(store: &SharedStore, id: &str, old: &Path) -> Result<bool, StageError> {
+/// Give the note `id` a new early write in the storage folder `current`,
+/// when the rule of a change of storage folder applies to it: no Move is
+/// open, the row is not saved, its early write is done, its first Save has
+/// not begun, its home folder is not in `current`, and the `longhand.json`
+/// of that folder has the "recording not saved" flag. A note that was saved
+/// before (a Resume or a Transcribe Again) has no such flag and stays where
+/// it is. Returns whether the note gets the new write. The caller then
+/// starts its job ([`EarlyHomes::start`]). Takes the note guard, so an
+/// early write step or a Save in progress completes first.
+pub fn rehome(store: &SharedStore, id: &str, current: &Path) -> Result<bool, StageError> {
     let _guard = guard(id);
-    let Some(home) = rehome_candidate(&lock(store), id, old)? else {
+    rehome_guarded(store, id, current)
+}
+
+/// [`rehome`] with the note guard held.
+pub(crate) fn rehome_guarded(
+    store: &SharedStore,
+    id: &str,
+    current: &Path,
+) -> Result<bool, StageError> {
+    let Some(home) = rehome_candidate(&lock(store), id, current)? else {
         return Ok(false);
     };
     // The read has a time limit and no store lock, because a synced folder
@@ -884,7 +933,7 @@ pub fn rehome(store: &SharedStore, id: &str, old: &Path) -> Result<bool, StageEr
                 && files.record.result == Some(ResultFlag::NotSaved) => {}
         NoteRead::Unreadable(why) => {
             log::warn!(
-                "the folder of {id} in the old storage folder cannot be read, so the note stays there: {why}"
+                "the home folder of {id} outside the storage folder cannot be read, so it stays for now: {why}"
             );
             return Ok(false);
         }
@@ -892,29 +941,39 @@ pub fn rehome(store: &SharedStore, id: &str, old: &Path) -> Result<bool, StageEr
     }
     let guard = lock(store);
     // The row can change before the store lock: check it again.
-    if rehome_candidate(&guard, id, old)?.as_deref() != Some(home.as_path()) {
+    if rehome_candidate(&guard, id, current)?.as_deref() != Some(home.as_path()) {
         return Ok(false);
     }
-    if guard.result_state(id, OLD_HOME)?.is_some() {
-        log::warn!("{id} has an earlier folder in another old storage folder, which stays");
-    }
     let written = guard.written_fingerprints(id)?;
-    let old_home = OldHome {
+    // An entry for the same folder, from a stop before the Begun record,
+    // gets the fingerprints of now: this computer can have written into
+    // the folder since then.
+    let mut entries = old_homes(&guard, id)?;
+    entries.retain(|entry| entry.path != home);
+    entries.push(OldHome {
         path: home,
         notes: written.notes,
         session: written.session,
         removing: false,
-    };
-    // The old folder first: a stop between the two records leaves a Done
-    // state at the old folder, and the launch then only clears this record.
-    guard.set_result_state(id, OLD_HOME, &serde_json::to_value(&old_home)?)?;
+    });
+    // The old home folder first: a stop between the two records leaves a
+    // Done state at the old folder, and the next trigger applies the rule
+    // again.
+    set_old_homes(&guard, id, &entries)?;
     guard.set_result_state(id, STATE, &serde_json::to_value(EarlyState::Begun)?)?;
-    log::info!("the folder of {id} is written again in the new storage folder");
+    log::info!("the home folder of {id} is written again in the storage folder");
     Ok(true)
 }
 
-/// The home folder of `id` when the row allows [`rehome`] from `old`.
-fn rehome_candidate(store: &Store, id: &str, old: &Path) -> Result<Option<PathBuf>, StageError> {
+/// The home folder of `id` when the row allows [`rehome`] into `current`.
+fn rehome_candidate(
+    store: &Store,
+    id: &str,
+    current: &Path,
+) -> Result<Option<PathBuf>, StageError> {
+    if current.as_os_str().is_empty() || move_open(store)? {
+        return Ok(None);
+    }
     let Some(record) = store.session(id)? else {
         return Ok(None);
     };
@@ -924,7 +983,7 @@ fn rehome_candidate(store: &Store, id: &str, old: &Path) -> Result<Option<PathBu
     let Some(home) = record
         .home_path
         .map(PathBuf::from)
-        .filter(|home| is_in(home, old))
+        .filter(|home| !is_in(home, current))
     else {
         return Ok(None);
     };
@@ -935,105 +994,157 @@ fn rehome_candidate(store: &Store, id: &str, old: &Path) -> Result<Option<PathBu
     Ok(Some(home))
 }
 
-/// [`rehome`] for each note that is not saved yet. Returns the notes that
-/// get a new early write, sorted by id.
-pub fn rehome_unsaved(store: &SharedStore, old: &Path) -> Result<Vec<String>, StageError> {
-    let mut ids: Vec<String> = lock(store)
-        .sessions()?
-        .into_iter()
-        .filter(|r| !matches!(r.state, SessionState::Saved | SessionState::Discarded))
-        .filter(|r| {
-            r.home_path
-                .as_deref()
-                .is_some_and(|h| is_in(Path::new(h), old))
-        })
-        .map(|r| r.id)
-        .collect();
+/// [`rehome`] for each note that has had no first save and whose home
+/// folder is not in the storage folder `current`. An error on one note is
+/// logged, and the other notes continue. Returns the notes that get a new
+/// early write, sorted by id. The caller starts their jobs.
+pub fn rehome_outside(store: &SharedStore, current: &Path) -> Result<Vec<String>, StageError> {
+    let mut ids: Vec<String> = {
+        let guard = lock(store);
+        if current.as_os_str().is_empty() || move_open(&guard)? {
+            return Ok(Vec::new());
+        }
+        guard
+            .sessions()?
+            .into_iter()
+            .filter(|r| !matches!(r.state, SessionState::Saved | SessionState::Discarded))
+            .filter(|r| {
+                r.home_path
+                    .as_deref()
+                    .is_some_and(|h| !is_in(Path::new(h), current))
+            })
+            .map(|r| r.id)
+            .collect()
+    };
     ids.sort();
     let mut rehomed = Vec::new();
     for id in ids {
-        if rehome(store, &id, old)? {
-            rehomed.push(id);
+        match rehome(store, &id, current) {
+            Ok(true) => rehomed.push(id),
+            Ok(false) => {}
+            Err(e) => log::warn!(
+                "could not give {id} a home folder in the storage folder; a later try continues: {e}"
+            ),
         }
     }
     Ok(rehomed)
 }
 
-/// Whether `id` has an early folder in an old storage folder ([`OLD_HOME`])
-/// that its home path still is: the new early write is not done.
+/// Whether the home folder `home` of `id` is an old home folder ([`OLD_HOMES`])
+/// and the new early write is not done. Until it is done, no writer changes
+/// that folder: the new early write takes the notes, the title and the tags
+/// from the row, and the removal checks the files that this computer wrote
+/// before the change.
 pub(crate) fn rehoming(store: &Store, id: &str, home: &Path) -> Result<bool, StageError> {
-    Ok(old_home(store, id)?.is_some_and(|old| old.path == home))
+    if matches!(state(store, id)?, Some(EarlyState::Done { .. }) | None) {
+        return Ok(false);
+    }
+    Ok(old_homes(store, id)?.iter().any(|old| old.path == home))
 }
 
-/// The [`OLD_HOME`] record of `id`.
-fn old_home(store: &Store, id: &str) -> Result<Option<OldHome>, StageError> {
+/// The [`OLD_HOMES`] entries of `id`.
+fn old_homes(store: &Store, id: &str) -> Result<Vec<OldHome>, StageError> {
     Ok(store
-        .result_state(id, OLD_HOME)?
-        .map(serde_json::from_value::<OldHome>)
-        .transpose()?)
+        .result_state(id, OLD_HOMES)?
+        .map(serde_json::from_value::<Vec<OldHome>>)
+        .transpose()?
+        .unwrap_or_default())
 }
 
-/// After the new early write of `id` is done: remove its early folder in
-/// the old storage folder, with the checks of an empty note. The files must
-/// be the files that this computer wrote before the change, so a folder
-/// that another computer changed stays. While the old storage folder is not
-/// available, the record stays, and a later launch tries again. The caller
-/// holds the note guard.
-fn remove_old_home(
+/// Record `entries` as the [`OLD_HOMES`] entries of `id`. An empty list
+/// clears the key.
+fn set_old_homes(store: &Store, id: &str, entries: &[OldHome]) -> Result<(), StageError> {
+    if entries.is_empty() {
+        store.clear_result_state(id, OLD_HOMES)?;
+    } else {
+        store.set_result_state(id, OLD_HOMES, &serde_json::to_value(entries)?)?;
+    }
+    Ok(())
+}
+
+/// After the new early write of `id` is done: remove each of its early home
+/// folders in old storage folders, with the checks of an empty note. The
+/// files must be the files that this computer wrote before the change, so
+/// a folder that another computer changed stays. An entry stays for a later
+/// try when its old storage folder is not available, when a fresh in-use
+/// marker of another run is in the folder, or when the removal failed. An
+/// entry for the home folder of now also stays while the note has had no
+/// first save: the rule can apply to it later. The caller holds the note
+/// guard.
+fn remove_old_homes(
     store: &SharedStore,
     id: &str,
     run_id: &str,
     earlier_runs: &[String],
 ) -> Result<(), StageError> {
-    let (old, home) = {
+    let (mut entries, home, settled) = {
         let guard = lock(store);
-        let Some(old) = old_home(&guard, id)? else {
+        let entries = old_homes(&guard, id)?;
+        if entries.is_empty() {
             return Ok(());
-        };
-        let home = guard.session(id)?.and_then(|r| r.home_path);
-        (old, home.map(PathBuf::from))
+        }
+        let record = guard.session(id)?;
+        let settled = record
+            .as_ref()
+            .is_none_or(|r| matches!(r.state, SessionState::Saved | SessionState::Discarded))
+            || crate::save::begun(&guard, id)?;
+        let home = record.and_then(|r| r.home_path).map(PathBuf::from);
+        (entries, home, settled)
     };
-    // A home folder is never removed here.
-    if home.as_deref() != Some(old.path.as_path()) {
-        let written = session_core::jobs::WrittenFingerprints {
-            session: old.session.clone(),
-            notes: old.notes.clone(),
-        };
-        let now = Local::now().fixed_offset();
-        let checked = crate::empty_note::check_folder(
-            &old.path,
-            &written,
-            old.removing,
-            run_id,
-            earlier_runs,
-            now,
-        );
-        match checked {
-            Ok(files) => {
-                let removing = OldHome {
-                    removing: true,
-                    ..old.clone()
-                };
-                lock(store).set_result_state(id, OLD_HOME, &serde_json::to_value(&removing)?)?;
-                if let Err(e) = crate::empty_note::remove_folder(&old.path, &files) {
-                    log::warn!("the folder of {id} in the old storage folder stays for now: {e}");
-                    return Ok(());
+    let mut index = 0;
+    while index < entries.len() {
+        let old = entries[index].clone();
+        // A home folder is never removed here.
+        let keep = if home.as_deref() == Some(old.path.as_path()) {
+            !settled
+        } else {
+            let written = session_core::jobs::WrittenFingerprints {
+                session: old.session.clone(),
+                notes: old.notes.clone(),
+            };
+            let now = Local::now().fixed_offset();
+            let checked = crate::empty_note::check_folder(
+                &old.path,
+                &written,
+                old.removing,
+                run_id,
+                earlier_runs,
+                now,
+            );
+            match checked {
+                Ok(files) => {
+                    entries[index].removing = true;
+                    set_old_homes(&lock(store), id, &entries)?;
+                    match crate::empty_note::remove_folder(&old.path, &files) {
+                        Ok(()) => {
+                            log::info!("removed the old home folder of {id}");
+                            false
+                        }
+                        Err(e) => {
+                            log::warn!("the old home folder of {id} stays for now: {e}");
+                            true
+                        }
+                    }
                 }
-                log::info!("removed the folder of {id} in the old storage folder");
+                Err(
+                    kept @ (crate::empty_note::Kept::Unavailable | crate::empty_note::Kept::InUse),
+                ) => {
+                    log::info!("the old home folder of {id} stays for now: {kept:?}");
+                    true
+                }
+                Err(kept) => {
+                    log::info!("the old home folder of {id} stays: {kept:?}");
+                    false
+                }
             }
-            Err(crate::empty_note::Kept::Unavailable) => {
-                log::info!(
-                    "the old storage folder of {id} is not available, so its folder there stays for now"
-                );
-                return Ok(());
-            }
-            Err(kept) => {
-                log::info!("the folder of {id} in the old storage folder stays: {kept:?}");
-            }
+        };
+        if keep {
+            index += 1;
+        } else {
+            entries.remove(index);
         }
     }
-    lock(store).clear_result_state(id, OLD_HOME)?;
-    Ok(())
+    set_old_homes(&lock(store), id, &entries)
 }
 
 // ------------------------------------------------------------ the jobs
@@ -1053,7 +1164,7 @@ pub struct EarlyHomes {
     done: Box<dyn Fn(&str) + Send + Sync>,
     retry: Duration,
     /// The earlier runs on this computer. Their in-use markers do not keep
-    /// an early folder in an old storage folder.
+    /// an early home folder in an old storage folder.
     earlier_runs: Vec<String>,
     jobs: Mutex<HashMap<String, Arc<NoteJob>>>,
     stopped: AtomicBool,
@@ -1116,7 +1227,7 @@ impl EarlyHomes {
     }
 
     /// The same jobs with the earlier runs on this computer, whose in-use
-    /// markers do not keep an early folder in an old storage folder.
+    /// markers do not keep an early home folder in an old storage folder.
     pub fn with_earlier_runs(self: Arc<Self>, earlier_runs: Vec<String>) -> Arc<Self> {
         match Arc::try_unwrap(self) {
             Ok(mut homes) => {

@@ -1323,7 +1323,7 @@ fn a_filled_state_with_no_type_reads_as_the_storage_folder() {
 
 // ------------------------------------------- a change of storage folder
 
-/// A note that records, with its early folder in the storage folder `old`.
+/// A note that records, with its early home folder in the storage folder `old`.
 fn placed_recording_note(store: &SharedStore, id: &str, old: &Path) -> PathBuf {
     recording_note(store, id, "Agenda\n");
     write(store, id, Some(old)).unwrap().unwrap()
@@ -1333,7 +1333,7 @@ fn old_home_key(store: &SharedStore, id: &str) -> Option<serde_json::Value> {
     store
         .lock()
         .unwrap()
-        .result_state(id, early_home::OLD_HOME)
+        .result_state(id, early_home::OLD_HOMES)
         .unwrap()
 }
 
@@ -1343,7 +1343,7 @@ fn leave_them_puts_the_folder_of_a_note_that_is_not_saved_in_the_new_storage_fol
     let store = store();
     let first = placed_recording_note(&store, "s", old.path());
 
-    let rehomed = early_home::rehome_unsaved(&store, old.path()).unwrap();
+    let rehomed = early_home::rehome_outside(&store, new.path()).unwrap();
     assert_eq!(rehomed, vec!["s".to_string()]);
     // Until the new folder is written, the save waits for it, and the store
     // keeps the row.
@@ -1364,7 +1364,7 @@ fn leave_them_puts_the_folder_of_a_note_that_is_not_saved_in_the_new_storage_fol
         .unwrap();
     assert_eq!(doc.session_id, "s");
     assert_eq!(doc.result, Some(ResultFlag::NotSaved));
-    // The early folder in the old storage folder is gone, and the row no
+    // The early home folder in the old storage folder is gone, and the row no
     // longer records it.
     assert!(!first.exists(), "{}", first.display());
     assert!(folders(old.path()).is_empty());
@@ -1376,7 +1376,7 @@ fn the_old_folder_goes_also_after_a_notes_edit_while_the_new_write_waits() {
     let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let store = store();
     let first = placed_recording_note(&store, "s", old.path());
-    early_home::rehome_unsaved(&store, old.path()).unwrap();
+    early_home::rehome_outside(&store, new.path()).unwrap();
 
     {
         let mut s = store.lock().unwrap();
@@ -1397,7 +1397,7 @@ fn an_old_folder_that_another_computer_changed_stays() {
     let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let store = store();
     let first = placed_recording_note(&store, "s", old.path());
-    early_home::rehome_unsaved(&store, old.path()).unwrap();
+    early_home::rehome_outside(&store, new.path()).unwrap();
     std::fs::write(first.join("notes.md"), "from another computer\n").unwrap();
 
     let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
@@ -1412,7 +1412,7 @@ fn an_old_folder_that_another_computer_changed_stays() {
 
 #[test]
 fn a_note_that_was_saved_before_is_not_rehomed() {
-    let old = tempfile::tempdir().unwrap();
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let store = store();
     let first = placed_recording_note(&store, "s", old.path());
     // A Resume or a Transcribe Again of a saved note: its folder has a
@@ -1423,7 +1423,7 @@ fn a_note_that_was_saved_before_is_not_rehomed() {
     doc.result = None;
     session_save::note_files::write_doc(&first, &doc).unwrap();
 
-    let rehomed = early_home::rehome_unsaved(&store, old.path()).unwrap();
+    let rehomed = early_home::rehome_outside(&store, new.path()).unwrap();
 
     assert!(rehomed.is_empty());
     assert_eq!(home(&store, "s"), Some(first.clone()));
@@ -1435,11 +1435,12 @@ fn a_note_that_was_saved_before_is_not_rehomed() {
 }
 
 #[test]
-fn a_note_whose_folder_is_written_or_whose_save_began_makes_the_change_wait() {
+fn a_note_whose_folder_is_written_or_whose_save_runs_makes_the_change_wait() {
     let old = tempfile::tempdir().unwrap();
     let store = store();
-    let saving =
-        |store: &SharedStore| early_home::saving_into(&store.lock().unwrap(), old.path()).unwrap();
+    let saving = |store: &SharedStore| {
+        early_home::saving_into(store, old.path(), &|id| id == "filled").unwrap()
+    };
     // The early write is between its staging folder and its rename.
     recording_note(&store, "filled", "");
     step(&store, "filled", old.path());
@@ -1450,7 +1451,8 @@ fn a_note_whose_folder_is_written_or_whose_save_began_makes_the_change_wait() {
         "a done early write does not stop the change"
     );
 
-    // The first save began to publish into the early folder.
+    // The first save began to publish into the early home folder, and it
+    // runs now.
     store
         .lock()
         .unwrap()
@@ -1462,9 +1464,25 @@ fn a_note_whose_folder_is_written_or_whose_save_began_makes_the_change_wait() {
         )
         .unwrap();
     assert!(saving(&store));
+    // A begun first Save that does not run now does not stop the change.
+    assert!(!early_home::saving_into(&store, old.path(), &|_| false).unwrap());
     // A note in another storage folder does not stop the change.
     let other = tempfile::tempdir().unwrap();
-    assert!(!early_home::saving_into(&store.lock().unwrap(), other.path()).unwrap());
+    assert!(!early_home::saving_into(&store, other.path(), &|_| true).unwrap());
+}
+
+#[test]
+fn a_filled_early_write_whose_folder_is_not_available_does_not_make_the_change_wait() {
+    let parent = tempfile::tempdir().unwrap();
+    let old = parent.path().join("Old");
+    std::fs::create_dir(&old).unwrap();
+    let store = store();
+    recording_note(&store, "s", "");
+    step(&store, "s", &old);
+    assert!(early_home::saving_into(&store, &old, &|_| false).unwrap());
+    // The volume of the storage folder goes away.
+    std::fs::rename(&old, parent.path().join("Away")).unwrap();
+    assert!(!early_home::saving_into(&store, &old, &|_| false).unwrap());
 }
 
 #[test]
@@ -1472,7 +1490,7 @@ fn the_launch_finishes_the_removal_of_the_old_folder_after_a_stop() {
     let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     let store = store();
     let first = placed_recording_note(&store, "s", old.path());
-    early_home::rehome_unsaved(&store, old.path()).unwrap();
+    early_home::rehome_outside(&store, new.path()).unwrap();
     // The app stops after the new folder is recorded and before the old one
     // goes.
     step(&store, "s", new.path());
@@ -1500,4 +1518,282 @@ fn the_launch_finishes_the_removal_of_the_old_folder_after_a_stop() {
     assert!(!first.exists(), "{}", first.display());
     assert_eq!(old_home_key(&store, "s"), None);
     assert_eq!(folders(new.path()).len(), 1);
+}
+
+/// Record `state` as the early write state of `id`, as a stop between two
+/// records leaves it.
+fn set_early(store: &SharedStore, id: &str, state: &EarlyState) {
+    store
+        .lock()
+        .unwrap()
+        .set_result_state(id, early_home::STATE, &serde_json::to_value(state).unwrap())
+        .unwrap();
+}
+
+/// The jobs of a launch whose storage folder is `dest`. Returns the jobs
+/// and the receiver of each run that succeeded.
+fn launch_jobs(
+    store: &SharedStore,
+    dest: &Path,
+) -> (Arc<EarlyHomes>, std::sync::mpsc::Receiver<String>) {
+    let target = dest.to_path_buf();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let homes = EarlyHomes::new(
+        Arc::clone(store),
+        RUN,
+        Box::new(move || Some(target.clone())),
+        Box::new(move |id| done_tx.send(id.to_string()).unwrap()),
+    );
+    (homes, done_rx)
+}
+
+#[test]
+fn a_stop_between_the_two_records_of_the_rehome_puts_the_note_in_the_new_folder_at_launch() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_outside(&store, new.path()).unwrap();
+    // The app stopped after the record of the old home folder and before
+    // the Begun record.
+    set_early(
+        &store,
+        "s",
+        &EarlyState::Done {
+            path: first.clone(),
+        },
+    );
+
+    // The launch applies the rule again, before the jobs continue.
+    assert_eq!(
+        early_home::rehome_outside(&store, new.path()).unwrap(),
+        vec!["s".to_string()]
+    );
+    // The folder has one entry.
+    assert_eq!(
+        old_home_key(&store, "s").unwrap().as_array().map(Vec::len),
+        Some(1)
+    );
+    let (homes, done) = launch_jobs(&store, new.path());
+    homes.resume();
+    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    homes.wait("s");
+
+    let path = home(&store, "s").unwrap();
+    assert!(path.starts_with(new.path()), "{}", path.display());
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn a_stop_after_the_settings_change_and_before_any_rehome_is_completed_at_launch() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    // The settings hold the new storage folder, and the app stopped before
+    // the rehome: the store has no record of the change.
+    assert_eq!(old_home_key(&store, "s"), None);
+    assert!(
+        early_home::waiting(&store.lock().unwrap())
+            .unwrap()
+            .is_empty()
+    );
+
+    let rehomed = early_home::rehome_outside(&store, new.path()).unwrap();
+    assert_eq!(rehomed, vec!["s".to_string()]);
+    let (homes, done) = launch_jobs(&store, new.path());
+    homes.resume();
+    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    homes.wait("s");
+
+    let path = home(&store, "s").unwrap();
+    assert!(path.starts_with(new.path()), "{}", path.display());
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+    // The rule does not apply again to a note in the storage folder.
+    assert!(
+        early_home::rehome_outside(&store, new.path())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_folder_that_cannot_be_read_at_the_change_is_rehomed_at_a_later_try() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    // The `longhand.json` of the folder cannot be read, as a file that does
+    // not download yet.
+    let record = first.join("longhand.json");
+    let text = std::fs::read(&record).unwrap();
+    std::fs::remove_file(&record).unwrap();
+    std::fs::create_dir(&record).unwrap();
+
+    assert!(!early_home::rehome(&store, "s", new.path()).unwrap());
+    assert!(
+        early_home::rehome_outside(&store, new.path())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(home(&store, "s"), Some(first.clone()));
+
+    // The file is back: the next try (a retry of the notes that wait for
+    // a folder) gives the note its new early write.
+    std::fs::remove_dir(&record).unwrap();
+    std::fs::write(&record, text).unwrap();
+    assert_eq!(
+        early_home::rehome_outside(&store, new.path()).unwrap(),
+        vec!["s".to_string()]
+    );
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+    assert!(path.starts_with(new.path()), "{}", path.display());
+    assert!(!first.exists(), "{}", first.display());
+}
+
+#[test]
+fn the_rule_does_not_apply_while_a_move_is_open() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    pipeline::move_notes::open(&store, old.path(), new.path()).unwrap();
+
+    assert!(
+        early_home::rehome_outside(&store, new.path())
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(write(&store, "s", Some(new.path())).unwrap(), Some(first));
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn an_early_write_that_crosses_the_change_ends_in_the_new_storage_folder() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    recording_note(&store, "s", "Agenda\n");
+    // The staging folder is complete in the old storage folder, and then
+    // the storage folder changes.
+    step(&store, "s", old.path());
+
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(path.starts_with(new.path()), "{}", path.display());
+    assert!(folders(old.path()).is_empty(), "{:?}", folders(old.path()));
+    assert_eq!(
+        std::fs::read_to_string(path.join("notes.md")).unwrap(),
+        "Agenda\n"
+    );
+}
+
+#[test]
+fn a_second_change_keeps_the_old_home_folders_of_both_changes() {
+    let (a, b, c) = (
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    );
+    let store = store();
+    let first = placed_recording_note(&store, "s", a.path());
+    early_home::rehome_outside(&store, b.path()).unwrap();
+    // A fresh in-use marker of another computer keeps the folder in A for
+    // now.
+    pipeline::in_use::write_marker(
+        &first,
+        "other-computer",
+        chrono::Local::now().fixed_offset(),
+    )
+    .unwrap();
+    let second = write(&store, "s", Some(b.path())).unwrap().unwrap();
+    assert!(first.exists());
+    early_home::rehome_outside(&store, c.path()).unwrap();
+    // The other computer is done with the folder.
+    std::fs::remove_file(first.join(marker_name("other-computer"))).unwrap();
+
+    let third = write(&store, "s", Some(c.path())).unwrap().unwrap();
+
+    assert!(third.starts_with(c.path()), "{}", third.display());
+    assert!(!second.exists(), "{}", second.display());
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn a_fresh_marker_of_another_run_keeps_the_old_home_folder_for_a_later_run() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_outside(&store, new.path()).unwrap();
+    pipeline::in_use::write_marker(
+        &first,
+        "other-computer",
+        chrono::Local::now().fixed_offset(),
+    )
+    .unwrap();
+
+    write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(first.exists());
+    assert!(old_home_key(&store, "s").is_some());
+    // The marker goes: a later run removes the folder.
+    std::fs::remove_file(first.join(marker_name("other-computer"))).unwrap();
+    let (homes, done) = launch_jobs(&store, new.path());
+    homes.resume();
+    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    homes.wait("s");
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn an_old_storage_folder_that_is_not_available_keeps_the_entry_and_a_later_run_removes_it() {
+    let parent = tempfile::tempdir().unwrap();
+    let old = parent.path().join("Old");
+    let away = parent.path().join("Away");
+    std::fs::create_dir(&old).unwrap();
+    let new = tempfile::tempdir().unwrap();
+    let store = store();
+    let first = placed_recording_note(&store, "s", &old);
+    early_home::rehome_outside(&store, new.path()).unwrap();
+    // The volume of the old storage folder goes away.
+    std::fs::rename(&old, &away).unwrap();
+
+    write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(old_home_key(&store, "s").is_some());
+    std::fs::rename(&away, &old).unwrap();
+    assert!(first.exists());
+    let (homes, done) = launch_jobs(&store, new.path());
+    homes.resume();
+    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    homes.wait("s");
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn a_title_edit_while_the_note_is_rehomed_writes_nothing_into_the_old_home_folder() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_outside(&store, new.path()).unwrap();
+    let before = files_written(&first);
+
+    pipeline::folder_rename::rename_session(&store, "s", "Budget", &|_| false, &RealFs).unwrap();
+    pipeline::tags::set_note_tags(
+        &store,
+        &session_core::jobs::Claims::default(),
+        "s",
+        &["Person::Ann".to_string()],
+        &[],
+    )
+    .unwrap();
+
+    assert_eq!(files_written(&first), before);
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+    assert!(!first.exists(), "{}", first.display());
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
+    assert_eq!(doc.title.as_deref(), Some("Budget"));
+    assert_eq!(doc.tags, vec!["Person::Ann".to_string()]);
 }

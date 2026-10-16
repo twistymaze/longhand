@@ -138,6 +138,14 @@ fn write_title(store: &Store, session_id: &str) {
     let Some(home) = record.home_path.as_deref().map(Path::new) else {
         return;
     };
+    // An old home folder gets no write: the new early write takes the
+    // title from the row ([`crate::early_home::rehoming`]).
+    if !matches!(
+        crate::early_home::rehoming(store, session_id, home),
+        Ok(false)
+    ) {
+        return;
+    }
     write_title_in(&record, home);
 }
 
@@ -250,6 +258,11 @@ fn reconcile_once(
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         return Ok(FolderRename::Later);
     };
+    // An old home folder is not renamed: the new early write in the
+    // storage folder takes the name.
+    if crate::early_home::rehoming(store, session_id, &home)? {
+        return Ok(FolderRename::Later);
+    }
     let segments = store.segments(session_id)?;
     // The note's start time names the folder, also for a note with no
     // segment (KTD9).

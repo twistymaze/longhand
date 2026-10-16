@@ -767,6 +767,13 @@ impl Runner {
             || !held(&self.current).is_empty()
     }
 
+    /// True while the runner works on `session_id` now: a stage of the note
+    /// runs, or waits for its turn in the summary queue. A note that waits
+    /// in the durable queue does not count.
+    pub fn runs(&self, session_id: &str) -> bool {
+        held(&self.current).contains_key(session_id)
+    }
+
     /// True while `session_id` waits for its turn in the summary queue:
     /// after its audio stages, or for a regeneration of its summary
     /// (KTD10). A title job that waits does not count.
