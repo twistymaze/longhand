@@ -156,4 +156,22 @@ describe("summary markdown", () => {
   test("a lone asterisk is not emphasis", () => {
     expect(parseInline("3 * 4 = 12")).toEqual([{ kind: "text", text: "3 * 4 = 12" }]);
   });
+
+  test("underscores inside words stay text", () => {
+    for (const text of ["Check user_id and order_id.", "a__b and c__d", "file_name_v2.txt"]) {
+      expect(parseInline(text)).toEqual([{ kind: "text", text }]);
+    }
+  });
+
+  test("underscores around words are still emphasis", () => {
+    expect(parseInline("say _hi_ now")).toEqual([
+      { kind: "text", text: "say " },
+      { kind: "em", text: "hi" },
+      { kind: "text", text: " now" },
+    ]);
+    expect(parseInline("__bold__ end")).toEqual([
+      { kind: "strong", text: "bold" },
+      { kind: "text", text: " end" },
+    ]);
+  });
 });

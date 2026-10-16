@@ -116,13 +116,27 @@ export function parseMarkdown(text: string): Block[] {
 
 export function parseInline(text: string): Inline[] {
   const out: Inline[] = [];
-  const pattern = /(\*\*|__)(.+?)\1|(\*|_)(?!\s)(.+?)(?<!\s)\3|`([^`]+)`/g;
+  // Groups: 1 and 2 strong, 3 and 4 em, 5 code. An `_` or `__` inside a
+  // word is text: it opens only after a character that is not a letter or
+  // number, and closes only before one.
+  const pattern = new RegExp(
+    [
+      String.raw`\*\*(.+?)\*\*`,
+      String.raw`(?<![\p{L}\p{N}])__(.+?)__(?![\p{L}\p{N}])`,
+      String.raw`\*(?!\s)(.+?)(?<!\s)\*`,
+      String.raw`(?<![\p{L}\p{N}_])_(?!\s)(.+?)(?<!\s)_(?![\p{L}\p{N}_])`,
+      "`([^`]+)`",
+    ].join("|"),
+    "gu",
+  );
   let last = 0;
   for (const m of text.matchAll(pattern)) {
     const at = m.index ?? 0;
     if (at > last) out.push({ kind: "text", text: text.slice(last, at) });
-    if (m[2] !== undefined) out.push({ kind: "strong", text: m[2] });
-    else if (m[4] !== undefined) out.push({ kind: "em", text: m[4] });
+    const strong = m[1] ?? m[2];
+    const em = m[3] ?? m[4];
+    if (strong !== undefined) out.push({ kind: "strong", text: strong });
+    else if (em !== undefined) out.push({ kind: "em", text: em });
     else out.push({ kind: "code", text: m[5] });
     last = at + m[0].length;
   }
