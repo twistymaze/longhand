@@ -199,6 +199,15 @@ The key parts of the pattern:
 - Restore the folder, call Retry, and assert that every note moves.
 - Run the test on one volume and on two volumes (`for cross in [false, true]`), because each case takes different steps.
 
+## The final check with a gone source (PR #25)
+
+The Placed step compared the source with the placed copy only when the source was there. When the source was gone, the Move homed its earlier copy: the edits after the copy were lost, and a note that another computer deleted came back. The step now treats a gone source as the other steps do: `check_old(old)?`, then it drops the note and removes its own copy.
+
+Two rules decide which folder the Move may remove:
+
+- **Only the move marker proves a copy is the Move's own.** `is_ours` also accepts a folder by the id in its `longhand.json`, so it also matches a finished note that another computer moved into the new folder. That folder can be the only copy of the note, and the Move homes it. The step uses `moving_copy` (the `.longhand-moving` marker holds the note id) for the choice.
+- **Remove the marker last.** `remove_copy` removes every entry but the marker, then the folder. A removal that stops part way keeps the marker, so the next step still knows the folder as the Move's copy. With `remove_dir_all` alone, the marker can go first, and the rest of the copy then reads as a finished note.
+
 ## Related Issues
 
 - [receiving-computer-renamed-synced-folder-back](receiving-computer-renamed-synced-folder-back.md): the same pattern. The state on disk alone cannot tell two causes apart, so an automatic step must get more evidence before it acts.
