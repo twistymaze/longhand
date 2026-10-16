@@ -539,3 +539,100 @@ fn one_session_that_cannot_be_recovered_does_not_stop_the_others_or_the_sweep() 
         "the old audio sweep runs"
     );
 }
+
+// ------------------------------------- unregistered audio (U2 of plan A)
+
+#[test]
+fn a_part_that_cannot_be_repaired_keeps_the_folder_and_a_later_launch_registers_it() {
+    // C3: the `.part` is the only audio of the recording.
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("s", common::at(0), None)
+        .unwrap();
+    let chunks = root.path().join("s").join(RECOVERY_DIR);
+    std::fs::create_dir_all(&chunks).unwrap();
+    let part = chunks.join("0-1800000000000-0-0.part");
+    std::fs::write(&part, b"not a wav file").unwrap();
+
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
+
+    interrupted_since(&recovered[0].state);
+    assert!(part.is_file(), "the folder with the .part stays");
+
+    // At the next launch the `.part` is readable: 30 s of audio, all of it
+    // in the open chunk.
+    let other = tempfile::tempdir().unwrap();
+    write_segment(other.path(), 0, 0, RATE, &tone(30.0), true);
+    std::fs::remove_file(&part).unwrap();
+    for entry in std::fs::read_dir(other.path().join(RECOVERY_DIR)).unwrap() {
+        let path = entry.unwrap().path();
+        std::fs::copy(&path, chunks.join(path.file_name().unwrap())).unwrap();
+    }
+
+    let report = recover_crashed(&store, root.path()).unwrap();
+
+    assert!(report.failed.is_empty());
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    assert_eq!(segments.len(), 1);
+    assert!(
+        (29_900..=30_000).contains(&segments[0].duration_ms),
+        "{}",
+        segments[0].duration_ms
+    );
+    let state = store.lock().unwrap().session("s").unwrap().unwrap().state;
+    interrupted_since(&state);
+}
+
+#[test]
+fn launch_recovery_registers_a_closed_chunk_of_an_interrupted_session_and_keeps_its_state() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    let dir = root.path().join("s");
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s", common::at(0), None).unwrap();
+        let first = write_segment(&dir, 0, 0, RATE, &tone(5.0), false);
+        s.put_segment("s", &first).unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::CaptureLost {
+                reason: InterruptReason::Crash,
+                at: first.wall_end,
+            },
+        )
+        .unwrap();
+    }
+    // A closed chunk whose row the store did not write.
+    write_segment(&dir, 1, 10_000, RATE, &tone(5.0), false);
+    let before = store.lock().unwrap().session("s").unwrap().unwrap().state;
+
+    let report = recover_crashed(&store, root.path()).unwrap();
+
+    assert!(report.failed.is_empty());
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let indexes: Vec<u32> = segments.iter().map(|s| s.index).collect();
+    assert_eq!(indexes, [0, 1]);
+    assert_eq!(segments[1].offset_ms, 10_000);
+    let after = store.lock().unwrap().session("s").unwrap().unwrap().state;
+    assert_eq!(after, before);
+}
+
+#[test]
+fn a_recording_with_no_chunk_and_no_part_leaves_a_note_with_no_audio() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("s", common::at(0), None)
+        .unwrap();
+    std::fs::create_dir_all(root.path().join("s").join(RECOVERY_DIR)).unwrap();
+
+    let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
+
+    assert_note_with_no_audio(&store, &recovered[0].state);
+    assert!(!root.path().join("s").exists());
+}

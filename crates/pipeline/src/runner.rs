@@ -1320,6 +1320,16 @@ impl Runner {
         // Once saving has begun, the working directory may be gone: only
         // the save itself is left to finish.
         let saving = save::begun(&lock(&self.env.store), id).unwrap_or(false);
+        // A failed store write can leave closed chunks with no segment row.
+        // They are registered first, so that assemble reads every segment
+        // (KTD3 of the capture recovery plan). When this fails, the save
+        // stage keeps the working folder.
+        if !saving {
+            let dir = self.env.working_root.join(id);
+            if let Err(e) = crate::recover::register_chunks(&self.env.store, id, &dir, None) {
+                log::error!("could not register the audio of {id}: {e}");
+            }
+        }
         let again = lock(&self.env.store)
             .transcribe_again_marks(id)
             .is_ok_and(|marks| marks.model.is_some());

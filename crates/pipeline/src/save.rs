@@ -199,6 +199,15 @@ pub fn run(
                 .into(),
         ));
     }
+    // The staged copy leaves `audio-recovery/` behind, and the save then
+    // deletes the working folder. Audio that has no segment row is not in
+    // the note, so the folder stays (KTD1 of the capture recovery plan).
+    if working.exists() && crate::recover::unregistered_audio(working, segments) {
+        return Err(StageError::Failed(
+            "some recorded audio is not part of the note yet, so the note stays in the working location"
+                .into(),
+        ));
+    }
     // The note guard keeps the flag updates of the early write out of the
     // save: an update either completes before the claim, or sees the claim
     // and writes nothing (KTD4).

@@ -45,8 +45,10 @@ pub struct Recovery {
 }
 
 /// Recover every session left Capturing. Run at launch, before any writer
-/// starts, while nothing in this process is recording. Then delete the old
-/// audio copies that ended sessions left ([`crate::old_audio::sweep`]).
+/// starts, while nothing in this process is recording. Then register the
+/// chunks that an Interrupted session keeps with no segment row, and delete
+/// the old audio copies that ended sessions left
+/// ([`crate::old_audio::sweep`]).
 ///
 /// An error in one session does not stop the others or the sweep. That
 /// session keeps its files and becomes Interrupted(crash) when the store
@@ -54,6 +56,7 @@ pub struct Recovery {
 /// that reads the list of sessions is returned.
 pub fn recover_crashed(store: &SharedStore, working_root: &Path) -> Result<Recovery, StageError> {
     let capturing = lock(store).sessions_in("capturing")?;
+    let interrupted = lock(store).sessions_in("interrupted")?;
     let mut report = Recovery::default();
     for record in capturing {
         let id = record.id;
@@ -70,11 +73,6 @@ pub fn recover_crashed(store: &SharedStore, working_root: &Path) -> Result<Recov
                 continue;
             }
         };
-        // A discarded recording and a note with no audio keep no working
-        // folder.
-        if matches!(state, SessionState::Discarded | SessionState::Saved) {
-            let _ = std::fs::remove_dir_all(&session_dir);
-        }
         log::info!(
             "session {id} was recording when Longhand stopped; now {}",
             state.name()
@@ -83,6 +81,18 @@ pub fn recover_crashed(store: &SharedStore, working_root: &Path) -> Result<Recov
             session_id: id,
             state,
         });
+    }
+    // A failed store write or an earlier failed recovery can leave chunks
+    // with no segment row in an Interrupted session. Their rows are added,
+    // and the state does not change (KTD3 of the capture recovery plan).
+    for record in interrupted {
+        let session_dir = working_root.join(&record.id);
+        if let Err(e) = register_chunks(store, &record.id, &session_dir, None) {
+            log::error!(
+                "could not register the audio of interrupted session {}: {e}",
+                record.id
+            );
+        }
     }
     // A session that ended while Longhand was stopped keeps no copy of its
     // old audio (KTD8 of the audio removal plan).
@@ -101,17 +111,27 @@ fn recover_session(
     if crate::early_home::home_deleted(store, id)? {
         // Another computer deleted the note while this one recorded into
         // it: a person's Delete wins, and the recording goes (R23). No
-        // folder is made again.
+        // folder is made again. The check for unregistered audio does not
+        // apply: a person chose to delete it.
         log::warn!("the folder of {id} was deleted on another computer");
-        return Ok(lock(store).apply(
+        let state = lock(store).apply(
             id,
             &Event::UserStop {
                 at: created_at,
                 retained_audio: false,
             },
-        )?);
+        )?;
+        remove_working_folder(&state, session_dir);
+        return Ok(state);
     }
     recover_one(store, id, session_dir, created_at)
+}
+
+/// A discarded recording and a note with no audio keep no working folder.
+fn remove_working_folder(state: &SessionState, session_dir: &Path) {
+    if matches!(state, SessionState::Discarded | SessionState::Saved) {
+        let _ = std::fs::remove_dir_all(session_dir);
+    }
 }
 
 /// Make a session whose recovery failed Interrupted(crash), as of the end
@@ -140,8 +160,56 @@ fn recover_one(
     session_dir: &Path,
     created_at: DateTime<FixedOffset>,
 ) -> Result<SessionState, StageError> {
+    register_chunks(store, id, session_dir, None)?;
+    let mut guard = lock(store);
+    let segments = guard.segments(id)?;
+    // A `.part` that no repair could read has no row. The session keeps it,
+    // and a later launch tries it again (R6).
+    let unregistered = unregistered_audio(session_dir, &segments);
+    // The last segment is the one that was recording.
+    let ended = segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end);
+    if ended.is_none() && !unregistered {
+        // Nothing survived R35: the note is a note with no audio again, as
+        // after a Stop with no segment (R19). A note that existed before
+        // the recording or has notes text stays. The removal of empty notes
+        // owns an empty note (U6).
+        let state = guard.apply(id, &Event::RecordingDropped)?;
+        drop(guard);
+        remove_working_folder(&state, session_dir);
+        return Ok(state);
+    }
+    Ok(guard.apply(
+        id,
+        &Event::CaptureLost {
+            reason: InterruptReason::Crash,
+            at: ended.unwrap_or(created_at),
+        },
+    )?)
+}
+
+/// Register as segments the closed chunks in the session's
+/// `audio-recovery/` folder that have no segment row (KTD2 of the capture
+/// recovery plan). First close each `.part` that a writer left. A segment
+/// under a second is removed with its chunks (R35), except the segment
+/// `keep`. A rebuilt segment does not end in a pause.
+///
+/// Each step locks the store on its own, so the caller must hold no store
+/// guard. Call only while no writer runs on the folder. A `.part` that
+/// cannot be repaired stays in place: [`unregistered_audio`] finds it.
+pub fn register_chunks(
+    store: &SharedStore,
+    id: &str,
+    session_dir: &Path,
+    keep: Option<u32>,
+) -> Result<(), StageError> {
     let dir = session_dir.join(RECOVERY_DIR);
-    recorder::recover_partial_chunks(&dir)?;
+    let partial = recorder::recover_partial_chunks(&dir)?;
+    if !partial.left.is_empty() {
+        log::warn!(
+            "{} partial chunks of {id} could not be closed and stay in place",
+            partial.left.len()
+        );
+    }
     let chunks = recorder::list_chunks(&dir)?;
     let known: Vec<u32> = lock(store).segments(id)?.iter().map(|s| s.index).collect();
 
@@ -156,7 +224,7 @@ fn recover_one(
         };
         let offset_ms = first.start_ms;
         let duration_ms = last.end_ms.saturating_sub(offset_ms);
-        if duration_ms < MIN_SEGMENT_MS {
+        if duration_ms < MIN_SEGMENT_MS && keep != Some(index) {
             recorder::remove_segment(&dir, index)?;
             crate::live::delete_segment(store, id, index)?;
             log::info!("segment {index} of {id} was under a second and was dropped");
@@ -164,7 +232,10 @@ fn recover_one(
         }
         // The segment's audio is its time: the wall clock at its start plus
         // its length is when the last sample was written.
-        let wall_start = wall(first.capture_started_at).unwrap_or(created_at);
+        let wall_start = match wall(first.capture_started_at) {
+            Some(at) => at,
+            None => created_at(store, id)?,
+        };
         // The open segment has no row, so its channel count comes from the
         // first chunk's WAV header (KTD6 of the system audio plan).
         let channels = recorder::chunk_channels(first)?;
@@ -185,24 +256,59 @@ fn recover_one(
             log::info!("segment {index} of {id} is the note's first stereo segment");
         }
     }
+    Ok(())
+}
 
-    let mut store = lock(store);
-    let segments = store.segments(id)?;
-    // The last segment is the one that was recording.
-    let Some(ended) = segments.iter().max_by_key(|s| s.index).map(|s| s.wall_end) else {
-        // Nothing survived R35: the note is a note with no audio again, as
-        // after a Stop with no segment (R19). A note that existed before
-        // the recording or has notes text stays. The removal of empty notes
-        // owns an empty note (U6).
-        return Ok(store.apply(id, &Event::RecordingDropped)?);
+/// Whether the session's `audio-recovery/` folder holds a closed chunk or a
+/// `.part` whose segment index has no row in `segments` (KTD1 of the
+/// capture recovery plan). A working folder that can follow a capture is
+/// deleted only when this is false. When the folder cannot be read, the
+/// result is true, so the folder stays.
+pub fn unregistered_audio(session_dir: &Path, segments: &[Segment]) -> bool {
+    let dir = session_dir.join(RECOVERY_DIR);
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(e) => {
+            log::warn!("could not read {} ({e}); its audio stays", dir.display());
+            return true;
+        }
     };
-    Ok(store.apply(
-        id,
-        &Event::CaptureLost {
-            reason: InterruptReason::Crash,
-            at: ended,
-        },
-    )?)
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                log::warn!(
+                    "could not read an entry of {} ({e}); its audio stays",
+                    dir.display()
+                );
+                return true;
+            }
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(stem) = name
+            .strip_suffix(".wav")
+            .or_else(|| name.strip_suffix(".part"))
+        else {
+            continue;
+        };
+        let Some(Ok(index)) = stem.split('-').next().map(str::parse::<u32>) else {
+            continue;
+        };
+        if !segments.iter().any(|s| s.index == index) {
+            return true;
+        }
+    }
+    false
+}
+
+/// When the session was created.
+fn created_at(store: &SharedStore, id: &str) -> Result<DateTime<FixedOffset>, StageError> {
+    lock(store)
+        .session(id)?
+        .map(|record| record.created_at)
+        .ok_or_else(|| StageError::Failed(format!("no session {id}")))
 }
 
 /// A chunk name's capture start, milliseconds since the epoch, as local time.
