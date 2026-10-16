@@ -4,6 +4,7 @@ import {
   TextSelection,
   type Transaction,
 } from "prosemirror-state";
+import { history } from "prosemirror-history";
 import type { EditorView } from "prosemirror-view";
 import { describe, expect, it } from "bun:test";
 
@@ -537,3 +538,147 @@ function typeText(doc: ReturnType<typeof schema.node>, text: string) {
   }
   return state;
 }
+
+// An editor state with the input rules, the keymap and the history, with the
+// cursor at `cursor`. `type` sends text as the view does, and `key` a key.
+function editorAt(doc: ReturnType<typeof schema.node>, cursor: number) {
+  const inputRules = buildInputRules();
+  const keys = buildKeymap();
+  let state = EditorState.create({
+    schema,
+    doc,
+    selection: TextSelection.create(doc, cursor),
+    plugins: [inputRules, keys, history()],
+  });
+  const view = {
+    composing: false,
+    get state() {
+      return state;
+    },
+    dispatch(tr: Transaction) {
+      state = state.apply(tr);
+    },
+    endOfTextblock: () => false,
+  } as Pick<EditorView, "composing" | "dispatch" | "endOfTextblock" | "state"> as EditorView;
+  const handleTextInput = inputRules.props.handleTextInput as (
+    view: EditorView,
+    from: number,
+    to: number,
+    text: string,
+    deflt: () => Transaction,
+  ) => boolean | void;
+  return {
+    get state() {
+      return state;
+    },
+    type(text: string) {
+      for (const char of text) {
+        const { from, to } = state.selection;
+        const insert = () => state.tr.insertText(char, from, to);
+        if (!handleTextInput(view, from, to, char, insert)) view.dispatch(insert());
+      }
+    },
+    key(key: string, init?: KeyboardEventInit) {
+      return keys.props.handleKeyDown?.call(keys, view, new KeyboardEvent("keydown", { key, ...init }));
+    },
+  };
+}
+
+const para = (text?: string) => schema.node("paragraph", null, text ? [schema.text(text)] : []);
+const item = (text: string) => schema.node("listItem", null, [para(text)]);
+const bulletList = (...texts: string[]) => schema.node("bulletList", null, texts.map(item));
+const taskItem = (checked: boolean, text: string) => schema.node("taskItem", { checked }, [para(text)]);
+const mod: KeyboardEventInit = /Mac|iP(hone|[oa]d)/.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true };
+
+describe("typed markdown keeps the text", () => {
+  it("keeps the item text when [ ] makes a task in a bullet item", () => {
+    const doc = schema.node("doc", null, [bulletList("buy milk")]);
+    const editor = editorAt(doc, getTextStartPos(doc, "buy milk"));
+    editor.type("[ ] ");
+    expect(editor.state.doc.toJSON()).toEqual(
+      schema.node("doc", null, [schema.node("taskList", null, [taskItem(false, "buy milk")])]).toJSON(),
+    );
+    expect(editor.state.selection.from).toBe(getTextStartPos(editor.state.doc, "buy milk"));
+  });
+
+  it("keeps the paragraph text after the cursor in the new task", () => {
+    const doc = schema.node("doc", null, [para("buy milk")]);
+    const editor = editorAt(doc, 1);
+    editor.type("[x] ");
+    expect(editor.state.doc.toJSON()).toEqual(
+      schema.node("doc", null, [schema.node("taskList", null, [taskItem(true, "buy milk")])]).toJSON(),
+    );
+  });
+
+  it("converts only the item in the middle of a bullet list", () => {
+    const doc = schema.node("doc", null, [bulletList("a", "b", "c")]);
+    const editor = editorAt(doc, getTextStartPos(doc, "b"));
+    editor.type("[ ] ");
+    expect(editor.state.doc.toJSON()).toEqual(
+      schema
+        .node("doc", null, [
+          bulletList("a"),
+          schema.node("taskList", null, [taskItem(false, "b")]),
+          bulletList("c"),
+        ])
+        .toJSON(),
+    );
+  });
+
+  it("keeps underscores, stars and tildes in normal text", () => {
+    for (const text of ["my_var_name", "call_notes_v2", "takes ~5 min, ~10 people", "2 * 3 * 4", "2*3*4"]) {
+      const editor = editorAt(schema.node("doc", null, [para()]), 1);
+      editor.type(text);
+      expect(editor.state.doc.toJSON()).toEqual(schema.node("doc", null, [para(text)]).toJSON());
+    }
+  });
+
+  it("still makes marks from delimiters around a word", () => {
+    for (const [text, mark] of [
+      ["say _hi_", "italic"],
+      ["say *hi*", "italic"],
+      ["say ~hi~", "strike"],
+      ["say **hi**", "bold"],
+    ] as const) {
+      const editor = editorAt(schema.node("doc", null, [para()]), 1);
+      editor.type(text);
+      const last = editor.state.doc.firstChild!.lastChild!;
+      expect(last.text).toBe("hi");
+      expect(last.marks.map((m) => m.type.name)).toEqual([mark]);
+    }
+  });
+
+  it("undoes a conversion with Backspace right after it", () => {
+    const editor = editorAt(schema.node("doc", null, [para()]), 1);
+    editor.type("say _hi_");
+    expect(editor.key("Backspace")).toBe(true);
+    expect(editor.state.doc.toJSON()).toEqual(schema.node("doc", null, [para("say _hi_")]).toJSON());
+  });
+});
+
+describe("editor keys", () => {
+  it("toggles the task at the cursor with Mod-Enter", () => {
+    const doc = schema.node("doc", null, [schema.node("taskList", null, [taskItem(false, "a"), taskItem(false, "b")])]);
+    const editor = editorAt(doc, getTextStartPos(doc, "b") + 1);
+    expect(editor.key("Enter", mod)).toBe(true);
+    expect(editor.state.doc.toJSON()).toEqual(
+      schema.node("doc", null, [schema.node("taskList", null, [taskItem(false, "a"), taskItem(true, "b")])]).toJSON(),
+    );
+    editor.key("Enter", mod);
+    expect(editor.state.doc.firstChild!.child(1).attrs.checked).toBe(false);
+  });
+
+  it("keeps the language when Enter leaves a code block", () => {
+    const doc = schema.node("doc", null, [schema.node("codeBlock", { language: "python" }, [schema.text("x = 1\n")])]);
+    const editor = editorAt(doc, doc.content.size - 1);
+    expect(editor.key("Enter")).toBe(true);
+    expect(editor.state.doc.firstChild!.attrs.language).toBe("python");
+    expect(editor.state.doc.firstChild!.textContent).toBe("x = 1");
+  });
+
+  it("keeps Tab in the editor in the first item of a list", () => {
+    const doc = schema.node("doc", null, [bulletList("a", "b")]);
+    const editor = editorAt(doc, getTextStartPos(doc, "a"));
+    expect(editor.key("Tab")).toBe(true);
+  });
+});
