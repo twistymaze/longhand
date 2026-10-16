@@ -428,6 +428,7 @@ pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
 /// Close every `.part` a crash left open: repair its header from its length
 /// and give it the closed name its audio supports (R8). A partial holding
 /// nothing past its lookback duplicates the previous chunk and is removed.
+/// A partial no longer than a WAV header holds no samples and is removed.
 /// Call only while no writer is running on `dir`.
 ///
 /// An error on one file does not stop the others: the file stays in place,
@@ -465,6 +466,19 @@ pub fn recover_partial_chunks(dir: &Path) -> std::io::Result<PartialRecovery> {
                 report.left.push(path);
                 continue;
             }
+        }
+        // A `.part` no longer than a header holds no samples. A crash before
+        // the first flush leaves a 0-byte `.part`, because the writer buffers
+        // the header.
+        match entry.metadata() {
+            Ok(meta) if meta.len() <= wav::HEADER_BYTES => {
+                if let Err(e) = std::fs::remove_file(&path) {
+                    log::warn!("could not remove empty partial chunk {name} ({e}); left in place");
+                    report.left.push(path);
+                }
+                continue;
+            }
+            _ => {}
         }
         let repaired = match wav::repair(&path) {
             Ok(repaired) => repaired,

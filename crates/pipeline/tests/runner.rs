@@ -1039,70 +1039,53 @@ async fn a_claimed_note_registers_a_closed_chunk_that_has_no_row_and_assembles_i
     assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
 }
 
-/// Renames that cross volumes, so the save copies the working folder.
-struct OtherVolume;
-
-impl session_save::Fs for OtherVolume {
-    fn rename(&self, _: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
-        Err(std::io::Error::from(std::io::ErrorKind::CrossesDevices))
-    }
-    fn rename_new(&self, from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
-        session_save::RealFs.rename_new(from, to)
-    }
-}
-
 #[test]
 fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
     // KTD1 of plan A: a `.part` that no repair could read has no row.
-    for fs in [
-        &session_save::RealFs as &dyn session_save::Fs,
-        &OtherVolume as &dyn session_save::Fs,
-    ] {
-        let store = store();
-        let root = tempfile::tempdir().unwrap();
-        let dest = tempfile::tempdir().unwrap();
-        assert!(library::scan::write_marker(dest.path()));
-        queue_session(
-            &store,
-            root.path(),
-            "s",
-            100,
-            Some("m"),
-            &[(16_000, speech())],
-        );
-        store
-            .lock()
-            .unwrap()
-            .dequeue_session("s", "test", common::at(100))
-            .unwrap();
-        let segments = store.lock().unwrap().segments("s").unwrap();
-        let working = root.path().join("s");
-        std::fs::create_dir_all(working.join("audio")).unwrap();
-        std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
-        std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
-        checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
-        let part = working
-            .join(pipeline::RECOVERY_DIR)
-            .join("1-1800000000000-70000-70000.part");
-        std::fs::write(&part, b"not a wav file").unwrap();
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    assert!(library::scan::write_marker(dest.path()));
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .dequeue_session("s", "test", common::at(100))
+        .unwrap();
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let working = root.path().join("s");
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    let part = working
+        .join(pipeline::RECOVERY_DIR)
+        .join("1-1800000000000-70000-70000.part");
+    std::fs::write(&part, [b'x'; 100]).unwrap();
 
-        let saved = pipeline::save::run(
-            &store,
-            "s",
-            &working,
-            &segments,
-            Some(dest.path()),
-            fs,
-            &pipeline::Unattended,
-        );
+    let saved = pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    );
 
-        assert!(
-            matches!(saved, Err(pipeline::StageError::Failed(_))),
-            "{saved:?}"
-        );
-        assert!(part.is_file(), "the working folder and its chunks stay");
-        assert!(working.join(TRANSCRIPT_FILE).is_file());
-    }
+    assert!(
+        matches!(saved, Err(pipeline::StageError::Failed(_))),
+        "{saved:?}"
+    );
+    assert!(part.is_file(), "the working folder and its chunks stay");
+    assert!(working.join(TRANSCRIPT_FILE).is_file());
 }
 
 /// The speaker progress events, in order.

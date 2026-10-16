@@ -858,7 +858,8 @@ fn a_partial_that_cannot_be_repaired_is_reported_and_the_others_are_recovered() 
     w.write(&vec![0.1; 3 * rate as usize]).unwrap();
     drop(w);
     let bad = dir.path().join("5-1700000000000-0-0.part");
-    std::fs::write(&bad, b"not a wav file").unwrap();
+    // Longer than a header, so recovery cannot tell that it holds no samples.
+    std::fs::write(&bad, [b'x'; 100]).unwrap();
 
     let report = recover_partial_chunks(dir.path()).unwrap();
 
@@ -867,4 +868,21 @@ fn a_partial_that_cannot_be_repaired_is_reported_and_the_others_are_recovered() 
     assert_eq!(report.left, vec![bad.clone()]);
     assert!(bad.is_file());
     assert_eq!(list_chunks(dir.path()).unwrap().len(), 1);
+}
+
+#[test]
+fn an_empty_partial_holds_no_samples_and_recovery_removes_it() {
+    // WavFile::create buffers the header, so a crash before the first flush
+    // leaves a 0-byte `.part`. A `.part` of header length holds no samples.
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("0-1700000000000-0-0.part");
+    std::fs::write(&empty, b"").unwrap();
+    let header_only = dir.path().join("1-1700000000000-0-0.part");
+    std::fs::write(&header_only, [0u8; recorder::wav::HEADER_BYTES as usize]).unwrap();
+
+    let report = recover_partial_chunks(dir.path()).unwrap();
+
+    assert!(report.recovered.is_empty());
+    assert!(report.left.is_empty(), "{:?}", report.left);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }

@@ -5,7 +5,7 @@ mod common;
 use chrono::TimeDelta;
 use common::{store, write_segment, write_stereo_segment};
 use pipeline::RECOVERY_DIR;
-use pipeline::recover::recover_crashed;
+use pipeline::recover::{recover_crashed, register_chunks, unregistered_audio};
 use session_core::{InterruptReason, SessionState};
 
 const RATE: u32 = 16_000;
@@ -555,7 +555,7 @@ fn a_part_that_cannot_be_repaired_keeps_the_folder_and_a_later_launch_registers_
     let chunks = root.path().join("s").join(RECOVERY_DIR);
     std::fs::create_dir_all(&chunks).unwrap();
     let part = chunks.join("0-1800000000000-0-0.part");
-    std::fs::write(&part, b"not a wav file").unwrap();
+    std::fs::write(&part, [b'x'; 100]).unwrap();
 
     let recovered = recover_crashed(&store, root.path()).unwrap().recovered;
 
@@ -584,6 +584,76 @@ fn a_part_that_cannot_be_repaired_keeps_the_folder_and_a_later_launch_registers_
     );
     let state = store.lock().unwrap().session("s").unwrap().unwrap().state;
     interrupted_since(&state);
+}
+
+/// A `.part` longer than a WAV header that no repair can read.
+fn unreadable_part(session_dir: &std::path::Path, index: u32) -> std::path::PathBuf {
+    let chunks = session_dir.join(RECOVERY_DIR);
+    std::fs::create_dir_all(&chunks).unwrap();
+    let part = chunks.join(format!("{index}-1800000000000-0-0.part"));
+    std::fs::write(&part, [b'x'; 100]).unwrap();
+    part
+}
+
+#[test]
+fn an_empty_part_is_removed_and_the_folder_holds_no_unregistered_audio() {
+    // A crash before the writer's first flush leaves a 0-byte `.part`.
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("s", common::at(0), None)
+        .unwrap();
+    let dir = root.path().join("s");
+    let chunks = dir.join(RECOVERY_DIR);
+    std::fs::create_dir_all(&chunks).unwrap();
+    let part = chunks.join("0-1800000000000-0-0.part");
+    std::fs::write(&part, b"").unwrap();
+
+    register_chunks(&store, "s", &dir, None).unwrap();
+
+    assert!(!part.exists());
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    assert!(segments.is_empty());
+    assert!(!unregistered_audio(&dir, &segments));
+}
+
+#[test]
+fn an_unreadable_part_is_unregistered_audio_also_when_its_segment_has_a_row() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("s");
+    let segment = write_segment(&dir, 0, 0, RATE, &tone(5.0), false);
+    let part = unreadable_part(&dir, 0);
+
+    assert!(unregistered_audio(&dir, &[segment]));
+    assert!(part.is_file());
+}
+
+#[test]
+fn a_short_segment_keeps_its_files_while_a_part_of_it_cannot_be_repaired() {
+    let root = tempfile::tempdir().unwrap();
+    let store = store();
+    store
+        .lock()
+        .unwrap()
+        .create_session("s", common::at(0), None)
+        .unwrap();
+    let dir = root.path().join("s");
+    write_segment(&dir, 0, 0, RATE, &tone(0.5), false);
+    let part = unreadable_part(&dir, 0);
+
+    register_chunks(&store, "s", &dir, None).unwrap();
+
+    assert!(part.is_file(), "the .part stays");
+    assert_eq!(
+        recorder::list_chunks(&dir.join(RECOVERY_DIR))
+            .unwrap()
+            .len(),
+        1
+    );
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    assert!(unregistered_audio(&dir, &segments));
 }
 
 #[test]

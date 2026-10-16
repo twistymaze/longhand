@@ -216,6 +216,12 @@ pub fn register_chunks(
             partial.left.len()
         );
     }
+    // The segments of the `.part` files that stay in place.
+    let left: Vec<u32> = partial
+        .left
+        .iter()
+        .filter_map(|path| recorder::chunk_segment_of(&path.file_name()?.to_string_lossy()))
+        .collect();
     let chunks = recorder::list_chunks(&dir)?;
     let known: Vec<u32> = lock(store).segments(id)?.iter().map(|s| s.index).collect();
 
@@ -231,6 +237,16 @@ pub fn register_chunks(
         let offset_ms = first.start_ms;
         let duration_ms = last.end_ms.saturating_sub(offset_ms);
         if duration_ms < MIN_SEGMENT_MS && keep != Some(index) {
+            // The removal deletes every file of the segment, also a `.part`
+            // that the repair left. Its audio can be longer than a second,
+            // so the segment and its files stay, and a later launch tries
+            // the `.part` again.
+            if left.contains(&index) {
+                log::warn!(
+                    "segment {index} of {id} has a partial chunk that could not be closed; its files stay"
+                );
+                continue;
+            }
             recorder::remove_segment(&dir, index)?;
             crate::live::delete_segment(store, id, index)?;
             log::info!("segment {index} of {id} was under a second and was dropped");
@@ -265,11 +281,13 @@ pub fn register_chunks(
     Ok(())
 }
 
-/// Whether the session's `audio-recovery/` folder holds a closed chunk or a
-/// `.part` whose segment index has no row in `segments` (KTD1 of the
-/// capture recovery plan). A working folder that can follow a capture is
-/// deleted only when this is false. When the folder cannot be read, the
-/// result is true, so the folder stays.
+/// Whether the session's `audio-recovery/` folder holds a `.part`, or a
+/// closed chunk whose segment index has no row in `segments` (KTD1 of the
+/// capture recovery plan). A `.part` counts whatever its index, because no
+/// row includes its audio. Call only while no writer runs on the folder:
+/// the open chunk of a running writer is a `.part`. A working folder that
+/// can follow a capture is deleted only when this is false. When the
+/// folder cannot be read, the result is true, so the folder stays.
 pub fn unregistered_audio(session_dir: &Path, segments: &[Segment]) -> bool {
     let dir = session_dir.join(RECOVERY_DIR);
     let entries = match std::fs::read_dir(&dir) {
@@ -291,10 +309,14 @@ pub fn unregistered_audio(session_dir: &Path, segments: &[Segment]) -> bool {
                 return true;
             }
         };
-        let Some(index) = recorder::chunk_segment_of(&entry.file_name().to_string_lossy()) else {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let Some(index) = recorder::chunk_segment_of(&name) else {
             continue;
         };
-        if !segments.iter().any(|s| s.index == index) {
+        // No row names the audio of a `.part`, also when its segment has a
+        // row: a row covers only the closed chunks.
+        if name.ends_with(".part") || !segments.iter().any(|s| s.index == index) {
             return true;
         }
     }

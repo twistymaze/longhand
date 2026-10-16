@@ -5963,7 +5963,7 @@ mod tests {
         let chunks = root.path().join("s").join(RECOVERY_DIR);
         std::fs::create_dir_all(&chunks).unwrap();
         let part = chunks.join("0-1800000000000-0-0.part");
-        std::fs::write(&part, b"not a wav file").unwrap();
+        std::fs::write(&part, [b'x'; 100]).unwrap();
 
         let held = hold_unregistered(&store, root.path());
         assert_eq!(held.ids, vec!["s".to_string()]);
