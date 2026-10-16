@@ -46,13 +46,15 @@ const baseSettings: Settings = {
 /// show a change from another computer.
 let setShown: (f: (s: Settings) => Settings) => void = () => {};
 
-function Harness({ initial }: { initial: Settings }) {
+/// With `lag`, a save result does not change the settings that the
+/// harness shows: as in the Settings window, only a later read does.
+function Harness({ initial, lag }: { initial: Settings; lag: boolean }) {
   const [settings, setSettings] = useState(initial);
   setShown = setSettings;
-  return <Background settings={settings} onSettings={setSettings} />;
+  return <Background settings={settings} onSettings={lag ? () => {} : setSettings} />;
 }
 
-function setup(settings: Partial<Settings> = {}, over: Record<string, CommandHandler> = {}) {
+function setup(settings: Partial<Settings> = {}, over: Record<string, CommandHandler> = {}, lag = false) {
   let current: Settings = { ...baseSettings, ...settings };
   const tauri = mockTauri({
     set_background: ({ text }) => {
@@ -62,13 +64,29 @@ function setup(settings: Partial<Settings> = {}, over: Record<string, CommandHan
     ...over,
   });
   mockWindows("settings");
-  const { unmount } = render(<Harness initial={current} />);
+  const { unmount } = render(<Harness initial={current} lag={lag} />);
   // Another computer changes the saved text.
   const remote = (text: string) => {
     current = { ...current, background: text };
     act(() => setShown((s) => ({ ...s, background: text })));
   };
   return { tauri, remote, unmount, user: userEvent.setup() };
+}
+
+/// A `set_background` handler whose saves wait until the test lets them go.
+/// `done` counts the saves that returned.
+function heldSaves() {
+  let release: () => void = () => {};
+  const held = new Promise<void>((r) => (release = r));
+  const state = { done: 0 };
+  let saved = "";
+  const handler: CommandHandler = async ({ text }) => {
+    await held;
+    saved = text as string;
+    state.done += 1;
+    return { ...baseSettings, background: saved };
+  };
+  return { handler, release: () => act(async () => release()), state, saved: () => saved };
 }
 
 const box = () => screen.getByRole("textbox", { name: "Background" });
@@ -242,7 +260,8 @@ describe("Background", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
-    await pause(10);
+    // The mount registers the close listener: the event mock adds it when
+    // the effect runs, and render runs the effects.
     await user.click(box());
     await user.keyboard("Erv");
     await tauri.emit("tauri://close-requested");
@@ -264,7 +283,6 @@ describe("Background", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
-    await pause(10);
     await user.click(box());
     await user.keyboard("Erv");
     unmount();
@@ -274,5 +292,71 @@ describe("Background", () => {
     expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
     await act(async () => finish());
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+  });
+
+  test("text typed during a save is saved when the save result comes before the settings read", async () => {
+    const h = heldSaves();
+    const { tauri, remote, user } = setup({}, { set_background: h.handler }, true);
+    await user.click(box());
+    await user.keyboard("A");
+    await waitFor(() => expect(saves(tauri)).toEqual(["A"]), { timeout: 1500 });
+    await user.keyboard("B");
+    await h.release();
+    await waitFor(() => expect(h.state.done).toBe(1));
+    await act(async () => {});
+    expect(screen.queryByText(/changed on another computer/)).toBeNull();
+    act(() => void fireEvent.blur(box()));
+    await waitFor(() => expect(saves(tauri)).toEqual(["A", "AB"]));
+    // The settings read then shows the own saves, with no notice.
+    await waitFor(() => expect(h.state.done).toBe(2));
+    remote(h.saved());
+    expect(screen.queryByText(/changed on another computer/)).toBeNull();
+    expect(box().textContent).toBe("AB");
+  });
+
+  test("a change on another computer back to a text that this window saved before shows the text", async () => {
+    const { tauri, remote, user } = setup();
+    await user.click(box());
+    await user.keyboard("Alice");
+    await waitFor(() => expect(saves(tauri)).toEqual(["Alice"]), { timeout: 1500 });
+    await user.keyboard(" Smith");
+    await waitFor(() => expect(saves(tauri)).toEqual(["Alice", "Alice Smith"]), { timeout: 1500 });
+    await waitFor(() => expect(screen.getByText("11 / 4,000")).toBeTruthy());
+    remote("Alice");
+    await waitFor(() => expect(box().textContent).toBe("Alice"));
+  });
+
+  test("a change on another computer back to a text that this window saved before shows the notice over a draft", async () => {
+    const { tauri, remote, user } = setup();
+    await user.click(box());
+    await user.keyboard("Alice");
+    await waitFor(() => expect(saves(tauri)).toEqual(["Alice"]), { timeout: 1500 });
+    await user.keyboard(" Smith");
+    await waitFor(() => expect(saves(tauri)).toEqual(["Alice", "Alice Smith"]), { timeout: 1500 });
+    await waitFor(() => expect(screen.getByText("11 / 4,000")).toBeTruthy());
+    await user.keyboard("!");
+    remote("Alice");
+    await waitFor(() => expect(screen.getByText("The Background changed on another computer.")).toBeTruthy());
+    expect(box().textContent).toBe("Alice Smith!");
+  });
+
+  test("a window close after a pane change waits for a save that was queued behind a running save", async () => {
+    const h = heldSaves();
+    const { tauri, unmount, user } = setup({}, {
+      set_background: h.handler,
+      "plugin:window|destroy": () => null,
+      log_from_webview: () => null,
+    });
+    await user.click(box());
+    await user.keyboard("A");
+    await waitFor(() => expect(saves(tauri)).toEqual(["A"]), { timeout: 1500 });
+    await user.keyboard("B");
+    // The blur queues the save of "AB" behind the running save.
+    act(() => void fireEvent.blur(box()));
+    unmount();
+    await tauri.emit("tauri://close-requested");
+    await h.release();
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+    expect(saves(tauri)).toEqual(["A", "AB"]);
   });
 });

@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, type Settings } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
+import { OwnSaves } from "./ownSaves";
 import { filesReadOnlyReason } from "./shared";
 import { ChangedElsewhereNotice, ErrorText, Group } from "./ui";
 
@@ -39,8 +40,8 @@ export function Background({
   const [saveError, setSaveError] = useState<string | null>(null);
   // The editor key. It changes only on a new document (KTD10).
   const [generation, setGeneration] = useState(0);
-  // The texts that this window sent.
-  const sentTexts = useRef(new Set<string>());
+  // The texts that this window sent and that the saved text did not show yet.
+  const ownSaves = useRef(new OwnSaves<string>());
   // The valid text that waits for the timer, the timer, and the last save
   // that started. Each save waits for the save before it, so the saves apply
   // in the order typed.
@@ -63,21 +64,27 @@ export function Background({
     const sent = pending.current;
     cancel();
     if (sent !== null) {
-      sentTexts.current.add(sent);
+      ownSaves.current.sent(sent);
       const fail = (reason: string | null) => {
         failed.current = true;
         setSaveError(reason ?? "The Background could not be saved.");
       };
       saving.current = saving.current
         .then(async () => {
-          const result = await commands.setBackground(sent);
+          let result: Awaited<ReturnType<typeof commands.setBackground>>;
+          try {
+            result = await commands.setBackground(sent);
+          } finally {
+            ownSaves.current.settled();
+          }
           if (result.status === "error") {
             fail(result.error);
             return;
           }
           failed.current = false;
           setSaveError(null);
-          setBase(sent);
+          // The base moves when the saved text shows this save, not here:
+          // until the settings are read again, the saved text is the old one.
           onSettingsRef.current(result.data);
           // Clear the draft only if it still holds the sent text, so that
           // text typed during the save stays for the next save.
@@ -93,23 +100,21 @@ export function Background({
   }, [cancel]);
 
   // A pane change unmounts the pane, and the save of the pending text then
-  // starts. The registration stays until that save is complete, so that a
-  // window close during the save waits for it. A window close and the page
+  // starts. The registration stays until all saves that started are
+  // complete, also a save that waits behind a running save, so that a window
+  // close during the saves waits for them. A window close and the page
   // events go through the close coordinator (KTD9).
   useEffect(() => {
     const remove = registerCloseSave(flush, closeSaveLimit);
     return () => {
-      const starts = pending.current !== null;
-      const saved = flush();
-      if (starts) void saved.finally(remove);
-      else remove();
+      void flush().finally(remove);
     };
   }, [flush, closeSaveLimit]);
 
   // The draft started from a saved text that another computer then changed.
   // The editor keeps the draft.
   const changedElsewhere =
-    draft !== null && draft !== saved && base !== null && saved !== base && !sentTexts.current.has(saved);
+    draft !== null && draft !== saved && base !== null && saved !== base && !ownSaves.current.has(saved);
 
   // Such a draft waits for Reload or Keep My Text, and does not replace the
   // text of the other computer.
@@ -122,12 +127,15 @@ export function Background({
   }, [draft]);
 
   // A change of the saved text from another computer, while there is no
-  // draft, shows the new text in a new editor. An own save does not.
+  // draft, shows the new text in a new editor. An own save does not: it
+  // moves the base of a draft to the saved text.
   const shownSaved = useRef(saved);
   useEffect(() => {
     if (saved === shownSaved.current) return;
     shownSaved.current = saved;
-    if (draft === null && !sentTexts.current.has(saved)) setGeneration((g) => g + 1);
+    if (ownSaves.current.confirm(saved)) {
+      if (draft !== null) setBase(saved);
+    } else if (draft === null) setGeneration((g) => g + 1);
   }, [saved, draft]);
 
   const valid = (text: string) => [...text].length <= limit;

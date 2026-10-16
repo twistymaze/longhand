@@ -3,10 +3,10 @@
 // many notes the change removes now, and shows a confirmation only when
 // that count is not zero. Rust starts the removal after the save (KTD6).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { type AudioRemovalSetting, commands, type Settings } from "../bindings";
 import { readOnlyReason } from "./shared";
-import { CommitField, ErrorText, Group, Row, Switch, notes, useConfirm } from "./ui";
+import { type CommitHow, CommitField, ErrorText, Group, Row, Switch, notes, useConfirm } from "./ui";
 
 export const MIN_DAYS = 1;
 export const MAX_DAYS = 3650;
@@ -26,6 +26,9 @@ export function AudioRemoval({ settings, onSettings }: { settings: Settings; onS
   // A settings view with no value shows the default.
   const removal: AudioRemovalSetting = settings.audio_removal ?? { kind: "after_days", days: DEFAULT_DAYS };
   const on = removal.kind === "after_days";
+  // The setting of the last render.
+  const latest = useRef(removal);
+  latest.current = removal;
   const [lastDays, setLastDays] = useState(on ? removal.days : DEFAULT_DAYS);
   const days = on ? removal.days : lastDays;
   const [error, setError] = useState<string | null>(null);
@@ -37,51 +40,61 @@ export function AudioRemoval({ settings, onSettings }: { settings: Settings; onS
   const readOnly = readOnlyReason(settings);
   const disabled = readOnly !== null || busy;
 
-  const change = async (next: AudioRemovalSetting) => {
+  // Resolves to true when the change was saved. An unattended change (a
+  // window close or a pane change) asks nothing, so it does not save a
+  // change that removes audio now.
+  const change = async (next: AudioRemovalSetting, how: CommitHow = "user"): Promise<boolean> => {
     setBusy(true);
     try {
       const count = await commands.audioRemovalCount(next);
       if (count.status === "error") {
-        setError(count.error);
-        return;
+        if (how === "user") setError(count.error);
+        return false;
       }
       if (count.data > 0) {
+        if (how === "unattended") return false;
         const yes = await ask({
           title: `Remove the audio of ${notes(count.data)} now?`,
           message:
             "The transcript, summary and notes stay. You can’t undo this. You can’t transcribe these notes again or resume their recordings.",
           action: "Remove Audio",
         });
-        if (!yes) return;
+        if (!yes) return false;
       }
       const saved = await commands.setAudioRemoval(next);
       if (saved.status === "error") {
         setError(saved.error);
-        return;
+        return false;
       }
       setError(null);
       if (next.kind === "after_days") setLastDays(next.days);
       else if (on) setLastDays(removal.days);
       onSettings(saved.data);
+      return true;
     } finally {
       setFieldKey((k) => k + 1);
       setBusy(false);
     }
   };
 
-  const commitDays = (text: string) => {
+  const commitDays = async (text: string, how: CommitHow): Promise<boolean> => {
+    // An unattended commit runs at the unmount of the field, after a render
+    // with a newer setting: for example after the switch turned removal
+    // off. Typed days then do not turn removal on again.
+    if (how === "unattended" && latest.current.kind !== "after_days") return false;
     const parsed = parseDays(text);
     if (parsed === null) {
+      if (how === "unattended") return false;
       setError(`Enter a number of days from ${MIN_DAYS} to ${MAX_DAYS}.`);
       setFieldKey((k) => k + 1);
-      return;
+      return false;
     }
     if (parsed === days) {
       setError(null);
       setFieldKey((k) => k + 1);
-      return;
+      return true;
     }
-    void change({ kind: "after_days", days: parsed });
+    return change({ kind: "after_days", days: parsed }, how);
   };
 
   return (

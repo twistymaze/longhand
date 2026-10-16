@@ -13,6 +13,7 @@ import {
   useState,
 } from "react";
 import { ConfirmDialog } from "../lib/ConfirmDialog";
+import { registerCloseSave } from "./closeSaves";
 
 export function Pane({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -165,20 +166,65 @@ export function ChangedElsewhereNotice({
   onReload: () => void;
 }) {
   return (
+    <CautionNotice
+      title={`The ${name} changed on another computer.`}
+      detail="Reload shows the new text. Keep My Text saves your text."
+    >
+      <Button onClick={onKeep}>
+        Keep My Text{suffix}
+      </Button>
+      <Button prominent onClick={onReload}>
+        Reload{suffix}
+      </Button>
+    </CautionNotice>
+  );
+}
+
+/// The row of a notice about unsaved text: a caution line, a line that
+/// says what each button does, and the buttons.
+function CautionNotice({ title, detail, children }: { title: string; detail: string; children: ReactNode }) {
+  return (
     <div className="settings-row px-4">
       <div className="flex min-h-[3.25rem] flex-wrap items-center gap-2 py-2.5">
         <div role="status" className="min-w-0 flex-1 text-[0.85rem] leading-[1.4]">
-          <p className="font-medium text-caution">{`The ${name} changed on another computer.`}</p>
-          <p className="text-label-secondary">Reload shows the new text. Keep My Text saves your text.</p>
+          <p className="font-medium text-caution">{title}</p>
+          <p className="text-label-secondary">{detail}</p>
         </div>
-        <Button onClick={onKeep}>
-          Keep My Text{suffix}
-        </Button>
-        <Button prominent onClick={onReload}>
-          Reload{suffix}
-        </Button>
+        {children}
       </div>
     </div>
+  );
+}
+
+/// The notice of a summary prompt with unsaved text that another computer
+/// deleted (R6). The buttons name the prompt for screen readers, because
+/// more than one such notice can show.
+export function DeletedPromptNotice({
+  name,
+  busy,
+  saveDisabled,
+  onDiscard,
+  onSave,
+}: {
+  name: string;
+  busy: boolean;
+  saveDisabled: boolean;
+  onDiscard: () => void;
+  onSave: () => void;
+}) {
+  const suffix = <span className="sr-only"> {name}</span>;
+  return (
+    <CautionNotice
+      title={`“${name}” was deleted on another computer.`}
+      detail="Save as New Prompt keeps your text. Discard removes it."
+    >
+      <Button disabled={busy} onClick={onDiscard}>
+        Discard{suffix}
+      </Button>
+      <Button prominent disabled={saveDisabled} onClick={onSave}>
+        Save as New Prompt{suffix}
+      </Button>
+    </CautionNotice>
   );
 }
 
@@ -379,12 +425,20 @@ export function NameField({
   );
 }
 
+/// Why a CommitField commits: the user pressed Return or left the field, or
+/// the field saves with no user action (a window close, a pane or prompt
+/// change). An unattended commit must not ask the user anything.
+export type CommitHow = "user" | "unattended";
+
 /// A text field that commits on Return or when focus leaves, the way macOS
-/// settings fields apply without a Save button.
+/// settings fields apply without a Save button. It also commits the typed
+/// text at a window close and when it unmounts, because no blur comes then.
+/// `onCommit` resolves to true when the value was saved.
 export function CommitField({
   value,
   placeholder,
   onCommit,
+  onDraft,
   inputMode,
   width = "w-64",
   label,
@@ -392,17 +446,89 @@ export function CommitField({
 }: {
   value: string;
   placeholder?: string;
-  onCommit: (v: string) => void;
+  onCommit: (v: string, how: CommitHow) => Promise<boolean>;
+  /// Receives the typed text that differs from the value, or null.
+  onDraft?: (draft: string | null) => void;
   inputMode?: "numeric";
   width?: string;
   label: string;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  const commit = () => {
-    if (draft !== value) onCommit(draft);
-  };
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+  // The value that the field shows when it has no edit.
+  const shown = useRef(value);
+  // The text of the last commit that was sent, and of the last commit that
+  // saved. The commits of the field run one after the other.
+  const sentText = useRef<string | null>(null);
+  const savedText = useRef<string | null>(null);
+  const chain = useRef<Promise<boolean>>(Promise.resolve(true));
+  const running = useRef(0);
+
+  // A new value replaces the draft only when the draft is not the user's
+  // own edit: it is the value before, or a text that a commit saved. A
+  // change from another computer keeps the text that the user types.
+  useEffect(() => {
+    if (value === shown.current) return;
+    const before = shown.current;
+    shown.current = value;
+    sentText.current = null;
+    setDraft((d) => (d === before || d === savedText.current ? value : d));
+  }, [value]);
+
+  const flush = useCallback((how: CommitHow) => {
+    const text = draftRef.current;
+    // An unattended commit does not send a text again that a commit sent:
+    // the user saw its result. Return sends it again when no commit runs.
+    const sentBefore = text === sentText.current && (how === "unattended" || running.current > 0);
+    if (text !== shown.current && !sentBefore) {
+      sentText.current = text;
+      const valueAtSend = shown.current;
+      running.current += 1;
+      chain.current = chain.current.then(async () => {
+        let saved = false;
+        try {
+          saved = await onCommitRef.current(text, how);
+        } catch (e) {
+          console.error(`The ${label} could not be saved:`, e);
+        } finally {
+          running.current -= 1;
+        }
+        if (saved) {
+          savedText.current = text;
+          // The value changed before the save returned: show it.
+          if (draftRef.current === text && shown.current !== valueAtSend) setDraft(shown.current);
+        }
+        return saved;
+      });
+    }
+    return chain.current;
+  }, [label]);
+
+  // React fires no blur when the field unmounts, so the unmount commits the
+  // typed text. A window close during that commit waits for it.
+  useEffect(
+    () => () => {
+      if (draftRef.current === shown.current && running.current === 0) return;
+      const remove = registerCloseSave(() => chain.current);
+      void flush("unattended").finally(remove);
+    },
+    [flush],
+  );
+  // While the field has typed text, a window close commits it.
+  const dirty = draft !== value;
+  useEffect(() => {
+    if (!dirty) return;
+    return registerCloseSave(() => flush("unattended"));
+  }, [dirty, flush]);
+  const onDraftRef = useRef(onDraft);
+  onDraftRef.current = onDraft;
+  useEffect(() => onDraftRef.current?.(dirty ? draft : null), [dirty, draft]);
+
+  const commit = () => void flush("user");
   return (
     <input
       aria-label={label}

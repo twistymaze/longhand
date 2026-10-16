@@ -562,6 +562,27 @@ test("this computer's own choice does not read the choices again", async () => {
   expect(screen.getByRole("radio", { name: "Whisper" }).getAttribute("aria-checked")).toBe("true");
 });
 
+test("a choice from another computer of a configuration that this pane chose before shows in the picker", async () => {
+  const { user, rerender, tauri } = open();
+  await ready();
+  const sent = () =>
+    tauri.calls.filter((c) => c.cmd === "set_recognition_defaults").map((c) => c.args.config as RecognitionConfig);
+  const show = (s: Settings) =>
+    rerender(<TestModels models={models} live={{}} settings={s} actions={{ cancel: () => {}, refresh: async () => {} }} />);
+  // This pane chooses Whisper, then Parakeet again, and the settings show each choice.
+  await user.click(screen.getByRole("radio", { name: "Whisper" }));
+  await waitFor(() => expect(sent()).toHaveLength(1));
+  show(choosing(sent()[0]));
+  await ready();
+  await user.click(screen.getByRole("radio", { name: "Parakeet" }));
+  await waitFor(() => expect(sent()).toHaveLength(2));
+  show(choosing(sent()[1]));
+  await ready();
+  // Another computer then chooses the Whisper configuration.
+  show(choosing(sent()[0]));
+  await waitFor(() => expect(screen.getByRole("radio", { name: "Whisper" }).getAttribute("aria-checked")).toBe("true"));
+});
+
 test("a settled configuration shows no download status", async () => {
   open();
   await ready();

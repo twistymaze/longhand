@@ -8,6 +8,7 @@ import {
   type Settings,
 } from "../bindings";
 import { sentence } from "../processing/describe";
+import { OwnSaves } from "./ownSaves";
 import { RecognitionOptions, recognitionDefaults } from "./RecognitionOptions";
 import { readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, formatBytes } from "./ui";
@@ -103,14 +104,17 @@ export function Models({
   const readOnly = readOnlyReason(settings);
   // A chosen configuration that this pane did not send, for example from
   // another computer, shows in new choices (R20). The pane's own choice
-  // keeps the choices, and the focus, where they are.
+  // keeps the choices, and the focus, where they are. A configuration that
+  // this pane sent counts as its own only until the settings show it, so a
+  // later change back to it from another computer shows too.
   const chosenKey = configKey(recognitionDefaults(settings));
-  const sentKeys = useRef(new Set<string>());
+  const ownSaves = useRef(new OwnSaves<string>());
   const [optionsKey, setOptionsKey] = useState(chosenKey);
+  const shownKey = useRef(chosenKey);
   useEffect(() => {
-    if (sentKeys.current.has(chosenKey)) return;
-    sentKeys.current.clear();
-    setOptionsKey(chosenKey);
+    if (chosenKey === shownKey.current) return;
+    shownKey.current = chosenKey;
+    if (!ownSaves.current.confirm(chosenKey)) setOptionsKey(chosenKey);
   }, [chosenKey]);
   // The progress of the files that the chosen configuration waits for.
   const waitingUpdates = settings.recognition.waiting_for
@@ -258,8 +262,9 @@ export function Models({
         onChanged={(next) => {
           setError(null);
           own(next.config.asr_model);
-          sentKeys.current.add(configKey(next.config));
-          defaults.save(next.config);
+          const saves = ownSaves.current;
+          saves.sent(configKey(next.config));
+          void defaults.save(next.config).finally(() => saves.settled());
         }}
         disabled={readOnly !== null}
         modelAction={modelAction}
