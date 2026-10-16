@@ -86,24 +86,6 @@ function taskListPlugin(md: MarkdownIt) {
     for (let i = 0; i < tokens.length; i++) {
       if (tokens[i].type !== "bullet_list_open") continue;
 
-      let hasTask = false;
-      let j = i + 1;
-      while (j < tokens.length && tokens[j].type !== "bullet_list_close") {
-        if (tokens[j].type === "list_item_open") {
-          const inlineIdx = findInlineToken(tokens, j);
-          if (
-            inlineIdx !== -1 &&
-            isTaskItemContent(tokens[inlineIdx].content)
-          ) {
-            hasTask = true;
-            break;
-          }
-        }
-        j++;
-      }
-
-      if (!hasTask) continue;
-
       const closeIdx = findMatchingClose(
         tokens,
         i,
@@ -112,17 +94,32 @@ function taskListPlugin(md: MarkdownIt) {
       );
       if (closeIdx === -1) continue;
 
+      // Only the direct items of this list count. A nested list gets its own
+      // pass, so a task in it does not change the items of this list.
+      const itemLevel = tokens[i].level + 1;
+      const isItem = (k: number) =>
+        tokens[k].type === "list_item_open" && tokens[k].level === itemLevel;
+
+      let hasTask = false;
+      for (let j = i + 1; j < closeIdx && !hasTask; j++) {
+        if (!isItem(j)) continue;
+        const inlineIdx = findInlineToken(tokens, j);
+        hasTask =
+          inlineIdx !== -1 && TASK_PREFIX.test(tokens[inlineIdx].content);
+      }
+      if (!hasTask) continue;
+
       tokens[i].type = "task_list_open";
       tokens[i].tag = "ul";
       tokens[closeIdx].type = "task_list_close";
       tokens[closeIdx].tag = "ul";
 
       for (let k = i + 1; k < closeIdx; k++) {
-        if (tokens[k].type === "list_item_open") {
+        if (isItem(k)) {
           const inlineIdx = findInlineToken(tokens, k);
           if (inlineIdx !== -1) {
             const content = tokens[inlineIdx].content;
-            const taskMatch = content.match(/^\[([ xX])\]\s*/);
+            const taskMatch = content.match(TASK_PREFIX);
             if (taskMatch) {
               const checked = taskMatch[1].toLowerCase() === "x";
               tokens[k].type = "task_item_open";
@@ -190,9 +187,10 @@ function findMatchingClose(
   return -1;
 }
 
-function isTaskItemContent(content: string): boolean {
-  return /^\[([ xX])\]\s/.test(content);
-}
+// `[ ]`, `[x]` or `[X]`, then whitespace or the end of the item text.
+// markdown-it removes the whitespace at the end of a paragraph, so an empty
+// task is only `[ ]`.
+const TASK_PREFIX = /^\[([ xX])\](?:\s+|$)/;
 
 function stripTaskPrefix(children: Token[], prefixLen: number) {
   let remaining = prefixLen;
@@ -219,6 +217,15 @@ function emptyParagraphsPlugin(md: MarkdownIt) {
     const tokens = state.tokens;
     const out: Token[] = [];
     const totalLines = countLines(state.src);
+    const lines = state.src.split("\n");
+    // The map of a list includes the blank lines after it. A list ends at
+    // its last line that is not blank, so those lines count as empty
+    // paragraphs too.
+    const listEnd = (map: [number, number]) => {
+      let end = map[1];
+      while (end > map[0] + 1 && (lines[end - 1] ?? "").trim() === "") end--;
+      return end;
+    };
 
     const pushEmpty = () => {
       out.push(
@@ -244,7 +251,10 @@ function emptyParagraphsPlugin(md: MarkdownIt) {
       out.push(token);
 
       if (isTopLevelBlockOpen) {
-        prevEndLine = token.map![1];
+        const isList =
+          token.type === "bullet_list_open" ||
+          token.type === "ordered_list_open";
+        prevEndLine = isList ? listEnd(token.map!) : token.map![1];
       }
     }
 

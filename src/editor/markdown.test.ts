@@ -207,3 +207,124 @@ describe("schema mirror", () => {
     );
   });
 });
+
+// Helpers for documents that the editor makes: a document must come back
+// the same after a save and an open.
+const t = (text: string, marks?: string[]): JSONContent =>
+  marks ? { type: "text", text, marks: marks.map((type) => ({ type })) } : { type: "text", text };
+const p = (...content: JSONContent[]): JSONContent =>
+  content.length ? { type: "paragraph", content } : { type: "paragraph" };
+const li = (...content: JSONContent[]): JSONContent => ({ type: "listItem", content });
+const task = (checked: boolean, ...content: JSONContent[]): JSONContent => ({
+  type: "taskItem",
+  attrs: { checked },
+  content,
+});
+const bullets = (...items: JSONContent[]): JSONContent => ({ type: "bulletList", content: items });
+const tasks = (...items: JSONContent[]): JSONContent => ({ type: "taskList", content: items });
+const ordered = (...items: JSONContent[]): JSONContent => ({
+  type: "orderedList",
+  attrs: { start: 1 },
+  content: items,
+});
+const doc = (...content: JSONContent[]): JSONContent => ({ type: "doc", content });
+
+// Save and open the document twice: the JSON stays the same.
+function expectStable(json: JSONContent) {
+  const once = md2json(json2md(json));
+  expect(once).toEqual(json);
+  expect(md2json(json2md(once))).toEqual(json);
+}
+
+describe("task lists in the file", () => {
+  test("keep a nested task list", () => {
+    const md = "- [ ] a\n  - [ ] b\n- [ ] c";
+    expect(roundTrip(md)).toBe(md);
+    expectStable(doc(tasks(task(false, p(t("a")), tasks(task(false, p(t("b"))))), task(false, p(t("c"))))));
+  });
+
+  test("keep a bullet list in a task item and a task list in a bullet item", () => {
+    expect(roundTrip("- [ ] a\n  - b")).toBe("- [ ] a\n  - b");
+    expect(roundTrip("- a\n  - [ ] b")).toBe("- a\n  - [ ] b");
+  });
+
+  test("read a list of empty tasks as tasks", () => {
+    expect(md2json("- [ ]\n")).toEqual(doc(tasks(task(false, p()))));
+    expectStable(doc(tasks(task(false, p()), task(true, p()))));
+  });
+
+  test("keep the text [ ] in a bullet item as text", () => {
+    expectStable(doc(bullets(li(p(t("[ ]"))))));
+  });
+
+  test("do not take [ ] before a letter as a task prefix", () => {
+    const json = md2json("- [ ] a\n- [ ]b");
+    expect(json).toEqual(doc(tasks(task(false, p(t("a"))), task(false, p(t("[ ]b"))))));
+  });
+});
+
+describe("text that looks like syntax", () => {
+  test("keeps underscores and stars after an escaped backslash", () => {
+    expectStable(doc(p(t("\\. _ab_ cd"))));
+    expectStable(doc(p(t("\\!\\!\\!*a b c*d e f"))));
+  });
+
+  test("keeps a backslash at the end of a text before a mark or a line break", () => {
+    expectStable(doc(p(t("a\\"), t("b", ["bold"]))));
+    expectStable(doc(p(t("a\\"), t("b", ["italic"]))));
+    expectStable(doc(p(t("a\\"), { type: "hardBreak" }, t("b"))));
+  });
+
+  test("keeps <br> typed as text", () => {
+    expectStable(doc(p(t("use <br> tags"))));
+    expectStable(doc(p(t("use <BR /> tags"))));
+  });
+
+  test("keeps leading spaces", () => {
+    for (const text of [" one", "   three", "    four", "        eight", "\ttab"]) {
+      expectStable(doc(p(t(text)), p(t("next"))));
+    }
+  });
+
+  test("keeps line-start syntax after leading spaces as text", () => {
+    for (const text of [" ```x", " > x", " - x", "  # x", "    **x**"]) {
+      expectStable(doc(p(t(text)), p(t("after"))));
+    }
+  });
+
+  test("keeps line-start syntax after a line break as text", () => {
+    for (const text of ["# bar", "- bar", "> bar", "1. bar", "---", "```"]) {
+      expectStable(doc(p(t("foo"), { type: "hardBreak" }, t(text))));
+    }
+  });
+});
+
+describe("adjacent lists", () => {
+  test("stay apart", () => {
+    expectStable(doc(tasks(task(false, p(t("a")))), bullets(li(p(t("b"))))));
+    expectStable(doc(bullets(li(p(t("a")))), tasks(task(false, p(t("b"))))));
+    expectStable(doc(bullets(li(p(t("a")))), bullets(li(p(t("b")))), bullets(li(p(t("c"))))));
+    expectStable(doc(ordered(li(p(t("a")))), ordered(li(p(t("b"))))));
+  });
+
+  test("keep the empty paragraphs between and after them", () => {
+    expectStable(doc(bullets(li(p(t("a")))), p(), bullets(li(p(t("b"))))));
+    expectStable(doc(bullets(li(p(t("a")))), p(), p(t("c"))));
+    expectStable(doc(ordered(li(p(t("a")))), p(), p(), ordered(li(p(t("b"))))));
+  });
+});
+
+describe("links", () => {
+  test("keep an address with a space", () => {
+    const json = doc(
+      p({
+        type: "text",
+        text: "link",
+        marks: [{ type: "link", attrs: { href: "https://example.com/my file.pdf", target: null } }],
+      }),
+    );
+    const back = md2json(json2md(json));
+    expect(back.content![0].content![0].text).toBe("link");
+    expect(back.content![0].content![0].marks?.[0].type).toBe("link");
+  });
+});
