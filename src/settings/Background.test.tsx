@@ -260,7 +260,8 @@ describe("Background", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
-    await pause(10);
+    // The mount registers the close listener: the event mock adds it when
+    // the effect runs, and render runs the effects.
     await user.click(box());
     await user.keyboard("Erv");
     await tauri.emit("tauri://close-requested");
@@ -282,7 +283,6 @@ describe("Background", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
-    await pause(10);
     await user.click(box());
     await user.keyboard("Erv");
     unmount();
@@ -347,7 +347,6 @@ describe("Background", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
-    await pause(10);
     await user.click(box());
     await user.keyboard("A");
     await waitFor(() => expect(saves(tauri)).toEqual(["A"]), { timeout: 1500 });

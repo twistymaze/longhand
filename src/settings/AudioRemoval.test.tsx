@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import type { AudioRemovalSetting, Settings } from "../bindings";
@@ -168,6 +169,31 @@ describe("AudioRemoval", () => {
     view.unmount();
     await waitFor(() => expect(cmds(tauri)).toEqual(["audio_removal_count", "set_audio_removal"]));
     expect(tauri.calls[1].args).toEqual({ removal: { kind: "after_days", days: 60 } });
+  });
+
+  test("turning removal off with typed days that were not saved keeps removal off", async () => {
+    const tauri = mockTauri({
+      audio_removal_count: () => 0,
+      set_audio_removal: (args) => withRemoval(args.removal as AudioRemovalSetting),
+    });
+    mockWindows("settings");
+    function Live() {
+      const [settings, setSettings] = useState(after(90));
+      return <AudioRemoval settings={settings} onSettings={setSettings} />;
+    }
+    const user = userEvent.setup();
+    render(<Live />);
+    await user.clear(field());
+    await user.type(field(), "60");
+    // A click on the switch in WKWebView does not move the focus, so the
+    // field gets no blur before it goes.
+    act(() => void fireEvent.click(toggle()));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Days before the audio is removed" })).toBeNull());
+    await act(async () => {});
+    await act(async () => {});
+    expect(tauri.calls.filter((c) => c.cmd === "set_audio_removal").map((c) => c.args.removal)).toEqual([
+      { kind: "off" },
+    ]);
   });
 
   test("a pane change does not save or ask about typed days that would remove audio", async () => {

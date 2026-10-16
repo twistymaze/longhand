@@ -372,6 +372,8 @@ export function SummaryPrompts({
     // another computer. Its text stays in a deleted prompt entry, so that it
     // is not lost with no notice (R6).
     const ids = new Set(list?.prompts.map((p) => p.id));
+    // A prompt that a sync brings back shows its save errors again.
+    for (const id of ids) gone.current.delete(id);
     const lost = (shownList.current?.prompts ?? []).filter(
       (p) =>
         !p.built_in &&
@@ -383,7 +385,9 @@ export function SummaryPrompts({
     if (lost.length > 0) {
       const entries = lost.map((p) => ({
         id: p.id,
-        name: nameDrafts[p.id] ?? p.name,
+        // A prompt can't have an empty name, so a cleared Name field keeps
+        // the saved name.
+        name: nameDrafts[p.id]?.trim() ? nameDrafts[p.id] : p.name,
         text: drafts[keyOf(p.id, "text")] ?? p.text,
         title: drafts[keyOf(p.id, "title")] ?? savedOf(p, "title"),
         savedText: p.text,

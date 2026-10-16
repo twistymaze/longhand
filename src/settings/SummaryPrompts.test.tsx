@@ -1417,6 +1417,19 @@ describe("own saves of prompts", () => {
     );
   });
 
+  test("a deleted prompt whose Name field was cleared keeps its saved name", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    const user = userEvent.setup();
+    await selectCustom(user);
+    await setText(textArea(), "Mine");
+    await user.clear(screen.getByRole("textbox", { name: "Name" }));
+    await b.remoteDelete();
+    expect(await screen.findByText(deletedNotice)).toBeTruthy();
+    await act(async () => void fireEvent.click(button(/^Save as New Prompt/)));
+    await waitFor(() => expect(restoreCalls(b.tauri)).toEqual([{ name: "Team sync", text: "Mine", titleText: "Sync title" }]));
+  });
+
   test("an invalid unsaved text of a deleted prompt becomes the unsaved text of the new prompt", async () => {
     const b = heldBackend();
     renderPrompts();

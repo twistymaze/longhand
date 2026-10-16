@@ -3,7 +3,7 @@
 // many notes the change removes now, and shows a confirmation only when
 // that count is not zero. Rust starts the removal after the save (KTD6).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { type AudioRemovalSetting, commands, type Settings } from "../bindings";
 import { readOnlyReason } from "./shared";
 import { type CommitHow, CommitField, ErrorText, Group, Row, Switch, notes, useConfirm } from "./ui";
@@ -26,6 +26,9 @@ export function AudioRemoval({ settings, onSettings }: { settings: Settings; onS
   // A settings view with no value shows the default.
   const removal: AudioRemovalSetting = settings.audio_removal ?? { kind: "after_days", days: DEFAULT_DAYS };
   const on = removal.kind === "after_days";
+  // The setting of the last render.
+  const latest = useRef(removal);
+  latest.current = removal;
   const [lastDays, setLastDays] = useState(on ? removal.days : DEFAULT_DAYS);
   const days = on ? removal.days : lastDays;
   const [error, setError] = useState<string | null>(null);
@@ -75,6 +78,10 @@ export function AudioRemoval({ settings, onSettings }: { settings: Settings; onS
   };
 
   const commitDays = async (text: string, how: CommitHow): Promise<boolean> => {
+    // An unattended commit runs at the unmount of the field, after a render
+    // with a newer setting: for example after the switch turned removal
+    // off. Typed days then do not turn removal on again.
+    if (how === "unattended" && latest.current.kind !== "after_days") return false;
     const parsed = parseDays(text);
     if (parsed === null) {
       if (how === "unattended") return false;
