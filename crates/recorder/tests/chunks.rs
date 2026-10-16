@@ -257,7 +257,7 @@ fn a_crash_leaves_a_partial_that_launch_recovery_closes() {
     drop(w);
     assert_eq!(list_chunks(dir.path()).unwrap().len(), 1);
 
-    let recovered = recover_partial_chunks(dir.path()).unwrap();
+    let recovered = recover_partial_chunks(dir.path()).unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     let chunks = list_chunks(dir.path()).unwrap();
     assert_eq!(chunks.len(), 2);
@@ -294,7 +294,8 @@ fn a_partial_holding_only_lookback_is_removed_at_recovery() {
         .set_len(len - 2)
         .unwrap();
 
-    assert!(recover_partial_chunks(dir.path()).unwrap().is_empty());
+    let report = recover_partial_chunks(dir.path()).unwrap();
+    assert!(report.recovered.is_empty() && report.left.is_empty());
     assert_eq!(list_chunks(dir.path()).unwrap().len(), 1);
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
@@ -780,7 +781,7 @@ fn a_crash_in_a_stereo_segment_leaves_a_partial_that_recovery_closes_on_whole_fr
         .write_all(&[9, 9])
         .unwrap();
 
-    let recovered = recover_partial_chunks(dir.path()).unwrap();
+    let recovered = recover_partial_chunks(dir.path()).unwrap().recovered;
     assert_eq!(recovered.len(), 1);
     let chunks = list_chunks(dir.path()).unwrap();
     assert_eq!(chunks.len(), 2);
@@ -806,4 +807,83 @@ fn a_stereo_writer_refuses_a_part_frame() {
     assert!(w.write(&[0.1, 0.2, 0.3]).is_err());
     w.write(&[0.1, 0.2]).unwrap();
     assert_eq!(w.end_ms(), 0);
+}
+
+/// The `.part` files in `dir`.
+#[cfg(unix)]
+fn parts(dir: &Path) -> Vec<std::path::PathBuf> {
+    let mut parts: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "part"))
+        .collect();
+    parts.sort();
+    parts
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_recovery_folder_leaves_each_partial_and_reports_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 16_000;
+    for segment in 0..2 {
+        let mut w = writer(dir.path(), segment, segment as u64 * 10_000, rate);
+        w.write(&vec![0.1; 3 * rate as usize]).unwrap();
+        drop(w);
+    }
+    let before = parts(dir.path());
+    assert_eq!(before.len(), 2);
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+    // A process that ignores permissions (root) cannot test this.
+    let ignores_permissions = std::fs::write(dir.path().join("probe"), b"").is_ok();
+    let result = recover_partial_chunks(dir.path());
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    if ignores_permissions {
+        return;
+    }
+
+    let report = result.unwrap();
+    assert!(report.recovered.is_empty());
+    let mut left = report.left;
+    left.sort();
+    assert_eq!(left, before);
+    assert_eq!(parts(dir.path()), before, "each partial stays in place");
+}
+
+#[test]
+fn a_partial_that_cannot_be_repaired_is_reported_and_the_others_are_recovered() {
+    let dir = tempfile::tempdir().unwrap();
+    let rate = 16_000;
+    let mut w = writer(dir.path(), 0, 0, rate);
+    w.write(&vec![0.1; 3 * rate as usize]).unwrap();
+    drop(w);
+    let bad = dir.path().join("5-1700000000000-0-0.part");
+    // Longer than a header, so recovery cannot tell that it holds no samples.
+    std::fs::write(&bad, [b'x'; 100]).unwrap();
+
+    let report = recover_partial_chunks(dir.path()).unwrap();
+
+    assert_eq!(report.recovered.len(), 1);
+    assert_eq!(report.recovered[0].segment, 0);
+    assert_eq!(report.left, vec![bad.clone()]);
+    assert!(bad.is_file());
+    assert_eq!(list_chunks(dir.path()).unwrap().len(), 1);
+}
+
+#[test]
+fn an_empty_partial_holds_no_samples_and_recovery_removes_it() {
+    // WavFile::create buffers the header, so a crash before the first flush
+    // leaves a 0-byte `.part`. A `.part` of header length holds no samples.
+    let dir = tempfile::tempdir().unwrap();
+    let empty = dir.path().join("0-1700000000000-0-0.part");
+    std::fs::write(&empty, b"").unwrap();
+    let header_only = dir.path().join("1-1700000000000-0-0.part");
+    std::fs::write(&header_only, [0u8; recorder::wav::HEADER_BYTES as usize]).unwrap();
+
+    let report = recover_partial_chunks(dir.path()).unwrap();
+
+    assert!(report.recovered.is_empty());
+    assert!(report.left.is_empty(), "{:?}", report.left);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }

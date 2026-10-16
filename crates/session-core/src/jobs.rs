@@ -567,12 +567,17 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
     ) -> Result<Vec<String>> {
-        self.start_session_with_recognition(id, now, speaker_count, model, capture, None)
+        self.start_session_with_recognition(id, now, speaker_count, model, capture, None, &[])
     }
 
     /// Store the recognition configuration with the new session in the same
     /// INSERT. The note records no summary prompt: the type of the note
     /// when the summary runs chooses it (R4 of the type prompt plan).
+    ///
+    /// The notes in `unregistered` keep audio that has no segment row. This
+    /// start does not stop them: they stay as they are, and a later launch
+    /// registers their audio (KTD3 of the capture recovery plan).
+    #[allow(clippy::too_many_arguments)]
     pub fn start_session_with_recognition(
         &mut self,
         id: &str,
@@ -581,10 +586,14 @@ impl Store {
         model: &RecordingModel,
         capture: &CaptureChoice,
         snapshot: Option<&serde_json::Value>,
+        unregistered: &[String],
     ) -> Result<Vec<String>> {
         let mut stopped = Vec::new();
         for name in ["capturing", "interrupted"] {
             for record in self.sessions_in(name)? {
+                if unregistered.contains(&record.id) {
+                    continue;
+                }
                 let retained_audio = !self.segments(&record.id)?.is_empty();
                 self.apply(
                     &record.id,

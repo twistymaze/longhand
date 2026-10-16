@@ -528,7 +528,7 @@ async fn toggle(app: AppHandle) {
     let _ = tauri::async_runtime::spawn_blocking(move || match action {
         ShortcutAction::Stop => match manager.stop_session(&app) {
             Ok(outcome) => {
-                log::info!("shortcut stopped {}: {outcome:?}", outcome.session_id());
+                log::info!("shortcut stopped: {outcome:?}");
                 app.state::<Arc<ProcessingManager>>().wake();
             }
             Err(e) => log::error!("shortcut stop failed: {e}"),

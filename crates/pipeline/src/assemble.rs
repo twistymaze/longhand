@@ -478,24 +478,33 @@ pub fn assemble_segment(
                 chunk.path.display()
             )));
         }
-        // A missing chunk leaves a hole; silence keeps what follows on the timeline.
+        // The audio in the file starts at `audio_start_ms`. Skip the part
+        // before `from`, which the previous chunk already has.
+        let mut from = expected_ms;
+        // A missing chunk leaves a hole. The lookback of this chunk fills the
+        // end of the hole, and silence fills the part before the lookback.
         if chunk.start_ms > expected_ms {
-            let gap = ms_to_samples(chunk.start_ms - expected_ms, rate);
+            from = expected_ms.max(chunk.audio_start_ms);
             log::warn!(
                 "segment {}: {} ms missing before {}; filled with silence",
                 segment.index,
-                chunk.start_ms - expected_ms,
+                from - expected_ms,
                 chunk.path.display()
             );
+            // Push the previous chunk's pending samples before the silence.
+            block.truncate(block.len() / width * width);
+            if !block.is_empty() {
+                native_samples += (block.len() / width) as u64;
+                sink.push(&mut opus, &block)?;
+                block.clear();
+            }
+            let gap = ms_to_samples(from - expected_ms, rate);
             for part in vec![0.0f32; gap as usize * width].chunks(BLOCK * width) {
                 native_samples += (part.len() / width) as u64;
                 sink.push(&mut opus, part)?;
             }
         }
-        // The lookback repeats the previous chunk's tail; skip it.
-        let lookback = ms_to_samples(chunk.start_ms.saturating_sub(chunk.audio_start_ms), rate);
-        let overlap = ms_to_samples(expected_ms.saturating_sub(chunk.start_ms), rate);
-        let skip = (lookback + overlap) * width as u64;
+        let skip = ms_to_samples(from.saturating_sub(chunk.audio_start_ms), rate) * width as u64;
         for (i, sample) in reader.samples::<i16>().enumerate() {
             if (i as u64) < skip {
                 continue;

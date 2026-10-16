@@ -1009,6 +1009,85 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     assert!(!speaker_progress(&r).is_empty());
 }
 
+#[tokio::test]
+async fn a_claimed_note_registers_a_closed_chunk_that_has_no_row_and_assembles_it() {
+    // KTD3 of plan A: the store write of segment 1 failed, its chunks stay.
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let first = r.store.lock().unwrap().segments("s").unwrap()[0].clone();
+    common::write_segment(
+        &r.root.join("s"),
+        1,
+        first.end_ms() + 5_000,
+        16_000,
+        &speech(),
+        false,
+    );
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+
+    assert_eq!(outcome, Outcome::Finished);
+    assert_eq!(r.store.lock().unwrap().segments("s").unwrap().len(), 2);
+    // One analysis per assembled segment.
+    assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
+    // KTD1 of plan A: a `.part` that no repair could read has no row.
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    assert!(library::scan::write_marker(dest.path()));
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .dequeue_session("s", "test", common::at(100))
+        .unwrap();
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let working = root.path().join("s");
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), "# Transcript\n").unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    let part = working
+        .join(pipeline::RECOVERY_DIR)
+        .join("1-1800000000000-70000-70000.part");
+    std::fs::write(&part, [b'x'; 100]).unwrap();
+
+    let saved = pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    );
+
+    assert!(
+        matches!(saved, Err(pipeline::StageError::Failed(_))),
+        "{saved:?}"
+    );
+    assert!(part.is_file(), "the working folder and its chunks stay");
+    assert!(working.join(TRANSCRIPT_FILE).is_file());
+}
+
 /// The speaker progress events, in order.
 fn speaker_progress(r: &Rig) -> Vec<SpeakerProgress> {
     r.events

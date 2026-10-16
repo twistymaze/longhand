@@ -403,6 +403,39 @@ fn the_shortcut_discards_an_open_session_that_kept_no_audio() {
 }
 
 #[test]
+fn a_start_leaves_a_note_that_keeps_unregistered_audio() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store
+        .apply(
+            "s1",
+            &Event::CaptureLost {
+                reason: InterruptReason::Disk,
+                at: t(1),
+            },
+        )
+        .unwrap();
+    let before = store.session("s1").unwrap().unwrap().state;
+    let stopped = store
+        .start_session_with_recognition(
+            "s2",
+            t(5),
+            None,
+            &parakeet_live(),
+            &CaptureChoice::default(),
+            None,
+            &["s1".to_string()],
+        )
+        .unwrap();
+    assert!(stopped.is_empty());
+    assert_eq!(store.session("s1").unwrap().unwrap().state, before);
+    assert_eq!(
+        store.session("s2").unwrap().unwrap().state,
+        SessionState::Capturing
+    );
+}
+
+#[test]
 fn tick_queues_only_interruptions_past_their_window() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();
@@ -2035,7 +2068,15 @@ fn a_new_note_records_no_prompt_snapshot() {
         live_transcript: false,
     };
     store
-        .start_session_with_recognition("new", t(0), None, &model, &CaptureChoice::default(), None)
+        .start_session_with_recognition(
+            "new",
+            t(0),
+            None,
+            &model,
+            &CaptureChoice::default(),
+            None,
+            &[],
+        )
         .unwrap();
     store.create_session("old", t(1), None).unwrap();
     let conn = rusqlite::Connection::open(&path).unwrap();

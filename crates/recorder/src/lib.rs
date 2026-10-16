@@ -21,8 +21,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_util::sync::CancellationToken;
 
 pub use chunks::{
-    ChunkInfo, ChunkedWriter, RecorderError, SegmentArgs, SegmentSpan, chunk_channels, list_chunks,
-    recover_partial_chunks, remove_segment,
+    ChunkInfo, ChunkedWriter, PartialRecovery, RecorderError, SegmentArgs, SegmentSpan,
+    chunk_channels, chunk_segment_of, list_chunks, recover_partial_chunks, remove_segment,
 };
 
 /// Why a segment stopped recording.

@@ -430,7 +430,8 @@ fn feed_with_silence(
 }
 
 /// Move samples from the ring to the consumer until the consumer goes away
-/// or the stream faults.
+/// or the stream faults. On a fault, the drain first sends the audio that is
+/// in the ring and the audio that the resampler holds, then the error.
 fn drain(
     mut consumer: rtrb::Consumer<f32>,
     mut gaps: rtrb::Consumer<Overrun>,
@@ -447,21 +448,30 @@ fn drain(
     let mut last_xruns = 0;
     let mut first = true;
     let mut consumed = 0u64;
+    let mut closed = false;
+    let mut send = |frame: &[f32], closed: &mut bool| {
+        if *closed {
+            return;
+        }
+        if first {
+            log::info!("first capture frame");
+            first = false;
+        }
+        let frame = CaptureFrame {
+            raw_mic: Arc::from(frame),
+            raw_speaker: Arc::from([] as [f32; 0]),
+            aec_mic: None,
+        };
+        *closed = tx.blocking_send(Ok(frame)).is_err();
+    };
 
     loop {
         if tx.is_closed() {
             return;
         }
+        // Read the fault before the ring: all the frames that the callback
+        // wrote before the fault are then in `available`.
         let fault = shared.fault.load(Ordering::Acquire);
-        if fault != NO_FAULT {
-            if fault == FAULT_DEVICE_LOST {
-                log::warn!("microphone lost; ending capture");
-            } else {
-                log::warn!("microphone stream failed; ending capture");
-            }
-            let _ = tx.blocking_send(Err(Error::MicStreamEnded));
-            return;
-        }
         let overrun = shared.overrun_samples.load(Ordering::Relaxed);
         if overrun != last_overrun {
             log::warn!(
@@ -477,35 +487,33 @@ fn drain(
         }
 
         let available = consumer.slots();
-        if available == 0 {
+        if available == 0 && fault == NO_FAULT {
             std::thread::sleep(IDLE_POLL);
             continue;
         }
-        let Ok(chunk) = consumer.read_chunk(available) else {
-            continue;
-        };
-        let (a, b) = chunk.as_slices();
-        let mut closed = false;
-        let unplaced = shared.unplaced.swap(0, Ordering::Relaxed);
-        feed_with_silence([a, b], &mut consumed, &mut gaps, unplaced, |part| {
-            resampler.push(part, |frame| {
-                if closed {
-                    return;
-                }
-                if first {
-                    log::info!("first capture frame");
-                    first = false;
-                }
-                let frame = CaptureFrame {
-                    raw_mic: Arc::from(frame),
-                    raw_speaker: Arc::from([] as [f32; 0]),
-                    aec_mic: None,
-                };
-                closed = tx.blocking_send(Ok(frame)).is_err();
+        if available > 0
+            && let Ok(chunk) = consumer.read_chunk(available)
+        {
+            let (a, b) = chunk.as_slices();
+            let unplaced = shared.unplaced.swap(0, Ordering::Relaxed);
+            feed_with_silence([a, b], &mut consumed, &mut gaps, unplaced, |part| {
+                resampler.push(part, |frame| send(frame, &mut closed));
             });
-        });
-        chunk.commit_all();
-        if closed {
+            chunk.commit_all();
+            if closed {
+                return;
+            }
+        }
+        if fault != NO_FAULT {
+            if fault == FAULT_DEVICE_LOST {
+                log::warn!("microphone lost; ending capture");
+            } else {
+                log::warn!("microphone stream failed; ending capture");
+            }
+            resampler.finish(|frame| send(frame, &mut closed));
+            if !closed {
+                let _ = tx.blocking_send(Err(Error::MicStreamEnded));
+            }
             return;
         }
     }
@@ -600,6 +608,49 @@ mod tests {
             2,
         );
         assert_eq!(out, [0.0, 0.0, 1.0]);
+    }
+
+    /// C16: a fault does not drop the audio that is already in the ring.
+    /// The drain sends all of it, with the resampler tail, before the error.
+    #[test]
+    fn a_fault_sends_the_ring_audio_and_the_resampler_tail_before_the_error() {
+        const NATIVE: u32 = 48_000;
+        const OUT: u32 = 16_000;
+        const FRAME: usize = 480;
+        const INPUT: usize = 24_000;
+        let (mut producer, consumer) = rtrb::RingBuffer::new(INPUT);
+        for _ in 0..INPUT {
+            producer.push(0.25).unwrap();
+        }
+        let (_gaps_in, gaps) = rtrb::RingBuffer::new(1);
+        let shared = Shared::default();
+        shared.fault.store(FAULT_DEVICE_LOST, Ordering::Release);
+        let (tx, mut rx) = mpsc::channel(1024);
+
+        drain(consumer, gaps, &shared, NATIVE, OUT, FRAME, &tx);
+        drop(tx);
+
+        let mut total = 0;
+        let mut ended = false;
+        while let Ok(item) = rx.try_recv() {
+            assert!(!ended, "nothing comes after the error");
+            match item {
+                Ok(frame) => {
+                    assert_eq!(frame.raw_mic.len(), FRAME, "every frame is whole");
+                    total += frame.raw_mic.len();
+                }
+                Err(Error::MicStreamEnded) => ended = true,
+                Err(e) => panic!("unexpected error {e:?}"),
+            }
+        }
+        assert!(ended, "the drain reports the end of the stream");
+        // All input at the output rate. The resampler delay and the padding
+        // of the last frame can add less than two frames.
+        let expected = INPUT * OUT as usize / NATIVE as usize;
+        assert!(
+            (expected..expected + 2 * FRAME).contains(&total),
+            "{expected} samples of output expected, got {total}"
+        );
     }
 
     #[test]

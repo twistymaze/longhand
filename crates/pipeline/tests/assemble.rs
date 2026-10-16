@@ -337,6 +337,96 @@ fn an_old_segment_removed_before_its_copy_fails_assembly_with_the_removal() {
     assert!(!dir.join(&segment.audio_file).exists(), "no copy is kept");
 }
 
+// ------------------------------------------------------- a missing chunk
+
+/// A ramp from 0.1 to 0.9 over `secs`, so that each time has its own level.
+fn ramp_at(t: f64, secs: f64) -> f64 {
+    0.1 + 0.8 * t / secs
+}
+
+/// Assemble a 130 s ramp segment whose middle chunk (60 s to 120 s) is
+/// missing. The last chunk starts at 120 s, and its file holds the 2 s
+/// lookback from 118 s. Returns the processing samples and the native
+/// sample count.
+fn assemble_with_missing_middle_chunk() -> (Vec<f32>, u64) {
+    const SECS: f64 = 130.0;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("gap");
+    let audio: Vec<f32> = (0..(48_000.0 * SECS) as usize)
+        .map(|i| ramp_at(i as f64 / 48_000.0, SECS) as f32)
+        .collect();
+    let segment = write_segment(&dir, 0, 0, 48_000, &audio, false);
+    let chunks = recorder::list_chunks(&dir.join(RECOVERY_DIR)).unwrap();
+    let starts: Vec<_> = chunks
+        .iter()
+        .map(|c| (c.start_ms, c.audio_start_ms))
+        .collect();
+    assert_eq!(starts, [(0, 0), (60_000, 58_000), (120_000, 118_000)]);
+    std::fs::remove_file(&chunks[1].path).unwrap();
+
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("gap", at(0), None).unwrap();
+        s.put_segment("gap", &segment).unwrap();
+    }
+    let done = assemble::run(
+        &store,
+        "gap",
+        &dir,
+        std::slice::from_ref(&segment),
+        None,
+        &Unattended,
+    )
+    .unwrap();
+    let (_, proc) = read_proc(&dir.join(proc_file(&segment.audio_file)));
+    assert_eq!(done[0].proc_samples, proc.len() as u64);
+    (proc, done[0].native_samples)
+}
+
+/// Check that `proc` agrees with `want` from `from_s` to `to_s`. A margin at
+/// each end lets the resampler settle at a step.
+fn check_span(proc: &[f32], from_s: f64, to_s: f64, want: impl Fn(f64) -> f64) {
+    let rate = PROC_RATE as f64;
+    let margin = 40;
+    let from = (from_s * rate) as usize + margin;
+    let to = (to_s * rate) as usize - margin;
+    for (i, &got) in proc.iter().enumerate().take(to).skip(from) {
+        let want = want(i as f64 / rate);
+        assert!(
+            (got as f64 - want).abs() < 0.01,
+            "sample {i} ({:.4} s): {got} vs {want}",
+            i as f64 / rate
+        );
+    }
+}
+
+#[test]
+fn audio_before_a_missing_chunk_ends_before_the_silence() {
+    // Covers C20.
+    let (proc, native) = assemble_with_missing_middle_chunk();
+    assert_eq!(native, 130 * 48_000);
+    // All of the first chunk, also its last samples, comes before the gap.
+    check_span(&proc, 0.0, 60.0, |t| ramp_at(t, 130.0));
+    check_span(&proc, 60.0, 118.0, |_| 0.0);
+}
+
+#[test]
+fn the_lookback_of_the_chunk_after_a_gap_fills_the_end_of_the_gap() {
+    // Covers C92.
+    let (proc, native) = assemble_with_missing_middle_chunk();
+    assert_eq!(native, 130 * 48_000);
+    let expected = 130 * PROC_RATE as i64;
+    assert!(
+        (proc.len() as i64 - expected).abs() <= 320,
+        "{} samples",
+        proc.len()
+    );
+    // Silence only before the lookback; the recorded audio from 118 s.
+    check_span(&proc, 60.0, 118.0, |_| 0.0);
+    check_span(&proc, 118.0, 130.0, |t| ramp_at(t, 130.0));
+}
+
 // ------------------------------------------------------------ stereo (U9)
 
 mod stereo {
