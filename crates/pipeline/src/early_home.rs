@@ -603,32 +603,7 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
     {
         return Ok(());
     }
-    let files = match scan::read_note(&home, READ_TIMEOUT) {
-        NoteRead::Note(files) => Some(*files),
-        NoteRead::Unreadable(why) => {
-            return Err(StageError::NoDestination(format!(
-                "the files of {} cannot be read: {why}",
-                home.display()
-            )));
-        }
-        _ => None,
-    };
-    // A note in the old layout gets no write: its records stay in
-    // `session.md` until the conversion (KTD6).
-    if let Some(files) = files
-        && files.layout == Layout::New
-        && files.record.session_id == id
-        && files.record.result != Some(flag)
-    {
-        // Only the flag changes: the title and the rest stay as the files
-        // have them, also when another computer wrote them.
-        let mut record = files.record;
-        record.result = Some(flag);
-        let text = note_files::write_record(&home, &record).map_err(|e| storage(&root, e))?;
-        let session = std::fs::read(home.join(SESSION_FILE)).unwrap_or_default();
-        lock(store)
-            .set_written_session_fingerprint(id, Some(&written_fingerprint(&session, &text)))?;
-    }
+    write_flag(&lock(store), id, &home, &root, flag)?;
     // The note does not record any more: a recording that kept no audio
     // went back to "no recording". This job wrote the marker, and the
     // in-use keeper removes only the markers that it wrote, so the job
@@ -637,7 +612,46 @@ fn sync_guarded(store: &SharedStore, id: &str, run_id: &str) -> Result<(), Stage
     if flag == ResultFlag::NoRecording {
         in_use::remove_marker(&home, run_id).map_err(|e| storage(&root, e))?;
     }
-    sync_notes(store, id, &home)
+    sync_notes(&lock(store), id, &home)
+}
+
+/// Write `flag` into the `longhand.json` of the note `id` in `home`, and
+/// record the fingerprint of what this computer wrote. The caller holds the
+/// store lock from the read to the write, so a title write does not undo
+/// the flag, and the flag write does not undo the title.
+fn write_flag(
+    store: &Store,
+    id: &str,
+    home: &Path,
+    root: &Path,
+    flag: ResultFlag,
+) -> Result<(), StageError> {
+    let files = match scan::read_note(home, READ_TIMEOUT) {
+        NoteRead::Note(files) => *files,
+        NoteRead::Unreadable(why) => {
+            return Err(StageError::NoDestination(format!(
+                "the files of {} cannot be read: {why}",
+                home.display()
+            )));
+        }
+        _ => return Ok(()),
+    };
+    // A note in the old layout gets no write: its records stay in
+    // `session.md` until the conversion (KTD6).
+    if files.layout != Layout::New
+        || files.record.session_id != id
+        || files.record.result == Some(flag)
+    {
+        return Ok(());
+    }
+    // Only the flag changes: the title and the rest stay as the files have
+    // them, also when another computer wrote them.
+    let mut record = files.record;
+    record.result = Some(flag);
+    let text = note_files::write_record(home, &record).map_err(|e| storage(root, e))?;
+    let session = std::fs::read(home.join(SESSION_FILE)).unwrap_or_default();
+    store.set_written_session_fingerprint(id, Some(&written_fingerprint(&session, &text)))?;
+    Ok(())
 }
 
 /// The storage folder of the home folder `home`, directly or through its
@@ -651,42 +665,37 @@ fn storage_root(home: &Path) -> PathBuf {
 }
 
 /// Write the notes of the store into `home` when the file differs and is
-/// still the file that this computer last wrote. A notes save during the
-/// write writes the file itself; the loop then sees the new notes.
-fn sync_notes(store: &SharedStore, id: &str, home: &Path) -> Result<(), StageError> {
+/// still the file that this computer last wrote. The caller holds the
+/// store lock from the read of the store notes to the record of the
+/// written fingerprint, so a notes save cannot write between them and then
+/// be replaced by older notes.
+fn sync_notes(store: &Store, id: &str, home: &Path) -> Result<(), StageError> {
     let root = storage_root(home);
-    loop {
-        let (notes, written) = {
-            let guard = lock(store);
-            (guard.notes(id)?, guard.written_fingerprints(id)?.notes)
-        };
-        let rendered = folder::render_notes(&notes);
-        let wanted = folder::fingerprint(rendered.as_bytes());
-        let current = match read_timed(home.join(NOTES_FILE), READ_TIMEOUT) {
-            Read::Bytes(bytes) => Some(folder::fingerprint(&bytes)),
-            Read::Missing => None,
-            Read::Failed(why) => {
-                return Err(StageError::NoDestination(format!(
-                    "{} cannot be read: {why}",
-                    home.join(NOTES_FILE).display()
-                )));
-            }
-        };
-        if current.as_ref() == Some(&wanted) {
-            return Ok(());
+    let notes = store.notes(id)?;
+    let written = store.written_fingerprints(id)?.notes;
+    let rendered = folder::render_notes(&notes);
+    let wanted = folder::fingerprint(rendered.as_bytes());
+    let current = match read_timed(home.join(NOTES_FILE), READ_TIMEOUT) {
+        Read::Bytes(bytes) => Some(folder::fingerprint(&bytes)),
+        Read::Missing => None,
+        Read::Failed(why) => {
+            return Err(StageError::NoDestination(format!(
+                "{} cannot be read: {why}",
+                home.join(NOTES_FILE).display()
+            )));
         }
-        // Another computer wrote the file: the library refresh takes it.
-        if current.is_some() && current != written {
-            return Ok(());
-        }
-        home_write::write_atomic(home, NOTES_FILE, rendered.as_bytes())
-            .map_err(|e| storage(&root, e))?;
-        let guard = lock(store);
-        if guard.notes(id)? == notes {
-            guard.set_written_notes_fingerprint(id, Some(&wanted))?;
-            return Ok(());
-        }
+    };
+    if current.as_ref() == Some(&wanted) {
+        return Ok(());
     }
+    // Another computer wrote the file: the library refresh takes it.
+    if current.is_some() && current != written {
+        return Ok(());
+    }
+    home_write::write_atomic(home, NOTES_FILE, rendered.as_bytes())
+        .map_err(|e| storage(&root, e))?;
+    store.set_written_notes_fingerprint(id, Some(&wanted))?;
+    Ok(())
 }
 
 /// Whether another computer deleted the home folder of `id` while this
