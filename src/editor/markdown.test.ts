@@ -323,16 +323,17 @@ describe("adjacent lists", () => {
 });
 
 describe("links", () => {
-  test("keep an address with a space", () => {
-    const json = doc(
-      p({
-        type: "text",
-        text: "link",
-        marks: [{ type: "link", attrs: { href: "https://example.com/my file.pdf", target: null } }],
-      }),
-    );
-    const back = md2json(json2md(json));
-    expect(back.content![0].content![0].text).toBe("link");
-    expect(back.content![0].content![0].marks?.[0].type).toBe("link");
+  test("keep an address with a space or angle brackets", () => {
+    for (const href of ["https://example.com/my file.pdf", "https://example.com/a<b>c"]) {
+      const json = doc(
+        p({ type: "text", text: "link", marks: [{ type: "link", attrs: { href, target: null } }] }),
+      );
+      const back = md2json(json2md(json));
+      const node = back.content![0].content![0];
+      expect(node.text).toBe("link");
+      expect(node.marks?.[0].type).toBe("link");
+      // The parser stores the address percent-encoded: the same address.
+      expect(decodeURI(node.marks?.[0].attrs?.href)).toBe(href);
+    }
   });
 });

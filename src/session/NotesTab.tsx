@@ -13,6 +13,7 @@
 // has not typed for 2 seconds, so a sync never replaces a local edit.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { commands } from "../bindings";
 import { NoteEditor, type NoteEditorHandle } from "../editor/NoteEditor";
 import { addNotesSend, trackNotesSave } from "../lib/notesSaves";
@@ -92,10 +93,6 @@ export function NotesTab({
   const readSeq = useRef(0);
   const forceRead = useRef(false);
   const editor = useRef<NoteEditorHandle>(null);
-  // The generation of the document that the editor shows, and the
-  // fingerprint of each document that a read replaced.
-  const generation = useRef(0);
-  const replaced = useRef(new Map<number, string | null>());
   const read = useCallback(
     async (id: string, forceThis: boolean) => {
       const seq = ++readSeq.current;
@@ -114,28 +111,31 @@ export function NotesTab({
       // the read.
       if (!force) editor.current?.flush();
       const s = saving.current;
-      const idle = !s.busy && !s.next && performance.now() - lastInput.current >= RELOAD_AFTER_INPUT_MS;
+      // An edit that waits after a conflict goes into a draft before the
+      // read can replace the document.
+      const waits = held.current?.id === id && held.current.markdown !== null;
+      const idle =
+        !s.busy && !s.next && !waits && performance.now() - lastInput.current >= RELOAD_AFTER_INPUT_MS;
       if (!force && !idle) {
         // The user typed while the notes were read: try again later.
         reload.current();
         return;
       }
       if (!force && r.data.fingerprint === fingerprint.current) {
-        // The notes did not change, so the editor shows them. Edits that
-        // wait after a conflict go out again on the normal path.
-        const h = held.current;
-        if (h?.id === id) {
-          held.current = null;
-          if (h.markdown) save(id, h.markdown);
-        }
+        // The notes did not change, so the editor shows them. No edit waits
+        // (see `waits`), and later edits go out again on the normal path.
+        if (held.current?.id === id) held.current = null;
         return;
       }
-      replaced.current.set(generation.current, fingerprint.current);
       fingerprint.current = r.data.fingerprint;
       if (held.current?.id === id) held.current = null;
-      generation.current += 1;
-      const next = generation.current;
-      setLoaded({ markdown: r.data.markdown, generation: next });
+      // The new editor replaces the old one in this same task, right after
+      // the flush above, so no change can reach the old editor between the
+      // two. Its unmount then has no change to send with the new
+      // fingerprint.
+      flushSync(() => {
+        setLoaded((l) => ({ markdown: r.data.markdown, generation: (l?.generation ?? 0) + 1 }));
+      });
       onMarkdownRef.current?.(r.data.markdown);
     },
     [],
@@ -165,8 +165,6 @@ export function NotesTab({
 
   useEffect(() => {
     fingerprint.current = null;
-    generation.current = 0;
-    replaced.current.clear();
     setLoaded(null);
     void read(sessionId, true);
     return () => {
@@ -210,7 +208,7 @@ export function NotesTab({
   // conflicting save sent. Return true when an edit was sent.
   function sendHeld() {
     const h = held.current;
-    if (!h?.markdown) return false;
+    if (!h || h.markdown === null) return false;
     held.current = null;
     save(h.id, h.markdown, h.fingerprint);
     return true;
@@ -264,15 +262,7 @@ export function NotesTab({
     trackNotesSave(id, saved);
   }
 
-  // `from` is the generation of the editor that sent the change. A change
-  // from a replaced editor (its unmount sends it) goes out with the
-  // fingerprint of its own document, so a changed file gives a draft. The
-  // page keeps the text that the editor shows.
-  const send = (next: string, from: number) => {
-    if (from !== generation.current) {
-      save(sessionId, next, replaced.current.get(from) ?? null);
-      return;
-    }
+  const send = (next: string) => {
     onMarkdown?.(next);
     save(sessionId, next);
   };
@@ -289,7 +279,7 @@ export function NotesTab({
           ref={editor}
           key={`${sessionId}:${loaded.generation}`}
           markdown={loaded.markdown}
-          onChange={(next) => send(next, loaded.generation)}
+          onChange={send}
           autoFocus={autoFocus && loaded.generation === 1}
           editable={editable}
         />
