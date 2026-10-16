@@ -8015,7 +8015,7 @@ fn stopped_summary(r: &Rig, home: &std::path::Path, stop: usize) -> std::path::P
         .unwrap();
     if stop > 0 {
         let mut written = 0;
-        let stopped = publication.publish_with(home, &local, &mut |_| {
+        let stopped = publication.publish_with(home, &local, || (), &mut |_| {
             written += 1;
             if written == stop {
                 Err(std::io::Error::other("crash"))

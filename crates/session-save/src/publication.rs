@@ -175,8 +175,13 @@ impl Publication {
     }
 
     /// [`Publication::publish_with`] with no hook.
-    pub fn publish(&self, home: &Path, local: &Path) -> io::Result<Outcome> {
-        self.publish_with(home, local, &mut |_| Ok(()))
+    pub fn publish<G>(
+        &self,
+        home: &Path,
+        local: &Path,
+        hold: impl FnOnce() -> G,
+    ) -> io::Result<Outcome> {
+        self.publish_with(home, local, hold, &mut |_| Ok(()))
     }
 
     /// Write the staged files in `local` that differ from the files in
@@ -184,10 +189,18 @@ impl Publication {
     /// the record after any write reaches the same end state. `after_write`
     /// runs after each write with the name of the file. An error from it
     /// stops the publication, as a crash does.
-    pub fn publish_with(
+    ///
+    /// The staged files are written without a lock. `hold` gives the guard
+    /// of the lock that the other writers of `longhand.json` hold (the store
+    /// lock of the app): the publication holds it from the last read of
+    /// the records to the write of `longhand.json`, so a title or a type
+    /// written by another writer is not undone. A caller that holds the lock
+    /// already gives a function that returns `()`.
+    pub fn publish_with<G>(
         &self,
         home: &Path,
         local: &Path,
+        hold: impl FnOnce() -> G,
         after_write: &mut dyn FnMut(&str) -> io::Result<()>,
     ) -> io::Result<Outcome> {
         let before = self.before.clone().compared(self.set);
@@ -219,8 +232,12 @@ impl Publication {
             home_write::copy_atomic(home, name, &local.join(name))?;
             after_write(name)?;
         }
-        // Read the records again just before the write, so that a title or
-        // a pending type written in the meantime stays.
+        // Read the records again under the lock, just before the write, so
+        // that a title or a pending type written in the meantime stays. The
+        // read has a time limit, because the lock stops the other writers:
+        // after a time-out, the publication stops as a crash does, and a
+        // rerun from the record rolls forward.
+        let _guard = hold();
         let current = note_files::new_layout_record(home)?;
         if ResultFields::of(&current).compared(self.set) != before {
             return Ok(Outcome::Conflict);

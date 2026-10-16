@@ -8,7 +8,8 @@
 //! there last. Before the conversion, the records of an old note come from
 //! `session.md`, and its summary data from the `summary.md` frontmatter.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::folder::{FolderError, SessionDoc, SessionMd, fingerprint};
 use crate::jobs::{Title, TitleSource};
@@ -112,6 +113,23 @@ impl NoteFiles {
             .map_err(|e| std::io::Error::other(e.to_string()))
     }
 
+    /// [`NoteFiles::read`], with each file read stopped after `timeout`. A
+    /// read that does not finish in time gives an error of the kind
+    /// [`std::io::ErrorKind::TimedOut`].
+    pub fn read_timed(folder: &Path, timeout: Duration) -> std::io::Result<Self> {
+        let text = |name: &str| match read_timed(folder.join(name), timeout) {
+            Read::Missing => Ok(None),
+            Read::Bytes(bytes) => String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            Read::Failed(why) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why)),
+        };
+        let session_md = text(SESSION_FILE)?;
+        let record = text(NOTE_RECORD_FILE)?;
+        Self::parse(session_md.as_deref(), record.as_deref())
+            .map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
     /// The files of a new-layout note.
     pub fn new(record: NoteRecord, user: SessionMd) -> Self {
         let title_source = user
@@ -170,6 +188,37 @@ impl NoteFiles {
         self.layout == Layout::New
             && self.doc.title.as_deref()
                 != self.record.written_title.as_ref().map(|t| t.text.as_str())
+    }
+}
+
+/// The default time limit of one file read.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The result of [`read_timed`].
+pub enum Read {
+    Missing,
+    Bytes(Vec<u8>),
+    /// The read failed or did not finish in time.
+    Failed(String),
+}
+
+/// Read `path` on a separate thread, and stop waiting after `timeout`. A
+/// read that does not finish keeps its thread until the read returns.
+pub fn read_timed(path: PathBuf, timeout: Duration) -> Read {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("note-read".into())
+        .spawn(move || {
+            let _ = tx.send(std::fs::read(&path));
+        });
+    if let Err(e) = spawned {
+        return Read::Failed(format!("cannot start the read: {e}"));
+    }
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(bytes)) => Read::Bytes(bytes),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Read::Missing,
+        Ok(Err(e)) => Read::Failed(e.to_string()),
+        Err(_) => Read::Failed(format!("the read did not finish in {timeout:?}")),
     }
 }
 
