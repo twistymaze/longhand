@@ -298,6 +298,79 @@ fn a_taken_name_gets_a_suffix_and_an_empty_folder_is_never_replaced() {
     assert!(std::fs::read_dir(dest.join(NAME)).unwrap().next().is_none());
 }
 
+/// Refuses the final rename as in use (`PermissionDenied`, as Windows does
+/// while another app holds a file in the folder) `refusals` times.
+struct InUse {
+    refusals: Cell<usize>,
+    calls: Cell<usize>,
+}
+
+impl InUse {
+    fn new(refusals: usize) -> Self {
+        Self {
+            refusals: Cell::new(refusals),
+            calls: Cell::new(0),
+        }
+    }
+}
+
+impl Fs for InUse {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        RealFs.rename(from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.calls.set(self.calls.get() + 1);
+        if self.refusals.get() > 0 {
+            self.refusals.set(self.refusals.get() - 1);
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        RealFs.rename_new(from, to)
+    }
+}
+
+#[test]
+fn a_final_rename_refused_for_a_moment_as_in_use_keeps_the_name() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, dest) = (working(root.path()), destination(root.path()));
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &dest,
+        folder_name: NAME,
+    };
+    let fs = InUse::new(2);
+    let states = run(&job, &fs, SaveState::Working);
+    assert_eq!(
+        states.last(),
+        Some(&SaveState::Done {
+            path: dest.join(NAME)
+        }),
+        "a folder in use is not a taken name"
+    );
+    assert_eq!(fs.calls.get(), 3);
+}
+
+#[test]
+fn a_final_rename_that_stays_in_use_says_so_and_tries_no_other_name() {
+    let root = tempfile::tempdir().unwrap();
+    let (work, dest) = (working(root.path()), destination(root.path()));
+    let job = Job {
+        session_id: "s1",
+        working: &work,
+        destination: &dest,
+        folder_name: NAME,
+    };
+    let staged = step(&SaveState::Working, &job, &RealFs).unwrap();
+    let fs = InUse::new(usize::MAX);
+    let err = step(&staged, &job, &fs).unwrap_err();
+    assert!(err.to_string().contains("in use"), "{err}");
+    assert!(!err.to_string().contains("no free name"), "{err}");
+    assert_eq!(
+        fs.calls.get(),
+        1 + session_save::rename_home::IN_USE_RETRIES
+    );
+}
+
 #[test]
 fn a_staging_folder_this_session_did_not_make_is_refused() {
     let root = tempfile::tempdir().unwrap();

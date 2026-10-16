@@ -450,7 +450,7 @@ pub fn step(
                 return Ok(EarlyState::Done { path: staging });
             }
             for target in candidates {
-                match fs.rename_new(&staging, &target) {
+                match rename::rename_new_waiting(fs, &staging, &target) {
                     Ok(()) => {
                         fsync::sync_dir(root).map_err(|e| storage(root, e))?;
                         // Longhand saves to this storage folder now (KTD5
@@ -458,7 +458,11 @@ pub fn step(
                         crate::follow::mark_destination(root);
                         return Ok(EarlyState::Done { path: target });
                     }
-                    Err(e) if rename::is_taken(&e) => continue,
+                    Err(e) if rename::is_name_taken(&e) => continue,
+                    // A folder in use is not a taken name (KTD8).
+                    Err(e) if rename::is_in_use(&e) => {
+                        return Err(storage(root, rename::in_use_error(&staging, &e)));
+                    }
                     Err(e) => return Err(storage(root, e)),
                 }
             }

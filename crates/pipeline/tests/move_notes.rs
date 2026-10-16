@@ -989,6 +989,77 @@ fn a_name_that_is_taken_in_the_new_folder_gives_a_free_name() {
     }
 }
 
+/// [`Volumes`], with each rename to a note name in the new folder refused
+/// as in use (`PermissionDenied`, as Windows does while another app holds
+/// a file) `refusals` times. Hidden names (the volume probe) are not
+/// refused.
+struct InUseInNew {
+    volumes: Volumes,
+    refusals: std::cell::Cell<usize>,
+}
+
+impl Fs for InUseInNew {
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.volumes.rename(from, to)
+    }
+    fn rename_new(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let hidden = to
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'));
+        if to.starts_with(&self.volumes.new) && !hidden && self.refusals.get() > 0 {
+            self.refusals.set(self.refusals.get() - 1);
+            return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        }
+        self.volumes.rename_new(from, to)
+    }
+}
+
+#[test]
+fn a_note_in_use_for_a_moment_moves_with_its_own_name() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = InUseInNew {
+            volumes: Volumes::of(&f, cross),
+            refusals: std::cell::Cell::new(2),
+        };
+        let source = f.save_note("a", "Budget");
+        let name = source.file_name().unwrap().to_owned();
+        f.open();
+        finish(&mover(&f, &fs));
+        let home = assert_moved(&f, "a");
+        assert_eq!(
+            home.file_name().unwrap(),
+            name,
+            "in use is not a taken name"
+        );
+    }
+}
+
+#[test]
+fn a_note_that_stays_in_use_pauses_the_move_saying_so() {
+    for cross in [false, true] {
+        let f = folders();
+        let fs = InUseInNew {
+            volumes: Volumes::of(&f, cross),
+            refusals: std::cell::Cell::new(usize::MAX),
+        };
+        f.save_note("a", "Budget");
+        f.open();
+        match pass(&mover(&f, &fs)) {
+            PassEnd::Paused(MovePause::Failed { message }) => {
+                assert!(message.contains("in use"), "{message}");
+                assert!(!message.contains("no free name"), "{message}");
+            }
+            end => panic!("{end:?}"),
+        }
+        // Only the first name was tried.
+        assert_eq!(
+            fs.refusals.get(),
+            usize::MAX - 1 - session_save::rename_home::IN_USE_RETRIES
+        );
+    }
+}
+
 // ---------------------------------------------------------------- type folders (KTD14)
 
 impl Folders {

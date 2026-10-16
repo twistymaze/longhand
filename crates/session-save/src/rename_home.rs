@@ -7,20 +7,14 @@
 //! another folder. A change of case alone goes through a temporary name,
 //! because a case-insensitive volume sees the old and the new name as one.
 
+use crate::rename::{Fs, is_in_use, is_name_taken, rename_new_waiting};
+pub use crate::rename::{IN_USE_DELAY, IN_USE_RETRIES};
+use crate::{MAX_NAMES, fsync, naming};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-
-use crate::rename::{Fs, is_in_use, is_name_taken};
-use crate::{MAX_NAMES, fsync, naming};
 
 /// The temporary name of a change of case alone starts with this.
 pub const TEMP_PREFIX: &str = ".longhand-rename-";
-
-/// A move that is refused because the folder is in use is tried again this
-/// many times, after [`IN_USE_DELAY`] each time.
-pub const IN_USE_RETRIES: usize = 3;
-pub const IN_USE_DELAY: Duration = Duration::from_millis(200);
 
 /// One recorded move of a home folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,18 +109,23 @@ pub fn rename_into(
         return Err(RenameError::Missing(from.to_path_buf()));
     };
     let same_parent = old_parent == parent;
+    // The folder that each next move takes. A change of case whose names
+    // are both taken leaves the folder at its temporary name, and the next
+    // names move it from there.
+    let mut source = from.to_path_buf();
+    let mut at_temp = false;
     for attempt in 1..=MAX_NAMES {
         let target = naming::candidate(name, attempt);
-        if same_parent && target == current {
+        if same_parent && !at_temp && target == current {
             return Ok(from.to_path_buf());
         }
         let to = parent.join(&target);
         if exists_exactly(&to) {
             continue;
         }
-        let case_only = same_parent && target.to_lowercase() == current.to_lowercase();
+        let case_only = same_parent && !at_temp && target.to_lowercase() == current.to_lowercase();
         let intent = Move {
-            from: from.to_path_buf(),
+            from: source.clone(),
             to: to.clone(),
             temp: case_only.then(|| parent.join(temp_name(session_id))),
         };
@@ -134,6 +133,15 @@ pub fn rename_into(
         match take(&intent, fs) {
             Ok(()) => return Ok(to),
             Err(Refused::Taken) => continue,
+            Err(Refused::AtTemp(temp)) => {
+                log::info!(
+                    "{} and {} are taken, so the folder goes to the next free name",
+                    to.display(),
+                    from.display()
+                );
+                source = temp;
+                at_temp = true;
+            }
             Err(Refused::Failed(e)) => return Err(e),
         }
     }
@@ -156,6 +164,15 @@ pub fn resolve(intent: &Move, fs: &dyn Fs) -> Result<Resolved, RenameError> {
         return match second_move(temp, &intent.to, &intent.from, fs) {
             Ok(()) => Ok(Resolved::Moved(intent.to.clone())),
             Err(Refused::Taken) => Ok(Resolved::NotMoved),
+            // The record keeps the temporary name, the only name that
+            // finds the folder.
+            Err(Refused::AtTemp(temp)) => Err(RenameError::Io(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "the folder is at {}, and its old and new names are taken",
+                    temp.display()
+                ),
+            ))),
             Err(Refused::Failed(e)) => Err(e),
         };
     }
@@ -170,6 +187,9 @@ enum Refused {
     /// Another folder has the name: the next name can be tried. The folder
     /// is at `from`.
     Taken,
+    /// The second move of a change of case and the move back were both
+    /// refused as taken: the folder is at this temporary name.
+    AtTemp(PathBuf),
     Failed(RenameError),
 }
 
@@ -193,12 +213,24 @@ fn take(intent: &Move, fs: &dyn Fs) -> Result<(), Refused> {
 }
 
 /// The move from the temporary name to `to`. When it is refused, the
-/// folder goes back to `from`, so it never stays under the hidden name.
+/// folder goes back to `from`, so it does not stay under the hidden name.
+/// When the move back fails too, the result says that the folder is at
+/// `temp`.
 fn second_move(temp: &Path, to: &Path, from: &Path, fs: &dyn Fs) -> Result<(), Refused> {
     match move_once(temp, to, fs) {
         Ok(()) => sync_parent(to),
         Err(refused) => {
-            move_once(temp, from, fs)?;
+            match move_once(temp, from, fs) {
+                Ok(()) => {}
+                Err(Refused::Taken) => return Err(Refused::AtTemp(temp.to_path_buf())),
+                Err(Refused::AtTemp(_)) => unreachable!("one move gives no temporary name"),
+                Err(Refused::Failed(e)) => {
+                    return Err(Refused::Failed(RenameError::Io(io::Error::other(format!(
+                        "the folder is at {}: it could not go back to its name ({e})",
+                        temp.display()
+                    )))));
+                }
+            }
             sync_parent(from)?;
             Err(refused)
         }
@@ -207,27 +239,14 @@ fn second_move(temp: &Path, to: &Path, from: &Path, fs: &dyn Fs) -> Result<(), R
 
 /// One rename that never replaces, tried again while the folder is in use.
 fn move_once(from: &Path, to: &Path, fs: &dyn Fs) -> Result<(), Refused> {
-    let mut tries = 0;
-    loop {
-        match fs.rename_new(from, to) {
-            Ok(()) => return Ok(()),
-            Err(e) if is_in_use(&e) && tries < IN_USE_RETRIES => {
-                tries += 1;
-                log::info!(
-                    "{} is in use; trying the rename again ({tries} of {IN_USE_RETRIES})",
-                    from.display()
-                );
-                std::thread::sleep(IN_USE_DELAY);
-            }
-            Err(e) if is_in_use(&e) => {
-                return Err(Refused::Failed(RenameError::InUse {
-                    path: from.to_path_buf(),
-                    source: e,
-                }));
-            }
-            Err(e) if is_name_taken(&e) => return Err(Refused::Taken),
-            Err(e) => return Err(Refused::Failed(e.into())),
-        }
+    match rename_new_waiting(fs, from, to) {
+        Ok(()) => Ok(()),
+        Err(e) if is_in_use(&e) => Err(Refused::Failed(RenameError::InUse {
+            path: from.to_path_buf(),
+            source: e,
+        })),
+        Err(e) if is_name_taken(&e) => Err(Refused::Taken),
+        Err(e) => Err(Refused::Failed(e.into())),
     }
 }
 

@@ -6,6 +6,7 @@
 
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 /// The filesystem operations that saving is built on, so a test can make a
 /// rename cross devices.
@@ -78,20 +79,47 @@ pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     std::fs::rename(from, to)
 }
 
-/// Whether a rename failed because the name is taken.
-pub fn is_taken(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty
-    ) || (cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied)
+/// A rename that is refused because the folder is in use is tried again
+/// this many times, after [`IN_USE_DELAY`] each time.
+pub const IN_USE_RETRIES: usize = 3;
+pub const IN_USE_DELAY: Duration = Duration::from_millis(200);
+
+/// [`Fs::rename_new`], tried again while the folder is in use
+/// ([`is_in_use`]). Returns the last error.
+pub fn rename_new_waiting(fs: &dyn Fs, from: &Path, to: &Path) -> io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match fs.rename_new(from, to) {
+            Err(e) if is_in_use(&e) && tries < IN_USE_RETRIES => {
+                tries += 1;
+                log::info!(
+                    "{} is in use; trying the rename again ({tries} of {IN_USE_RETRIES})",
+                    from.display()
+                );
+                std::thread::sleep(IN_USE_DELAY);
+            }
+            result => return result,
+        }
+    }
 }
 
-/// Whether a rename of a home folder failed because another process holds
-/// the folder or a file in it (KTD8). Windows reports a sharing violation
-/// or `PermissionDenied`; a sync client on macOS can report
-/// `PermissionDenied` too, and Linux reports `EBUSY`. A home folder rename
-/// retries these and never takes them for a name that is taken, unlike
-/// [`is_taken`], which the first save uses.
+/// The error for a rename of `path` that stayed in use after the tries.
+/// Its kind is the kind of `e`.
+pub fn in_use_error(path: &Path, e: &io::Error) -> io::Error {
+    io::Error::new(
+        e.kind(),
+        format!(
+            "{} is in use by another app, or access was refused ({e})",
+            path.display()
+        ),
+    )
+}
+
+/// Whether a rename failed because another process holds the folder or a
+/// file in it (KTD8). Windows reports a sharing violation or
+/// `PermissionDenied`; a sync client on macOS can report `PermissionDenied`
+/// too, and Linux reports `EBUSY`. A rename tries these again
+/// ([`rename_new_waiting`]) and never takes them for a name that is taken.
 pub fn is_in_use(e: &io::Error) -> bool {
     /// `ERROR_SHARING_VIOLATION` and `ERROR_LOCK_VIOLATION`.
     const WINDOWS_IN_USE: [i32; 2] = [32, 33];
@@ -103,8 +131,10 @@ pub fn is_in_use(e: &io::Error) -> bool {
             .is_some_and(|c| WINDOWS_IN_USE.contains(&c)))
 }
 
-/// Whether a home folder rename failed because the name is taken. Only
-/// these two kinds: `PermissionDenied` is [`is_in_use`].
+/// Whether a rename failed because the name is taken. Only these two
+/// kinds: `PermissionDenied` is [`is_in_use`]. The Windows
+/// [`rename_noreplace`] checks the target first, so a taken name gives
+/// `AlreadyExists` there too.
 pub fn is_name_taken(e: &io::Error) -> bool {
     matches!(
         e.kind(),

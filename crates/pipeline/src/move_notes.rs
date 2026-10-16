@@ -865,12 +865,14 @@ impl Mover<'_> {
     fn rename_into(&self, from: &Path, new: &Path, name: &str) -> io::Result<PathBuf> {
         for attempt in 1..=MAX_NAMES {
             let target = new.join(naming::candidate(name, attempt));
-            match self.fs.rename_new(from, &target) {
+            match rename::rename_new_waiting(self.fs, from, &target) {
                 Ok(()) => {
                     fsync::sync_dir(new)?;
                     return Ok(target);
                 }
-                Err(e) if rename::is_taken(&e) => continue,
+                Err(e) if rename::is_name_taken(&e) => continue,
+                // A folder in use is not a taken name (KTD8).
+                Err(e) if rename::is_in_use(&e) => return Err(rename::in_use_error(from, &e)),
                 Err(e) => return Err(e),
             }
         }

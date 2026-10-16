@@ -250,7 +250,7 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
             // goes with it and is removed once `Saved` is recorded.
             for attempt in 1..=MAX_NAMES {
                 let target = root.join(naming::candidate(job.folder_name, attempt));
-                match fs.rename_new(staging, &target) {
+                match rename::rename_new_waiting(fs, staging, &target) {
                     Ok(()) => {
                         fsync::sync_dir(root)?;
                         return Ok(SaveState::Saved {
@@ -258,7 +258,11 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
                             working_retained: *copied,
                         });
                     }
-                    Err(e) if rename::is_taken(&e) => continue,
+                    Err(e) if rename::is_name_taken(&e) => continue,
+                    // A folder in use is not a taken name (KTD8).
+                    Err(e) if rename::is_in_use(&e) => {
+                        return Err(rename::in_use_error(staging, &e).into());
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
