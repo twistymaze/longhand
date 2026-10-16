@@ -77,7 +77,9 @@ export function useRecognitionDefaultsSave(onSaved: () => Promise<void>) {
   const [savingModel, setSavingModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const save = (config: RecognitionConfig) => {
+  // Resolves when this request ends: saved, failed, or not sent because a
+  // later request replaced it.
+  const save = (config: RecognitionConfig): Promise<void> => {
     const request = ++version.current;
     setSavingModel(config.asr_model);
     setError(null);
@@ -95,6 +97,7 @@ export function useRecognitionDefaultsSave(onSaved: () => Promise<void>) {
         if (request === version.current) setSavingModel(null);
       }
     });
+    return queue.current;
   };
 
   return { save, savingModel, error };
