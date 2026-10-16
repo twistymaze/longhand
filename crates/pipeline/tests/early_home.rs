@@ -1320,3 +1320,184 @@ fn a_filled_state_with_no_type_reads_as_the_storage_folder() {
         }
     );
 }
+
+// ------------------------------------------- a change of storage folder
+
+/// A note that records, with its early folder in the storage folder `old`.
+fn placed_recording_note(store: &SharedStore, id: &str, old: &Path) -> PathBuf {
+    recording_note(store, id, "Agenda\n");
+    write(store, id, Some(old)).unwrap().unwrap()
+}
+
+fn old_home_key(store: &SharedStore, id: &str) -> Option<serde_json::Value> {
+    store
+        .lock()
+        .unwrap()
+        .result_state(id, early_home::OLD_HOME)
+        .unwrap()
+}
+
+#[test]
+fn leave_them_puts_the_folder_of_a_note_that_is_not_saved_in_the_new_storage_folder() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+
+    let rehomed = early_home::rehome_unsaved(&store, old.path()).unwrap();
+    assert_eq!(rehomed, vec!["s".to_string()]);
+    // Until the new folder is written, the save waits for it, and the store
+    // keeps the row.
+    assert_eq!(early(&store, "s"), Some(EarlyState::Begun));
+    assert!(early_home::unfinished(&store.lock().unwrap(), "s").unwrap());
+
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(path.starts_with(new.path()), "{}", path.display());
+    assert_eq!(home(&store, "s"), Some(path.clone()));
+    assert_eq!(
+        std::fs::read_to_string(path.join("notes.md")).unwrap(),
+        "Agenda\n"
+    );
+    assert!(path.join("session.md").is_file());
+    let doc = session_core::note_folder::NoteFiles::read(&path)
+        .map(|files| files.doc)
+        .unwrap();
+    assert_eq!(doc.session_id, "s");
+    assert_eq!(doc.result, Some(ResultFlag::NotSaved));
+    // The early folder in the old storage folder is gone, and the row no
+    // longer records it.
+    assert!(!first.exists(), "{}", first.display());
+    assert!(folders(old.path()).is_empty());
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn the_old_folder_goes_also_after_a_notes_edit_while_the_new_write_waits() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_unsaved(&store, old.path()).unwrap();
+
+    {
+        let mut s = store.lock().unwrap();
+        pipeline::save::set_notes(&mut s, "s", "edited\n").unwrap();
+    }
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(path.join("notes.md")).unwrap(),
+        "edited\n"
+    );
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn an_old_folder_that_another_computer_changed_stays() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_unsaved(&store, old.path()).unwrap();
+    std::fs::write(first.join("notes.md"), "from another computer\n").unwrap();
+
+    let path = write(&store, "s", Some(new.path())).unwrap().unwrap();
+
+    assert!(path.starts_with(new.path()));
+    assert_eq!(
+        std::fs::read_to_string(first.join("notes.md")).unwrap(),
+        "from another computer\n"
+    );
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn a_note_that_was_saved_before_is_not_rehomed() {
+    let old = tempfile::tempdir().unwrap();
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    // A Resume or a Transcribe Again of a saved note: its folder has a
+    // result, so it has no "not saved" flag.
+    let mut doc = session_core::note_folder::NoteFiles::read(&first)
+        .map(|files| files.doc)
+        .unwrap();
+    doc.result = None;
+    session_save::note_files::write_doc(&first, &doc).unwrap();
+
+    let rehomed = early_home::rehome_unsaved(&store, old.path()).unwrap();
+
+    assert!(rehomed.is_empty());
+    assert_eq!(home(&store, "s"), Some(first.clone()));
+    assert_eq!(
+        early_home::state(&store.lock().unwrap(), "s").unwrap(),
+        Some(EarlyState::Done { path: first })
+    );
+    assert_eq!(old_home_key(&store, "s"), None);
+}
+
+#[test]
+fn a_note_whose_folder_is_written_or_whose_save_began_makes_the_change_wait() {
+    let old = tempfile::tempdir().unwrap();
+    let store = store();
+    let saving =
+        |store: &SharedStore| early_home::saving_into(&store.lock().unwrap(), old.path()).unwrap();
+    // The early write is between its staging folder and its rename.
+    recording_note(&store, "filled", "");
+    step(&store, "filled", old.path());
+    assert!(saving(&store));
+    write(&store, "filled", Some(old.path())).unwrap();
+    assert!(
+        !saving(&store),
+        "a done early write does not stop the change"
+    );
+
+    // The first save began to publish into the early folder.
+    store
+        .lock()
+        .unwrap()
+        .put_checkpoint(
+            "filled",
+            session_core::Stage::Save,
+            pipeline::save::STATE,
+            &serde_json::to_string(&session_save::SaveState::Working).unwrap(),
+        )
+        .unwrap();
+    assert!(saving(&store));
+    // A note in another storage folder does not stop the change.
+    let other = tempfile::tempdir().unwrap();
+    assert!(!early_home::saving_into(&store.lock().unwrap(), other.path()).unwrap());
+}
+
+#[test]
+fn the_launch_finishes_the_removal_of_the_old_folder_after_a_stop() {
+    let (old, new) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let store = store();
+    let first = placed_recording_note(&store, "s", old.path());
+    early_home::rehome_unsaved(&store, old.path()).unwrap();
+    // The app stops after the new folder is recorded and before the old one
+    // goes.
+    step(&store, "s", new.path());
+    let done = step(&store, "s", new.path());
+    assert!(matches!(&done, EarlyState::Done { path } if path.starts_with(new.path())));
+    assert!(first.exists());
+    assert!(old_home_key(&store, "s").is_some());
+    assert_eq!(
+        early_home::waiting(&store.lock().unwrap()).unwrap(),
+        vec!["s".to_string()]
+    );
+
+    let target = new.path().to_path_buf();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let homes = EarlyHomes::new(
+        Arc::clone(&store),
+        RUN,
+        Box::new(move || Some(target.clone())),
+        Box::new(move |id| done_tx.send(id.to_string()).unwrap()),
+    );
+    homes.resume();
+    assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    homes.wait("s");
+
+    assert!(!first.exists(), "{}", first.display());
+    assert_eq!(old_home_key(&store, "s"), None);
+    assert_eq!(folders(new.path()).len(), 1);
+}

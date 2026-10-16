@@ -1134,10 +1134,18 @@ pub fn save_notes(
     // A session in a run keeps the edit in the store when its folder is
     // not there; the save of the run writes it. A saved session reports
     // the folder that is gone.
-    let home = record
+    let mut home = record
         .home_path
         .map(PathBuf::from)
         .filter(|home| saved || home.is_dir());
+    // A home folder in an old storage folder gets no more writes: the new
+    // early write and its sync take the notes from the store (KTD7 of plan
+    // E). So the folder keeps the files that its removal checks.
+    if let Some(old) = &home
+        && crate::early_home::rehoming(store, session_id, old)?
+    {
+        home = None;
+    }
     // A saved note whose folder is not at its home path keeps the edit in
     // the store and makes no folder (R24). Another app can have renamed
     // the folder, with or without audio: the rescue then finds it.

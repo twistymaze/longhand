@@ -3757,6 +3757,56 @@ async fn the_first_save_waits_for_the_early_folder_and_then_publishes_into_it() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_note_that_records_during_a_change_with_leave_them_saves_into_the_new_folder() {
+    // The early folder is in the old storage folder, and the
+    // user changes the storage folder with Leave them while the note
+    // records.
+    use pipeline::early_home;
+    let r = rig().await;
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    early_home::begin(&r.store.lock().unwrap(), "s").unwrap();
+    add_notes(&r.store, "s");
+    let old = r.dest.clone();
+    let early = early_home::write(&r.store, "s", Some(&old), "run", &session_save::RealFs)
+        .unwrap()
+        .unwrap();
+    let new_dir = tempfile::tempdir().unwrap();
+    let new = new_dir.path().to_path_buf();
+
+    // The change: the new storage folder, the new early write, then the
+    // library forgets the notes of the old folder.
+    *r.script.destination.lock().unwrap() = Some(new.clone());
+    early_home::rehome_unsaved(&r.store, &old).unwrap();
+    early_home::write(&r.store, "s", Some(&new), "run", &session_save::RealFs).unwrap();
+    common::stop_session(&r.store, "s", 100);
+    r.runner.retry_awaiting().unwrap();
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+
+    let folder = saved_folder(&r, "s");
+    assert!(folder.starts_with(&new), "{}", folder.display());
+    assert!(folder.join("audio/segment-01.opus").exists());
+    assert!(
+        !early.exists(),
+        "the early folder in the old storage folder is gone"
+    );
+    let forgotten = library::reconcile::forget_outside(
+        &mut r.store.lock().unwrap(),
+        std::slice::from_ref(&new),
+        &|_| false,
+    )
+    .unwrap();
+    assert!(forgotten.is_empty(), "{forgotten:?}");
+    assert!(r.store.lock().unwrap().session("s").unwrap().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_notes_only_note_that_records_publishes_its_result_into_the_same_folder() {
     use pipeline::early_home;
     use session_core::Event;

@@ -806,6 +806,24 @@ fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf,
     Ok(folder)
 }
 
+/// The cause that Settings shows when a change with Leave them waits for a
+/// note that is saved now.
+const NOTE_SAVING: &str =
+    "A note is being saved to the current storage folder. Try again in a moment.";
+
+/// The check before a change with Leave them from the storage folder
+/// `current`: no note that is not saved yet writes its
+/// folder in `current` now, and no first Save publishes into it. These
+/// steps take a few seconds. After the change, such a note gets a new
+/// folder in the new storage folder.
+fn check_leave(store: &session_core::Store, current: &str) -> Result<(), String> {
+    match pipeline::early_home::saving_into(store, Path::new(current)) {
+        Ok(false) => Ok(()),
+        Ok(true) => Err(NOTE_SAVING.into()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Make `folder` the storage folder (R4, R21). The shared settings of the
 /// new folder apply, and this computer's custom prompts merge into them,
 /// or this computer's shared settings go into a folder that has none
@@ -838,6 +856,14 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     let current = settings::get_settings(app).storage_folder;
     let move_open = processing.as_ref().is_some_and(|p| p.move_open());
     let new = check_change(&current, folder, move_open)?;
+    let moving = old_notes == OldNotes::Move;
+    if !moving && let Some(processing) = &processing {
+        let store = processing
+            .shared_store()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        check_leave(&store, &current)?;
+    }
     let shared = app.try_state::<Arc<SharedSettingsManager>>();
     if let Some(shared) = &shared {
         shared.change_folder(Some(new.clone()));
@@ -851,7 +877,6 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     };
     // The journal opens before the folder changes, so the library keeps
     // the notes of the old folder in the meantime (KTD10).
-    let moving = old_notes == OldNotes::Move;
     if moving && let Some(processing) = &processing {
         let opened = processing.open_move(Path::new(&current), &new);
         if let Err(e) = opened {
@@ -874,6 +899,12 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     }
     log::info!("the storage folder changed");
     if let Some(processing) = &processing {
+        // Before the retry and the forget: a note that is not saved yet
+        // gets its folder in the new storage folder, so its first Save
+        // publishes there and the library keeps it.
+        if !moving {
+            processing.rehome_unsaved(Path::new(&current));
+        }
         processing.retry_awaiting();
         processing.forget_outside_roots();
         processing.roots_changed();
@@ -1167,6 +1198,47 @@ mod tests {
         // The read wrote nothing (rule 1), and a second read has no change.
         assert_eq!(std::fs::read(settings_path(folder.path())).unwrap(), file);
         assert_eq!(reread_removal_delay(&a), (false, Some(90)));
+    }
+
+    /// Leave them waits while a note that is not saved yet
+    /// is written into the current storage folder.
+    #[test]
+    fn leave_them_is_refused_while_a_note_is_saved_to_the_current_folder() {
+        use pipeline::early_home;
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        std::fs::create_dir_all(&current).unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        {
+            let mut s = store.lock().unwrap();
+            s.create_session("s", chrono::Local::now().fixed_offset(), None)
+                .unwrap();
+            early_home::begin(&s, "s").unwrap();
+        }
+        let check = || check_leave(&store.lock().unwrap(), current.to_str().unwrap());
+        assert_eq!(check(), Ok(()));
+
+        // The early write is between its staging folder and its rename.
+        let next = early_home::step(
+            &store,
+            "s",
+            &early_home::EarlyState::Begun,
+            Some(&current),
+            "run",
+            &session_save::RealFs,
+        )
+        .unwrap();
+        early_home::record(&store, "s", &next).unwrap();
+
+        assert_eq!(check(), Err(NOTE_SAVING.to_string()));
+        assert_eq!(
+            NOTE_SAVING,
+            "A note is being saved to the current storage folder. Try again in a moment."
+        );
+        early_home::write(&store, "s", Some(&current), "run", &session_save::RealFs).unwrap();
+        assert_eq!(check(), Ok(()));
     }
 
     /// KTD11: Change is not available while a Move runs or is paused.

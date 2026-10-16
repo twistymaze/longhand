@@ -874,7 +874,8 @@ impl ProcessingManager {
                     }
                 }
             }),
-        );
+        )
+        .with_earlier_runs(own_runs.get(1..).unwrap_or_default().to_vec());
         let library_status: Arc<library::status::LibraryStatus> = Arc::default();
         let audio_removal = AudioRemovalManager::new(
             app,
@@ -1388,6 +1389,30 @@ impl ProcessingManager {
                 notices: false,
             };
             emit_library_changed(&self.app, changes.into());
+        }
+    }
+
+    /// The store of this run's notes.
+    pub fn shared_store(&self) -> &pipeline::SharedStore {
+        &self.store
+    }
+
+    /// After a change of storage folder with Leave them, before the library
+    /// forgets the notes of the old storage folder `old`:
+    /// each note that is not saved yet and has its early folder in `old`
+    /// gets a new early write in the new storage folder. Its first Save then
+    /// publishes there, and the library keeps it. The early folder in `old`
+    /// goes after the new write is done.
+    pub fn rehome_unsaved(&self, old: &std::path::Path) {
+        match pipeline::early_home::rehome_unsaved(&self.store, old) {
+            Ok(ids) => {
+                for id in ids {
+                    self.early_homes.start(&id);
+                }
+            }
+            Err(e) => log::error!(
+                "could not give the notes that are not saved a folder in the new storage folder: {e}"
+            ),
         }
     }
 
