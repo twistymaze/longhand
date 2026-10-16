@@ -109,10 +109,9 @@ pub fn rename_into(
         return Err(RenameError::Missing(from.to_path_buf()));
     };
     let same_parent = old_parent == parent;
-    // The folder that each next move takes. A change of case whose names
-    // are both taken leaves the folder at its temporary name, and the next
-    // names move it from there.
-    let mut source = from.to_path_buf();
+    // A change of case whose names are both taken leaves the folder at its
+    // temporary name. Each next move then records that name too, so a
+    // record always tells [`resolve`] where the folder is.
     let mut at_temp = false;
     for attempt in 1..=MAX_NAMES {
         let target = naming::candidate(name, attempt);
@@ -123,23 +122,22 @@ pub fn rename_into(
         if exists_exactly(&to) {
             continue;
         }
-        let case_only = same_parent && !at_temp && target.to_lowercase() == current.to_lowercase();
+        let case_only = same_parent && target.to_lowercase() == current.to_lowercase();
         let intent = Move {
-            from: source.clone(),
+            from: from.to_path_buf(),
             to: to.clone(),
-            temp: case_only.then(|| parent.join(temp_name(session_id))),
+            temp: (case_only || at_temp).then(|| parent.join(temp_name(session_id))),
         };
         record(&intent)?;
         match take(&intent, fs) {
             Ok(()) => return Ok(to),
             Err(Refused::Taken) => continue,
-            Err(Refused::AtTemp(temp)) => {
+            Err(Refused::AtTemp(_)) => {
                 log::info!(
                     "{} and {} are taken, so the folder goes to the next free name",
                     to.display(),
                     from.display()
                 );
-                source = temp;
                 at_temp = true;
             }
             Err(Refused::Failed(e)) => return Err(e),
@@ -200,6 +198,11 @@ fn take(intent: &Move, fs: &dyn Fs) -> Result<(), Refused> {
         move_once(&intent.from, &intent.to, fs)?;
         return sync_parent(&intent.to);
     };
+    // An earlier move of this rename left the folder at the temporary
+    // name: only the second move is left.
+    if !exists_exactly(&intent.from) && exists_exactly(temp) {
+        return second_move(temp, &intent.to, &intent.from, fs);
+    }
     // A taken temporary name is a leftover, not a name to skip.
     move_once(&intent.from, temp, fs).map_err(|r| match r {
         Refused::Taken => Refused::Failed(RenameError::Io(io::Error::new(
@@ -222,8 +225,9 @@ fn second_move(temp: &Path, to: &Path, from: &Path, fs: &dyn Fs) -> Result<(), R
         Err(refused) => {
             match move_once(temp, from, fs) {
                 Ok(()) => {}
-                Err(Refused::Taken) => return Err(Refused::AtTemp(temp.to_path_buf())),
-                Err(Refused::AtTemp(_)) => unreachable!("one move gives no temporary name"),
+                Err(Refused::Taken | Refused::AtTemp(_)) => {
+                    return Err(Refused::AtTemp(temp.to_path_buf()));
+                }
                 Err(Refused::Failed(e)) => {
                     return Err(Refused::Failed(RenameError::Io(io::Error::other(format!(
                         "the folder is at {}: it could not go back to its name ({e})",

@@ -366,8 +366,47 @@ fn a_change_of_case_whose_names_are_both_taken_goes_to_a_free_name() {
     let suffixed = dest.path().join(format!("{NEW}-2"));
     assert_eq!(result.unwrap(), suffixed, "the folder gets a visible name");
     assert_eq!(entries(dest.path()), [format!("{NEW}-2")]);
+    // The record of each move names the temporary name too.
     let last = moves.last().unwrap();
-    assert_eq!((&last.from, &last.to), (&temp, &suffixed));
+    assert_eq!(
+        (&last.from, &last.to, last.temp.as_ref()),
+        (&from, &suffixed, Some(&temp))
+    );
+}
+
+#[test]
+fn a_crash_after_a_change_of_case_reached_the_temporary_name_still_finds_the_folder() {
+    let dest = tempfile::tempdir().unwrap();
+    let old = "2026-09-22 1400 budget review";
+    let from = home(dest.path(), old);
+    let temp = dest.path().join(temp_name("s1"));
+    let fs = BothNamesTaken {
+        temp: temp.clone(),
+        names: [dest.path().join(NEW), from.clone()],
+        other: false,
+    };
+    let suffixed = dest.path().join(format!("{NEW}-2"));
+    let mut moves = Vec::new();
+    // The process stops after the move to the next name is recorded and
+    // before it is taken.
+    let stopped = catch_unwind(AssertUnwindSafe(|| {
+        rename_home::rename(&from, NEW, "s1", &fs, &mut |m| {
+            moves.push(m.clone());
+            if m.to == suffixed {
+                panic!("the process stops here");
+            }
+            Ok(())
+        })
+    }));
+    assert!(stopped.is_err());
+    assert_eq!(entries(dest.path()), [temp_name("s1")]);
+    // At the next launch, the last record finds the folder at the
+    // temporary name and finishes the move.
+    assert_eq!(
+        rename_home::resolve(moves.last().unwrap(), &RealFs).unwrap(),
+        Resolved::Moved(suffixed.clone())
+    );
+    assert_eq!(entries(dest.path()), [format!("{NEW}-2")]);
 }
 
 #[test]
