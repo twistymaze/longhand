@@ -394,9 +394,15 @@ describe("SummaryPrompts", () => {
   });
 
   test("a window close closes the window after the time limit when the save does not complete", async () => {
+    // The save does not complete until the end of the test. A save that never
+    // completes would keep its close registration into the next tests.
+    let finish: () => void = () => {};
+    const held = new Promise<void>((r) => (finish = r));
     const tauri = backend({
-      // The save never completes.
-      set_summary_prompt_text: () => new Promise(() => {}),
+      set_summary_prompt_text: async () => {
+        await held;
+        throw "The test ended.";
+      },
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
@@ -416,6 +422,8 @@ describe("SummaryPrompts", () => {
       "info: destroy called",
     ]);
     expect(screen.queryByRole("alertdialog")).toBeNull();
+    await act(async () => finish());
+    await screen.findByText("The test ended.");
   });
 
   test("a window close removes its listener before the destroy", async () => {
@@ -1292,5 +1300,151 @@ describe("shared prompts", () => {
     expect((button("Make default Team sync") as HTMLButtonElement).disabled).toBe(true);
     expect((button("Duplicate") as HTMLButtonElement).disabled).toBe(true);
     expect((button("Delete") as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("own saves of prompts", () => {
+  /// A backend whose list reads and saves can wait until the test lets them
+  /// go. `remote` changes the saved text on another computer and sends
+  /// `settings-changed`.
+  function heldBackend() {
+    const state = { text: "Sync text", fail: false };
+    const gates = { list: [] as (() => void)[], save: null as Promise<void> | null };
+    const reads = { holdNext: false, done: 0 };
+    const saves = { done: 0 };
+    const list = () => ({
+      prompts: [
+        { id: "topic-summary", name: "Topic summary", text: "Topic text", title_text: "Built-in title text", built_in: true, over_limit: false, too_large: false },
+        { id: "c1", name: "Team sync", text: state.text, title_text: "Sync title", built_in: false, over_limit: false, too_large: false },
+      ],
+      active: "topic-summary",
+      text_limit: 4000,
+      title_text_limit: 1000,
+    });
+    const tauri = backend({
+      // The list is made when the read starts, as the backend reads the
+      // files then.
+      summary_prompts: async () => {
+        const result = list();
+        if (reads.holdNext) {
+          reads.holdNext = false;
+          await new Promise<void>((r) => gates.list.push(r));
+        }
+        reads.done += 1;
+        return result;
+      },
+      set_summary_prompt_text: async ({ text }) => {
+        if (gates.save) await gates.save;
+        saves.done += 1;
+        if (state.fail) {
+          state.fail = false;
+          throw "The prompt file could not be written.";
+        }
+        state.text = text as string;
+        return baseSettings;
+      },
+      "plugin:window|destroy": () => null,
+      log_from_webview: () => null,
+    });
+    const remote = async (text: string) => {
+      state.text = text;
+      await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
+    };
+    const holdSaves = () => {
+      let release: () => void = () => {};
+      gates.save = new Promise<void>((r) => (release = r));
+      return () => act(async () => release());
+    };
+    const releaseRead = () => act(async () => gates.list.shift()?.());
+    return { tauri, state, reads, saves, remote, holdSaves, releaseRead };
+  }
+
+  // Types into the editor that has the focus, after the pasted text.
+  const typeAtEnd = (text: string) => userEvent.setup().keyboard(text);
+
+  test("text typed while the list is read again after a save is saved", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    await setText(textArea(), "T1");
+    b.reads.holdNext = true;
+    await waitFor(() => expect(textCalls(b.tauri)).toEqual([{ id: "c1", text: "T1" }]), { timeout: 1500 });
+    await waitFor(() => expect(b.saves.done).toBe(1));
+    await typeAtEnd("x");
+    await b.releaseRead();
+    await waitFor(() => expect(b.reads.done).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByText(/changed on another computer/)).toBeNull();
+    act(() => void fireEvent.blur(textArea()));
+    await waitFor(() =>
+      expect(textCalls(b.tauri)).toEqual([
+        { id: "c1", text: "T1" },
+        { id: "c1", text: "T1x" },
+      ]),
+    );
+  });
+
+  test("a change on another computer back to a text that this window saved before shows the text", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    await setText(textArea(), "A");
+    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(1), { timeout: 1500 });
+    await setText(textArea(), "AB");
+    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(2), { timeout: 1500 });
+    // The read after the second save is done.
+    await waitFor(() => expect(b.reads.done).toBe(3));
+    await b.remote("A");
+    await waitFor(() => expect(textArea().textContent).toBe("A"));
+  });
+
+  test("a list read that ends after a later read does not replace the later list", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    b.reads.holdNext = true;
+    await b.remote("Sync text");
+    await b.remote("New text");
+    await waitFor(() => expect(textArea().textContent).toBe("New text"));
+    await b.releaseRead();
+    await waitFor(() => expect(b.reads.done).toBe(3));
+    await act(async () => {});
+    expect(textArea().textContent).toBe("New text");
+  });
+
+  test("a window close after a pane change waits for a save that was queued behind a running save", async () => {
+    const b = heldBackend();
+    mockWindows("settings");
+    const { unmount } = render(<SummaryPrompts onSettings={() => {}} />);
+    await selectCustom(userEvent.setup());
+    const release = b.holdSaves();
+    await setText(textArea(), "A");
+    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(1), { timeout: 1500 });
+    await typeAtEnd("B");
+    act(() => void fireEvent.blur(textArea()));
+    unmount();
+    await b.tauri.emit("tauri://close-requested");
+    await release();
+    await waitFor(() => expect(called(b.tauri, "plugin:window|destroy")).toBe(1));
+    expect(textCalls(b.tauri)).toEqual([
+      { id: "c1", text: "A" },
+      { id: "c1", text: "AB" },
+    ]);
+  });
+
+  test("after a failed save, a change on another computer and Reload, Duplicate and New Prompt run", async () => {
+    const b = heldBackend();
+    renderPrompts();
+    await selectCustom(userEvent.setup());
+    b.state.fail = true;
+    await setText(textArea(), "Mine");
+    expect(await screen.findByText("The prompt file could not be written.", {}, { timeout: 1500 })).toBeTruthy();
+    await b.remote("Theirs");
+    expect(await screen.findByText("The prompt text changed on another computer.")).toBeTruthy();
+    await act(async () => void fireEvent.click(button("Reload")));
+    await waitFor(() => expect(textArea().textContent).toBe("Theirs"));
+    await act(async () => void fireEvent.click(button("Duplicate")));
+    await waitFor(() => expect(called(b.tauri, "duplicate_summary_prompt")).toBe(1));
+    await act(async () => void fireEvent.click(button("New Prompt")));
+    await waitFor(() => expect(called(b.tauri, "create_summary_prompt")).toBe(1));
   });
 });

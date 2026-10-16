@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type NoteTypeEntry, type Result, type Settings, type SummaryPromptEntry, type SummaryPromptList } from "../bindings";
 import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 import { MarkdownField } from "./MarkdownField";
+import { OwnSaves } from "./ownSaves";
 import { Button, ChangedElsewhereNotice, CommitField, ErrorText, Group, Row, useConfirm } from "./ui";
 
 /// The time from the last change to the save, in milliseconds.
@@ -147,8 +148,16 @@ export function SummaryPrompts({
   // changes to a text that this window did not send, another computer
   // changed the field.
   const [bases, setBases] = useState<Record<string, string>>({});
-  // The texts that this window sent.
-  const sentTexts = useRef(new Map<string, Set<string>>());
+  // The texts of each field that this window sent and that the saved text
+  // did not show yet.
+  const ownSaves = useRef(new Map<string, OwnSaves<string>>());
+  const ownOf = (key: string) => {
+    let own = ownSaves.current.get(key);
+    if (!own) ownSaves.current.set(key, (own = new OwnSaves<string>()));
+    return own;
+  };
+  // The number of the last list read that started.
+  const lastRead = useRef(0);
   const [listError, setListError] = useState<string | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   // The error of the last failed save of each field. The editor shows it
@@ -165,9 +174,14 @@ export function SummaryPrompts({
   const onSettingsRef = useRef(onSettings);
   onSettingsRef.current = onSettings;
 
+  // Only the last read that started shows its list: an earlier read that
+  // ends later has older files.
   const load = useCallback(async () => {
+    const read = ++lastRead.current;
     try {
-      setList(await commands.summaryPrompts());
+      const next = await commands.summaryPrompts();
+      if (read !== lastRead.current) return;
+      setList(next);
       try {
         const result = await commands.noteTypes();
         setTypes(result.status === "ok" ? result.data.types : null);
@@ -214,19 +228,25 @@ export function SummaryPrompts({
           failed.current.add(key);
           setSaveErrors((m) => ({ ...m, [key]: error }));
         };
-        const texts = sentTexts.current.get(key) ?? new Set<string>();
-        sentTexts.current.set(key, texts.add(sent.text));
+        const own = ownOf(key);
+        own.sent(sent.text);
         const save = sent.field === "text" ? commands.setSummaryPromptText : commands.setSummaryPromptTitleText;
         saving.current = saving.current
           .then(async () => {
-            const result = await save(sent.id, sent.text);
+            let result: Awaited<ReturnType<typeof save>>;
+            try {
+              result = await save(sent.id, sent.text);
+            } finally {
+              own.settled();
+            }
             if (result.status === "error") {
               fail(result.error);
               return;
             }
             failed.current.delete(key);
             setSaveErrors((m) => without(m, key));
-            setBases((m) => ({ ...m, [key]: sent.text }));
+            // The base moves when the list shows this save, not here: until
+            // the list is read again, it has the old text.
             onSettingsRef.current(result.data);
             await load();
             // Clear the draft only if it still holds the sent text, so that
@@ -247,16 +267,14 @@ export function SummaryPrompts({
   );
 
   // A pane change unmounts the pane, and the save of the pending text then
-  // starts. The registration stays until that save is complete, so that a
-  // window close during the save waits for it. A window close and the page
+  // starts. The registration stays until all saves that started are
+  // complete, also a save that waits behind a running save, so that a window
+  // close during the saves waits for them. A window close and the page
   // events go through the close coordinator (KTD9).
   useEffect(() => {
     const remove = registerCloseSave(() => flush(), closeSaveLimit);
     return () => {
-      const starts = pending.current !== null;
-      const saved = flush();
-      if (starts) void saved.finally(remove);
-      else remove();
+      void flush().finally(remove);
     };
   }, [flush, closeSaveLimit]);
 
@@ -270,7 +288,7 @@ export function SummaryPrompts({
       drafts[key] !== saved &&
       key in bases &&
       saved !== bases[key] &&
-      !sentTexts.current.get(key)?.has(saved)
+      !ownSaves.current.get(key)?.has(saved)
     );
   };
   const held =
@@ -295,7 +313,8 @@ export function SummaryPrompts({
   // The editor of a field gets a new key only on a new document (KTD10): a
   // change of prompt or field, Reload, and a change from another computer
   // while the field has no draft. An own save, the notice of a change on
-  // another computer and a read-only change keep the editor.
+  // another computer and a read-only change keep the editor. An own save
+  // moves the base of a draft to the saved text.
   const [generations, setGenerations] = useState<Record<string, number>>({});
   const bump = (key: string) => setGenerations((m) => ({ ...m, [key]: (m[key] ?? 0) + 1 }));
   // The saved text of each field at the last check.
@@ -308,7 +327,9 @@ export function SummaryPrompts({
         const before = shownSaved.current.get(key);
         shownSaved.current.set(key, saved);
         if (before === undefined || before === saved) continue;
-        if (!(key in drafts) && !sentTexts.current.get(key)?.has(saved)) bump(key);
+        if (ownOf(key).confirm(saved)) {
+          if (key in drafts) setBases((m) => ({ ...m, [key]: saved }));
+        } else if (!(key in drafts)) bump(key);
       }
     }
     // Only a new list is a change of the saved texts.
@@ -367,6 +388,7 @@ export function SummaryPrompts({
       .map((f) => [f, keyOf(from, f)] as const)
       .filter(([f, key]) => key in drafts && !valid(f, drafts[key]))
       .map(([, key]) => key);
+    for (const key of dropped) failed.current.delete(key);
     if (dropped.length > 0) setDrafts((m) => dropped.reduce((acc, key) => without(acc, key), m));
     void flush();
     show(id);
@@ -438,6 +460,7 @@ export function SummaryPrompts({
   const reload = (field: Field) => {
     const key = keyOf(id, field);
     if (waitingKey() === key) cancel();
+    failed.current.delete(key);
     setDrafts((m) => without(m, key));
     setSaveErrors((m) => without(m, key));
     bump(key);
