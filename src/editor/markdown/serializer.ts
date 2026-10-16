@@ -11,7 +11,13 @@ import type { Node as PMNode } from "prosemirror-model";
 // Escape `text` so that `getParser()` reads it back as the same plain text.
 // Each rule matches one syntax that the parser knows (see `parser.ts`); a
 // character that cannot start that syntax stays as it is.
-export function escapeText(text: string, atBlockStart: boolean): string {
+// `lineContinues` tells that more inline content follows the text on the
+// same line of the file.
+export function escapeText(
+  text: string,
+  atBlockStart: boolean,
+  lineContinues = false,
+): string {
   let out = text
     // A backslash escapes only ASCII punctuation. A backslash at the end of
     // the text comes before the next mark or line break, which starts with
@@ -38,11 +44,14 @@ export function escapeText(text: string, atBlockStart: boolean): string {
     .replace(/&(?=#?[a-zA-Z0-9]+;)/g, "\\&");
 
   if (atBlockStart) {
+    // The parser removes up to three leading spaces and reads four as an
+    // indented code block. An entity for the first one keeps them all as
+    // text, and no line-start rule then applies. A line of only spaces is
+    // a blank line in any form, so it stays as it is.
+    if (lineContinues || /\S/.test(text)) {
+      out = out.replace(/^[ \t]/, (c) => (c === " " ? "&#32;" : "&#9;"));
+    }
     out = out
-      // The parser removes up to three leading spaces and reads four as an
-      // indented code block. An entity for the first one keeps them all as
-      // text, and no line-start rule then applies.
-      .replace(/^[ \t]/, (c) => (c === " " ? "&#32;" : "&#9;"))
       .replace(/^(\s*)(#{1,6})(?=\s|$)/, "$1\\$2")
       .replace(/^([-+])(?=\s|$)/, "\\$1")
       .replace(/^-(?=(?:\s*-){2,}\s*$)/, "\\-")
@@ -194,7 +203,9 @@ export function getSerializer(): MarkdownSerializer {
         const atBlockStart =
           (state as unknown as { atBlockStart: boolean }).atBlockStart ||
           (index > 0 && parent.child(index - 1).type.name === "hardBreak");
-        state.text(escapeText(node.text!, atBlockStart), false);
+        const next = index + 1 < parent.childCount ? parent.child(index + 1) : null;
+        const lineContinues = next !== null && next.type.name !== "hardBreak";
+        state.text(escapeText(node.text!, atBlockStart, lineContinues), false);
       },
     },
     {

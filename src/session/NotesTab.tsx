@@ -14,8 +14,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands } from "../bindings";
-import { NoteEditor } from "../editor/NoteEditor";
-import { trackNotesSave } from "../lib/notesSaves";
+import { NoteEditor, type NoteEditorHandle } from "../editor/NoteEditor";
+import { addNotesSend, trackNotesSave } from "../lib/notesSaves";
 import { folderName } from "../settings/ui";
 
 /// A sync reloads the notes only after this long with no input.
@@ -91,6 +91,11 @@ export function NotesTab({
   // newer read replaces gives its force to that read.
   const readSeq = useRef(0);
   const forceRead = useRef(false);
+  const editor = useRef<NoteEditorHandle>(null);
+  // The generation of the document that the editor shows, and the
+  // fingerprint of each document that a read replaced.
+  const generation = useRef(0);
+  const replaced = useRef(new Map<number, string | null>());
   const read = useCallback(
     async (id: string, forceThis: boolean) => {
       const seq = ++readSeq.current;
@@ -103,6 +108,11 @@ export function NotesTab({
         setError(r.error);
         return;
       }
+      // A change that the editor still holds was made on the document that
+      // it shows: send it now, with that document's fingerprint, before the
+      // read can replace the document. The save then waits, and so does
+      // the read.
+      if (!force) editor.current?.flush();
       const s = saving.current;
       const idle = !s.busy && !s.next && performance.now() - lastInput.current >= RELOAD_AFTER_INPUT_MS;
       if (!force && !idle) {
@@ -110,10 +120,22 @@ export function NotesTab({
         reload.current();
         return;
       }
-      if (!force && r.data.fingerprint === fingerprint.current) return;
+      if (!force && r.data.fingerprint === fingerprint.current) {
+        // The notes did not change, so the editor shows them. Edits that
+        // wait after a conflict go out again on the normal path.
+        const h = held.current;
+        if (h?.id === id) {
+          held.current = null;
+          if (h.markdown) save(id, h.markdown);
+        }
+        return;
+      }
+      replaced.current.set(generation.current, fingerprint.current);
       fingerprint.current = r.data.fingerprint;
       if (held.current?.id === id) held.current = null;
-      setLoaded((l) => ({ markdown: r.data.markdown, generation: (l?.generation ?? 0) + 1 }));
+      generation.current += 1;
+      const next = generation.current;
+      setLoaded({ markdown: r.data.markdown, generation: next });
       onMarkdownRef.current?.(r.data.markdown);
     },
     [],
@@ -143,6 +165,8 @@ export function NotesTab({
 
   useEffect(() => {
     fingerprint.current = null;
+    generation.current = 0;
+    replaced.current.clear();
     setLoaded(null);
     void read(sessionId, true);
     return () => {
@@ -159,6 +183,19 @@ export function NotesTab({
       sendHeld();
     };
   }, []);
+
+  // A leave of the note sends the editor's pending change, then the edit
+  // that waits after a conflict, so that the leave waits for its save.
+  const sendHeldRef = useRef(sendHeld);
+  sendHeldRef.current = sendHeld;
+  useEffect(
+    () =>
+      addNotesSend(() => {
+        editor.current?.flush();
+        sendHeldRef.current();
+      }),
+    [],
+  );
 
   const first = useRef(true);
   useEffect(() => {
@@ -227,7 +264,15 @@ export function NotesTab({
     trackNotesSave(id, saved);
   }
 
-  const send = (next: string) => {
+  // `from` is the generation of the editor that sent the change. A change
+  // from a replaced editor (its unmount sends it) goes out with the
+  // fingerprint of its own document, so a changed file gives a draft. The
+  // page keeps the text that the editor shows.
+  const send = (next: string, from: number) => {
+    if (from !== generation.current) {
+      save(sessionId, next, replaced.current.get(from) ?? null);
+      return;
+    }
     onMarkdown?.(next);
     save(sessionId, next);
   };
@@ -241,9 +286,10 @@ export function NotesTab({
       {error && <p className="mb-2 text-[0.85rem] text-negative">{error}</p>}
       {loaded !== null && (
         <NoteEditor
+          ref={editor}
           key={`${sessionId}:${loaded.generation}`}
           markdown={loaded.markdown}
-          onChange={send}
+          onChange={(next) => send(next, loaded.generation)}
           autoFocus={autoFocus && loaded.generation === 1}
           editable={editable}
         />

@@ -286,6 +286,14 @@ describe("text that looks like syntax", () => {
     }
   });
 
+  test("keeps leading spaces before a mark", () => {
+    expectStable(doc(p(t("    "), t("x", ["bold"])), p(t("next"))));
+  });
+
+  test("writes a line of only spaces as it is", () => {
+    expect(json2md(doc(p(t("   "))))).toBe("   ");
+  });
+
   test("keeps line-start syntax after leading spaces as text", () => {
     for (const text of [" ```x", " > x", " - x", "  # x", "    **x**"]) {
       expectStable(doc(p(t(text)), p(t("after"))));

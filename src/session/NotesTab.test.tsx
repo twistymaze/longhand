@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { notesSaved } from "../lib/notesSaves";
 import { mockTauri } from "../test/tauri";
 import { NotesTab, RELOAD_AFTER_INPUT_MS } from "./NotesTab";
 
@@ -279,5 +280,89 @@ describe("NotesTab", () => {
 
     view.rerender(<NotesTab sessionId="s" autoFocus={false} editable />);
     expect(box.getAttribute("contenteditable")).toBe("true");
+  });
+
+  test("a mouse edit that waits when a sync reloads the notes goes into a draft", async () => {
+    let file = notes("- [ ] task", "f0");
+    const markdowns: string[] = [];
+    let drafts = 0;
+    const tauri = mockTauri({
+      load_session_notes: () => file,
+      // As save_notes does: a save with another fingerprint writes a draft.
+      save_session_notes: (args) => {
+        if (args.loadedFingerprint === file.fingerprint) return saved(file.fingerprint);
+        return { kind: "conflict", draft: `/n/Planning/notes (Longhand conflict ${++drafts}).md` };
+      },
+    });
+    const view = render(
+      <NotesTab sessionId="s" autoFocus={false} synced={0} onMarkdown={(m) => markdowns.push(m)} />,
+    );
+    await screen.findByText("task");
+    // A click on the checkbox fires no key or input event, and the editor
+    // waits before it sends the change.
+    act(() => {
+      fireEvent.click(document.querySelector(".task-checkbox")!);
+    });
+    file = notes("- [ ] task from the other computer", "f1");
+    view.rerender(
+      <NotesTab sessionId="s" autoFocus={false} synced={1} onMarkdown={(m) => markdowns.push(m)} />,
+    );
+    expect(await screen.findByText("task from the other computer")).toBeTruthy();
+    expect(saves(tauri)).toEqual([{ sessionId: "s", markdown: "- [x] task", loadedFingerprint: "f0" }]);
+    expect(drafts).toBe(1);
+    // The last text that the page holds is the text that the editor shows.
+    expect(markdowns[markdowns.length - 1]).toBe("- [ ] task from the other computer");
+  });
+
+  test("an edit after a conflict is saved when the read finds the same notes", async () => {
+    const file = notes("Old notes", "f0");
+    const first = deferred<unknown>();
+    let n = 0;
+    const tauri = mockTauri({
+      load_session_notes: () => file,
+      // The first save cannot read notes.md and conflicts. The store does
+      // not change.
+      save_session_notes: () =>
+        n++ === 0 ? first.promise : saved("f2"),
+    });
+    render(<NotesTab sessionId="s" autoFocus={false} />);
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    await typeAndSend(box, "1");
+    // The user stops typing, then the save conflicts and the tab reads the
+    // notes again: they did not change.
+    clock += RELOAD_AFTER_INPUT_MS;
+    await act(async () => first.resolve({ kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" }));
+    await act(async () => {});
+    await typeAndSend(box, "2");
+    await waitFor(() => expect(saves(tauri)).toHaveLength(2));
+    expect(saves(tauri)[1]).toEqual({ sessionId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" });
+  });
+
+  test("a leave of the note sends an edit that waits after a conflict, and waits for it", async () => {
+    const file = notes("Old notes", "f0");
+    const later = deferred<unknown>();
+    let n = 0;
+    const tauri = mockTauri({
+      load_session_notes: () => file,
+      save_session_notes: () =>
+        n++ === 0 ? { kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" } : later.promise,
+    });
+    render(<NotesTab sessionId="s" autoFocus={false} />);
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    await typeAndSend(box, "1");
+    await act(async () => {});
+    // The user types on: the edit waits in the tab, and the editor still
+    // holds the last key.
+    await typeAndSend(box, "2");
+    await userEvent.setup().type(box, "3");
+    let left = false;
+    const leave = notesSaved("s").then(() => (left = true));
+    await waitFor(() => expect(saves(tauri)).toHaveLength(2));
+    expect(saves(tauri)[1]).toEqual({ sessionId: "s", markdown: "1Old notes23", loadedFingerprint: "f0" });
+    await act(async () => {});
+    expect(left).toBe(false);
+    await act(async () => later.resolve({ kind: "conflict", draft: "/n/Planning/notes (Longhand conflict 2).md" }));
+    await leave;
+    expect(left).toBe(true);
   });
 });
