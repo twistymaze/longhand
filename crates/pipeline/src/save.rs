@@ -282,9 +282,10 @@ pub fn run(
         let next = match session_save::step(&state, &job, fs) {
             Ok(next) => next,
             Err(e) => {
-                // A failed copy removed its partial staging and left the
-                // working copy whole: start over from it, so a retry after
-                // choosing another folder goes there.
+                // A failed copy left the working copy whole: start over
+                // from it, so a retry after choosing another folder goes
+                // there. A partial staging that stays has this session's
+                // marker, and the Working step removes it.
                 if matches!(state, SaveState::Copying { .. }) && working.exists() {
                     checkpoint::put(store, session_id, Stage::Save, STATE, &SaveState::Working)?;
                     state = SaveState::Working;

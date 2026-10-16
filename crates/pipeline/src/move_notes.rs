@@ -296,18 +296,7 @@ fn folder_name(path: &Path) -> String {
 /// folder as this Move's copy and removes the rest; it is never taken for
 /// a finished note.
 fn remove_copy(dir: &Path) -> io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_name() == MARKER {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
-        } else {
-            std::fs::remove_file(entry.path())?;
-        }
-    }
-    std::fs::remove_dir_all(dir)
+    session_save::remove_marker_last(dir, MARKER)
 }
 
 fn write_marker(dir: &Path, session_id: &str) -> io::Result<()> {
