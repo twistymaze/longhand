@@ -178,12 +178,28 @@ pub fn session_id_of(text: &str) -> Option<String> {
 /// characters, each a lowercase ASCII letter, a digit, `-` or `_`. The id
 /// comes from a synced file, and the app uses it as a folder name under
 /// the working root. So a path, `..`, an empty id and uppercase (a file
-/// system that ignores case gives two such ids one folder) are refused.
+/// system that ignores case gives two such ids one folder) are refused. A
+/// Windows device name is refused on each platform: no folder on Windows
+/// can have that name, and the note folder syncs to each computer.
 pub fn valid_session_id(id: &str) -> bool {
     (1..=64).contains(&id.len())
         && id
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        && !windows_device_name(id)
+}
+
+/// Whether `id` is a name that Windows keeps for a device.
+fn windows_device_name(id: &str) -> bool {
+    match id {
+        "con" | "prn" | "aux" | "nul" => true,
+        _ => {
+            let (stem, number) = id.split_at(id.len().min(3));
+            matches!(stem, "com" | "lpt")
+                && number.len() == 1
+                && number.bytes().all(|b| b.is_ascii_digit() && b != b'0')
+        }
+    }
 }
 
 /// An error for the file `file` when `id` is not a valid note id

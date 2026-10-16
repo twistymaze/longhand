@@ -278,7 +278,12 @@ impl LibraryStatus {
         let problems = inner.reported_problems();
         let old_layout = inner.old_layout_notes();
         inner.notes.retain(|_, (path, _)| inside(path));
-        inner.seen.retain(|_, (path, _)| inside(path));
+        // Another version in a removed Destination is dropped too, also when
+        // the note is in a Destination that stays.
+        inner.seen.retain(|_, (path, versions)| {
+            versions.retain(|version, _| inside(version));
+            inside(path) && !versions.is_empty()
+        });
         inner.problems.retain(|path, _| inside(path));
         inner.old_layout.retain(|_, path| inside(path));
         inner.unavailable.retain(|root| roots.contains(root));

@@ -5543,7 +5543,7 @@ mod tests {
                 &recognition(),
                 &CaptureChoice::default(),
             );
-            assert!(refused.is_err());
+            assert_eq!(refused.unwrap_err().to_string(), NOTE_DELETING);
             std::fs::remove_dir_all(path).map_err(|e| e.to_string())
         })
         .unwrap();

@@ -1147,6 +1147,33 @@ mod tests {
         assert_eq!(targets.lock().unwrap().len(), 1);
     }
 
+    /// A change of the Destinations drops the problems of the removed one
+    /// and emits a change, so the interface reads the notices again.
+    #[test]
+    fn a_removed_destination_drops_its_notices_and_emits_a_change() {
+        let first = marked_root();
+        let second = marked_root();
+        let newer = second.path().join("Newer");
+        std::fs::create_dir(&newer).unwrap();
+        std::fs::write(
+            newer.join("longhand.json"),
+            "{\"layout\": 9, \"session_id\": \"zz\"}\n",
+        )
+        .unwrap();
+        let both = vec![first.path().to_path_buf(), second.path().to_path_buf()];
+        let (mut worker, _targets, _) = worker(both, fast());
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&emitted);
+        worker.emit = Box::new(move |changes| sink.lock().unwrap().push(changes));
+        worker.full_scan();
+        assert_eq!(worker.reconciler.status().problems().len(), 1);
+        emitted.lock().unwrap().clear();
+
+        worker.set_roots(vec![first.path().to_path_buf()], None);
+        assert!(worker.reconciler.status().problems().is_empty());
+        assert_eq!(emitted.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn a_root_that_appears_later_gets_a_watch_at_the_next_full_scan() {
         let parent = tempfile::tempdir().unwrap();

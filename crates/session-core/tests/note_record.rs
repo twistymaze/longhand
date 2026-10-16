@@ -211,6 +211,13 @@ fn a_record_whose_session_id_is_not_a_plain_note_id_does_not_parse() {
         "..",
         "01J8Z",
         long.as_str(),
+        // Windows device names: no folder can have such a name there.
+        "con",
+        "nul",
+        "aux",
+        "prn",
+        "com1",
+        "lpt9",
     ] {
         let text = NoteRecord::new(id, wall(0)).render();
         assert!(NoteRecord::parse(&text).is_err(), "{id:?} parsed");
