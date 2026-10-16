@@ -16,21 +16,20 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
 use summarize::prompts::TOPIC_SUMMARY_ID;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_store::StoreExt;
 use tauri_specta::Event;
 
+use crate::managers::local_store;
 use crate::managers::shared::{
     SharedAvailability, SharedSettingsManager, SharedSnapshot, SharedState,
 };
 
-/// Relative, so `tauri-plugin-store` resolves it under the app data directory.
-pub const SETTINGS_STORE_PATH: &str = "settings.json";
+/// The key of the local settings in the local settings file.
 const SETTINGS_KEY: &str = "settings";
 
 pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 6;
@@ -1463,52 +1462,143 @@ pub fn get_background(app: &AppHandle) -> String {
     shared_snapshot(app).view.background
 }
 
-/// The local settings. A first run writes the defaults, and an old store
-/// migrates. The migration of a store from before version 6 puts the old
-/// shared values into the cache first, when no cache exists. When that
-/// write fails, the store stays as it is, so the next read tries again.
-pub fn get_local_settings(app: &AppHandle) -> LocalSettings {
-    let store = match app.store(SETTINGS_STORE_PATH) {
-        Ok(store) => store,
-        Err(e) => {
-            log::error!("failed to open settings store: {e}; using defaults");
-            return LocalSettings::default();
-        }
-    };
-    let stored = store.get(SETTINGS_KEY);
-    let (settings, updated) = match &stored {
+/// The values of the local settings file after the launch read, as the app
+/// uses them. [`write_settings`] changes them only after the file write
+/// succeeded.
+pub struct LocalStore {
+    path: PathBuf,
+    values: Mutex<Map<String, Value>>,
+}
+
+/// The path of the local settings file in the app data folder.
+fn local_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|dir| dir.join(local_store::FILE_NAME))
+        .map_err(|e| e.to_string())
+}
+
+/// The local settings in `values`, and whether a migration changed them.
+fn local_from(values: &Map<String, Value>) -> (LocalSettings, bool) {
+    match values.get(SETTINGS_KEY) {
         Some(stored) => settings_from_value(stored),
         None => (LocalSettings::default(), true),
+    }
+}
+
+/// What the launch does with the result of the read of the local settings
+/// file. A file that cannot be read needs the user's choice: the defaults
+/// never replace it without that choice.
+#[derive(Debug, PartialEq)]
+pub enum LaunchRead {
+    /// The values of the file. A missing file has no values.
+    Values(Map<String, Value>),
+    /// The file is there and cannot be read.
+    Ask(local_store::Unreadable),
+}
+
+pub fn launch_read(
+    read: Result<Option<Map<String, Value>>, local_store::Unreadable>,
+) -> LaunchRead {
+    match read {
+        Ok(values) => LaunchRead::Values(values.unwrap_or_default()),
+        Err(e) => LaunchRead::Ask(e),
+    }
+}
+
+/// Read the local settings file at launch, before any other reader that
+/// writes. A first run writes the defaults, and an old file migrates. The
+/// migration of a file from before version 6 puts the old shared values into
+/// the cache first, when no cache exists. When that write fails, the file
+/// stays as it is, so the next launch tries again. A file that cannot be
+/// read shows the startup alert: Quit changes no file, and Use Default
+/// Settings keeps the file under another name and starts as a first run.
+pub fn load_at_launch(app: &AppHandle) -> Result<LocalSettings, crate::startup::Failure> {
+    let failure = |e: String| crate::startup::Failure {
+        description: crate::startup::SETTINGS_FAILURE,
+        source: e.into(),
     };
-    if updated {
-        if let Some(legacy) = stored.as_ref().and_then(legacy_shared) {
-            let seeded = shared_cache_dir(app).and_then(|dir| {
+    let path = local_store_path(app).map_err(failure)?;
+    let read = local_store::read(&path, local_store::LAUNCH_TRIES, local_store::LAUNCH_DELAY);
+    let values = match launch_read(read) {
+        LaunchRead::Values(values) => values,
+        LaunchRead::Ask(error) => {
+            log::error!(
+                "the local settings file {} can't be read: {error}",
+                path.display()
+            );
+            crate::startup::ask_about_settings(&path, &error.to_string());
+            let kept = local_store::set_aside(&path)
+                .map_err(|e| failure(format!("{}: {e}", path.display())))?;
+            log::info!("the unreadable settings file is kept as {}", kept.display());
+            Map::new()
+        }
+    };
+    let (settings, updated) = local_from(&values);
+    let values = if updated {
+        let legacy = values.get(SETTINGS_KEY).and_then(legacy_shared);
+        let seeded = match legacy {
+            Some(legacy) => shared_cache_dir(app).and_then(|dir| {
                 crate::managers::shared::seed_cache(&dir, legacy).map_err(|e| e.to_string())
-            });
-            if let Err(e) = seeded {
+            }),
+            None => Ok(false),
+        };
+        match seeded {
+            Err(e) => {
                 log::error!("could not keep the old shared settings in the cache: {e}");
-                return settings;
+                values
+            }
+            Ok(_) => {
+                let mut migrated = values.clone();
+                migrated.insert(
+                    SETTINGS_KEY.into(),
+                    serde_json::to_value(&settings).expect("settings serialize"),
+                );
+                match local_store::write(&path, &migrated) {
+                    Ok(()) => migrated,
+                    Err(e) => {
+                        log::error!("failed to persist migrated settings: {e}");
+                        values
+                    }
+                }
             }
         }
-        store.set(
-            SETTINGS_KEY,
-            serde_json::to_value(&settings).expect("settings serialize"),
-        );
-        if let Err(e) = store.save() {
-            log::error!("failed to persist migrated settings: {e}");
-        }
+    } else {
+        values
+    };
+    app.manage(LocalStore {
+        path,
+        values: Mutex::new(values),
+    });
+    Ok(settings)
+}
+
+/// The local settings. Before the launch read, this reads the file and
+/// writes nothing, as [`read_settings`] does: the update install at launch
+/// runs before the launch read.
+pub fn get_local_settings(app: &AppHandle) -> LocalSettings {
+    match app.try_state::<LocalStore>() {
+        Some(store) => local_from(&store.values.lock().unwrap_or_else(|e| e.into_inner())).0,
+        None => read_settings(app),
     }
-    settings
+}
+
+/// The local settings in the file at `path`, with no write: a migrated
+/// value is not saved, and a file that cannot be read gives the defaults.
+pub fn read_settings_at(path: &Path) -> LocalSettings {
+    local_store::read(path, 1, std::time::Duration::ZERO)
+        .ok()
+        .flatten()
+        .map(|values| local_from(&values).0)
+        .unwrap_or_default()
 }
 
 /// Read the local settings and write nothing: a migrated value is not
 /// saved. Launch reads the Dock policy with this before the single-instance
 /// lock (U19), so a second copy that exits changes no file.
 pub fn read_settings(app: &AppHandle) -> LocalSettings {
-    app.store(SETTINGS_STORE_PATH)
-        .ok()
-        .and_then(|store| store.get(SETTINGS_KEY))
-        .map(|stored| settings_from_value(&stored).0)
+    local_store_path(app)
+        .map(|path| read_settings_at(&path))
         .unwrap_or_default()
 }
 
@@ -1550,24 +1640,21 @@ pub fn update_settings(
     ))
 }
 
-/// Write and flush immediately: the store's autosave is debounced, and a
-/// setting changed just before quitting must survive the quit.
+/// Write the local settings file now, so a setting changed just before
+/// quitting survives the quit. The values in memory change only when the
+/// write succeeded.
 fn write_settings(app: &AppHandle, settings: &LocalSettings) -> Result<(), String> {
-    let store = app.store(SETTINGS_STORE_PATH).map_err(|e| e.to_string())?;
-    let previous = store.get(SETTINGS_KEY);
-    store.set(
-        SETTINGS_KEY,
+    let store = app
+        .try_state::<LocalStore>()
+        .ok_or("The settings are not ready yet.")?;
+    let mut values = store.values.lock().unwrap_or_else(|e| e.into_inner());
+    let mut changed = values.clone();
+    changed.insert(
+        SETTINGS_KEY.into(),
         serde_json::to_value(settings).map_err(|e| e.to_string())?,
     );
-    if let Err(error) = store.save() {
-        match previous {
-            Some(value) => store.set(SETTINGS_KEY, value),
-            None => {
-                store.delete(SETTINGS_KEY);
-            }
-        }
-        return Err(error.to_string());
-    }
+    local_store::write(&store.path, &changed).map_err(|e| e.to_string())?;
+    *values = changed;
     Ok(())
 }
 
@@ -2635,6 +2722,46 @@ mod tests {
         let mut after = settings.clone();
         after.endpoint_model = "gpt-4o".into();
         assert!(shared_patch(&settings, &after).is_empty());
+    }
+
+    #[test]
+    fn the_launch_asks_for_a_file_that_cannot_be_read_and_starts_a_missing_file_empty() {
+        assert_eq!(launch_read(Ok(None)), LaunchRead::Values(Map::new()));
+        let values = json!({ "settings": { "storage_folder": "/notes" } })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            launch_read(Ok(Some(values.clone()))),
+            LaunchRead::Values(values)
+        );
+        let damaged = local_store::Unreadable::DoesNotParse("EOF".into());
+        assert_eq!(launch_read(Err(damaged.clone())), LaunchRead::Ask(damaged));
+    }
+
+    #[test]
+    fn a_read_before_the_launch_read_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(local_store::FILE_NAME);
+        // A missing file gives the defaults and stays missing.
+        assert_eq!(read_settings_at(&path), LocalSettings::default());
+        assert!(!path.exists());
+        // A damaged file gives the defaults and does not change.
+        std::fs::write(&path, b"{\"settings\": {\"storage_fol").unwrap();
+        assert_eq!(read_settings_at(&path), LocalSettings::default());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"{\"settings\": {\"storage_fol"
+        );
+        // An old file reads migrated and does not change.
+        let old = serde_json::to_vec(&json!({ "settings": {
+            "settings_schema_version": 2,
+            "storage_folder": "/notes",
+        }}))
+        .unwrap();
+        std::fs::write(&path, &old).unwrap();
+        assert_eq!(read_settings_at(&path).storage_folder, "/notes");
+        assert_eq!(std::fs::read(&path).unwrap(), old);
     }
 
     #[test]

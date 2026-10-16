@@ -249,12 +249,13 @@ fn setup_app(
     // Without the instance lock the check is skipped; a database that this
     // build cannot open then stops the start with the R9 alert.
     startup::check_database(&handle, &liveness)?;
-    // Read once before any other reader, so a first run writes the
-    // defaults and an old store migrates. The migration puts the old
+    // Read once before any other reader that writes, so a first run writes
+    // the defaults and an old file migrates. A file that can't be read
+    // shows an alert (Quit or Use Default Settings). The migration puts the old
     // shared values into the cache (R21). The join with the storage
     // folder runs on the launch thread, before the first library
     // scan; until then the shared view comes from the cache.
-    let local = managers::settings::get_local_settings(&handle);
+    let local = managers::settings::load_at_launch(&handle)?;
     log::info!(
         "settings loaded (schema version {})",
         local.settings_schema_version
