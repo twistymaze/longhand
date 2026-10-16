@@ -90,6 +90,12 @@ impl RateFollower {
         self.resampler.push(samples, emit);
     }
 
+    /// Send the audio that the resampler holds to `emit`, with the last
+    /// frame padded to its full length. Call this at the end of the stream.
+    pub fn finish(&mut self, emit: impl FnMut(&[f32])) {
+        self.resampler.finish(emit);
+    }
+
     /// Discard the audio that the resampler holds, and read `in_hz` from
     /// now on. The Windows backend calls this when it follows another
     /// output device.
@@ -135,6 +141,25 @@ mod tests {
             "two seconds of output, got {total} samples"
         );
         assert_eq!(total % 320, 0, "every frame is whole");
+    }
+
+    /// C16: at the end of the stream, `finish` sends the audio that the
+    /// resampler still holds.
+    #[test]
+    fn finish_emits_the_audio_that_the_resampler_holds() {
+        let mut follower = RateFollower::new(48_000, 16_000, 320);
+        let mut total = count(&mut follower, 48_000, 0.5);
+        assert!(total < 8_000, "the resampler holds a tail, got {total}");
+        follower.finish(|frame| {
+            assert_eq!(frame.len(), 320, "every frame is whole");
+            total += frame.len();
+        });
+        // Half a second at 16 kHz. The resampler delay and the padding of
+        // the last frame can add less than two frames.
+        assert!(
+            (8_000..8_640).contains(&total),
+            "half a second of output, got {total} samples"
+        );
     }
 
     #[test]

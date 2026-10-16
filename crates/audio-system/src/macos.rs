@@ -368,7 +368,21 @@ fn drain(
             next_check = now + DEVICE_CHECK;
             if !device.is_alive().unwrap_or(false) {
                 log::warn!("the system audio device is no longer alive; ending system audio");
-                let _ = tx.blocking_send(Err(Error::SpeakerStreamEnded));
+                // Send the audio that is in the ring and in the resampler
+                // before the error.
+                let left = consumer.slots();
+                if left > 0
+                    && let Ok(chunk) = consumer.read_chunk(left)
+                {
+                    let (a, b) = chunk.as_slices();
+                    rate.push(a, |frame| send(frame, &mut closed));
+                    rate.push(b, |frame| send(frame, &mut closed));
+                    chunk.commit_all();
+                }
+                rate.finish(|frame| send(frame, &mut closed));
+                if !closed {
+                    let _ = tx.blocking_send(Err(Error::SpeakerStreamEnded));
+                }
                 return;
             }
             if let Some(hz) = device_rate(device, tap) {
