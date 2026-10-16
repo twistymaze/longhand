@@ -434,8 +434,8 @@ impl LibraryStatus {
         // A folder that the scan read and that gave no note has nothing to
         // show now. A folder that the scan did not read keeps its status;
         // `retain_roots` drops the folders of a removed Destination. A note
-        // that the scan found, or
-        // that cannot be read, has the other versions of this scan only.
+        // that the scan found, or that cannot be read, has the other
+        // versions of this scan only.
         inner.notes.retain(|id, (path, _)| {
             let keep = found.contains_key(id) || coverage.keeps_wait(scan, path);
             if !keep {

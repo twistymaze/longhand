@@ -192,6 +192,7 @@ pub(crate) fn check_session_id(file: &'static str, id: &str) -> Result<(), Folde
     if valid_session_id(id) {
         return Ok(());
     }
+    // `Yaml` is the error with a free text. It also serves a JSON file.
     Err(FolderError::Yaml {
         file,
         message: format!("session_id {id:?} is not a valid note id"),
