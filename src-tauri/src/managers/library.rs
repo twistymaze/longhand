@@ -387,10 +387,12 @@ impl Worker {
         })
     }
 
-    /// A new set of Destinations: start the watches again on it, and scan
-    /// every Destination. The change of folder already read the shared
-    /// settings of the new storage folder.
+    /// A new set of Destinations: drop the waits of the notes in a removed
+    /// Destination, start the watches again on the new set, and scan every
+    /// Destination. The change of folder already read the shared settings
+    /// of the new storage folder.
     fn set_roots(&mut self, roots: Vec<PathBuf>, storage: Option<PathBuf>) {
+        self.reconciler.retain_roots(&roots);
         self.roots = roots;
         self.storage = storage;
         self.watches.clear();
