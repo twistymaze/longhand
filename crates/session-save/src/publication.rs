@@ -174,7 +174,7 @@ impl Publication {
         }
     }
 
-    /// [`Publication::publish_with`] with no hook.
+    /// [`Publication::publish_with`] with no `after_write` hook.
     pub fn publish<G>(
         &self,
         home: &Path,

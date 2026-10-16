@@ -649,7 +649,11 @@ fn write_flag(
     let mut record = files.record;
     record.result = Some(flag);
     let text = note_files::write_record(home, &record).map_err(|e| storage(root, e))?;
-    let session = std::fs::read(home.join(SESSION_FILE)).unwrap_or_default();
+    // The read is timed: the caller holds the store lock.
+    let session = match read_timed(home.join(SESSION_FILE), READ_TIMEOUT) {
+        Read::Bytes(bytes) => bytes,
+        Read::Missing | Read::Failed(_) => Vec::new(),
+    };
     store.set_written_session_fingerprint(id, Some(&written_fingerprint(&session, &text)))?;
     Ok(())
 }

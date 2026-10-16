@@ -24,11 +24,8 @@ pub const TAGS_KEY: &str = "longhand_tags";
 ///
 /// A writer that reads the records, changes them and writes them back
 /// holds the store lock from the read to the write, so that two writers
-/// on this computer do not undo each other: the title writer, the type
-/// move, the flag update of the early write, the accept of a hand edit in
-/// Regenerate Summary, and the publication (through the guard that it
-/// gets). The conversion of old notes and the early write before its last
-/// step do not hold it yet.
+/// on this computer do not undo each other. The publication holds it
+/// through the guard that its caller gives.
 pub fn write_record(dir: &Path, record: &NoteRecord) -> io::Result<Vec<u8>> {
     let bytes = record.render().into_bytes();
     home_write::write_atomic(dir, NOTE_RECORD_FILE, &bytes)?;

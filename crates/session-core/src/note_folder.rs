@@ -107,25 +107,32 @@ impl NoteFiles {
     /// error of the kind [`std::io::ErrorKind::Other`] with the reason, and
     /// a file that cannot be read gives its error.
     pub fn read(folder: &Path) -> std::io::Result<Self> {
-        let session_md = read_optional(&folder.join(SESSION_FILE))?;
-        let record = read_optional(&folder.join(NOTE_RECORD_FILE))?;
-        Self::parse(session_md.as_deref(), record.as_deref())
-            .map_err(|e| std::io::Error::other(e.to_string()))
+        Self::read_with(folder, &|path| read_optional(path))
     }
 
     /// [`NoteFiles::read`], with each file read stopped after `timeout`. A
-    /// read that does not finish in time gives an error of the kind
-    /// [`std::io::ErrorKind::TimedOut`].
+    /// read that fails or does not finish in time gives an error with the
+    /// reason.
     pub fn read_timed(folder: &Path, timeout: Duration) -> std::io::Result<Self> {
-        let text = |name: &str| match read_timed(folder.join(name), timeout) {
-            Read::Missing => Ok(None),
-            Read::Bytes(bytes) => String::from_utf8(bytes)
-                .map(Some)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
-            Read::Failed(why) => Err(std::io::Error::new(std::io::ErrorKind::TimedOut, why)),
-        };
-        let session_md = text(SESSION_FILE)?;
-        let record = text(NOTE_RECORD_FILE)?;
+        Self::read_with(
+            folder,
+            &|path| match read_timed(path.to_path_buf(), timeout) {
+                Read::Missing => Ok(None),
+                Read::Bytes(bytes) => String::from_utf8(bytes)
+                    .map(Some)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                Read::Failed(why) => Err(std::io::Error::other(why)),
+            },
+        )
+    }
+
+    /// The note in `folder`, with each file read by `text`.
+    fn read_with(
+        folder: &Path,
+        text: &dyn Fn(&Path) -> std::io::Result<Option<String>>,
+    ) -> std::io::Result<Self> {
+        let session_md = text(&folder.join(SESSION_FILE))?;
+        let record = text(&folder.join(NOTE_RECORD_FILE))?;
         Self::parse(session_md.as_deref(), record.as_deref())
             .map_err(|e| std::io::Error::other(e.to_string()))
     }
