@@ -103,6 +103,9 @@ pub enum Closed {
 pub struct Timeline {
     segments: Vec<Segment>,
     open: Option<OpenSegment>,
+    /// The lowest index that a later segment can take: see
+    /// [`Timeline::retire`].
+    retired: u32,
 }
 
 impl Timeline {
@@ -125,6 +128,7 @@ impl Timeline {
         Ok(Self {
             segments,
             open: None,
+            retired: 0,
         })
     }
 
@@ -137,10 +141,13 @@ impl Timeline {
     }
 
     /// The index the next opened segment takes. A dropped sub-second segment
-    /// gives its index back, so saved audio files number without holes.
+    /// gives its index back, so saved audio files number without holes. A
+    /// retired index is not given back.
     fn next_index(&self) -> u32 {
         let closed = self.segments.last().map(|s| s.index + 1).unwrap_or(0);
-        closed.max(self.open.as_ref().map(|o| o.index + 1).unwrap_or(0))
+        closed
+            .max(self.open.as_ref().map(|o| o.index + 1).unwrap_or(0))
+            .max(self.retired)
     }
 
     pub fn open(
@@ -182,6 +189,17 @@ impl Timeline {
     /// audio and leaves no gap of its own.
     pub fn abandon_open(&mut self) {
         self.open = None;
+    }
+
+    /// Forget the open segment, when it is `index`, and never give `index`
+    /// to a later segment. Its chunks stay on disk with no segment row, and
+    /// a later segment must not mix with them or remove them (KTD2 of the
+    /// capture recovery plan).
+    pub fn retire(&mut self, index: u32) {
+        if self.open.as_ref().is_some_and(|o| o.index == index) {
+            self.open = None;
+        }
+        self.retired = self.retired.max(index + 1);
     }
 
     /// Close the open segment at `end_ms` on the session timeline.

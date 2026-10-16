@@ -90,6 +90,19 @@ fn a_sub_second_segment_is_discarded_on_close() {
 }
 
 #[test]
+fn a_retired_index_is_not_given_to_a_later_segment() {
+    // C9: the close of segment 0 failed, and its chunks have no row.
+    let mut timeline = Timeline::new();
+    timeline.open(0, wall(0)).unwrap();
+    timeline.retire(0);
+    assert!(timeline.open_segment().is_none());
+    assert_eq!(timeline.open(5_000, wall(0)).unwrap(), 1);
+    // A later segment under a second gives back only its own index.
+    timeline.close(5_500, wall(0), "b".into()).unwrap();
+    assert_eq!(timeline.open(9_000, wall(0)).unwrap(), 1);
+}
+
+#[test]
 fn a_short_segment_that_ends_at_a_switch_is_kept() {
     // KTD3: a quick microphone change, or a Stop just after one, loses no
     // audio.

@@ -262,6 +262,74 @@ fn stop_note(
     })
 }
 
+/// Stop the note `id`, whose working folder is `session_dir`, in the store
+/// at `at` (see [`stop_note`]). Its segment must already be closed. First
+/// its chunks that have no segment row are registered, so that the rows
+/// are complete before the decision (KTD3 of the capture recovery plan).
+/// A note that kept no audio loses its working folder.
+///
+/// When audio stays with no row, the note becomes Interrupted (disk) and
+/// keeps its folder, and the result is an error. A later Stop or launch
+/// tries again. The caller holds no store guard.
+fn settle_stop(
+    store: &pipeline::SharedStore,
+    session_dir: &Path,
+    id: &str,
+    at: DateTime<FixedOffset>,
+) -> Result<StopOutcome, CaptureError> {
+    let registered = pipeline::recover::register_chunks(store, id, session_dir, None);
+    let mut guard = pipeline::lock(store);
+    if pipeline::recover::unregistered_audio(session_dir, &guard.segments(id)?) {
+        let cause = match registered {
+            Err(e) => e.to_string(),
+            Ok(()) => "a partial chunk could not be repaired".into(),
+        };
+        keep_unregistered(&mut guard, id, at)?;
+        return Err(CaptureError::Other(format!(
+            "the audio of {id} could not be registered ({cause}); it stays"
+        )));
+    }
+    if let Err(e) = registered {
+        log::warn!("registering the chunks of {id} failed, but no audio is left out: {e}");
+    }
+    let outcome = stop_note(&mut guard, id, at)?;
+    drop(guard);
+    if !matches!(outcome, StopOutcome::Recorded { .. }) {
+        let _ = std::fs::remove_dir_all(session_dir);
+    }
+    Ok(outcome)
+}
+
+/// The note `id` keeps audio with no segment row. A note that records
+/// becomes Interrupted (disk) as of the end of its last stored segment, or
+/// `at` when it has none. An Interrupted note does not change.
+fn keep_unregistered(
+    store: &mut Store,
+    id: &str,
+    at: DateTime<FixedOffset>,
+) -> Result<(), CaptureError> {
+    let Some(record) = store.session(id)? else {
+        return Ok(());
+    };
+    if record.state != SessionState::Capturing {
+        return Ok(());
+    }
+    let since = store
+        .segments(id)?
+        .iter()
+        .max_by_key(|s| s.index)
+        .map_or(at, |s| s.wall_end);
+    store.apply(
+        id,
+        &Event::CaptureLost {
+            reason: InterruptReason::Disk,
+            at: since,
+        },
+    )?;
+    log::warn!("session {id} keeps audio with no segment row and is interrupted");
+    Ok(())
+}
+
 /// Put the type `note_type` in the new row of `id`, and begin its early
 /// write. The early write reads the type from the row and makes the home
 /// folder in the type folder (U7 of the note types plan). The caller holds
@@ -324,16 +392,74 @@ fn leave_in_background(app: &AppHandle, ids: Vec<String>) {
     }
 }
 
+/// A Start of the new note `id` failed after its segment stopped or did not
+/// open, and the new note has no row: its working folder goes. The note
+/// that the Start ended, `ended`, is already closed: it is stopped and
+/// queued, as the new note would have done, so that it does not stay
+/// Capturing with nothing recording (R4 of the capture recovery plan).
+/// Returns that note and the result of its Stop. The caller holds no store
+/// guard.
+fn abandon_start(
+    store: &pipeline::SharedStore,
+    working_root: &Path,
+    id: &str,
+    ended: Option<&str>,
+) -> Option<(String, Result<StopOutcome, CaptureError>)> {
+    let _ = std::fs::remove_dir_all(working_root.join(id));
+    let other = ended?;
+    let outcome = settle_stop(store, &working_root.join(other), other, now());
+    Some((other.to_string(), outcome))
+}
+
+/// Before a Start decides from the segment rows, register the audio of each
+/// note that records or is interrupted (KTD3). Returns the notes that still
+/// keep audio with no segment row. Of these, a note that records becomes
+/// Interrupted (disk), and a later launch registers its audio. The caller
+/// holds no store guard.
+fn hold_unregistered(store: &pipeline::SharedStore, working_root: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    for name in ["capturing", "interrupted"] {
+        match pipeline::lock(store).sessions_in(name) {
+            Ok(records) => ids.extend(records.into_iter().map(|r| r.id)),
+            Err(e) => log::warn!("could not list the {name} notes: {e}"),
+        }
+    }
+    let mut held = Vec::new();
+    for id in ids {
+        let session_dir = working_root.join(&id);
+        if let Err(e) = pipeline::recover::register_chunks(store, &id, &session_dir, None) {
+            log::error!("could not register the chunks of {id}: {e}");
+        }
+        let mut guard = pipeline::lock(store);
+        let unregistered = match guard.segments(&id) {
+            Ok(segments) => pipeline::recover::unregistered_audio(&session_dir, &segments),
+            Err(e) => {
+                log::warn!("could not read the segments of {id} ({e}); its audio stays");
+                true
+            }
+        };
+        if unregistered {
+            if let Err(e) = keep_unregistered(&mut guard, &id, now()) {
+                log::error!("could not interrupt {id}, which keeps unregistered audio: {e}");
+            }
+            held.push(id);
+        }
+    }
+    held
+}
+
 /// The notes that record or are interrupted and have no segment, which a
-/// new start stops. A store error lists none: the start then stops them as
+/// new start stops. The notes in `held` keep audio with no segment row and
+/// are not listed. A store error lists none: the start then stops them as
 /// before.
-fn open_with_no_segments(store: &Store) -> Vec<String> {
+fn open_with_no_segments(store: &Store, held: &[String]) -> Vec<String> {
     let mut ids = Vec::new();
     for name in ["capturing", "interrupted"] {
         match store.sessions_in(name) {
             Ok(records) => ids.extend(
                 records
                     .into_iter()
+                    .filter(|r| !held.contains(&r.id))
                     .filter(|r| store.segments(&r.id).is_ok_and(|s| s.is_empty()))
                     .map(|r| r.id),
             ),
@@ -899,6 +1025,40 @@ fn may_capture(inner: &Inner) -> Result<(), CaptureError> {
 /// cancelled. The paused flag clears.
 fn stopped_without_segment(inner: &mut Inner, reconnecting: Option<String>) -> Option<String> {
     inner.paused.take().or(reconnecting)
+}
+
+/// The note that a Stop settles, after `supersede` gave `reconnecting`.
+/// The segment that records closes first. A close error is logged, and the
+/// Stop continues, as a Pause does (KTD5 of the capture recovery plan).
+/// The caller holds `inner` and no store guard.
+fn stop_target(
+    store: &pipeline::SharedStore,
+    working_root: &Path,
+    inner: &mut Inner,
+    reconnecting: Option<String>,
+) -> Result<String, CaptureError> {
+    if let Some(active) = inner.active.take() {
+        let id = active.session_id.clone();
+        if let Err(e) = close_segment_in(store, working_root, inner, active, false) {
+            log::error!("closing {id} for a stop failed: {e}");
+        }
+        return Ok(id);
+    }
+    // Stopped while paused (R4), or between restart attempts: the segment
+    // is closed.
+    if let Some(id) = stopped_without_segment(inner, reconnecting) {
+        return Ok(id);
+    }
+    // Stopped from the failed-capture state, which acknowledges it (R5c).
+    // A note that records while `inner` holds nothing has nothing that
+    // records it: an earlier close or store write failed (KTD5).
+    let store = pipeline::lock(store);
+    for name in ["capturing", "interrupted"] {
+        if let Some(record) = store.sessions_in(name)?.into_iter().next() {
+            return Ok(record.id);
+        }
+    }
+    Err(CaptureError::NotCapturing)
 }
 
 /// Whether a background reopen (the device watch, a restart, the move back
@@ -1576,8 +1736,12 @@ impl CaptureManager {
             ended = Some(paused);
         }
         if let Some(active) = inner.active.take() {
-            ended = Some(active.session_id.clone());
-            self.close_segment(&mut inner, active, false)?;
+            let other = active.session_id.clone();
+            // The note stops below in any case (KTD5).
+            if let Err(e) = self.close_segment(&mut inner, active, false) {
+                log::error!("closing {other} for a start failed: {e}");
+            }
+            ended = Some(other);
         }
         let id = uuid::Uuid::new_v4().to_string();
         let started = now();
@@ -1605,18 +1769,7 @@ impl CaptureManager {
         let mut active = match self.open_segment(app, &mut inner, opening) {
             Ok(active) => active,
             Err(e) => {
-                // The session this press ended is already closed: stop and
-                // queue it, as the new session would have, rather than leave
-                // it Capturing with nothing recording.
-                let _ = std::fs::remove_dir_all(self.session_dir(&id));
-                if let Some(other) = ended {
-                    match self.stop_in_store(app, &other) {
-                        Ok(_) => log::info!("session {other} stopped by a start that failed"),
-                        Err(stop) => log::error!("stopping {other} failed: {stop}"),
-                    }
-                    drop(inner);
-                    changed(app, None);
-                }
+                self.abandon_start(app, inner, &id, ended);
                 return Err(e);
             }
         };
@@ -1624,7 +1777,10 @@ impl CaptureManager {
         // note with no audio (R19): the new start does not discard it.
         // An empty note that it stops is left: the user starts a new note
         // (R18).
-        let open = open_with_no_segments(&self.store());
+        // A note that keeps audio with no segment row stays as it is: no
+        // decision from its rows deletes that audio (KTD3).
+        let held = hold_unregistered(&self.store, &self.working_root);
+        let open = open_with_no_segments(&self.store(), &held);
         let mut emptied = Vec::new();
         for other in open {
             match self.stop_in_store(app, &other) {
@@ -1642,12 +1798,13 @@ impl CaptureManager {
                 &model,
                 &capture,
                 Some(&snapshot),
+                &held,
             ) {
                 Ok(stopped) => stopped,
                 Err(e) => {
                     drop(store);
                     abandon(active);
-                    let _ = std::fs::remove_dir_all(self.session_dir(&id));
+                    self.abandon_start(app, inner, &id, ended);
                     return Err(e.into());
                 }
             };
@@ -1716,25 +1873,17 @@ impl CaptureManager {
         let mut inner = self.inner();
         self.opens.stop_has_lock();
         let reconnecting = inner.supersede();
-        let id = match inner.active.take() {
-            Some(active) => {
-                let id = active.session_id.clone();
-                self.close_segment(&mut inner, active, false)?;
-                id
+        let id = stop_target(&self.store, &self.working_root, &mut inner, reconnecting)?;
+        let outcome = match self.stop_in_store(app, &id) {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                // Nothing records now. The note stays Interrupted or
+                // Capturing, and a later Stop finds it (KTD5).
+                drop(inner);
+                changed(app, None);
+                return Err(e);
             }
-            None => match stopped_without_segment(&mut inner, reconnecting) {
-                // Stopped while paused (R4), or between restart attempts:
-                // the segment is closed.
-                Some(id) => id,
-                // Stopped from the failed-capture state, which acknowledges
-                // it (R5c).
-                None => match self.open_session()? {
-                    Some((id, SessionState::Interrupted { .. })) => id,
-                    _ => return Err(CaptureError::NotCapturing),
-                },
-            },
         };
-        let outcome = self.stop_in_store(app, &id)?;
         drop(inner);
         app.state::<Arc<AlertsManager>>().clear(&id);
         changed(app, None);
@@ -1803,13 +1952,44 @@ impl CaptureManager {
     /// audio again when it kept no segment (R19). Its segment must already
     /// be closed.
     fn stop_in_store(&self, app: &AppHandle, id: &str) -> Result<StopOutcome, CaptureError> {
-        let outcome = stop_note(&mut self.store(), id, now())?;
+        let outcome = settle_stop(&self.store, &self.session_dir(id), id, now());
+        self.after_stop(app, id, outcome)
+    }
+
+    /// See [`abandon_start`]. `inner` is released before the change event.
+    fn abandon_start(
+        &self,
+        app: &AppHandle,
+        inner: std::sync::MutexGuard<'_, Inner>,
+        id: &str,
+        ended: Option<String>,
+    ) {
+        let Some((other, outcome)) =
+            abandon_start(&self.store, &self.working_root, id, ended.as_deref())
+        else {
+            return;
+        };
+        match self.after_stop(app, &other, outcome) {
+            Ok(_) => log::info!("session {other} stopped by a start that failed"),
+            Err(stop) => log::error!("stopping {other} failed: {stop}"),
+        }
+        drop(inner);
+        changed(app, None);
+    }
+
+    /// The work after [`settle_stop`] of `id` that needs the app.
+    fn after_stop(
+        &self,
+        app: &AppHandle,
+        id: &str,
+        outcome: Result<StopOutcome, CaptureError>,
+    ) -> Result<StopOutcome, CaptureError> {
+        let outcome = outcome?;
         if let StopOutcome::Recorded { .. } = outcome {
             self.record_model_at_stop(app, id);
         } else {
             // Nothing survived R35. The folder gets the flag "no recording"
             // again, and this run's in-use marker goes.
-            let _ = std::fs::remove_dir_all(self.session_dir(id));
             log::info!("session {id} kept no audio and is a note with no audio");
             if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
                 processing.early_homes().mark_pending(id);
@@ -3396,82 +3576,89 @@ impl CaptureManager {
         })
     }
 
-    /// Stop the segment, then keep it on the timeline and in the store, or
-    /// drop it and its audio when it ran under a second (R35). The live
-    /// worker then saves its last part, or deletes the parts of a dropped
-    /// segment, on its own thread: processing waits for it (KTD9). A
-    /// segment that ends at an input change (`at_switch`), or that one
-    /// opened, is kept even when it is short (KTD3). Returns true when the
-    /// segment is kept.
+    /// See [`close_segment_in`].
     fn close_segment(
         &self,
         inner: &mut Inner,
         active: ActiveSegment,
         at_switch: bool,
     ) -> Result<bool, CaptureError> {
-        let ActiveSegment {
-            session_id,
-            segment,
-            stop,
-            outcome,
-            thread,
-            live,
-            opened_at_switch,
-            channels,
-            ..
-        } = active;
-        // A close that fails before it decides keeps the live parts: the
-        // worker reads a dropped end as a kept segment.
-        let end_live = |how: LiveEnd| {
-            if let Some(live) = live {
-                live.end(how);
-            }
-        };
-        stop.cancel();
-        let outcome = outcome.recv();
-        let _ = thread.join();
-        let dir = self.session_dir(&session_id).join(RECOVERY_DIR);
+        close_segment_in(&self.store, &self.working_root, inner, active, at_switch)
+    }
+}
+
+/// Stop the segment, then keep it on the timeline and in the store, or drop
+/// it and its audio when it ran under a second (R35). The live worker then
+/// saves its last part, or deletes the parts of a dropped segment, on its
+/// own thread: processing waits for it (KTD9). A segment that ends at an
+/// input change (`at_switch`), or that one opened, is kept even when it is
+/// short (KTD3). Returns true when the segment is kept.
+///
+/// The caller holds `inner` and no store guard.
+fn close_segment_in(
+    store: &pipeline::SharedStore,
+    working_root: &Path,
+    inner: &mut Inner,
+    active: ActiveSegment,
+    at_switch: bool,
+) -> Result<bool, CaptureError> {
+    let ActiveSegment {
+        session_id,
+        segment,
+        stop,
+        outcome,
+        thread,
+        live,
+        opened_at_switch,
+        channels,
+        ..
+    } = active;
+    // A close that fails before it decides keeps the live parts: the
+    // worker reads a dropped end as a kept segment.
+    let end_live = |how: LiveEnd| {
+        if let Some(live) = live {
+            live.end(how);
+        }
+    };
+    stop.cancel();
+    let outcome = outcome.recv();
+    let _ = thread.join();
+    // From here no writer runs on the folder.
+    let session_dir = working_root.join(&session_id);
+    let dir = session_dir.join(RECOVERY_DIR);
+    // The open segment's own index names its audio: never an earlier
+    // segment's, whose chunks a discard would otherwise remove.
+    let index = clock_of(inner, &session_id)
+        .and_then(|clock| clock.timeline.open_segment())
+        .map_or(segment, |open| open.index);
+    let keep = at_switch || opened_at_switch;
+    let closed = (|| {
         let end_ms = match outcome {
             Ok(SegmentOutcome { span: Ok(span), .. }) => span.end_ms,
             Ok(SegmentOutcome { span: Err(e), .. }) => {
                 log::error!("closing the last chunk failed: {e}; recovering from disk");
-                recovered_end(&dir, segment)?
+                segment_end(&dir, segment)?
             }
-            Err(_) => recovered_end(&dir, segment)?,
+            Err(_) => segment_end(&dir, segment)?,
         };
-        let Some(clock) = inner.clock.as_mut().filter(|c| c.session_id == session_id) else {
+        let Some(clock) = clock_of(inner, &session_id) else {
             return Err(CaptureError::Other(
                 "segment closed without its timeline".into(),
             ));
         };
-        // The open segment's own index names its audio: never an earlier
-        // segment's, whose chunks a discard would otherwise remove.
-        let index = clock
-            .timeline
-            .open_segment()
-            .map_or(segment, |open| open.index);
         clock.timeline.set_open_channels(channels)?;
         let closed = close_timeline(
             &mut clock.timeline,
             end_ms,
             now(),
             segment_audio_file(index),
-            at_switch || opened_at_switch,
+            keep,
         )?;
         let kept = matches!(closed, Closed::Kept(_));
         match closed {
             Closed::Kept(segment) => {
                 end_live(LiveEnd::Keep);
-                let store = self.store();
-                store.put_segment(&session_id, &segment)?;
-                // The first stereo segment that is kept sets the stereo mark
-                // (KTD2): every later segment of the note is stereo.
-                if segment.channels == 2 && store.mark_stereo_from(&session_id, segment.index)? {
-                    log::info!(
-                        "segment {} of {session_id} is the note's first stereo segment",
-                        segment.index
-                    );
-                }
+                write_kept(&pipeline::lock(store), &session_id, &segment)?;
             }
             Closed::Discarded => {
                 end_live(LiveEnd::Discard);
@@ -3480,6 +3667,150 @@ impl CaptureManager {
             }
         }
         Ok(kept)
+    })();
+    match closed {
+        Ok(kept) => Ok(kept),
+        Err(e) => {
+            rebuild_after_failed_close(store, &session_dir, inner, &session_id, index, keep, e)
+        }
+    }
+}
+
+/// The clock of the note `id`, when `inner` holds it.
+fn clock_of<'a>(inner: &'a mut Inner, id: &str) -> Option<&'a mut Clock> {
+    inner.clock.as_mut().filter(|c| c.session_id == id)
+}
+
+/// The close of segment `index` of the note `id` failed with `error` after
+/// its writer stopped. Its chunks are on disk: register them as segments
+/// now, as launch recovery does (KTD2 of the capture recovery plan). A
+/// segment that closed at or opened at an input change (`keep`) is
+/// registered also when it is under a second.
+///
+/// When the rows are complete, the clock's timeline is made again from
+/// them, and the result tells whether segment `index` is kept. When audio
+/// stays with no row, `index` is retired, so that no later segment of the
+/// note takes it, and `error` is returned. The caller holds no store guard.
+fn rebuild_after_failed_close(
+    store: &pipeline::SharedStore,
+    session_dir: &Path,
+    inner: &mut Inner,
+    id: &str,
+    index: u32,
+    keep: bool,
+    error: CaptureError,
+) -> Result<bool, CaptureError> {
+    log::error!("closing segment {index} of {id} failed: {error}; registering its chunks");
+    let registered =
+        pipeline::recover::register_chunks(store, id, session_dir, keep.then_some(index));
+    if let Err(e) = &registered {
+        log::error!("could not register the chunks of {id}: {e}; they stay");
+    }
+    let segments = match registered {
+        Ok(()) => stored_with_stereo_mark(&pipeline::lock(store), id, index),
+        Err(_) => None,
+    };
+    let mut complete = segments
+        .as_ref()
+        .is_some_and(|segments| !pipeline::recover::unregistered_audio(session_dir, segments));
+    let kept = segments
+        .as_ref()
+        .is_some_and(|segments| segments.iter().any(|s| s.index == index));
+    if let Some(clock) = clock_of(inner, id) {
+        if let Some(segments) = segments {
+            match Timeline::from_segments(segments) {
+                Ok(timeline) => clock.timeline = timeline,
+                Err(e) => {
+                    log::error!("could not make the timeline of {id} from its rows: {e}");
+                    complete = false;
+                }
+            }
+        }
+        if !complete {
+            clock.timeline.retire(index);
+        }
+    }
+    if complete { Ok(kept) } else { Err(error) }
+}
+
+/// The stored segments of `id` after a rebuild. When the row of `index` is
+/// stereo, set the stereo mark again: the failed close can have written the
+/// row but not the mark (KTD2). The mark does not change when it is set
+/// already. `None` when the rows or the mark cannot be read or written.
+fn stored_with_stereo_mark(
+    store: &Store,
+    id: &str,
+    index: u32,
+) -> Option<Vec<session_core::Segment>> {
+    let segments = store.segments(id).ok()?;
+    let stereo = segments.iter().any(|s| s.index == index && s.channels == 2);
+    if stereo && let Err(e) = store.mark_stereo_from(id, index) {
+        log::error!("could not set the stereo mark of {id} at segment {index}: {e}");
+        return None;
+    }
+    Some(segments)
+}
+
+/// Write the row of the kept `segment` of `id`. The first stereo segment
+/// that is kept sets the stereo mark (KTD2): every later segment of the
+/// note is stereo.
+fn write_kept(
+    store: &Store,
+    id: &str,
+    segment: &session_core::Segment,
+) -> Result<(), CaptureError> {
+    #[cfg(test)]
+    if faults::take(&faults::WRITE) {
+        return Err(CaptureError::Other("test: the segment write failed".into()));
+    }
+    store.put_segment(id, segment)?;
+    #[cfg(test)]
+    if faults::take(&faults::STEREO) {
+        return Err(CaptureError::Other("test: the stereo mark failed".into()));
+    }
+    if segment.channels == 2 && store.mark_stereo_from(id, segment.index)? {
+        log::info!(
+            "segment {} of {id} is the note's first stereo segment",
+            segment.index
+        );
+    }
+    Ok(())
+}
+
+/// Where `segment` ends on disk, from its chunks: see [`recovered_end`].
+fn segment_end(dir: &Path, segment: u32) -> Result<u64, CaptureError> {
+    #[cfg(test)]
+    if faults::take(&faults::END) {
+        return Err(CaptureError::Other(
+            "test: the segment end was not read".into(),
+        ));
+    }
+    recovered_end(dir, segment)
+}
+
+/// Faults that a test sets for the next close on its own thread. Each
+/// fault occurs one time.
+#[cfg(test)]
+mod faults {
+    use std::cell::Cell;
+    use std::thread::LocalKey;
+
+    thread_local! {
+        /// The next [`super::write_kept`] fails.
+        pub static WRITE: Cell<bool> = const { Cell::new(false) };
+        /// The stereo mark of the next [`super::write_kept`] fails, after
+        /// its row is written.
+        pub static STEREO: Cell<bool> = const { Cell::new(false) };
+        /// The next [`super::segment_end`] fails.
+        pub static END: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub fn set(fault: &'static LocalKey<Cell<bool>>) {
+        fault.with(|f| f.set(true));
+    }
+
+    pub fn take(fault: &'static LocalKey<Cell<bool>>) -> bool {
+        fault.with(|f| f.replace(false))
     }
 }
 
@@ -3642,6 +3973,7 @@ mod tests {
                 &recording_model(&settings),
                 &CaptureChoice::default(),
                 Some(&serde_json::to_value(&spec).unwrap()),
+                &[],
             )
             .unwrap();
         let store = Arc::new(Mutex::new(store));
@@ -4639,6 +4971,7 @@ mod tests {
                 &r.model,
                 &CaptureChoice::default(),
                 Some(&r.snapshot),
+                &[],
             )
             .unwrap();
         store.set_notes(id, notes).unwrap();
@@ -4864,7 +5197,10 @@ mod tests {
         store.create_session("empty", at(0), None).unwrap();
         store.create_session("kept", at(0), None).unwrap();
         store.put_segment("kept", &one_segment(1)).unwrap();
-        assert_eq!(open_with_no_segments(&store), vec!["empty".to_string()]);
+        assert_eq!(
+            open_with_no_segments(&store, &[]),
+            vec!["empty".to_string()]
+        );
     }
 
     /// A note that records segment 0 of `id`, with its clock.
@@ -5023,5 +5359,476 @@ mod tests {
         };
         assert_eq!(recorded_ms(&[first, second]), 90_000);
         assert_eq!(recorded_ms(&[]), 0);
+    }
+
+    // U3 of the capture recovery plan: a failed close or store write never
+    // strands audio or a Capturing note.
+
+    fn shared(store: Store) -> pipeline::SharedStore {
+        Arc::new(Mutex::new(store))
+    }
+
+    /// Write `ms` of audio as the closed chunks of segment `index` in
+    /// `session_dir`, from `offset_ms` on the note's timeline.
+    fn write_chunks(session_dir: &Path, index: u32, offset_ms: u64, ms: u64) {
+        let rate = 16_000;
+        let mut writer = recorder::ChunkedWriter::with_probe(
+            recorder::SegmentArgs {
+                dir: session_dir.join(RECOVERY_DIR),
+                segment: index,
+                capture_started_at: 1_800_000_000_000,
+                offset_ms,
+                sample_rate: rate,
+                channels: 1,
+                floor_bytes: 0,
+            },
+            Box::new(|_| Some(u64::MAX)),
+        )
+        .unwrap();
+        let samples = vec![0.1_f32; (u64::from(rate) * ms / 1000) as usize];
+        for block in samples.chunks(rate as usize / 50) {
+            writer.write(block).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+
+    /// The segment indexes that have chunk files in `session_dir`.
+    fn chunk_segments(session_dir: &Path) -> Vec<u32> {
+        let mut segments: Vec<u32> = recorder::list_chunks(&session_dir.join(RECOVERY_DIR))
+            .unwrap()
+            .iter()
+            .map(|c| c.segment)
+            .collect();
+        segments.dedup();
+        segments
+    }
+
+    /// Set the mode of every file in the `audio-recovery/` folder of
+    /// `session_dir`: 0o000 makes a chunk unreadable.
+    #[cfg(unix)]
+    fn chunk_mode(session_dir: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        for entry in std::fs::read_dir(session_dir.join(RECOVERY_DIR)).unwrap() {
+            let path = entry.unwrap().path();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+    }
+
+    /// A note `id` that records segment `index` with the clock `timeline`,
+    /// whose open segment is `index`.
+    fn recording_segment(id: &str, timeline: Timeline, index: u32) -> Inner {
+        Inner {
+            active: Some(ActiveSegment {
+                segment: index,
+                ..active(id, false)
+            }),
+            clock: Some(Clock::new(id, timeline, Instant::now())),
+            ..Inner::default()
+        }
+    }
+
+    /// A timeline whose segment 0 is open from 0.
+    fn open_timeline() -> Timeline {
+        let mut timeline = Timeline::new();
+        timeline.open(0, at(0)).unwrap();
+        timeline
+    }
+
+    fn state_of(store: &pipeline::SharedStore, id: &str) -> SessionState {
+        store.lock().unwrap().session(id).unwrap().unwrap().state
+    }
+
+    fn segment_rows(store: &pipeline::SharedStore, id: &str) -> Vec<u32> {
+        store
+            .lock()
+            .unwrap()
+            .segments(id)
+            .unwrap()
+            .iter()
+            .map(|s| s.index)
+            .collect()
+    }
+
+    // Covers C8.
+    #[test]
+    fn a_failed_segment_write_at_stop_is_rebuilt_from_its_chunks() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        faults::set(&faults::WRITE);
+
+        let id = stop_target(&store, root.path(), &mut inner, None).unwrap();
+        let outcome = settle_stop(&store, &dir, &id, at(70)).unwrap();
+
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+        assert_eq!(chunk_segments(&dir), vec![0]);
+    }
+
+    // Covers C58.
+    #[cfg(unix)]
+    #[test]
+    fn a_close_error_at_stop_interrupts_the_note_and_a_second_stop_settles_it() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        // The write fails, and the rebuild cannot read the chunk.
+        chunk_mode(&dir, 0o000);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        faults::set(&faults::WRITE);
+
+        let id = stop_target(&store, root.path(), &mut inner, None).unwrap();
+        assert_eq!(id, "s");
+        assert!(settle_stop(&store, &dir, &id, at(70)).is_err());
+        assert!(matches!(
+            state_of(&store, "s"),
+            SessionState::Interrupted {
+                reason: InterruptReason::Disk,
+                ..
+            }
+        ));
+        assert_eq!(chunk_segments(&dir), vec![0]);
+
+        // The next Stop finds the note, although nothing in `Inner` holds
+        // it, and settles it.
+        chunk_mode(&dir, 0o644);
+        let mut empty = Inner::default();
+        let id = stop_target(&store, root.path(), &mut empty, None).unwrap();
+        assert_eq!(id, "s");
+        let outcome = settle_stop(&store, &dir, &id, at(80)).unwrap();
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+    }
+
+    // Covers C8: a Start in the same run does not delete the chunks.
+    #[cfg(unix)]
+    #[test]
+    fn a_start_keeps_a_note_whose_chunks_could_not_be_registered() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        // The close of segment 0 failed: its chunks have no row, and they
+        // cannot be read now.
+        write_chunks(&dir, 0, 0, 3_000);
+        chunk_mode(&dir, 0o000);
+
+        let held = hold_unregistered(&store, root.path());
+        assert_eq!(held, vec!["s".to_string()]);
+        assert!(open_with_no_segments(&store.lock().unwrap(), &held).is_empty());
+        let r = recognition();
+        let stopped = store
+            .lock()
+            .unwrap()
+            .start_session_with_recognition(
+                "new",
+                at(100),
+                r.speaker_count,
+                &r.model,
+                &CaptureChoice::default(),
+                Some(&r.snapshot),
+                &held,
+            )
+            .unwrap();
+
+        assert!(stopped.is_empty());
+        assert!(matches!(
+            state_of(&store, "s"),
+            SessionState::Interrupted {
+                reason: InterruptReason::Disk,
+                ..
+            }
+        ));
+        chunk_mode(&dir, 0o644);
+        assert_eq!(chunk_segments(&dir), vec![0]);
+    }
+
+    // Covers C9.
+    #[test]
+    fn a_pause_with_a_failed_segment_write_keeps_the_audio_for_the_stop() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        let closing = inner.active.take().unwrap();
+        faults::set(&faults::WRITE);
+
+        let kept = close_segment_in(&store, root.path(), &mut inner, closing, false).unwrap();
+        assert!(kept);
+        inner.paused = Some("s".into());
+        let id = stop_target(&store, root.path(), &mut inner, None).unwrap();
+        let outcome = settle_stop(&store, &dir, &id, at(70)).unwrap();
+
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+    }
+
+    // Covers C9 (3c): the rebuild registers the segment.
+    #[test]
+    fn a_failed_segment_end_rebuilds_the_timeline_and_the_next_segment_takes_a_new_index() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        let closing = inner.active.take().unwrap();
+        faults::set(&faults::END);
+
+        let kept = close_segment_in(&store, root.path(), &mut inner, closing, false).unwrap();
+
+        assert!(kept);
+        let clock = inner.clock.as_mut().unwrap();
+        assert!(clock.timeline.open_segment().is_none());
+        assert_eq!(clock.timeline.open(10_000, at(10)).unwrap(), 1);
+        // A Continue shorter than a second is dropped with its own chunks
+        // only.
+        write_chunks(&dir, 1, 10_000, 400);
+        let short = ActiveSegment {
+            segment: 1,
+            ..active("s", false)
+        };
+        let kept = close_segment_in(&store, root.path(), &mut inner, short, false).unwrap();
+        assert!(!kept);
+        assert_eq!(chunk_segments(&dir), vec![0]);
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+    }
+
+    // Covers C9 (3c): the rebuild also fails.
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_segment_end_that_cannot_be_rebuilt_retires_its_index() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        chunk_mode(&dir, 0o000);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        let closing = inner.active.take().unwrap();
+        faults::set(&faults::END);
+
+        assert!(close_segment_in(&store, root.path(), &mut inner, closing, false).is_err());
+
+        let clock = inner.clock.as_mut().unwrap();
+        assert!(clock.timeline.open_segment().is_none());
+        assert_eq!(clock.timeline.open(10_000, at(10)).unwrap(), 1);
+        write_chunks(&dir, 1, 10_000, 400);
+        let short = ActiveSegment {
+            segment: 1,
+            ..active("s", false)
+        };
+        let kept = close_segment_in(&store, root.path(), &mut inner, short, false).unwrap();
+        assert!(!kept);
+        chunk_mode(&dir, 0o644);
+        assert_eq!(chunk_segments(&dir), vec![0]);
+    }
+
+    #[test]
+    fn a_stop_registers_a_closed_chunk_that_has_no_row() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        store
+            .put_segment(
+                "s",
+                &session_core::Segment {
+                    duration_ms: 3_000,
+                    wall_end: at(3),
+                    ..one_segment(0)
+                },
+            )
+            .unwrap();
+        write_chunks(&dir, 1, 10_000, 3_000);
+        let store = shared(store);
+
+        let outcome = settle_stop(&store, &dir, "s", at(70)).unwrap();
+
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
+        assert!(matches!(state_of(&store, "s"), SessionState::Queued { .. }));
+        assert_eq!(segment_rows(&store, "s"), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_short_segment_that_closed_at_an_input_switch_is_rebuilt_when_its_write_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 400);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        let closing = inner.active.take().unwrap();
+        faults::set(&faults::WRITE);
+
+        let kept = close_segment_in(&store, root.path(), &mut inner, closing, true).unwrap();
+
+        assert!(kept);
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+        assert_eq!(chunk_segments(&dir), vec![0]);
+    }
+
+    #[test]
+    fn a_failed_stereo_mark_is_set_again_by_the_rebuild() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        let mut inner = recording_segment("s", open_timeline(), 0);
+        let closing = ActiveSegment {
+            channels: 2,
+            ..inner.active.take().unwrap()
+        };
+        faults::set(&faults::STEREO);
+
+        let kept = close_segment_in(&store, root.path(), &mut inner, closing, false).unwrap();
+
+        assert!(kept);
+        assert_eq!(segment_rows(&store, "s"), vec![0]);
+        assert_eq!(store.lock().unwrap().stereo_from("s").unwrap(), Some(0));
+    }
+
+    #[test]
+    fn a_start_leaves_an_interrupted_note_with_an_unrepairable_part() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store
+            .apply(
+                "s",
+                &Event::CaptureLost {
+                    reason: InterruptReason::Crash,
+                    at: at(5),
+                },
+            )
+            .unwrap();
+        let store = shared(store);
+        let chunks = root.path().join("s").join(RECOVERY_DIR);
+        std::fs::create_dir_all(&chunks).unwrap();
+        let part = chunks.join("0-1800000000000-0-0.part");
+        std::fs::write(&part, b"not a wav file").unwrap();
+
+        let held = hold_unregistered(&store, root.path());
+        assert_eq!(held, vec!["s".to_string()]);
+        assert!(open_with_no_segments(&store.lock().unwrap(), &held).is_empty());
+        let r = recognition();
+        store
+            .lock()
+            .unwrap()
+            .start_session_with_recognition(
+                "new",
+                at(100),
+                r.speaker_count,
+                &r.model,
+                &CaptureChoice::default(),
+                Some(&r.snapshot),
+                &held,
+            )
+            .unwrap();
+        assert!(matches!(
+            state_of(&store, "s"),
+            SessionState::Interrupted { .. }
+        ));
+
+        // The next launch tries it again, and it stays.
+        pipeline::recover::recover_crashed(&store, root.path()).unwrap();
+        assert!(matches!(
+            state_of(&store, "s"),
+            SessionState::Interrupted { .. }
+        ));
+        assert!(part.is_file());
+    }
+
+    // Covers C57.
+    #[test]
+    fn a_failed_store_insert_at_start_stops_the_ended_note() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "a", "");
+        let a_dir = root.path().join("a");
+        write_chunks(&a_dir, 0, 0, 3_000);
+        store
+            .put_segment(
+                "a",
+                &session_core::Segment {
+                    duration_ms: 3_000,
+                    wall_end: at(3),
+                    ..one_segment(0)
+                },
+            )
+            .unwrap();
+        let store = shared(store);
+        let b_dir = root.path().join("b");
+        write_chunks(&b_dir, 0, 0, 3_000);
+
+        let stopped = abandon_start(&store, root.path(), "b", Some("a"));
+
+        let (id, outcome) = stopped.unwrap();
+        assert_eq!(id, "a");
+        assert_eq!(
+            outcome.unwrap(),
+            StopOutcome::Recorded {
+                session_id: "a".into()
+            }
+        );
+        assert!(matches!(state_of(&store, "a"), SessionState::Queued { .. }));
+        assert!(!b_dir.exists());
+    }
+
+    #[test]
+    fn a_stop_settles_a_capturing_note_that_nothing_records() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        let store = shared(store);
+        let mut inner = Inner::default();
+
+        let id = stop_target(&store, root.path(), &mut inner, None).unwrap();
+        let outcome = settle_stop(&store, &root.path().join("s"), &id, at(70)).unwrap();
+
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                session_id: "s".into()
+            }
+        );
     }
 }
