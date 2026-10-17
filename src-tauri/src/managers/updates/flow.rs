@@ -288,6 +288,24 @@ impl Flow {
         }
     }
 
+    /// Show a held ready question or a held download error.
+    fn release(&mut self) {
+        match &self.state {
+            UpdateState::ReadyHeld { version, .. } => {
+                self.state = UpdateState::Ready {
+                    version: version.clone(),
+                }
+            }
+            UpdateState::FailedHeld { version, error } => {
+                self.state = UpdateState::Failed {
+                    version: version.clone(),
+                    error: error.clone(),
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Go to the rest state, and forget the state before the check.
     fn settle(&mut self) {
         self.state = self.rest();
@@ -348,10 +366,7 @@ impl Flow {
                     current: self.current.clone(),
                 }
             }
-            UpdateState::ReadyHeld { version, .. } => self.state = UpdateState::Ready { version },
-            UpdateState::FailedHeld { version, error } => {
-                self.state = UpdateState::Failed { version, error }
-            }
+            UpdateState::ReadyHeld { .. } | UpdateState::FailedHeld { .. } => self.release(),
             UpdateState::WaitingForQuit { version } => {
                 self.state = match self.newest.clone() {
                     Some(newest) if newer(&newest, &version) => self.notice(newest, false),
@@ -402,15 +417,7 @@ impl Flow {
             | UpdateState::FailedHeld { .. }
             | UpdateState::Installing { .. } => {
                 // The user asked, so a held notice shows while busy.
-                match self.state.clone() {
-                    UpdateState::ReadyHeld { version, .. } => {
-                        self.state = UpdateState::Ready { version }
-                    }
-                    UpdateState::FailedHeld { version, error } => {
-                        self.state = UpdateState::Failed { version, error }
-                    }
-                    _ => {}
-                }
+                self.release();
                 return vec![];
             }
             _ => {}
@@ -594,17 +601,7 @@ impl Flow {
                         current: self.current.clone(),
                     }
                 }
-                UpdateState::ReadyHeld { version, .. } => {
-                    self.state = UpdateState::Ready {
-                        version: version.clone(),
-                    }
-                }
-                UpdateState::FailedHeld { version, error } => {
-                    self.state = UpdateState::Failed {
-                        version: version.clone(),
-                        error: error.clone(),
-                    }
-                }
+                UpdateState::ReadyHeld { .. } | UpdateState::FailedHeld { .. } => self.release(),
                 _ => {}
             }
         }

@@ -107,33 +107,36 @@ fn launch_skips_install(failure: Option<&InstallFailure>, current: &str) -> bool
     failure.is_some_and(|f| flow::newer(&f.version, current))
 }
 
-/// At the start of the manager: the record to keep, and the error that the
-/// window shows. A failure of a build that is not newer than the running
+/// At the start of the manager: the record to keep, and the failure that
+/// the window shows. A failure of a build that is not newer than the running
 /// one is old, so it goes.
 fn failure_at_start(
     failure: Option<InstallFailure>,
     current: &str,
-) -> (Option<InstallFailure>, Option<(String, String)>) {
+) -> (Option<InstallFailure>, Option<InstallFailure>) {
     match failure {
         Some(f) if !flow::newer(&f.version, current) => (None, None),
-        Some(f) if !f.shown => {
-            let show = (f.version.clone(), f.error.clone());
-            (Some(InstallFailure { shown: true, ..f }), Some(show))
-        }
+        Some(f) if !f.shown => (
+            Some(InstallFailure {
+                shown: true,
+                ..f.clone()
+            }),
+            Some(f),
+        ),
         other => (other, None),
     }
 }
 
 /// True when a step starts an install or a download, so a recorded failure
 /// goes: the user chose to try again, or chose another build.
-fn starts_install(before: &UpdateState, after: &UpdateState) -> bool {
-    let installs = |s: &UpdateState| {
+fn starts_install_or_download(before: &UpdateState, after: &UpdateState) -> bool {
+    let installs_or_downloads = |s: &UpdateState| {
         matches!(
             s,
             UpdateState::Installing { .. } | UpdateState::Downloading { .. }
         )
     };
-    installs(after) && !installs(before)
+    installs_or_downloads(after) && !installs_or_downloads(before)
 }
 
 /// True when the update window may be visible (KTD2): the flow wants it,
@@ -236,9 +239,9 @@ fn write_failure(app: &AppHandle, failure: Option<&InstallFailure>) {
                     INSTALL_FAILURE_KEY,
                     serde_json::to_value(f).map_err(|e| e.to_string())?,
                 ),
-                None => {
-                    store.delete(INSTALL_FAILURE_KEY);
-                }
+                // No record: nothing to save.
+                None if !store.delete(INSTALL_FAILURE_KEY) => return Ok(()),
+                None => {}
             }
             store.save().map_err(|e| e.to_string())
         });
@@ -272,8 +275,8 @@ impl UpdateManager {
             write_failure(app, failure.as_ref());
         }
         let mut flow = Flow::new(current, read_delays(app), saved);
-        if let Some((version, error)) = show {
-            flow.install_failed(version, error);
+        if let Some(f) = show {
+            flow.install_failed(f.version, f.error);
         }
         let (messages, receiver) = mpsc::unbounded_channel();
         Arc::new(Self {
@@ -419,7 +422,7 @@ impl UpdateManager {
             )
         };
         self.keep_install_update(install.as_deref());
-        if starts_install(&before, &state) {
+        if starts_install_or_download(&before, &state) {
             write_failure(&self.app, None);
         }
         // A request on a shown notice changes only with_key, and the page
@@ -694,7 +697,7 @@ mod tests {
         assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
         // The next launch shows the error and marks it shown.
         let (failure, show) = failure_at_start(failure, "1.0.3");
-        assert_eq!(show, Some(("1.0.4".into(), "read-only".into())));
+        assert_eq!(show, Some(InstallFailure::new("1.0.4", "read-only")));
         assert!(failure.as_ref().is_some_and(|f| f.shown));
         // The launch after that still does not install, and shows nothing.
         assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
@@ -717,10 +720,16 @@ mod tests {
         let installing = UpdateState::Installing {
             version: "1.0.4".into(),
         };
-        assert!(starts_install(&failed, &downloading));
-        assert!(starts_install(&ready, &installing));
-        assert!(!starts_install(&downloading, &downloading), "progress");
-        assert!(!starts_install(&installing, &ready), "a refused restart");
+        assert!(starts_install_or_download(&failed, &downloading));
+        assert!(starts_install_or_download(&ready, &installing));
+        assert!(
+            !starts_install_or_download(&downloading, &downloading),
+            "progress"
+        );
+        assert!(
+            !starts_install_or_download(&installing, &ready),
+            "a refused restart"
+        );
     }
 
     #[test]
