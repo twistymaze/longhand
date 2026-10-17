@@ -105,10 +105,11 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 
 /// Ask the endpoint, in order, until one answer names the model's context.
 /// `Ok(None)` when the endpoint answers and no answer names it. An error
-/// when the first probe cannot reach the endpoint or gets a server error
-/// ([`is_server_problem`]): then nothing is known about the context, and
-/// the default budget must not be kept for the run. A later probe asks a
-/// route that the server can lack, so any failure there is a miss.
+/// when the first probe cannot reach the endpoint, gets no answer within
+/// its deadline, or gets a server error ([`is_server_problem`]): then
+/// nothing is known about the context, and the default budget must not be
+/// kept for the run. A later probe asks a route that the server can lack,
+/// so any failure there is a miss.
 pub async fn probe(client: &Client, label: &Label) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
@@ -161,8 +162,10 @@ fn answer(
 ) -> Result<Option<Value>, SummarizeError> {
     match result {
         Ok(body) => Ok(Some(body)),
-        Err(e @ SummarizeError::Transport(_)) if first => Err(e),
+        Err(e @ (SummarizeError::Transport(_) | SummarizeError::Deadline(_))) if first => Err(e),
         Err(e) if first && is_server_problem(&e) => Err(e),
+        // 401 or 403 stays a miss: a key can be limited to the completion
+        // routes. A bad key fails at the first completion with a clear error.
         Err(_) => Ok(None),
     }
 }
