@@ -22,6 +22,7 @@ use crate::file::{
     AudioRemoval, Field, FileRead, ParseError, SettingsFile, SharedFields, Unavailable,
     default_settings, read_settings,
 };
+use crate::inside::OUTSIDE_FILE;
 use crate::prompts::{PromptScan, scan_prompts};
 
 /// Whether this computer can change the shared settings now.
@@ -108,7 +109,14 @@ impl SharedView {
 
     /// Whether a save of the Background can write now (R5, KTD3).
     pub fn background_writable(&self) -> bool {
-        self.files_writable && self.background_unavailable.is_none()
+        self.files_writable
+            && match &self.background_unavailable {
+                None => true,
+                // A save replaces the link with a file, so the user can fix
+                // it in Settings.
+                Some(BackgroundUnavailable::Unreadable(cause)) => cause == OUTSIDE_FILE,
+                Some(_) => false,
+            }
     }
 
     /// The settings file exists and does not parse (R22). The settings come

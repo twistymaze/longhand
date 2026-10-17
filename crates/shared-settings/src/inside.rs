@@ -19,6 +19,12 @@ pub(crate) const OUTSIDE_FOLDER: &str = "it is in a folder outside the storage f
 /// does not exist gives the error of `canonicalize`. A path outside the
 /// storage folder gives an error with [`OUTSIDE_FILE`].
 pub(crate) fn inside_file(root: &Path, path: &Path) -> io::Result<PathBuf> {
+    // A path with no link under the storage folder is in the storage
+    // folder. `canonicalize` is then not used: it fails on some network
+    // and virtual drives of Windows.
+    if !has_link(root, path) {
+        return Ok(path.to_path_buf());
+    }
     let root = root.canonicalize()?;
     let path = path.canonicalize()?;
     if path.starts_with(&root) {
@@ -33,7 +39,6 @@ pub(crate) fn inside_file(root: &Path, path: &Path) -> io::Result<PathBuf> {
 /// the nearest part of the path that exists, which is the folder where a
 /// write would make the first new folder.
 pub(crate) fn check_write_folder(root: &Path, folder: &Path) -> io::Result<()> {
-    let root = root.canonicalize()?;
     let mut existing = folder;
     while std::fs::symlink_metadata(existing).is_err() {
         match existing.parent() {
@@ -41,6 +46,10 @@ pub(crate) fn check_write_folder(root: &Path, folder: &Path) -> io::Result<()> {
             None => return Err(io::Error::other(OUTSIDE_FOLDER)),
         }
     }
+    if !has_link(root, existing) {
+        return Ok(());
+    }
+    let root = root.canonicalize()?;
     let existing = existing
         .canonicalize()
         .map_err(|_| io::Error::other(OUTSIDE_FOLDER))?;
@@ -49,4 +58,22 @@ pub(crate) fn check_write_folder(root: &Path, folder: &Path) -> io::Result<()> {
     } else {
         Err(io::Error::other(OUTSIDE_FOLDER))
     }
+}
+
+/// Whether a part of `path` under the storage folder `root` is a link, or
+/// cannot be examined. A path that is not under `root` gives true, so the
+/// caller examines it with `canonicalize`.
+fn has_link(root: &Path, path: &Path) -> bool {
+    let Ok(rest) = path.strip_prefix(root) else {
+        return true;
+    };
+    let mut at = root.to_path_buf();
+    for part in rest.components() {
+        at.push(part);
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if !meta.file_type().is_symlink() => {}
+            _ => return true,
+        }
+    }
+    false
 }

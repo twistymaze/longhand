@@ -402,6 +402,8 @@ fn a_background_that_links_outside_the_folder_is_not_available() {
     let loaded = load(root.path(), None);
     assert_ne!(loaded.view.background, "Outside text.");
     assert!(loaded.view.background_unavailable.is_some());
+    // Settings lets the user save, and the save replaces the link.
+    assert!(loaded.view.background_writable());
     assert!(
         fs::symlink_metadata(background_path(root.path()))
             .unwrap()
