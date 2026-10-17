@@ -3035,7 +3035,6 @@ dependencies = [
  "specta-typescript",
  "summarize",
  "supervisor",
- "sysinfo",
  "tauri",
  "tauri-build",
  "tauri-nspanel",
@@ -4527,12 +4526,15 @@ dependencies = [
  "futures-util",
  "hound",
  "log",
+ "objc2",
+ "objc2-foundation",
  "session-core",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
