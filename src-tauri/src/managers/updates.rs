@@ -107,24 +107,19 @@ fn launch_skips_install(failure: Option<&InstallFailure>, current: &str) -> bool
     failure.is_some_and(|f| flow::newer(&f.version, current))
 }
 
-/// At the start of the manager: the record to keep, and the failure that
-/// the window shows. A failure of a build that is not newer than the running
-/// one is old, so it goes.
-fn failure_at_start(
-    failure: Option<InstallFailure>,
-    current: &str,
-) -> (Option<InstallFailure>, Option<InstallFailure>) {
-    match failure {
-        Some(f) if !flow::newer(&f.version, current) => (None, None),
-        Some(f) if !f.shown => (
-            Some(InstallFailure {
-                shown: true,
-                ..f.clone()
-            }),
-            Some(f),
-        ),
-        other => (other, None),
-    }
+/// At the start of the manager: the record to keep. A failure of a build
+/// that is not newer than the running one is old, so it goes.
+fn failure_at_start(failure: Option<InstallFailure>, current: &str) -> Option<InstallFailure> {
+    failure.filter(|f| flow::newer(&f.version, current))
+}
+
+/// True when the window now shows the error of a failure that it did not
+/// show before, so the record can say that it showed. A launch with no
+/// window, or a quit before the error shows, keeps it for the next launch.
+fn shows_failure(failure: &InstallFailure, state: &UpdateState, visible: bool) -> bool {
+    !failure.shown
+        && visible
+        && matches!(state, UpdateState::Failed { version, .. } if *version == failure.version)
 }
 
 /// True when a step starts an install or a download, so a recorded failure
@@ -163,6 +158,8 @@ pub struct UpdateManager {
     /// The `Update` of the build that a quit installs. A later check does
     /// not replace it, so a confirmed install stays (KTD8).
     install_update: Mutex<Option<Update>>,
+    /// The recorded install failure, if any.
+    failure: Mutex<Option<InstallFailure>>,
     busy: Box<dyn Fn() -> bool + Send + Sync>,
     was_busy: AtomicBool,
     messages: mpsc::UnboundedSender<Message>,
@@ -270,13 +267,14 @@ impl UpdateManager {
         let current = current_version(app);
         let saved = updates_dir(app).and_then(|dir| archive::newest_saved(&dir, &current));
         let stored = read_failure(app);
-        let (failure, show) = failure_at_start(stored.clone(), &current);
+        let failure = failure_at_start(stored.clone(), &current);
         if failure != stored {
             write_failure(app, failure.as_ref());
         }
         let mut flow = Flow::new(current, read_delays(app), saved);
-        if let Some(f) = show {
-            flow.install_failed(f.version, f.error);
+        if let Some(f) = &failure {
+            let error = (!f.shown).then(|| f.error.clone());
+            flow.install_failed(f.version.clone(), error);
         }
         let (messages, receiver) = mpsc::unbounded_channel();
         Arc::new(Self {
@@ -284,6 +282,7 @@ impl UpdateManager {
             flow: Mutex::new(flow),
             update: Mutex::new(None),
             install_update: Mutex::new(None),
+            failure: Mutex::new(failure),
             busy: Box::new(busy),
             was_busy: AtomicBool::new(false),
             messages,
@@ -422,7 +421,7 @@ impl UpdateManager {
             )
         };
         self.keep_install_update(install.as_deref());
-        if starts_install_or_download(&before, &state) {
+        if starts_install_or_download(&before, &state) && lock(&self.failure).take().is_some() {
             write_failure(&self.app, None);
         }
         // A request on a shown notice changes only with_key, and the page
@@ -447,6 +446,7 @@ impl UpdateManager {
             crate::window::longhand_window_active(&self.app)
         });
         crate::window::show_update_window(&self.app, visible, with_key, asked_now);
+        self.note_failure_shown(&state, visible);
         crate::tray::set_update_item(&self.app, tray);
         for effect in effects {
             match effect {
@@ -468,6 +468,19 @@ impl UpdateManager {
                     }
                 }
             }
+        }
+    }
+
+    /// Record that the window showed the install error, so a later launch
+    /// does not show it again.
+    fn note_failure_shown(&self, state: &UpdateState, visible: bool) {
+        let mut failure = lock(&self.failure);
+        if let Some(f) = failure
+            .as_mut()
+            .filter(|f| shows_failure(f, state, visible))
+        {
+            f.shown = true;
+            write_failure(&self.app, Some(f));
         }
     }
 
@@ -695,20 +708,26 @@ mod tests {
         // A failure at quit.
         let failure = Some(InstallFailure::new("1.0.4", "read-only"));
         assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
-        // The next launch shows the error and marks it shown.
-        let (failure, show) = failure_at_start(failure, "1.0.3");
-        assert_eq!(show, Some(InstallFailure::new("1.0.4", "read-only")));
-        assert!(failure.as_ref().is_some_and(|f| f.shown));
-        // The launch after that still does not install, and shows nothing.
-        assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
-        let (failure, show) = failure_at_start(failure, "1.0.3");
-        assert_eq!(show, None);
-        assert!(failure.is_some(), "the record stays until the next install");
-        // "Try Again" or "Relaunch Now" removes it.
+        // The next launch keeps it, and the error shows only when the window
+        // shows it.
+        let mut failure = failure_at_start(failure, "1.0.3").unwrap();
         let failed = UpdateState::Failed {
             version: "1.0.4".into(),
             error: "read-only".into(),
         };
+        assert!(!shows_failure(&failure, &failed, false), "no window");
+        assert!(
+            !shows_failure(&failure, &UpdateState::Idle, true),
+            "another state"
+        );
+        assert!(shows_failure(&failure, &failed, true));
+        failure.shown = true;
+        assert!(!shows_failure(&failure, &failed, true), "once");
+        // The launch after that still does not install.
+        let failure = failure_at_start(Some(failure), "1.0.3");
+        assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
+        assert!(failure.is_some(), "the record stays until the next install");
+        // "Try Again" or "Relaunch Now" removes it.
         let downloading = UpdateState::Downloading {
             version: "1.0.4".into(),
             downloaded: 0,
@@ -737,9 +756,9 @@ mod tests {
         for current in ["1.0.4", "1.0.5"] {
             let failure = Some(InstallFailure::new("1.0.4", "read-only"));
             assert!(!launch_skips_install(failure.as_ref(), current));
-            assert_eq!(failure_at_start(failure, current), (None, None));
+            assert_eq!(failure_at_start(failure, current), None);
         }
-        assert_eq!(failure_at_start(None, "1.0.3"), (None, None));
+        assert_eq!(failure_at_start(None, "1.0.3"), None);
         assert!(!launch_skips_install(None, "1.0.3"));
     }
 }

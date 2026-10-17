@@ -176,6 +176,10 @@ pub struct Flow {
     /// item), so it shows with the focus and needs no Longhand window in
     /// front. It ends when the window closes.
     user_asked: bool,
+    /// The build whose install at quit or at launch failed. No automatic
+    /// notice offers it and no quit installs it, until the user starts an
+    /// install or a download again.
+    failed_install: Option<String>,
 }
 
 impl Flow {
@@ -190,13 +194,18 @@ impl Flow {
             newest: None,
             pending: None,
             user_asked: false,
+            failed_install: None,
         }
     }
 
-    /// The install of `version` at the last quit or at this launch failed
-    /// with `error`, so the window shows the error, not the ready question.
-    pub fn install_failed(&mut self, version: String, error: String) {
-        self.state = UpdateState::Failed { version, error };
+    /// The install of `version` at a quit or at a launch failed. With an
+    /// `error`, the window shows it, not the ready question. Without one, the
+    /// error showed at an earlier launch.
+    pub fn install_failed(&mut self, version: String, error: Option<String>) {
+        self.failed_install = Some(version.clone());
+        if let Some(error) = error {
+            self.state = UpdateState::Failed { version, error };
+        }
     }
 
     /// True while the window shows a state that the user asked for.
@@ -247,6 +256,11 @@ impl Flow {
     /// newer release replaces does not install (R9). A build that the user
     /// confirmed with "Relaunch Now" or a download installs (KTD8).
     pub fn install_at_quit(&self) -> Option<&str> {
+        self.quit_build()
+            .filter(|version| self.failed_install.as_deref() != Some(*version))
+    }
+
+    fn quit_build(&self) -> Option<&str> {
         match &self.state {
             UpdateState::ReadyHeld {
                 version,
@@ -319,6 +333,10 @@ impl Flow {
     pub fn step(&mut self, input: Input, facts: Facts) -> Vec<Effect> {
         let asked = matches!(input, Input::ManualCheck | Input::TrayOpen);
         let effects = self.apply(input, facts);
+        if let UpdateState::Installing { .. } | UpdateState::Downloading { .. } = self.state {
+            // The user tries the install again, or chose another build.
+            self.failed_install = None;
+        }
         if asked {
             self.user_asked = true;
         }
@@ -498,6 +516,9 @@ impl Flow {
         let remind = Self::active(self.delays.remind_until, facts.now);
         let later = Self::active(self.delays.later_until, facts.now);
         let saved = self.saved.as_deref() == Some(newest.as_str());
+        if saved && self.failed_install.as_deref() == Some(newest.as_str()) {
+            return;
+        }
         match &self.state {
             UpdateState::Idle if saved && later => {
                 self.state = UpdateState::WaitingForQuit { version: newest }
@@ -1912,7 +1933,7 @@ mod tests {
     #[test]
     fn a_failed_install_shows_the_error_and_try_again_installs_again() {
         let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
-        f.install_failed(NEW.into(), "the app is read-only".into());
+        f.install_failed(NEW.into(), Some("the app is read-only".into()));
         assert_eq!(f.state(), &failed("the app is read-only"));
         assert!(f.window_visible());
         assert_eq!(f.install_at_quit(), None);
@@ -1929,7 +1950,7 @@ mod tests {
     #[test]
     fn a_failed_install_with_no_saved_build_downloads_again_at_try_again() {
         let mut f = flow();
-        f.install_failed(NEW.into(), "bad signature".into());
+        f.install_failed(NEW.into(), Some("bad signature".into()));
         assert_eq!(f.state(), &failed("bad signature"));
         f.step(Input::Choice(Choice::TryAgain), facts(NINE));
         assert_eq!(
@@ -1943,8 +1964,76 @@ mod tests {
     #[test]
     fn a_closed_install_error_settles() {
         let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
-        f.install_failed(NEW.into(), "the app is read-only".into());
+        f.install_failed(NEW.into(), Some("the app is read-only".into()));
         f.step(Input::Choice(Choice::Close), facts(NINE));
         assert_eq!(f.state(), &UpdateState::Idle);
+    }
+
+    /// A flow with the saved build NEW whose install failed, after the error
+    /// closed.
+    fn install_error_closed() -> Flow {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
+        f.install_failed(NEW.into(), Some("the app is read-only".into()));
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        f
+    }
+
+    #[test]
+    fn an_automatic_check_does_not_offer_a_build_whose_install_failed() {
+        let mut f = install_error_closed();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
+        assert_eq!(f.install_at_quit(), None);
+        f.step(Input::Timer, busy(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE + HOUR));
+        assert_eq!(f.state(), &UpdateState::Idle, "also while busy");
+    }
+
+    #[test]
+    fn an_install_error_shown_at_an_earlier_launch_stops_the_offer_too() {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
+        f.install_failed(NEW.into(), None);
+        assert_eq!(f.state(), &UpdateState::Idle);
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
+        assert_eq!(f.install_at_quit(), None);
+    }
+
+    #[test]
+    fn a_build_whose_install_failed_does_not_install_at_quit_after_later() {
+        let mut f = install_error_closed();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            },
+            "the user asked"
+        );
+        f.step(Input::Choice(Choice::Later), facts(NINE));
+        assert_eq!(f.install_at_quit(), None);
+    }
+
+    #[test]
+    fn relaunch_now_on_a_build_whose_install_failed_tries_it_again() {
+        let mut f = install_error_closed();
+        f.step(Input::ManualCheck, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Choice(Choice::RelaunchNow), facts(NINE));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+        f.step(Input::RestartRefused, facts(NINE));
+        f.step(Input::Choice(Choice::Later), facts(NINE));
+        assert_eq!(f.install_at_quit(), Some(NEW), "the failure is forgotten");
+    }
+
+    #[test]
+    fn a_newer_release_after_a_failed_install_is_offered() {
+        let mut f = install_error_closed();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE));
+        assert_eq!(f.state(), &offered(NEWER));
     }
 }
