@@ -315,6 +315,14 @@ class LonghandAndSyncWorkTests(support.StorageFolderTest):
         self.assertNotIn("is gone", out)
         self.assertIn("Compare again later", section(out, "Not checked"))
 
+    def test_a_note_in_a_longhand_rename_folder_in_a_type_folder_is_not_checked(self):
+        snapshot = self.snapshot()
+        shutil.move(self.path(HIRING), self.path("Meetings", ".longhand-rename-abc"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED, out)
+        self.assertNotIn("is gone", out)
+        self.assertIn("Meetings/.longhand-rename-abc is a folder that Longhand uses", section(out, "Warnings"))
+
     def test_folders_that_a_sync_still_delivers_are_not_checked(self):
         snapshot = self.snapshot()
         os.makedirs(self.path("2026-10-15 0900 Standup"))
@@ -364,6 +372,14 @@ class ByteOrderMarkTests(support.StorageFolderTest):
     def test_a_session_md_with_a_byte_order_mark_is_a_problem(self):
         snapshot = self.snapshot()
         self.write("\ufeff" + BUDGET_SESSION, BUDGET, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("byte order mark", section(out, "Problems"))
+
+    def test_a_moved_note_with_a_byte_order_mark_from_before_is_a_problem(self):
+        self.write("﻿" + BUDGET_SESSION, BUDGET, "session.md")
+        snapshot = self.snapshot()
+        os.rename(self.path(BUDGET), self.path(BUDGET + "-2"))
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
         self.assertIn("byte order mark", section(out, "Problems"))
@@ -582,6 +598,7 @@ class PromptTests(support.StorageFolderTest):
         self.write("---\nid: 0c1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5f\nname: \"Odd\"\n---\n\x1c\n",
                    self.PROMPTS, "Odd.md")
         code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
         self.assertNotIn("has no text", out)
 
     def test_a_setting_can_name_a_prompt_with_no_id(self):

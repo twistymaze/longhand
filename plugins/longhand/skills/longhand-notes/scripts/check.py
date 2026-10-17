@@ -112,7 +112,7 @@ def other_entries(root):
         if name in types:
             for child in sorted(os.listdir(path)):
                 child_path = os.path.join(path, child)
-                if is_skipped(child) or lh.is_note_folder(child_path):
+                if is_skipped(child) or (not lh.is_hidden(child) and lh.is_note_folder(child_path)):
                     continue
                 add(name + "/" + child, child_path)
             continue
