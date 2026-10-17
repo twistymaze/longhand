@@ -32,6 +32,7 @@ if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then spm_library="$tokenize
 # GGML_NATIVE=OFF: build the CPU code for ggml's fixed baseline (AVX2 on x86), not
 # for the CPU of the build machine, so the helper runs on the users' computers.
 "$source_dir/scripts/configure.sh" "$backend-asr" -B "$sdk_build" -DGGML_NATIVE=OFF -DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF -DNEMO_SPEECH_BUILD_CLI=OFF -DNEMO_SPEECH_BUILD_TESTS=ON -DNEMO_SPEECH_WITH_NORM=OFF -DSENTENCEPIECE_LIB="$spm_library" -DSENTENCEPIECE_INCLUDE_DIR="$tokenizer_source/src"
+grep -Eq $'^GGML_NATIVE:BOOL=OFF\r?$' "$sdk_build/CMakeCache.txt" || { echo 'the NeMo build must set GGML_NATIVE=OFF' >&2; exit 2; }
 cmake --build "$sdk_build" --config Release
 cmake -S "$root/native/nemo-helper" -B "$helper_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DLONGHAND_NEMO_SOURCE="$source_dir" -DLONGHAND_NEMO_BUILD="$sdk_build"
 cmake --build "$helper_build" --config Release
