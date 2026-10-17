@@ -29,6 +29,7 @@ tags:
   - tauri-windows-manifest
   - ggml
   - cargo-test
+last_updated: 2026-10-17
 ---
 
 # Separate cargo invocations rebuilt ggml three times per Windows CI job
@@ -97,7 +98,7 @@ Checked in the current tree with `cargo tree` on the macOS host (Windows adds pl
 
 The extra features come from `cargo_metadata`, which asks for serde_json's `unbounded_depth` and reaches the graph only through the app crate's build tooling (`tauri-build` → `tauri-utils` → `cargo_metadata`). Excluding `longhand` removes them, so `transcribe-cpp-sys`'s build script links a different `serde_json`, and ggml rebuilds. The third rebuild (`-p longhand` after `--exclude longhand`) was seen in the Windows logs but not reproduced for the Windows target locally; on the macOS host `-p longhand` and `--workspace` share the build-dependency subtree.
 
-Other splits in the same diff cost Rust compile time rather than a C++ rebuild: `sysinfo` gets `system` from the recorder's soak-test dev-dependency (`crates/recorder/Cargo.toml:24`) while normal dependencies turn on only `disk` (`crates/recorder/Cargo.toml:12`, `src-tauri/Cargo.toml:37`); `objc2`, `tokio`, `serde`, `regex`, `url` and others also resolve differently.
+Other splits in the same diff cost Rust compile time rather than a C++ rebuild: `objc2`, `tokio`, `serde`, `regex`, `url` and others resolve differently. (When this was written, `sysinfo` also split: `system` from the recorder's soak-test dev-dependency, only `disk` from normal dependencies. Since PR #32 sysinfo is only a dev-dependency.)
 
 Making clippy and tests select exactly `--workspace` (both activating dev-dependencies: `--all-targets` for clippy, `cargo test` by nature) gives one feature resolution per job, so ggml's build script and its build-dependencies get one fingerprint and ggml builds once. The manifest change is what made that possible: the only reason for `--exclude longhand` was that the app's test binaries could not start without it. The remaining extra compile, in the Tauri build step, is the bounded `custom-protocol` split, which does not reach ggml's build-dependency chain.
 

@@ -46,7 +46,7 @@ The installer is not signed. A file copied with `scp` has no Mark of the Web, so
 Run local checks, including:
 
 - `scripts/check-windows.sh`: lints for Windows from macOS in seconds, except crates that build C or C++.
-- `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies.
+- `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies. Run it after each change that adds or removes a dependency, and commit the files that it writes. In a new worktree, run `bun install --frozen-lockfile` first: a copied `node_modules` can be older than `bun.lock` and writes wrong versions into `js-packages.json`.
 
 CI runs only on:
 
