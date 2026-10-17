@@ -113,7 +113,7 @@ pub fn available_space(dir: &Path) -> Option<u64> {
 
 /// The figure that Finder shows: the capacity for important usage, which
 /// counts space that macOS can free (purgeable files), and the plain
-/// available capacity when the first is missing or 0 (sysinfo's rule).
+/// available capacity when the first is missing or 0.
 #[cfg(any(target_os = "macos", test))]
 fn capacity(important: Option<u64>, available: Option<u64>) -> Option<u64> {
     important.filter(|&bytes| bytes != 0).or(available)
@@ -248,7 +248,7 @@ mod tests {
     /// writes by other processes.
     #[cfg(any(target_os = "macos", windows))]
     #[test]
-    fn the_figure_is_the_one_that_sysinfo_gives_for_the_volume() {
+    fn the_figure_matches_the_mount_list_figure_for_the_volume() {
         const TOLERANCE: u64 = 1 << 30;
         let dir = tempfile::tempdir().unwrap();
         let before = sysinfo_space(dir.path());
@@ -261,8 +261,8 @@ mod tests {
         );
     }
 
-    /// The lookup that the app used before: the deepest mount point that
-    /// contains `dir`.
+    /// The free space of the deepest mount point that contains `dir`, from
+    /// the list of all mounts, as sysinfo reports it.
     #[cfg(any(target_os = "macos", windows))]
     fn sysinfo_space(dir: &Path) -> u64 {
         let canonical = dir.canonicalize().unwrap();
