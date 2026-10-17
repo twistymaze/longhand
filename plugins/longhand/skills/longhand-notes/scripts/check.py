@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import _longhand as lh  # noqa: E402
 
-SNAPSHOT_FORMAT = 2
+SNAPSHOT_FORMAT = 3
 SNAPSHOT_FOLDER = "longhand-notes-snapshots"
 
 PASS, PROBLEM, NOT_CHECKED = 0, 1, 2
@@ -69,39 +69,61 @@ FINDER_FILE = ".DS_Store"
 WRITE_PROBE_PREFIX = ".longhand-write-probe-"
 # The temporary file of a Longhand write: `.<name>.<16 hex digits>.tmp`.
 LONGHAND_TEMP = re.compile(r"^\..+\.[0-9a-f]{16}\.tmp$")
+# The probes that Longhand makes in the storage folder and removes at once.
+PROBE_PREFIX = ".longhand-probe-"
+MOVE_PROBE = ".longhand-move-probe"
+# The folders that Longhand makes at the root or in a type folder while it
+# saves, renames or moves a note, and removes when it is done.
+WORK_FOLDER_PREFIXES = (".longhand-staging-", ".longhand-rename-", ".longhand-move-")
 
 
 def is_skipped(name):
     """Whether `name` is a file that the system or Longhand makes and
     removes again, so that it does not count."""
-    return name == FINDER_FILE or name.startswith(WRITE_PROBE_PREFIX) or bool(LONGHAND_TEMP.match(name))
+    return (
+        name == FINDER_FILE
+        or name == MOVE_PROBE
+        or name.startswith(WRITE_PROBE_PREFIX)
+        or name.startswith(PROBE_PREFIX)
+        or bool(LONGHAND_TEMP.match(name))
+    )
+
+
+def is_work_folder(name):
+    return name != MOVE_PROBE and name.startswith(WORK_FOLDER_PREFIXES)
 
 
 def other_entries(root):
     """The files and folders that are not Longhand files, by their paths in
-    the storage folder: names at the root that are not note folders, type
-    folders, `.longhand` or the agent instructions; entries in a type folder
-    that are not note folders; and hidden files in `.longhand`."""
+    the storage folder, each with "folder" or "file": names at the root that
+    are not note folders, type folders, `.longhand` or the agent
+    instructions; entries in a type folder that are not note folders; and
+    hidden files in `.longhand`."""
     types = set(lh.type_folders(root))
-    out = []
+    out = {}
+
+    def add(relative, path):
+        out[relative] = "folder" if os.path.isdir(path) else "file"
+
     for name in sorted(os.listdir(root)):
         path = os.path.join(root, name)
         if is_skipped(name) or name == lh.LONGHAND_FOLDER or name in ROOT_FILES:
             continue
         if name in types:
             for child in sorted(os.listdir(path)):
-                if is_skipped(child) or lh.is_note_folder(os.path.join(path, child)):
+                child_path = os.path.join(path, child)
+                if is_skipped(child) or lh.is_note_folder(child_path):
                     continue
-                out.append(name + "/" + child)
+                add(name + "/" + child, child_path)
             continue
         if not lh.is_hidden(name) and os.path.isdir(path) and lh.is_note_folder(path):
             continue
-        out.append(name)
+        add(name, path)
     folder = os.path.join(root, lh.LONGHAND_FOLDER)
     for relative in lh.folder_files(folder):
         parts = relative.split("/")
         if any(lh.is_hidden(part) for part in parts) and not is_skipped(parts[-1]):
-            out.append(lh.LONGHAND_FOLDER + "/" + relative)
+            out[lh.LONGHAND_FOLDER + "/" + relative] = "file"
     return out
 
 
@@ -250,13 +272,18 @@ def compare_note(report, before, after):
     if not (added or removed or changed or moved):
         return
     path = after["path"]
-    touched = [name for name in added + removed + changed if not is_marker(name)]
+    touched = [
+        name
+        for name in added + removed + changed
+        if not is_marker(name) and not is_skipped(name.split("/")[-1])
+    ]
     if moved:
         report.changes.append("moved: %s -> %s" % (before["path"], path))
     if touched:
         report.changes.append("changed: %s: %s" % (path, ", ".join(touched)))
     if not touched and not moved:
-        # Only an in-use marker changed: a computer started or ended work.
+        # Only an in-use marker or a system file changed: a computer started
+        # or ended work, or the system wrote its own file.
         return
 
     for reason in before["busy"] + [r for r in after["busy"] if r not in before["busy"]]:
@@ -281,7 +308,10 @@ def compare_note(report, before, after):
 
     if after["session_md"] != "ok":
         if lh.SESSION_FILE in touched or moved:
-            report.not_checked.append("%s: %s" % (path, after["session_md"]))
+            # Longhand cannot read a session.md that starts with a byte
+            # order mark, so that one is a problem of the edit.
+            items = report.problems if after["session_md_bom"] else report.not_checked
+            items.append("%s: %s" % (path, after["session_md"]))
         return
 
     if lh.SESSION_FILE in changed:
@@ -316,35 +346,63 @@ def compare_note(report, before, after):
             )
 
 
-def compare_notes(report, before_state, after_state):
-    before = {note_key(n): n for n in before_state["notes"]}
-    after = {}
-    for note in after_state["notes"]:
-        key = note_key(note)
-        if key in after:
+def notes_by_key(notes):
+    """The notes of one state by their key, each list in path order."""
+    out = {}
+    for note in sorted(notes, key=lambda n: n["path"]):
+        out.setdefault(note_key(note), []).append(note)
+    return out
+
+
+def compare_notes(report, before_state, after_state, longhand_works):
+    """Compare the notes of the two states. One key can have more than one
+    folder (a copied note): a folder that keeps its path is compared with
+    itself, and the folders that are left pair in path order as moves.
+    `longhand_works` tells whether a new Longhand work folder is present,
+    in which a gone note can be."""
+    before = notes_by_key(before_state["notes"])
+    after = notes_by_key(after_state["notes"])
+    for key in sorted(set(before) | set(after), key=lambda k: (before.get(k) or after[k])[0]["path"]):
+        olds, news = before.get(key, []), after.get(key, [])
+        old_paths = {n["path"] for n in olds}
+        new_by_path = {n["path"]: n for n in news}
+        for old in olds:
+            if old["path"] in new_by_path:
+                compare_note(report, old, new_by_path[old["path"]])
+        left_olds = [n for n in olds if n["path"] not in new_by_path]
+        left_news = [n for n in news if n["path"] not in old_paths]
+        for old, note in zip(left_olds, left_news):
+            compare_note(report, old, note)
+        for old in left_olds[len(left_news):]:
+            if longhand_works:
+                report.not_checked.append(
+                    "%s: the note folder is not in its place while Longhand saves, renames or moves "
+                    "notes. Compare again later." % old["path"]
+                )
+            else:
+                report.problems.append(
+                    "%s: the note folder is gone. Do not delete or move a note out of the storage folder."
+                    % old["path"]
+                )
+        extra = left_news[len(left_olds):]
+        if not olds and extra:
+            compare_new_note(report, extra[0])
+            extra = extra[1:]
+        for note in extra:
+            first = next(n for n in news if n is not note)
             report.problems.append(
-                "%s and %s have one session_id. Do not copy a note folder."
-                % (after[key]["path"], note["path"])
+                "%s and %s have one session_id. Do not copy a note folder." % (first["path"], note["path"])
             )
-            continue
-        after[key] = note
-    for key, note in sorted(before.items(), key=lambda item: item[1]["path"]):
-        if key not in after:
-            report.problems.append(
-                "%s: the note folder is gone. Do not delete or move a note out of the storage folder."
-                % note["path"]
-            )
-            continue
-        compare_note(report, note, after[key])
-    for key, note in sorted(after.items(), key=lambda item: item[1]["path"]):
-        if key in before:
-            continue
-        if note["record"] == "ok":
-            report.changes.append("new note: %s (a sync can deliver a note from another computer)" % note["path"])
-        else:
-            report.problems.append(
-                "%s: a new folder that is not a complete note (%s)." % (note["path"], note["record"])
-            )
+
+
+def compare_new_note(report, note):
+    if note["record"] == "ok":
+        report.changes.append("new note: %s (a sync can deliver a note from another computer)" % note["path"])
+    else:
+        report.not_checked.append(
+            "%s: a new folder that is not a complete note (%s). A sync can still deliver the other "
+            "files. Compare again later." % (note["path"], note["record"])
+        )
 
 
 def valid_prompt_ids(prompts):
@@ -500,6 +558,10 @@ def compare_prompts(report, before_state, after_state):
             continue
         if info["open"]:
             report.problems.append("%s: the front matter has no closing --- line." % where)
+        if info["empty"]:
+            report.problems.append(
+                "%s: the prompt has no text. Longhand does not use a prompt with no text." % where
+            )
         if info["over_limit"]:
             report.problems.append(
                 "%s: the prompt text is over %d characters or the title instructions are over %d "
@@ -572,18 +634,37 @@ def compare_longhand_files(report, before_state, after_state):
 
 
 def compare_other_entries(report, before_state, after_state):
-    """A new file or folder that Longhand does not know is a problem. A type
-    folder that has no note now is not new."""
+    """Report each new file or folder that Longhand does not know. A new
+    file is a problem. A new folder can be a Longhand work folder, a note
+    that a sync has not delivered yet or the folder of another app, so the
+    agent must not remove it. A type folder that has no note now is not
+    new. Return whether a new Longhand work folder is present."""
     known = set(before_state["other_entries"]) | set(before_state["type_folders"])
-    for path in after_state["other_entries"]:
-        if path not in known:
-            report.problems.append("%s is a new file or folder that Longhand does not know. Remove it." % path)
+    longhand_works = False
+    for path, kind in sorted(after_state["other_entries"].items()):
+        if path in known:
+            continue
+        if kind == "file":
+            report.problems.append("%s is a new file that Longhand does not know. Remove it." % path)
+        elif is_work_folder(path.split("/")[-1]):
+            longhand_works = True
+            report.warnings.append(
+                "%s is a folder that Longhand uses while it saves, renames or moves a note. "
+                "Do not touch it." % path
+            )
+        else:
+            report.not_checked.append(
+                "%s is a new folder that is not a note. It can be a note that a sync has not "
+                "delivered yet, or the folder of another app. Compare again later. Remove it "
+                "only if you made it." % path
+            )
+    return longhand_works
 
 
 def compare(before_state, after_state):
     report = Report()
-    compare_other_entries(report, before_state, after_state)
-    compare_notes(report, before_state, after_state)
+    longhand_works = compare_other_entries(report, before_state, after_state)
+    compare_notes(report, before_state, after_state, longhand_works)
     compare_settings(report, before_state, after_state)
     compare_prompts(report, before_state, after_state)
     compare_longhand_files(report, before_state, after_state)

@@ -12,6 +12,18 @@ PASS, PROBLEM, NOT_CHECKED = 0, 1, 2
 BUDGET_SESSION = "---\ntitle: Budget review\nlonghand_tags:\n- Finance\n- Team::Planning\n---\n"
 
 
+def section(out, title):
+    """The lines of one section of the compare output, as one text."""
+    lines, inside = [], False
+    for line in out.splitlines():
+        if not line.startswith(" "):
+            inside = line == title + ":"
+            continue
+        if inside:
+            lines.append(line)
+    return "\n".join(lines)
+
+
 class CompareTests(support.StorageFolderTest):
     def test_no_change_passes(self):
         snapshot = self.snapshot()
@@ -210,16 +222,18 @@ class CompareTests(support.StorageFolderTest):
         self.write("scratch\n", "draft.md")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
-        self.assertIn("draft.md is a new file or folder that Longhand does not know. Remove it.", out)
+        self.assertIn("draft.md is a new file that Longhand does not know. Remove it.", out)
 
-    def test_a_new_file_or_folder_in_a_type_folder_is_a_problem(self):
+    def test_a_new_file_in_a_type_folder_is_a_problem_and_a_new_folder_is_not_checked(self):
         snapshot = self.snapshot()
         self.write("scratch\n", "Meetings", "draft.md")
         os.makedirs(self.path("Meetings", "scratch"))
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
-        self.assertIn("Meetings/draft.md is a new file or folder", out)
-        self.assertIn("Meetings/scratch is a new file or folder", out)
+        problems, not_checked = section(out, "Problems"), section(out, "Not checked")
+        self.assertIn("Meetings/draft.md is a new file", problems)
+        self.assertNotIn("Meetings/scratch", problems)
+        self.assertIn("Meetings/scratch", not_checked)
 
     def test_a_new_hidden_file_in_the_longhand_folder_is_a_problem(self):
         snapshot = self.snapshot()
@@ -228,7 +242,7 @@ class CompareTests(support.StorageFolderTest):
         self.write("x", ".longhand", ".settings.json.0123456789abcdef.tmp")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
-        self.assertIn(".longhand/.notes is a new file or folder", out)
+        self.assertIn(".longhand/.notes is a new file", out)
         self.assertNotIn(".tmp", out)
 
     def test_agent_files_finder_files_and_write_probes_at_the_root_pass(self):
@@ -270,6 +284,140 @@ class CompareTests(support.StorageFolderTest):
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
         self.assertIn(".longhand/library changed", out)
+
+
+class LonghandAndSyncWorkTests(support.StorageFolderTest):
+    """Folders that Longhand or a sync makes while the agent edits are never
+    a problem, and the check never tells the agent to remove a folder."""
+
+    def test_a_longhand_work_folder_is_a_warning_not_a_problem(self):
+        snapshot = self.snapshot()
+        os.makedirs(self.path(".longhand-staging-abc", "audio"))
+        self.write("x", ".longhand-staging-abc", "audio", "segment-0001.wav")
+        os.makedirs(self.path("Meetings", ".longhand-rename-abc"))
+        os.makedirs(self.path(".longhand-move-abc"))
+        os.makedirs(self.path(".longhand-probe-1"))
+        os.makedirs(self.path(".longhand-move-probe"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        warnings = section(out, "Warnings")
+        for path in (".longhand-staging-abc", "Meetings/.longhand-rename-abc", ".longhand-move-abc"):
+            self.assertIn("%s is a folder that Longhand uses" % path, warnings)
+        self.assertIn("Do not touch it", warnings)
+        self.assertNotIn("probe", out)
+        self.assertNotIn("Remove it", out)
+
+    def test_a_note_in_a_longhand_rename_folder_is_not_checked(self):
+        snapshot = self.snapshot()
+        shutil.move(self.path(IDEA), self.path(".longhand-rename-abc"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED, out)
+        self.assertNotIn("is gone", out)
+        self.assertIn("Compare again later", section(out, "Not checked"))
+
+    def test_folders_that_a_sync_still_delivers_are_not_checked(self):
+        snapshot = self.snapshot()
+        os.makedirs(self.path("2026-10-15 0900 Standup"))
+        self.write("x", "2026-10-15 0900 Standup", ".syncthing.session.md.tmp")
+        os.makedirs(self.path("Clients", "2026-10-15 0900 Call"))
+        os.makedirs(self.path(".sync-state"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED, out)
+        not_checked = section(out, "Not checked")
+        for path in ("2026-10-15 0900 Standup", "Clients", ".sync-state"):
+            self.assertIn(path + " ", not_checked)
+        self.assertNotIn("Clients/", out)
+        self.assertIn("sync", not_checked)
+        self.assertNotIn("Remove it.", out)
+
+    def test_a_new_note_that_a_sync_has_not_finished_is_not_checked(self):
+        snapshot = self.snapshot()
+        os.makedirs(self.path("2026-10-15 0900 Standup"))
+        self.write("---\ntitle: Standup\n---\n", "2026-10-15 0900 Standup", "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED, out)
+        self.assertIn("2026-10-15 0900 Standup", section(out, "Not checked"))
+        self.assertNotIn("Problems:", out)
+
+    def test_finder_files_in_a_note_folder_do_not_count(self):
+        self.write("old", HIRING, ".DS_Store")
+        snapshot = self.snapshot()
+        self.write("", BUDGET, ".DS_Store")
+        self.write("new", HIRING, ".DS_Store")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertIn("Changes: none", out)
+
+    def test_a_snapshot_of_the_earlier_format_stops(self):
+        snapshot = self.snapshot()
+        with open(snapshot, "r", encoding="utf-8") as handle:
+            state = json.load(handle)
+        state["format"] = 2
+        with open(snapshot, "w", encoding="utf-8") as handle:
+            json.dump(state, handle)
+        code, _, err = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED)
+        self.assertIn("not a snapshot of this script", err)
+
+
+class ByteOrderMarkTests(support.StorageFolderTest):
+    def test_a_session_md_with_a_byte_order_mark_is_a_problem(self):
+        snapshot = self.snapshot()
+        self.write("﻿" + BUDGET_SESSION, BUDGET, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("byte order mark", section(out, "Problems"))
+
+    def test_a_prompt_with_a_byte_order_mark_passes(self):
+        snapshot = self.snapshot()
+        text = self.read(".longhand/prompts", "Action items.md").replace("owner.", "owner and date.")
+        self.write("﻿" + text, ".longhand/prompts", "Action items.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+
+
+class DuplicateIdTests(support.StorageFolderTest):
+    """Two folders with one session_id from before the snapshot."""
+
+    COPY = "2026-10-07 1300 Quick idea-2"
+
+    def setUp(self):
+        super().setUp()
+        shutil.copytree(self.path(IDEA), self.path(self.COPY), copy_function=shutil.copyfile)
+
+    def test_an_edit_of_another_note_passes(self):
+        snapshot = self.snapshot()
+        self.write(BUDGET_SESSION.replace("- Finance\n", "- Finance\n- Travel\n"), BUDGET, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertNotIn("one session_id", out)
+        self.assertNotIn("moved", out)
+
+    def test_an_edit_of_the_copy_is_checked_against_the_copy(self):
+        snapshot = self.snapshot()
+        text = self.read(self.COPY, "session.md")
+        self.write(text.replace("- Ideas\n", "- ' '\n"), self.COPY, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("%s: tag" % self.COPY, section(out, "Problems"))
+        self.assertNotIn("moved", out)
+
+    def test_a_deleted_copy_is_gone(self):
+        snapshot = self.snapshot()
+        shutil.rmtree(self.path(self.COPY))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("%s: the note folder is gone" % self.COPY, out)
+
+    def test_a_rename_of_the_first_folder_is_one_move(self):
+        snapshot = self.snapshot()
+        renamed = "2026-10-07 1300 Quick idea-3"
+        os.rename(self.path(IDEA), self.path(renamed))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertEqual(out.count("moved:"), 1, out)
+        self.assertIn("moved: %s -> %s" % (IDEA, renamed), out)
+        self.assertNotIn("one session_id", out)
 
 
 class SettingsTests(support.StorageFolderTest):
@@ -415,6 +563,26 @@ class PromptTests(support.StorageFolderTest):
                    "Write a short summary in three sentences.\n", self.PROMPTS, "Plain prompt.md")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PASS, out)
+
+    def test_a_prompt_with_no_text_is_a_problem(self):
+        head = "---\nid: 0c1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5f\nname: \"Empty\"\n---\n"
+        for body in ("", "\n  \t\n", "\n<!-- longhand: title instructions -->\nUse the date.\n"):
+            with self.subTest(body=body):
+                snapshot = self.snapshot()
+                self.write(head + body, self.PROMPTS, "Empty.md")
+                code, out, _ = self.compare(snapshot)
+                self.assertEqual(code, PROBLEM, out)
+                self.assertIn("Empty.md: the prompt has no text", out)
+                os.remove(self.path(self.PROMPTS, "Empty.md"))
+
+    def test_a_prompt_of_separator_characters_has_text(self):
+        # Longhand's trim keeps U+001C to U+001F, as Rust's white space
+        # does not hold them.
+        snapshot = self.snapshot()
+        self.write("---\nid: 0c1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5f\nname: \"Odd\"\n---\n\x1c\n",
+                   self.PROMPTS, "Odd.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertNotIn("has no text", out)
 
     def test_a_setting_can_name_a_prompt_with_no_id(self):
         import _longhand as lh
