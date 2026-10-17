@@ -29,7 +29,16 @@ cmake -S "$tokenizer_source" -B "$tokenizer_build" -G Ninja -DCMAKE_BUILD_TYPE=R
 cmake --build "$tokenizer_build" --target sentencepiece-static --config Release
 spm_library="$tokenizer_build/src/libsentencepiece.a"
 if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; then spm_library="$tokenizer_build/src/sentencepiece.lib"; fi
-"$source_dir/scripts/configure.sh" "$backend-asr" -B "$sdk_build" -DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF -DNEMO_SPEECH_BUILD_CLI=OFF -DNEMO_SPEECH_BUILD_TESTS=ON -DNEMO_SPEECH_WITH_NORM=OFF -DSENTENCEPIECE_LIB="$spm_library" -DSENTENCEPIECE_INCLUDE_DIR="$tokenizer_source/src"
+# Build the CPU code for a fixed baseline (AVX2 on x86, no -mcpu=native on ARM),
+# not for the CPU of the build machine, so the helper runs on the users' computers.
+# Each option is set: a native configure caches the x86 options as OFF, and a
+# build folder that CI keeps would otherwise keep those values.
+cpu_baseline=(GGML_NATIVE=OFF GGML_SSE42=ON GGML_AVX=ON GGML_AVX2=ON GGML_BMI2=ON GGML_FMA=ON GGML_F16C=ON
+  GGML_AVX_VNNI=OFF GGML_AVX512=OFF GGML_AVX512_VBMI=OFF GGML_AVX512_VNNI=OFF GGML_AVX512_BF16=OFF)
+"$source_dir/scripts/configure.sh" "$backend-asr" -B "$sdk_build" "${cpu_baseline[@]/#/-D}" -DNEMO_SPEECH_BUILD_MIC_CAPTURE=OFF -DNEMO_SPEECH_BUILD_CLI=OFF -DNEMO_SPEECH_BUILD_TESTS=ON -DNEMO_SPEECH_WITH_NORM=OFF -DSENTENCEPIECE_LIB="$spm_library" -DSENTENCEPIECE_INCLUDE_DIR="$tokenizer_source/src"
+for setting in "${cpu_baseline[@]}"; do
+  grep -Eq "^${setting%%=*}:[A-Z]+=${setting#*=}"$'\r?$' "$sdk_build/CMakeCache.txt" || { echo "the NeMo build must set ${setting}" >&2; exit 2; }
+done
 cmake --build "$sdk_build" --config Release
 cmake -S "$root/native/nemo-helper" -B "$helper_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DLONGHAND_NEMO_SOURCE="$source_dir" -DLONGHAND_NEMO_BUILD="$sdk_build"
 cmake --build "$helper_build" --config Release
