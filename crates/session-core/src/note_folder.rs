@@ -98,6 +98,7 @@ impl NoteFiles {
             None => SessionMd {
                 title: record.written_title.as_ref().map(|t| t.text.clone()),
                 tags: Vec::new(),
+                tags_not_text: false,
             },
         };
         Ok(Self::new(record, user))

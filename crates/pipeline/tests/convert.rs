@@ -400,6 +400,34 @@ fn the_summary_data_of_an_old_note_moves_into_longhand_json() {
     );
 }
 
+// The body of an old summary that starts with a
+// rule is written by the rule of `render_body`, so that it shows in full.
+#[test]
+fn an_old_summary_whose_body_starts_with_a_rule_converts_to_the_body_in_full() {
+    let (_dir, root) = storage();
+    let home = root.join("2026-09-25 0900 Rule");
+    fs::create_dir(&home).unwrap();
+    let summary = Summary {
+        meta: SummaryMeta::stub(),
+        body: "---\nOwner: Anna\n---\n\n## Overview\n\nWe agreed.".into(),
+    };
+    let mut doc = SessionDoc::without_audio("r", started(), None);
+    doc.result = None;
+    doc.summary_fingerprint = Some(fingerprint(summary.render().as_bytes()));
+    fs::write(home.join("summary.md"), summary.render()).unwrap();
+    fs::write(home.join("session.md"), doc.render()).unwrap();
+
+    convert::convert_folder(&home, &mut no_crash).unwrap();
+    let after = NoteFiles::read(&home).unwrap();
+    let text = fs::read_to_string(home.join("summary.md")).unwrap();
+    assert_eq!(text, summary.render_body());
+    assert_eq!(Summary::body_of(&text), summary.body);
+    assert_eq!(
+        after.record.summary_fingerprint,
+        Some(fingerprint(summary.render_body().as_bytes()))
+    );
+}
+
 /// Copy each file of `from` into a new folder.
 fn copy_of(from: &BTreeMap<String, Vec<u8>>) -> tempfile::TempDir {
     let folder = tempfile::tempdir().unwrap();

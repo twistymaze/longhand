@@ -42,6 +42,11 @@ pub const CONTROL_IN_TAG: &str = "A tag can't contain a line break or a tab.";
 pub const NOTE_UNAVAILABLE: &str =
     "The note's folder isn't available now, so its tags didn't change. Try again later.";
 
+/// The error text when `longhand_tags` in the note's `session.md` holds an
+/// item that is not text. A write of the tags would remove the item, so
+/// the edit did not change the note.
+pub const TAGS_NOT_TEXT: &str = "The tags in session.md have an item that isn't text, so the tags didn't change. Fix the tags in session.md and try again.";
+
 /// Check the text of a tag that the user typed. Returns the text with the
 /// spaces at its ends removed. The text inside stays as the user typed it
 /// (R11).
@@ -233,8 +238,21 @@ fn write_file(
         } else {
             note_files::title_patch(files.doc.title.as_deref())
         };
-        note_files::patch_session_md(folder, &note_files::with_tags(patch, &tags))
-            .map_err(|e| unavailable(e.to_string()))?;
+        note_files::patch_session_md_tags(folder, &note_files::with_tags(patch, &tags)).map_err(
+            |e| {
+                if e.get_ref()
+                    .is_some_and(|e| e.is::<note_files::TagsNotText>())
+                {
+                    log::warn!(
+                        "could not change the tags in {SESSION_FILE} in {}: {e}",
+                        folder.display()
+                    );
+                    StageError::NoDestination(TAGS_NOT_TEXT.into())
+                } else {
+                    unavailable(e.to_string())
+                }
+            },
+        )?;
     }
     Ok(tags)
 }

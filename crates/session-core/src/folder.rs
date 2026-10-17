@@ -419,6 +419,10 @@ pub struct SessionMd {
     pub title: Option<String>,
     /// The `longhand_tags` list. One text value reads as one tag.
     pub tags: Vec<String>,
+    /// `longhand_tags` holds an item that is not text: null, a list or a
+    /// mapping, or `longhand_tags` is a mapping. [`SessionMd::tags`] does
+    /// not hold such an item, so a write of the tags would remove it.
+    pub tags_not_text: bool,
 }
 
 impl SessionMd {
@@ -427,19 +431,65 @@ impl SessionMd {
     pub fn parse(text: &str) -> Result<Self, FolderError> {
         let (start, end, _) = frontmatter_bounds(text)
             .ok_or(FolderError::MissingFrontmatter { file: SESSION_FILE })?;
-        let map = parse_mapping(SESSION_FILE, &text[start..end])?;
+        let yaml = &text[start..end];
+        let map = parse_mapping(SESSION_FILE, yaml)?;
+        // The parsed values give the kind of each value. The text of a
+        // scalar comes from a second read as text, so that `1.50` stays
+        // `1.50` and does not become `1.5`.
+        let mut tags_not_text = false;
         let tags = match map.get("longhand_tags") {
             Some(serde_yaml::Value::Sequence(items)) => {
-                items.iter().filter_map(scalar_text).collect()
+                if items.iter().all(|item| scalar_text(item).is_some()) {
+                    serde_yaml::from_str::<TagTexts>(yaml)
+                        .map(|t| t.longhand_tags)
+                        .unwrap_or_else(|_| items.iter().filter_map(scalar_text).collect())
+                } else {
+                    tags_not_text = true;
+                    items.iter().filter_map(scalar_text).collect()
+                }
             }
-            Some(value) => scalar_text(value).into_iter().collect(),
-            None => Vec::new(),
+            Some(serde_yaml::Value::Null) | None => Vec::new(),
+            Some(value) => match scalar_text(value) {
+                Some(text) => vec![
+                    serde_yaml::from_str::<TagText>(yaml)
+                        .map(|t| t.longhand_tags)
+                        .unwrap_or(text),
+                ],
+                None => {
+                    tags_not_text = true;
+                    Vec::new()
+                }
+            },
         };
+        let title = map.get("title").and_then(scalar_text).map(|text| {
+            serde_yaml::from_str::<TitleText>(yaml)
+                .map(|t| t.title)
+                .unwrap_or(text)
+        });
         Ok(Self {
-            title: map.get("title").and_then(scalar_text),
+            title,
             tags,
+            tags_not_text,
         })
     }
+}
+
+/// The `title` of a frontmatter, read as the text in the file.
+#[derive(Deserialize)]
+struct TitleText {
+    title: String,
+}
+
+/// One text value of `longhand_tags`, read as the text in the file.
+#[derive(Deserialize)]
+struct TagText {
+    longhand_tags: String,
+}
+
+/// The items of `longhand_tags`, read as the text in the file.
+#[derive(Deserialize)]
+struct TagTexts {
+    longhand_tags: Vec<String>,
 }
 
 fn scalar_text(value: &serde_yaml::Value) -> Option<String> {
@@ -471,6 +521,16 @@ fn frontmatter_bounds(text: &str) -> Option<(usize, usize, usize)> {
         at += line.len();
     }
     None
+}
+
+/// Whether the frontmatter YAML `yaml` has only blank lines, or is a
+/// mapping with at least one key.
+fn holds_keys_or_nothing(yaml: &str) -> bool {
+    yaml.trim().is_empty()
+        || matches!(
+            serde_yaml::from_str::<serde_yaml::Value>(yaml),
+            Ok(serde_yaml::Value::Mapping(map)) if !map.is_empty()
+        )
 }
 
 /// Parse frontmatter YAML as a mapping. An empty frontmatter, or one with
@@ -822,13 +882,19 @@ impl Transcript {
 
     /// Read a `transcript.md`. The read never fails: a line that is not in
     /// a form that Longhand writes is a [`TranscriptLine::Text`] line, so a
-    /// person or an agent can edit the file (R7, KTD7).
+    /// person or an agent can edit the file (R7, KTD7). Only a first line
+    /// `# Transcript` is the heading of the file. Another `# ` line, for
+    /// example a heading that a person adds, is a text line.
     pub fn parse(text: &str) -> Self {
         let mut has_speakers = true;
         let mut lines = Vec::new();
+        let mut first = true;
         for raw in text.lines() {
             let line = raw.trim_end();
-            if line.is_empty() || line.starts_with("# ") {
+            if line.is_empty() {
+                continue;
+            }
+            if std::mem::take(&mut first) && line == "# Transcript" {
                 continue;
             }
             if line == NO_SPEAKERS_NOTE || line == SPEAKERS_OFF_NOTE {
@@ -946,16 +1012,29 @@ impl Summary {
     /// The text of a `summary.md` in the new layout: the body only, with
     /// no frontmatter. `longhand.json` holds the summary data (R1).
     pub fn render_body(&self) -> String {
-        format!("{}\n", self.body.trim_end())
+        Self::body_text(&self.body)
+    }
+
+    /// The text of a `summary.md` with the body `body` and no frontmatter.
+    /// A body that starts with a `---` line gets an empty line before it,
+    /// so that no part of the body reads as a frontmatter.
+    pub fn body_text(body: &str) -> String {
+        let body = body.trim_end();
+        let rule = body.lines().next().is_some_and(|line| line == "---");
+        format!("{}{body}\n", if rule { "\n" } else { "" })
     }
 
     /// The body of the `summary.md` text `text`, trimmed. A frontmatter at
     /// the start, for example one that an agent added, is not part of the
-    /// body (R7, KTD7).
+    /// body (R7, KTD7). A frontmatter is empty or holds keys: other text
+    /// between two `---` lines at the start, for example a heading after a
+    /// rule, is part of the body.
     pub fn body_of(text: &str) -> &str {
         match frontmatter_bounds(text) {
-            Some((_, _, body)) => text[body..].trim(),
-            None => text.trim(),
+            Some((start, end, body)) if holds_keys_or_nothing(&text[start..end]) => {
+                text[body..].trim()
+            }
+            _ => text.trim(),
         }
     }
 

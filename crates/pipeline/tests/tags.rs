@@ -9,7 +9,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, FixedOffset, Local, TimeDelta};
 use pipeline::SharedStore;
 use pipeline::early_home::{self, EarlyState};
-use pipeline::tags::{self, CONTROL_IN_TAG, EMPTY_TAG, NOTE_UNAVAILABLE, TagCount, check_tag};
+use pipeline::tags::{
+    self, CONTROL_IN_TAG, EMPTY_TAG, NOTE_UNAVAILABLE, TAGS_NOT_TEXT, TagCount, check_tag,
+};
 use session_core::folder::{ResultFlag, SessionDoc};
 use session_core::jobs::Claims;
 use session_core::{BulkEdit, Event, Segment, SessionRecord, SessionState, Stage, Store};
@@ -186,13 +188,14 @@ fn a_tag_edit_changes_only_the_tag_lines_of_session_md() {
 
 #[test]
 fn a_tag_edit_writes_one_tag_for_each_tag_key() {
-    // R8: an agent wrote one tag key two times.
+    // R8: an agent wrote one tag key two times. The second tag has
+    // quotes: with no quotes, YAML reads `person :: nathan` as a mapping.
     let (_dir, root) = storage();
     let b = computer();
     let home = b.save_note("n", &root, started(), &[]);
     fs::write(
         home.join("session.md"),
-        "---\ntitle: Note n\nlonghand_tags:\n- Person::Nathan\n- person :: nathan\n---\n",
+        "---\ntitle: Note n\nlonghand_tags:\n- Person::Nathan\n- 'person :: nathan'\n---\n",
     )
     .unwrap();
 
@@ -219,6 +222,56 @@ fn a_tag_edit_of_a_note_whose_session_md_does_not_parse_is_refused_with_no_write
     assert!(b.set("n", &["follow-up"], &[]).is_err());
     assert_eq!(fs::read_to_string(home.join("session.md")).unwrap(), broken);
     assert_eq!(fs::read(home.join("longhand.json")).unwrap(), records);
+}
+
+#[test]
+fn a_tag_edit_keeps_the_text_of_a_tag_that_reads_as_a_number() {
+    // `1.50` stays `1.50`, not `1.5`.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("n", &root, started(), &[]);
+    fs::write(
+        home.join("session.md"),
+        "---\ntitle: Note n\nlonghand_tags:\n- 1.50\n---\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        b.set("n", &["follow-up"], &[]),
+        Ok(texts(&["1.50", "follow-up"]))
+    );
+    assert_eq!(document(&home).tags, texts(&["1.50", "follow-up"]));
+}
+
+#[test]
+fn a_tag_edit_of_a_note_with_a_tag_item_that_is_not_text_is_refused_with_no_write() {
+    // The write would remove the item, so the file
+    // stays as it is and the message tells the user to fix it. A tag
+    // rename leaves the note for a later pass, as for a `session.md` that
+    // does not parse.
+    let (_dir, root) = storage();
+    let b = computer();
+    let home = b.save_note("n", &root, started(), &["Customer::Mayo"]);
+    for text in [
+        "---\ntitle: Note n\nlonghand_tags:\n- Customer::Mayo\n- ~\n---\n",
+        "---\ntitle: Note n\nlonghand_tags:\n- Customer::Mayo\n- [a]\n---\n",
+    ] {
+        fs::write(home.join("session.md"), text).unwrap();
+        let records = fs::read(home.join("longhand.json")).unwrap();
+
+        assert_eq!(
+            b.set("n", &["follow-up"], &[]),
+            Err(TAGS_NOT_TEXT.to_string())
+        );
+        let pass = b.apply(&BulkEdit::RenameTag {
+            from: "Customer::Mayo".into(),
+            to: "Customer::Mayo Clinic".into(),
+        });
+        assert_eq!((pass.matched, pass.done), (1, false), "{text}");
+        assert_eq!(fs::read_to_string(home.join("session.md")).unwrap(), text);
+        assert_eq!(fs::read(home.join("longhand.json")).unwrap(), records);
+        assert_eq!(b.record("n").tags, texts(&["Customer::Mayo"]));
+    }
 }
 
 #[test]

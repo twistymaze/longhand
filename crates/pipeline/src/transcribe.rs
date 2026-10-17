@@ -918,4 +918,25 @@ mod tests {
         assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
         assert_eq!(seeded_pieces(&store)[0], (0, 1));
     }
+
+    // A heading that a person adds is a line that
+    // is not a turn. The seed would lose it, so every segment is
+    // transcribed again from its audio.
+    #[test]
+    fn a_transcript_with_an_added_heading_seeds_nothing() {
+        let store = store_with_segment();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n# Decisions\n\n- [00:00:01] Speaker 1: We start with the budget.\n",
+        )
+        .unwrap();
+        assert!(!seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert!(
+            store
+                .checkpoints("n", Stage::Transcribe)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
