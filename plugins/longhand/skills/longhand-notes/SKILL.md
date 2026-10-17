@@ -45,7 +45,9 @@ In the commands below, `python3` is the command that you found, and `SKILL_DIR` 
 5. Read the result:
    - Exit code 0: the check passed. Tell the user which notes and files changed.
    - Exit code 1: a problem. Correct each problem, or undo the edit, and compare again with the same snapshot.
-   - Exit code 2: a part of the change was not checked. This is not a pass. Tell the user what was not checked, and why.
+   - Exit code 2: a part of the change was not checked. This is not a pass. Tell the user what was not checked, and why. A new folder or a new note that is not complete can be a sync that is not done: compare again later with the same snapshot.
+
+   Do not remove a folder that the result names, unless you made it. Longhand makes some folders for a short time, and a sync can deliver a note from another computer.
 
 A script that prints "Stopped:" did no work. Read the reason, and correct it.
 

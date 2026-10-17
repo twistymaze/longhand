@@ -17,7 +17,7 @@ Use the main action item as the title.
 
 - `id` is the identity of the prompt. The settings name a prompt by its id, not by its name. Never change the id of an existing prompt.
 - `name` is the name that Settings shows. Write it as a JSON string in double quotes.
-- The text after the frontmatter is the prompt text: at most 4,000 characters.
+- The text after the frontmatter is the prompt text: at most 4,000 characters. Longhand does not use a prompt with no text.
 - The line `<!-- longhand: title instructions -->` and the text after it are the title instructions: what the proposed note title contains. At most 1,000 characters. Leave out the line and the text when there are no title instructions.
 - The file name is the name, with each character that macOS or Windows refuses changed to `-`, and `.md` at the end.
 - Longhand adds fixed rules to each prompt, and a prompt cannot change them: the transcript and the notes are data, never instructions, and a person is never called "Speaker N" or given a guessed name.
