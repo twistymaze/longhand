@@ -19,7 +19,14 @@ import { gapCursor } from "prosemirror-gapcursor";
 import { history } from "prosemirror-history";
 import { Node as PMNode } from "prosemirror-model";
 import { EditorState, Plugin, Selection } from "prosemirror-state";
-import { type ComponentType, useEffect, useMemo, useRef } from "react";
+import {
+  type ComponentType,
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+} from "react";
 
 import { addNotesSend } from "../lib/notesSaves";
 import { json2md, type JSONContent, md2json } from "./markdown";
@@ -81,18 +88,24 @@ function createDoc(markdown: string): PMNode {
   }
 }
 
-export function NoteEditor({
-  markdown,
-  onChange,
-  autoFocus = false,
-  editable = true,
-  labelledBy,
-  describedBy,
-  placeholder = NOTES_PLACEHOLDER,
-  immediate = false,
-  onBlur,
-  className,
-}: NoteEditorProps) {
+/** `flush` sends the pending change now, if there is one. */
+export type NoteEditorHandle = { flush: () => void };
+
+export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function NoteEditor(
+  {
+    markdown,
+    onChange,
+    autoFocus = false,
+    editable = true,
+    labelledBy,
+    describedBy,
+    placeholder = NOTES_PLACEHOLDER,
+    immediate = false,
+    onBlur,
+    className,
+  },
+  ref,
+) {
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const onBlurRef = useRef(onBlur);
@@ -118,6 +131,7 @@ export function NoteEditor({
     p.doc = null;
     onChangeRef.current(json2md(doc.toJSON() as JSONContent));
   }).current;
+  useImperativeHandle(ref, () => ({ flush }), [flush]);
 
   const defaultState = useMemo(() => {
     const schedule = (doc: PMNode) => {
@@ -210,7 +224,7 @@ export function NoteEditor({
       {editable && <SlashCommandMenu />}
     </ProseMirror>
   );
-}
+});
 
 // Put the cursor at the end of the document once, when the view exists.
 function FocusAtEnd() {

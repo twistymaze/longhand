@@ -52,6 +52,7 @@ function setup() {
   const defaultState = EditorState.create({ doc, plugins: [reactKeys()] });
   const rendered = render(
     <ProseMirror defaultState={defaultState}>
+      <input aria-label="Other field" />
       <ProseMirrorDoc />
       <CaptureView
         onView={(next) => {
@@ -66,6 +67,8 @@ function setup() {
   );
   if (!view) throw new Error("the editor view does not exist");
   const v: EditorView = view;
+  // The toolbar shows only while the editor has the focus.
+  act(() => v.focus());
   const select = (from: number, to = from) =>
     act(() => {
       v.dispatch(v.state.tr.setSelection(TextSelection.create(v.state.doc, from, to)));
@@ -83,6 +86,37 @@ function setup() {
 }
 
 const toolbar = () => screen.queryByRole("toolbar");
+
+describe("FormatToolbar focus", () => {
+  test("hides the toolbar when the focus goes to another field", () => {
+    const { select } = setup();
+    select(1, 8);
+    expect(toolbar()).not.toBeNull();
+    act(() => screen.getByLabelText("Other field").focus());
+    expect(toolbar()).toBeNull();
+  });
+
+  test("keeps the toolbar and its link field when the focus goes to the link field", () => {
+    const { view, select } = setup();
+    select(1, 8);
+    act(() => screen.getByRole("button", { name: "Link" }).click());
+    const field = screen.getByLabelText("Link address") as HTMLInputElement;
+    expect(document.activeElement).toBe(field);
+    expect(toolbar()).not.toBeNull();
+    fireEvent.change(field, { target: { value: "https://example.com" } });
+    expect((screen.getByLabelText("Link address") as HTMLInputElement).value).toBe("https://example.com");
+    fireEvent.keyDown(field, { key: "Enter" });
+    expect(view.state.doc.firstChild!.firstChild!.marks.map((m) => m.type.name)).toEqual(["link"]);
+  });
+
+  test("hides the toolbar when the focus goes from the link field to another field", () => {
+    const { select } = setup();
+    select(1, 8);
+    act(() => screen.getByRole("button", { name: "Link" }).click());
+    act(() => screen.getByLabelText("Other field").focus());
+    expect(toolbar()).toBeNull();
+  });
+});
 
 describe("FormatToolbar composition gate", () => {
   test("shows the toolbar for a selection without composition", () => {

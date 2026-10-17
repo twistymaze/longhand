@@ -14,8 +14,13 @@ import {
   useEditorState,
 } from "@handlewithcare/react-prosemirror";
 import { setBlockType } from "prosemirror-commands";
+import { Fragment } from "prosemirror-model";
 import { wrapInList } from "prosemirror-schema-list";
-import type { EditorState, Transaction } from "prosemirror-state";
+import {
+  type EditorState,
+  TextSelection,
+  type Transaction,
+} from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 import { type ComponentType, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -33,6 +38,7 @@ import {
   TaskListIcon,
   TextIcon,
 } from "../icons";
+import { taskListWith } from "../note/keymap";
 import { schema } from "../note/schema";
 
 // The `/` menu: type `/` at a line start or after a space to change the block.
@@ -64,7 +70,7 @@ function clearSlashAndRun(
   command(view.state, (tr) => view.dispatch(tr));
 }
 
-const SLASH_COMMANDS: SlashCommandItem[] = [
+export const SLASH_COMMANDS: SlashCommandItem[] = [
   {
     id: "paragraph",
     label: "Text",
@@ -147,17 +153,33 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     icon: TaskListIcon,
     keywords: ["task", "todo", "checkbox", "check"],
     action(view, from, to) {
-      const tr = view.state.tr.delete(from, to);
-      view.dispatch(tr);
-      const taskItem = schema.nodes.taskItem.create(
-        { checked: false },
-        schema.nodes.paragraph.create(),
-      );
-      const taskList = schema.nodes.taskList.create(null, taskItem);
+      view.dispatch(view.state.tr.delete(from, to));
       const { $from } = view.state.selection;
-      const blockStart = $from.start($from.depth) - 1;
-      const blockEnd = $from.end($from.depth) + 1;
-      view.dispatch(view.state.tr.replaceWith(blockStart, blockEnd, taskList));
+      // A task list cannot hold code, and cannot be the first block of a
+      // list item: there, an empty task list goes after the block.
+      const parentType = $from.node(-1).type;
+      if (
+        $from.parent.type.spec.code ||
+        ($from.index(-1) === 0 &&
+          (parentType === schema.nodes.listItem ||
+            parentType === schema.nodes.taskItem))
+      ) {
+        const after = $from.after();
+        const tr = view.state.tr.insert(after, taskListWith(Fragment.empty));
+        view.dispatch(tr.setSelection(TextSelection.create(tr.doc, after + 3)));
+        return;
+      }
+      // The text of the line becomes the task text.
+      const blockStart = $from.before();
+      const tr = view.state.tr.replaceWith(
+        blockStart,
+        $from.after(),
+        taskListWith($from.parent.content),
+      );
+      // The cursor stays where the slash was, three levels into
+      // taskList > taskItem > paragraph.
+      const cursor = blockStart + 3 + $from.parentOffset;
+      view.dispatch(tr.setSelection(TextSelection.create(tr.doc, cursor)));
     },
   },
   {
@@ -196,16 +218,17 @@ const SLASH_COMMANDS: SlashCommandItem[] = [
     icon: DividerIcon,
     keywords: ["divider", "horizontal", "rule", "line", "hr"],
     action(view, from, to) {
-      const tr = view.state.tr.delete(from, to);
-      view.dispatch(tr);
+      view.dispatch(view.state.tr.delete(from, to));
       const hr = schema.nodes.horizontalRule.create();
       const paragraph = schema.nodes.paragraph.create();
       const { $from } = view.state.selection;
-      const blockStart = $from.start($from.depth) - 1;
-      const blockEnd = $from.end($from.depth) + 1;
-      view.dispatch(
-        view.state.tr.replaceWith(blockStart, blockEnd, [hr, paragraph]),
-      );
+      // An empty line becomes the rule. A line with text stays, and the
+      // rule goes after it.
+      const start = $from.parent.content.size === 0 ? $from.before() : $from.after();
+      const tr = view.state.tr.replaceWith(start, $from.after(), [hr, paragraph]);
+      // The cursor goes into the new empty paragraph after the rule.
+      const cursor = start + hr.nodeSize + 1;
+      view.dispatch(tr.setSelection(TextSelection.create(tr.doc, cursor)));
     },
   },
 ];
@@ -269,7 +292,11 @@ export function SlashCommandMenu() {
   const active = slashState !== null && !dismissed;
   const items = active ? filterCommands(slashState.query) : [];
 
-  if (!active && selectedIndex !== 0) {
+  // A new query shows other items, so the selection goes back to the first.
+  const query = active ? slashState.query : null;
+  const [shownQuery, setShownQuery] = useState<string | null>(null);
+  if (query !== shownQuery) {
+    setShownQuery(query);
     setSelectedIndex(0);
   }
   if (slashState === null && dismissedFrom !== null) {

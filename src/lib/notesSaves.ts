@@ -33,10 +33,14 @@ export function trackNotesSave(id: string, save: Promise<unknown>) {
 }
 
 /// Send each waiting change, then wait until no save of the notes of `id`
-/// runs. A save that fails counts as complete.
+/// runs. A save that fails counts as complete. A save can make a change
+/// wait again (a conflict holds the next edit), so the changes are sent
+/// again after each round of saves.
 export async function notesSaved(id: string): Promise<void> {
-  for (const send of sends) send();
-  for (let saves = running.get(id); saves; saves = running.get(id)) {
+  for (;;) {
+    for (const send of sends) send();
+    const saves = running.get(id);
+    if (!saves) return;
     await Promise.allSettled([...saves]);
   }
 }

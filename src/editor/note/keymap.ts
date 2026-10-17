@@ -20,10 +20,16 @@ import {
   InputRule,
   inputRules,
   textblockTypeInputRule,
+  undoInputRule,
   wrappingInputRule,
 } from "prosemirror-inputrules";
 import { keymap } from "prosemirror-keymap";
-import { Fragment, type MarkType, type NodeType } from "prosemirror-model";
+import {
+  Fragment,
+  type MarkType,
+  type Node as PMNode,
+  type NodeType,
+} from "prosemirror-model";
 import {
   liftListItem,
   sinkListItem,
@@ -330,38 +336,68 @@ function markInputRule(pattern: RegExp, markType: MarkType, delimLen: number) {
   });
 }
 
-// `[] `, `[ ] ` or `[x] ` at the start of a paragraph makes a task list. In
-// the only item of a bullet list (the result of typing `- ` first), the task
-// list replaces the bullet list, so that `- [ ] ` also makes a task.
+/// A task list with one task. Its paragraph holds `content`, and `blocks`
+/// follow the paragraph in the task.
+export function taskListWith(
+  content: Fragment,
+  checked = false,
+  blocks: Fragment = Fragment.empty,
+): PMNode {
+  const paragraph = schema.nodes.paragraph.create(null, content);
+  return schema.nodes.taskList.create(
+    null,
+    schema.nodes.taskItem.create({ checked }, Fragment.from(paragraph).append(blocks)),
+  );
+}
+
+// `[] `, `[ ] ` or `[x] ` at the start of a paragraph makes a task list, with
+// the text after the cursor as the task text. At the start of a bullet item
+// (the result of typing `- ` first), only that item becomes a task, so that
+// `- [ ] ` also makes a task and the other items stay bullets.
 function taskListRule() {
   return new InputRule(/^\s*\[([ x]?)\]\s$/, (state, match, start, end) => {
     const checked = match[1] === "x";
-    const taskItem = schema.nodes.taskItem.create(
-      { checked },
-      schema.nodes.paragraph.create(),
-    );
-    const taskList = schema.nodes.taskList.create(null, taskItem);
     const $start = state.doc.resolve(start);
     const depth = $start.depth;
-    if (
+    if ($start.parent.type !== schema.nodes.paragraph) return null;
+    // The typed text that matched is from `start` to `end`.
+    const rest = $start.parent.content.cut(end - $start.start());
+
+    const inItem =
       depth >= 3 &&
       $start.node(depth - 1).type === schema.nodes.listItem &&
-      $start.node(depth - 1).childCount === 1 &&
-      $start.node(depth - 2).type === schema.nodes.bulletList &&
-      $start.node(depth - 2).childCount === 1
-    ) {
+      $start.index(depth - 1) === 0;
+    if (inItem && $start.node(depth - 2).type === schema.nodes.bulletList) {
+      const list = $start.node(depth - 2);
+      const item = $start.node(depth - 1);
+      // The items before and after this one, as offsets in the list.
+      const listContentStart = $start.start(depth - 2);
+      const before = list.content.cut(0, $start.before(depth - 1) - listContentStart);
+      const after = list.content.cut($start.after(depth - 1) - listContentStart);
+      const blocks = item.content.cut(item.firstChild!.nodeSize);
+      const nodes: PMNode[] = [];
+      if (before.size) nodes.push(list.type.create(list.attrs, before));
+      nodes.push(taskListWith(rest, checked, blocks));
+      if (after.size) nodes.push(list.type.create(list.attrs, after));
+
       const listStart = $start.before(depth - 2);
-      const tr = state.tr.replaceWith(
-        listStart,
-        $start.after(depth - 2),
-        taskList,
-      );
-      return tr.setSelection(TextSelection.create(tr.doc, listStart + 3));
+      const tr = state.tr.replaceWith(listStart, $start.after(depth - 2), nodes);
+      const taskStart = listStart + (before.size ? nodes[0].nodeSize : 0);
+      // The text starts three levels into taskList > taskItem > paragraph.
+      return tr.setSelection(TextSelection.create(tr.doc, taskStart + 3));
     }
-    const tr = state.tr.replaceWith(start - 1, end, taskList);
-    // Content starts three levels into taskList > taskItem > paragraph,
-    // measured from the replacement position (start - 1).
-    return tr.setSelection(TextSelection.create(tr.doc, start + 2));
+    // A task list cannot be the first block of another list item.
+    if (inItem || $start.node(depth - 1).type === schema.nodes.taskItem) {
+      return null;
+    }
+
+    const blockStart = $start.before(depth);
+    const tr = state.tr.replaceWith(
+      blockStart,
+      $start.after(depth),
+      taskListWith(rest, checked),
+    );
+    return tr.setSelection(TextSelection.create(tr.doc, blockStart + 3));
   });
 }
 
@@ -378,9 +414,25 @@ export function buildInputRules() {
       markInputRule(/(^|[^*])\*\*([^*]+)\*\*$/, schema.marks.bold, 2),
       markInputRule(/(^|[^~])~~([^~]+)~~$/, schema.marks.strike, 2),
       markInputRule(/(^|[^=])==([^=]+)==$/, schema.marks.highlight, 2),
-      markInputRule(/(^|[^*])\*([^*]+)\*$/, schema.marks.italic, 1),
-      markInputRule(/(^|[^_])_([^_]+)_$/, schema.marks.italic, 1),
-      markInputRule(/(^|[^~])~([^~]+)~$/, schema.marks.strike, 1),
+      // One delimiter makes a mark only as markdown reads it: the opening
+      // one has no letter or number before it and no space after it, and
+      // the closing one has no space before it. So `my_var_name`,
+      // `2*3*4` and `~5 min, ~10` stay as typed.
+      markInputRule(
+        /(^|[^\p{L}\p{N}*])\*([^*\s](?:[^*]*[^*\s])?)\*$/u,
+        schema.marks.italic,
+        1,
+      ),
+      markInputRule(
+        /(^|[^\p{L}\p{N}_])_([^_\s](?:[^_]*[^_\s])?)_$/u,
+        schema.marks.italic,
+        1,
+      ),
+      markInputRule(
+        /(^|[^\p{L}\p{N}~])~([^~\s](?:[^~]*[^~\s])?)~$/u,
+        schema.marks.strike,
+        1,
+      ),
     ],
   });
 }
@@ -422,7 +474,10 @@ export function buildKeymap() {
         codeBlockPos + codeBlock.nodeSize,
         textContent
           ? [
-              schema.nodes.codeBlock.create(null, schema.text(textContent)),
+              schema.nodes.codeBlock.create(
+                codeBlock.attrs,
+                schema.text(textContent),
+              ),
               schema.nodes.paragraph.create(),
             ]
           : [schema.nodes.paragraph.create()],
@@ -475,6 +530,9 @@ export function buildKeymap() {
   };
 
   const backspaceCmd: Command = chainCommands(
+    // Right after a typed shortcut made a mark or a block, Backspace puts
+    // back the typed text.
+    undoInputRule,
     deleteSelection,
     (state, _dispatch) => {
       const { selection } = state;
@@ -517,7 +575,26 @@ export function buildKeymap() {
     if (!itemName) return true;
     const nodeType = state.schema.nodes[itemName];
     if (!nodeType) return true;
-    return sinkListItem(nodeType)(state, dispatch);
+    // The first item cannot go in: Tab still stays in the editor.
+    sinkListItem(nodeType)(state, dispatch);
+    return true;
+  };
+
+  // Check or clear the task at the cursor: the keyboard way to the checkbox.
+  keys["Mod-Enter"] = (state, dispatch) => {
+    const { $from } = state.selection;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      const node = $from.node(depth);
+      if (node.type !== schema.nodes.taskItem) continue;
+      dispatch?.(
+        state.tr.setNodeMarkup($from.before(depth), undefined, {
+          ...node.attrs,
+          checked: !node.attrs.checked,
+        }),
+      );
+      return true;
+    }
+    return false;
   };
 
   keys["Shift-Tab"] = (state, dispatch) => {

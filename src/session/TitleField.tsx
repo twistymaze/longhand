@@ -36,6 +36,8 @@ export const TitleField = forwardRef<
   const [draft, setDraft] = useState(title ?? "");
   const input = useRef<HTMLInputElement>(null);
   const cancelled = useRef(false);
+  // The user typed since the last commit or Escape. Only typed text renames.
+  const dirty = useRef(false);
 
   useImperativeHandle(ref, () => ({
     edit: () => {
@@ -44,10 +46,10 @@ export const TitleField = forwardRef<
     },
   }));
 
-  // A title from elsewhere (Home, or a proposed title) replaces the text,
-  // except while the user types.
+  // A title from elsewhere (Home, another computer, or a proposed title)
+  // replaces the text, except text that the user typed.
   useEffect(() => {
-    if (document.activeElement !== input.current) setDraft(title ?? "");
+    if (!dirty.current) setDraft(title ?? "");
   }, [title]);
 
   const commit = async () => {
@@ -55,6 +57,8 @@ export const TitleField = forwardRef<
       cancelled.current = false;
       return;
     }
+    if (!dirty.current) return;
+    dirty.current = false;
     const text = draft.trim();
     setDraft(text);
     if (text === (title ?? "")) return;
@@ -68,7 +72,10 @@ export const TitleField = forwardRef<
       value={draft}
       placeholder={placeholder}
       spellCheck={false}
-      onChange={(e) => setDraft(e.target.value)}
+      onChange={(e) => {
+        dirty.current = true;
+        setDraft(e.target.value);
+      }}
       onBlur={() => void commit()}
       onKeyDown={(e) => {
         if (e.key === "Enter") {
@@ -78,6 +85,7 @@ export const TitleField = forwardRef<
         if (e.key === "Escape") {
           e.preventDefault();
           cancelled.current = true;
+          dirty.current = false;
           setDraft(title ?? "");
           e.currentTarget.blur();
         }
