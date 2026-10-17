@@ -149,7 +149,7 @@ fn downloading(version: String) -> UpdateState {
 
 /// True when version `a` is newer than version `b`. Two versions that do
 /// not parse count as newer when they differ.
-fn newer(a: &str, b: &str) -> bool {
+pub(super) fn newer(a: &str, b: &str) -> bool {
     match (semver::Version::parse(a), semver::Version::parse(b)) {
         (Ok(a), Ok(b)) => a > b,
         _ => a != b,
