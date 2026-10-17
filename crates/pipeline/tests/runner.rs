@@ -7961,10 +7961,46 @@ async fn a_regeneration_keeps_a_record_that_another_computer_wrote_after_the_rea
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_the_new_segment() {
-    // Covers AE3.
+    // Covers AE3. The first recording is long enough for a silence line.
     let a = rig().await;
-    let folder = saved_note(&a, None).await;
+    let mut first = conversation();
+    first.resize(first.len() + 16_000 * 90, 0.0);
+    queue_session(&a.store, &a.root, "s", 100, Some("m"), &[(16_000, first)]);
+    add_notes(&a.store, "s");
+    assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&a, "s");
     let audio = std::fs::read(folder.join("audio/segment-01.opus")).unwrap();
+    // The old part has two paragraphs of one speaker and
+    // a silence.
+    let old_part = [
+        TranscriptLine::Turn {
+            position_ms: 1_000,
+            speaker: Some(1),
+            text: "We start with the budget.".into(),
+        },
+        TranscriptLine::Turn {
+            position_ms: 5_000,
+            speaker: Some(1),
+            text: "Then we look at the plan.".into(),
+        },
+        TranscriptLine::Silence {
+            duration_ms: 70_000,
+        },
+        TranscriptLine::Turn {
+            position_ms: 80_000,
+            speaker: Some(1),
+            text: "We are back.".into(),
+        },
+    ];
+    std::fs::write(
+        folder.join(TRANSCRIPT_FILE),
+        Transcript {
+            has_speakers: true,
+            lines: old_part.to_vec(),
+        }
+        .render(),
+    )
+    .unwrap();
     let said = first_recording_text(&folder);
     let b = other_computer(&a).await;
     sync(&b, &a.dest);
@@ -7986,6 +8022,29 @@ async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_
         .count();
     assert_eq!(gaps, 1, "both recordings");
     assert_eq!(first_recording_text(&folder), said);
+    // The speakers come from the new speaker analysis, so the check
+    // compares the lines of the old part without them.
+    let without_speakers = |lines: &[TranscriptLine]| -> Vec<TranscriptLine> {
+        lines
+            .iter()
+            .take_while(|line| !matches!(line, TranscriptLine::Gap { .. }))
+            .map(|line| match line {
+                TranscriptLine::Turn {
+                    position_ms, text, ..
+                } => TranscriptLine::Turn {
+                    position_ms: *position_ms,
+                    speaker: None,
+                    text: text.clone(),
+                },
+                other => other.clone(),
+            })
+            .collect()
+    };
+    assert_eq!(
+        without_speakers(&transcript.lines),
+        without_speakers(&old_part),
+        "the old paragraphs and the silence stay"
+    );
     assert_eq!(calls(&b), windows_of(&b, 1), "only the new segment");
     assert_fingerprints_match(&folder);
 
