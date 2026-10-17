@@ -35,10 +35,16 @@ pub enum UpdateState {
         downloaded: u64,
         total: Option<u64>,
     },
-    /// The download or the signature check failed (R18).
+    /// The download, the signature check or the install failed (R18).
     Failed { version: String, error: String },
-    /// The build is downloaded while busy. The ready question shows when busy ends (R17).
-    ReadyHeld { version: String },
+    /// A download error while busy. It shows when busy ends (R3 of the
+    /// notice timing plan).
+    FailedHeld { version: String, error: String },
+    /// The build is downloaded while busy. The ready question shows when busy
+    /// ends (R17). `confirmed` is true when the user chose the build ("Relaunch
+    /// Now" or a download), so a quit installs it also when a newer release
+    /// replaced it (KTD8).
+    ReadyHeld { version: String, confirmed: bool },
     /// The build is downloaded: "Relaunch Now" or "Later" (R17).
     Ready { version: String },
     /// After "Later": the build installs at the next quit.
@@ -88,6 +94,8 @@ pub enum Input {
     Downloaded(Result<(), String>),
     /// A click on the update item of the tray menu (R4).
     TrayOpen,
+    /// The app did not claim the restart, because a note is open.
+    RestartRefused,
 }
 
 /// The facts at the time of an input.
@@ -185,6 +193,12 @@ impl Flow {
         }
     }
 
+    /// The install of `version` at the last quit or at this launch failed
+    /// with `error`, so the window shows the error, not the ready question.
+    pub fn install_failed(&mut self, version: String, error: String) {
+        self.state = UpdateState::Failed { version, error };
+    }
+
     /// True while the window shows a state that the user asked for.
     pub fn user_asked(&self) -> bool {
         self.user_asked
@@ -234,12 +248,17 @@ impl Flow {
     /// confirmed with "Relaunch Now" or a download installs (KTD8).
     pub fn install_at_quit(&self) -> Option<&str> {
         match &self.state {
-            UpdateState::ReadyHeld { version } | UpdateState::Installing { version } => {
-                Some(version)
+            UpdateState::ReadyHeld {
+                version,
+                confirmed: true,
             }
-            UpdateState::Ready { version } | UpdateState::WaitingForQuit { version } => {
-                self.unless_superseded(version)
+            | UpdateState::Installing { version } => Some(version),
+            UpdateState::ReadyHeld {
+                version,
+                confirmed: false,
             }
+            | UpdateState::Ready { version }
+            | UpdateState::WaitingForQuit { version } => self.unless_superseded(version),
             // A check and its result keep the build that waits for a quit.
             UpdateState::Checking { .. }
             | UpdateState::UpToDate { .. }
@@ -310,6 +329,7 @@ impl Flow {
                 vec![]
             }
             Input::Downloaded(result) => self.downloaded(result, facts),
+            Input::RestartRefused => self.restart_refused(facts),
         }
     }
 
@@ -328,7 +348,10 @@ impl Flow {
                     current: self.current.clone(),
                 }
             }
-            UpdateState::ReadyHeld { version } => self.state = UpdateState::Ready { version },
+            UpdateState::ReadyHeld { version, .. } => self.state = UpdateState::Ready { version },
+            UpdateState::FailedHeld { version, error } => {
+                self.state = UpdateState::Failed { version, error }
+            }
             UpdateState::WaitingForQuit { version } => {
                 self.state = match self.newest.clone() {
                     Some(newest) if newer(&newest, &version) => self.notice(newest, false),
@@ -376,12 +399,17 @@ impl Flow {
             | UpdateState::ReadyHeld { .. }
             | UpdateState::Ready { .. }
             | UpdateState::Failed { .. }
+            | UpdateState::FailedHeld { .. }
             | UpdateState::Installing { .. } => {
-                if let UpdateState::ReadyHeld { version } = &self.state {
-                    // The user asked, so the question shows while busy.
-                    self.state = UpdateState::Ready {
-                        version: version.clone(),
-                    };
+                // The user asked, so a held notice shows while busy.
+                match self.state.clone() {
+                    UpdateState::ReadyHeld { version, .. } => {
+                        self.state = UpdateState::Ready { version }
+                    }
+                    UpdateState::FailedHeld { version, error } => {
+                        self.state = UpdateState::Failed { version, error }
+                    }
+                    _ => {}
                 }
                 return vec![];
             }
@@ -484,7 +512,10 @@ impl Flow {
     /// else the offer. While busy, it is held (R14, R17).
     fn notice(&self, version: String, busy: bool) -> UpdateState {
         match (self.saved.as_deref() == Some(version.as_str()), busy) {
-            (true, true) => UpdateState::ReadyHeld { version },
+            (true, true) => UpdateState::ReadyHeld {
+                version,
+                confirmed: false,
+            },
             (true, false) => UpdateState::Ready { version },
             (false, true) => UpdateState::Held { version },
             (false, false) => UpdateState::Offered {
@@ -520,10 +551,25 @@ impl Flow {
                         version: version.clone(),
                     }
                 }
-                // An install that could not claim the restart waits too.
-                UpdateState::Ready { version } | UpdateState::Installing { version } => {
+                // The question waits, and a quit installs it only when no
+                // newer release replaced it (R9).
+                UpdateState::Ready { version } => {
                     self.state = UpdateState::ReadyHeld {
                         version: version.clone(),
+                        confirmed: false,
+                    }
+                }
+                // An install that could not claim the restart waits too.
+                UpdateState::Installing { version } => {
+                    self.state = UpdateState::ReadyHeld {
+                        version: version.clone(),
+                        confirmed: true,
+                    }
+                }
+                UpdateState::Failed { version, error } => {
+                    self.state = UpdateState::FailedHeld {
+                        version: version.clone(),
+                        error: error.clone(),
                     }
                 }
                 UpdateState::Downloading { .. } => self.download_hidden = true,
@@ -537,8 +583,7 @@ impl Flow {
                 }
                 UpdateState::UpToDate { .. }
                 | UpdateState::CheckFailed { .. }
-                | UpdateState::LocalBuild
-                | UpdateState::Failed { .. } => self.settle(),
+                | UpdateState::LocalBuild => self.settle(),
                 _ => {}
             }
         } else {
@@ -549,9 +594,15 @@ impl Flow {
                         current: self.current.clone(),
                     }
                 }
-                UpdateState::ReadyHeld { version } => {
+                UpdateState::ReadyHeld { version, .. } => {
                     self.state = UpdateState::Ready {
                         version: version.clone(),
+                    }
+                }
+                UpdateState::FailedHeld { version, error } => {
+                    self.state = UpdateState::Failed {
+                        version: version.clone(),
+                        error: error.clone(),
                     }
                 }
                 _ => {}
@@ -580,6 +631,16 @@ impl Flow {
             }
             (Choice::Close, UpdateState::Downloading { .. }) => {
                 self.download_hidden = true;
+                vec![]
+            }
+            // The relaunch waits while busy (R14), and the question shows
+            // again when busy ends (R17). The download of an Install click
+            // starts at once, because the user asked (R11).
+            (Choice::RelaunchNow, UpdateState::Ready { version }) if facts.busy => {
+                self.state = UpdateState::ReadyHeld {
+                    version: version.clone(),
+                    confirmed: true,
+                };
                 vec![]
             }
             (Choice::RelaunchNow, UpdateState::Ready { version }) => {
@@ -661,7 +722,10 @@ impl Flow {
         self.saved = Some(version.clone());
         self.delays.later_until = None;
         if facts.busy {
-            self.state = UpdateState::ReadyHeld { version };
+            self.state = UpdateState::ReadyHeld {
+                version,
+                confirmed: true,
+            };
             vec![Effect::SaveDelays]
         } else {
             self.state = UpdateState::Installing { version };
@@ -674,14 +738,39 @@ impl Flow {
             return vec![];
         };
         let version = version.clone();
+        let hidden = self.download_hidden;
         self.download_hidden = false;
         match result {
             Ok(()) => self.install_saved(version, facts),
+            // The error of a download that the user does not watch waits
+            // while busy (R3 of the notice timing plan).
+            Err(error) if facts.busy && hidden => {
+                self.state = UpdateState::FailedHeld { version, error };
+                vec![]
+            }
             Err(error) => {
                 self.state = UpdateState::Failed { version, error };
                 vec![]
             }
         }
+    }
+
+    /// The app did not claim the restart. The question waits while busy, and
+    /// shows again at once when not busy, because no busy change follows.
+    fn restart_refused(&mut self, facts: Facts) -> Vec<Effect> {
+        let UpdateState::Installing { version } = &self.state else {
+            return vec![];
+        };
+        let version = version.clone();
+        self.state = if facts.busy {
+            UpdateState::ReadyHeld {
+                version,
+                confirmed: true,
+            }
+        } else {
+            UpdateState::Ready { version }
+        };
+        vec![]
     }
 }
 
@@ -955,7 +1044,8 @@ mod tests {
         assert_eq!(
             f.state(),
             &UpdateState::ReadyHeld {
-                version: NEW.into()
+                version: NEW.into(),
+                confirmed: true
             }
         );
         assert!(!f.window_visible());
@@ -972,7 +1062,8 @@ mod tests {
         assert_eq!(
             f.state(),
             &UpdateState::ReadyHeld {
-                version: NEW.into()
+                version: NEW.into(),
+                confirmed: true
             }
         );
         f.step(Input::Busy(false), facts(NINE));
@@ -1602,7 +1693,8 @@ mod tests {
         assert_eq!(
             f.state(),
             &UpdateState::ReadyHeld {
-                version: NEW.into()
+                version: NEW.into(),
+                confirmed: true
             }
         );
         assert_eq!(f.install_at_quit(), Some(NEW));
@@ -1628,5 +1720,234 @@ mod tests {
                 version: NEW.into()
             }
         );
+    }
+
+    fn ready_held(version: &str, confirmed: bool) -> UpdateState {
+        UpdateState::ReadyHeld {
+            version: version.into(),
+            confirmed,
+        }
+    }
+
+    fn failed(error: &str) -> UpdateState {
+        UpdateState::Failed {
+            version: NEW.into(),
+            error: error.into(),
+        }
+    }
+
+    fn failed_held(error: &str) -> UpdateState {
+        UpdateState::FailedHeld {
+            version: NEW.into(),
+            error: error.into(),
+        }
+    }
+
+    /// A flow that asks the ready question for NEW while busy, because the
+    /// user chose "Check for Updates…".
+    fn ready_asked_while_busy() -> Flow {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Downloaded(Ok(())), busy(NINE));
+        f.step(Input::ManualCheck, busy(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+        f
+    }
+
+    #[test]
+    fn relaunch_now_while_busy_holds_the_question_and_does_not_restart() {
+        let mut f = ready_asked_while_busy();
+        let effects = f.step(Input::Choice(Choice::RelaunchNow), busy(NINE));
+        assert!(!effects.contains(&Effect::Restart));
+        assert_eq!(f.state(), &ready_held(NEW, true));
+        assert!(!f.window_visible());
+        assert_eq!(f.install_at_quit(), Some(NEW));
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+    }
+
+    #[test]
+    fn relaunch_now_while_busy_on_a_replaced_question_downloads_the_newest() {
+        let mut f = ready_asked_while_busy();
+        f.step(Input::Timer, busy(NINE));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), busy(NINE));
+        let effects = f.step(Input::Choice(Choice::RelaunchNow), busy(NINE));
+        assert!(effects.contains(&Effect::QuickCheck));
+        assert!(matches!(f.state(), UpdateState::Downloading { version, .. } if version == NEWER));
+    }
+
+    #[test]
+    fn a_refused_restart_while_busy_holds_the_question_as_a_confirmed_build() {
+        let mut f = ready();
+        f.step(Input::Choice(Choice::RelaunchNow), facts(NINE));
+        f.step(Input::RestartRefused, busy(NINE));
+        assert_eq!(f.state(), &ready_held(NEW, true));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_refused_restart_when_not_busy_shows_the_question_again() {
+        let mut f = ready();
+        f.step(Input::Choice(Choice::RelaunchNow), facts(NINE));
+        f.step(Input::RestartRefused, facts(NINE));
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+        assert!(f.window_visible());
+    }
+
+    #[test]
+    fn a_refused_restart_in_another_state_changes_nothing() {
+        let mut f = offering(NEW);
+        assert_eq!(f.step(Input::RestartRefused, facts(NINE)), vec![]);
+        assert_eq!(f.state(), &offered(NEW));
+    }
+
+    #[test]
+    fn a_download_error_while_busy_with_the_window_hidden_shows_when_busy_ends() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        f.step(Input::Downloaded(Err("offline".into())), busy(NINE));
+        assert_eq!(f.state(), &failed_held("offline"));
+        assert!(!f.window_visible());
+        assert_eq!(f.install_at_quit(), None);
+        f.step(Input::Timer, busy(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE + HOUR));
+        assert_eq!(f.state(), &failed_held("offline"), "a check keeps it");
+        f.step(Input::Busy(false), facts(NINE + HOUR));
+        assert_eq!(f.state(), &failed("offline"));
+        assert!(f.window_visible());
+    }
+
+    #[test]
+    fn a_download_error_that_the_user_watches_while_busy_shows_at_once() {
+        let mut f = flow();
+        f.step(Input::ManualCheck, busy(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
+        f.step(Input::Choice(Choice::Install), busy(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
+        f.step(Input::Downloaded(Err("offline".into())), busy(NINE));
+        assert_eq!(f.state(), &failed("offline"));
+        assert!(f.window_visible());
+    }
+
+    #[test]
+    fn a_shown_download_error_is_held_while_busy_and_the_user_can_ask_for_it() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Downloaded(Err("offline".into())), facts(NINE));
+        f.step(Input::Busy(true), busy(NINE));
+        assert_eq!(f.state(), &failed_held("offline"));
+        f.step(Input::ManualCheck, busy(NINE));
+        assert_eq!(f.state(), &failed("offline"));
+        assert!(f.user_asked());
+        f.step(Input::Busy(true), busy(NINE));
+        f.step(Input::TrayOpen, busy(NINE));
+        assert_eq!(f.state(), &failed("offline"));
+        f.step(Input::Busy(true), busy(NINE));
+        f.step(Input::Busy(false), facts(NINE));
+        assert_eq!(f.state(), &failed("offline"));
+    }
+
+    #[test]
+    fn a_question_held_by_a_recording_does_not_install_a_replaced_build_at_quit() {
+        let mut f = ready();
+        f.step(Input::Timer, facts(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE + HOUR));
+        f.step(Input::Busy(true), busy(NINE + HOUR));
+        assert_eq!(f.state(), &ready_held(NEW, false));
+        assert_eq!(f.install_at_quit(), None);
+    }
+
+    #[test]
+    fn a_question_held_by_a_recording_installs_at_quit_when_nothing_replaced_it() {
+        let mut f = ready();
+        f.step(Input::Busy(true), busy(NINE));
+        assert_eq!(f.state(), &ready_held(NEW, false));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn a_download_that_ends_while_busy_installs_at_quit_after_a_newer_release() {
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE));
+        f.step(Input::Downloaded(Ok(())), busy(NINE));
+        f.step(Input::Timer, busy(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), busy(NINE + HOUR));
+        assert_eq!(f.state(), &ready_held(NEW, true));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn a_saved_build_offered_while_busy_is_held_as_not_confirmed() {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
+        f.step(Input::Timer, busy(NINE));
+        f.step(Input::Checked(Ok(Some(NEW.into()))), busy(NINE));
+        assert_eq!(f.state(), &ready_held(NEW, false));
+        assert_eq!(f.install_at_quit(), Some(NEW));
+    }
+
+    #[test]
+    fn a_failed_install_shows_the_error_and_try_again_installs_again() {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
+        f.install_failed(NEW.into(), "the app is read-only".into());
+        assert_eq!(f.state(), &failed("the app is read-only"));
+        assert!(f.window_visible());
+        assert_eq!(f.install_at_quit(), None);
+        assert_eq!(
+            f.step(Input::Choice(Choice::TryAgain), facts(NINE)),
+            vec![Effect::QuickCheck, Effect::SaveDelays]
+        );
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE)),
+            vec![Effect::SaveDelays, Effect::Restart]
+        );
+    }
+
+    #[test]
+    fn a_failed_install_with_no_saved_build_downloads_again_at_try_again() {
+        let mut f = flow();
+        f.install_failed(NEW.into(), "bad signature".into());
+        assert_eq!(f.state(), &failed("bad signature"));
+        f.step(Input::Choice(Choice::TryAgain), facts(NINE));
+        assert_eq!(
+            f.step(Input::Checked(Ok(Some(NEW.into()))), facts(NINE)),
+            vec![Effect::Download {
+                version: NEW.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_closed_install_error_settles() {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
+        f.install_failed(NEW.into(), "the app is read-only".into());
+        f.step(Input::Choice(Choice::Close), facts(NINE));
+        assert_eq!(f.state(), &UpdateState::Idle);
     }
 }
