@@ -15,7 +15,7 @@ use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 pub use pyannote_local::segmentation::WINDOW_SAMPLES;
-use pyannote_local::segmentation::WindowActivity;
+use pyannote_local::segmentation::{LOCAL_SPEAKERS, WindowActivity};
 pub use pyannote_local::{
     Analysis, AnalysisChunk, AnalysisLayout, AudioSource, Backend, DiarizationConfig,
     DiarizeRequest, Diarizer, SpeakerBounds, SpeakerSegment, WindowEmbedding,
@@ -208,34 +208,45 @@ pub fn write_analysis(path: &Path, analysis: &Analysis) -> std::io::Result<()> {
     std::fs::rename(temp, path)
 }
 
+/// Read an analysis that [`write_analysis`] wrote. A file that `analyze()`
+/// cannot have made is `InvalidData`: each count must fit in the bytes that
+/// are left, and each index must point into the analysis.
 pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
-    let mut input = BufReader::new(std::fs::File::open(path)?);
-    let mut magic = [0u8; 8];
-    input.read_exact(&mut magic)?;
-    if &magic != MAGIC {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "not a Longhand diarization analysis",
-        ));
+    let file = std::fs::File::open(path)?;
+    let left = file.metadata()?.len();
+    let mut input = AnalysisInput {
+        reader: BufReader::new(file),
+        left,
+    };
+    if &input.bytes::<8>()? != MAGIC {
+        return Err(invalid("not a Longhand diarization analysis"));
     }
-    let u64_ = |r: &mut BufReader<std::fs::File>| -> std::io::Result<u64> {
-        let mut b = [0u8; 8];
-        r.read_exact(&mut b)?;
-        Ok(u64::from_le_bytes(b))
+    let total = input.u64()?;
+    let step = input.u64()?;
+    // Each window holds at least its frame count.
+    let windows = input.u64()?;
+    let windows = input.count(windows, 4)?;
+    let step = usize::try_from(step).map_err(|_| invalid("the analysis hop is not valid"))?;
+    if windows > 0 && (step == 0 || step > WINDOW_SAMPLES) {
+        return Err(invalid("the analysis hop is not valid"));
+    }
+    // `analyze()` makes no window for no samples, and else one window more
+    // than the hops that the samples after the first window need.
+    let cover = match windows {
+        0 => Some(0),
+        _ => (windows - 1)
+            .checked_mul(step)
+            .and_then(|hops| hops.checked_add(WINDOW_SAMPLES)),
     };
-    let u32_ = |r: &mut BufReader<std::fs::File>| -> std::io::Result<u32> {
-        let mut b = [0u8; 4];
-        r.read_exact(&mut b)?;
-        Ok(u32::from_le_bytes(b))
-    };
-    let total = u64_(&mut input)? as usize;
-    let step = u64_(&mut input)? as usize;
-    let windows = u64_(&mut input)? as usize;
+    let total = usize::try_from(total)
+        .ok()
+        .filter(|&total| cover.is_some_and(|cover| total <= cover))
+        .ok_or_else(|| invalid("the analysis is longer than its windows"))?;
     let mut activities = Vec::with_capacity(windows);
     for _ in 0..windows {
-        let n = u32_(&mut input)? as usize;
-        let mut bytes = vec![0u8; n];
-        input.read_exact(&mut bytes)?;
+        let n = input.u32()?;
+        let n = input.count(u64::from(n), 1)?;
+        let bytes = input.vec(n)?;
         activities.push(WindowActivity {
             frames: bytes
                 .iter()
@@ -243,19 +254,26 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
                 .collect(),
         });
     }
-    let count = u64_(&mut input)? as usize;
+    // Each embedding holds at least its window, its flags and its dimension.
+    let count = input.u64()?;
+    let count = input.count(count, 10)?;
     let mut embeddings = Vec::with_capacity(count);
     for _ in 0..count {
-        let window = u32_(&mut input)? as usize;
-        let mut flags = [0u8; 2];
-        input.read_exact(&mut flags)?;
-        let dim = u32_(&mut input)? as usize;
-        let mut raw = vec![0u8; dim * 4];
-        input.read_exact(&mut raw)?;
+        let window = input.u32()? as usize;
+        let [local_speaker, anchor] = input.bytes::<2>()?;
+        if window >= windows {
+            return Err(invalid("an embedding is past the analysis windows"));
+        }
+        if usize::from(local_speaker) >= LOCAL_SPEAKERS {
+            return Err(invalid("an embedding has an unknown local speaker"));
+        }
+        let dim = input.u32()?;
+        let dim = input.count(u64::from(dim), 4)?;
+        let raw = input.vec(dim * 4)?;
         embeddings.push(WindowEmbedding {
             window,
-            local_speaker: flags[0] as usize,
-            anchor: flags[1] != 0,
+            local_speaker: usize::from(local_speaker),
+            anchor: anchor != 0,
             embedding: raw
                 .chunks_exact(4)
                 .map(|c| f32::from_le_bytes(c.try_into().expect("four bytes")))
@@ -270,13 +288,58 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
     })
 }
 
+fn invalid(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, message.to_owned())
+}
+
+/// The reader of an analysis file, with the count of bytes that are left.
+struct AnalysisInput {
+    reader: BufReader<std::fs::File>,
+    left: u64,
+}
+
+impl AnalysisInput {
+    fn bytes<const N: usize>(&mut self) -> std::io::Result<[u8; N]> {
+        let mut bytes = [0u8; N];
+        self.reader.read_exact(&mut bytes)?;
+        self.left = self.left.saturating_sub(N as u64);
+        Ok(bytes)
+    }
+
+    fn u64(&mut self) -> std::io::Result<u64> {
+        Ok(u64::from_le_bytes(self.bytes()?))
+    }
+
+    fn u32(&mut self) -> std::io::Result<u32> {
+        Ok(u32::from_le_bytes(self.bytes()?))
+    }
+
+    /// `count` items of at least `size` bytes each, when they fit in the
+    /// bytes that are left.
+    fn count(&self, count: u64, size: u64) -> std::io::Result<usize> {
+        count
+            .checked_mul(size)
+            .filter(|&bytes| bytes <= self.left)
+            .and_then(|_| usize::try_from(count).ok())
+            .ok_or_else(|| invalid("a count in the analysis is larger than the file"))
+    }
+
+    /// The next `n` bytes. [`Self::count`] checks `n` first.
+    fn vec(&mut self, n: usize) -> std::io::Result<Vec<u8>> {
+        let mut bytes = vec![0u8; n];
+        self.reader.read_exact(&mut bytes)?;
+        self.left = self.left.saturating_sub(n as u64);
+        Ok(bytes)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn analysis() -> Analysis {
         Analysis {
-            total: 480_000,
+            total: 180_000,
             step: 31_860,
             activities: vec![
                 WindowActivity {
@@ -310,6 +373,76 @@ mod tests {
         let path = dir.path().join("x.diar");
         std::fs::write(&path, b"not an analysis at all").unwrap();
         assert!(read_analysis(&path).is_err());
+    }
+
+    // Byte offsets in the file of `analysis()`.
+    const TOTAL: usize = 8;
+    const STEP: usize = 16;
+    const WINDOWS: usize = 24;
+    const FIRST_FRAMES: usize = 32;
+    const COUNT: usize = 43;
+    const EMBEDDING_WINDOW: usize = 51;
+    const LOCAL_SPEAKER: usize = 55;
+    const DIM: usize = 57;
+
+    /// Write `analysis()`, put `bytes` at `at`, and read the file again.
+    fn read_damaged(at: usize, bytes: &[u8]) -> std::io::Result<Analysis> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("segment-01.diar");
+        write_analysis(&path, &analysis()).unwrap();
+        let mut raw = std::fs::read(&path).unwrap();
+        raw[at..at + bytes.len()].copy_from_slice(bytes);
+        std::fs::write(&path, raw).unwrap();
+        read_analysis(&path)
+    }
+
+    fn assert_invalid(result: std::io::Result<Analysis>) {
+        let error = result.expect_err("a damaged file must not read");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+    }
+
+    #[test]
+    fn a_count_larger_than_the_file_is_refused() {
+        assert_invalid(read_damaged(WINDOWS, &u64::MAX.to_le_bytes()));
+        assert_invalid(read_damaged(FIRST_FRAMES, &u32::MAX.to_le_bytes()));
+        assert_invalid(read_damaged(COUNT, &u64::MAX.to_le_bytes()));
+        assert_invalid(read_damaged(DIM, &u32::MAX.to_le_bytes()));
+    }
+
+    #[test]
+    fn a_truncated_file_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("segment-01.diar");
+        write_analysis(&path, &analysis()).unwrap();
+        let raw = std::fs::read(&path).unwrap();
+        for len in [12, WINDOWS + 4, FIRST_FRAMES + 3, COUNT + 2, raw.len() - 1] {
+            std::fs::write(&path, &raw[..len]).unwrap();
+            assert!(read_analysis(&path).is_err(), "{len} bytes");
+        }
+    }
+
+    #[test]
+    fn a_local_speaker_past_the_window_speakers_is_refused() {
+        assert_invalid(read_damaged(LOCAL_SPEAKER, &[LOCAL_SPEAKERS as u8]));
+    }
+
+    #[test]
+    fn an_embedding_past_the_windows_is_refused() {
+        assert_invalid(read_damaged(EMBEDDING_WINDOW, &2u32.to_le_bytes()));
+    }
+
+    #[test]
+    fn a_total_past_the_windows_is_refused() {
+        assert_invalid(read_damaged(TOTAL, &u64::MAX.to_le_bytes()));
+        let cover = 31_860 + WINDOW_SAMPLES as u64;
+        assert_invalid(read_damaged(TOTAL, &(cover + 1).to_le_bytes()));
+        assert!(read_damaged(TOTAL, &cover.to_le_bytes()).is_ok());
+    }
+
+    #[test]
+    fn a_step_that_analyze_never_writes_is_refused() {
+        assert_invalid(read_damaged(STEP, &0u64.to_le_bytes()));
+        assert_invalid(read_damaged(STEP, &u64::MAX.to_le_bytes()));
     }
 
     #[test]

@@ -175,9 +175,19 @@ impl SpeakerAnalyzer for FakeAnalyzer {
         if let Some(report) = request.on_progress {
             report(1.0);
         }
+        // The window layout of `analyze()` with no speech, so the file of
+        // a saved segment reads again on a resume.
+        use pyannote_local::segmentation::{WINDOW_SAMPLES, WindowActivity};
+        let total = audio.sample_count().map_err(DiarizeError::Engine)?;
+        let step = 32_000;
+        let windows = match total {
+            0 => 0,
+            _ => total.saturating_sub(WINDOW_SAMPLES).div_ceil(step) + 1,
+        };
         Ok(Analysis {
-            total: audio.sample_count().map_err(DiarizeError::Engine)?,
-            step: 32_000,
+            total,
+            step,
+            activities: vec![WindowActivity { frames: vec![] }; windows],
             ..Analysis::default()
         })
     }

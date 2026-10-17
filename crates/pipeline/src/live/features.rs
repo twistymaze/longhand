@@ -265,6 +265,8 @@ pub fn saved(store: &SharedStore, id: &str, segment: u32) -> Result<bool, StageE
 }
 
 /// Read the persisted features for final clustering; no native inference.
+/// `None` when the features are not complete, or when a window file does
+/// not read: the caller then analyses the segment again.
 pub fn restore(
     store: &SharedStore,
     id: &str,
@@ -283,10 +285,27 @@ pub fn restore(
         let saved: Window =
             checkpoint::get(store, id, Stage::Diarize, &window_key(segment, window))?
                 .ok_or_else(|| StageError::Failed("live feature checkpoint is absent".into()))?;
-        let mut analysis = diarize::read_analysis(&dir.join("live-features").join(saved.file))?;
-        if analysis.step != index.step {
-            return Err(StageError::Failed("live feature hop mismatch".into()));
-        }
+        let path = dir.join("live-features").join(&saved.file);
+        // Each file holds the analysis of one live window.
+        let mut analysis = match diarize::read_analysis(&path) {
+            Ok(analysis) if analysis.step == index.step && analysis.activities.len() == 1 => {
+                analysis
+            }
+            Ok(_) => {
+                log::warn!(
+                    "live speaker features {} of {id} do not match their index",
+                    path.display()
+                );
+                return Ok(None);
+            }
+            Err(e) => {
+                log::warn!(
+                    "live speaker features {} of {id} do not read: {e}",
+                    path.display()
+                );
+                return Ok(None);
+            }
+        };
         for embedding in &mut analysis.embeddings {
             embedding.window = window;
         }
