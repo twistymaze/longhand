@@ -139,8 +139,10 @@ fn prompts_of(cache: &Cache) -> Vec<Prompt> {
 /// old cache stays and the next join tries again.
 fn merge_cache(root: &Path, cache: &Cache, written: &mut Written) -> io::Result<()> {
     let prompts = merge_prompts(root, &prompts_of(cache), &mut written.prompt_files);
-    written.background_file = write_new_background(root, &cache.background)?;
-    prompts
+    let background = write_new_background(root, &cache.background);
+    prompts?;
+    written.background_file = background?;
+    Ok(())
 }
 
 /// Add each prompt of `prompts` that the folder does not have (R22). A

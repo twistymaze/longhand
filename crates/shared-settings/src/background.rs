@@ -110,6 +110,12 @@ pub fn read_background(root: &Path) -> BackgroundRead {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return BackgroundRead::Missing,
         Err(e) => return unreadable(e.to_string()),
     }
+    // A save cannot replace a file in a folder outside the storage folder.
+    // That gives a cause other than [`OUTSIDE_FILE`], so the Background
+    // stays read-only.
+    if let Err(e) = check_write_folder(root, &longhand_folder(root)) {
+        return unreadable(e.to_string());
+    }
     let path = match inside_file(root, &path) {
         Ok(path) => path,
         Err(e) => return unreadable(e.to_string()),

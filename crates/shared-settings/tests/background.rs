@@ -468,3 +468,22 @@ fn a_save_into_a_longhand_folder_that_links_outside_writes_nothing() {
         .collect();
     assert_eq!(names, ["settings.json"]);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_background_in_a_longhand_folder_that_links_outside_is_read_only() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let settings = serde_json::to_vec(&default_settings()).unwrap();
+    fs::write(outside.path().join("settings.json"), settings).unwrap();
+    fs::write(outside.path().join(BACKGROUND_FILE), "Outside text.").unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join(".longhand")).unwrap();
+    let loaded = load(root.path(), None);
+    assert_ne!(loaded.view.background, "Outside text.");
+    // A save cannot write into the folder, so Settings does not offer it.
+    assert!(!loaded.view.background_writable());
+    assert_eq!(
+        fs::read_to_string(outside.path().join(BACKGROUND_FILE)).unwrap(),
+        "Outside text."
+    );
+}
