@@ -64,7 +64,13 @@ if (cancelStage) {
 }
 const child = spawn(helper, ["--parent", String(process.pid)], { stdio: ["pipe", "pipe", "pipe"] });
 let diagnosticBytes = 0;
-child.stderr.on("data", (data: Buffer) => { diagnosticBytes += data.length; });
+// The last part of the helper's diagnostics, for the error when it stops early.
+let diagnosticTail = Buffer.alloc(0);
+child.stderr.on("data", (data: Buffer) => { diagnosticBytes += data.length; diagnosticTail = Buffer.concat([diagnosticTail, data]).subarray(-8192); });
+function stopped(code: number | null, signal: NodeJS.Signals | null): string {
+  const status = code === null ? `signal ${signal}` : `code ${code} (0x${(code >>> 0).toString(16)})`;
+  return `${status}; stderr: ${diagnosticTail.toString().trim() || "(none)"}`;
+}
 let bytes = Buffer.alloc(0);
 let completed = false;
 child.stdin.on("error", error => fail(error));
@@ -110,7 +116,7 @@ function send(metadata: object, samples = new Float32Array()) {
   child.stdin.write(Buffer.concat([header, json, pcm]));
   return seq;
 }
-const exit = new Promise<number | null>((resolve, reject) => { child.once("error", error => { fail(error); reject(error); }); child.once("close", code => { if (!completed) fail(new Error(`Helper exited before completion (${code})`)); resolve(code); }); });
+const exit = new Promise<number | null>((resolve, reject) => { child.once("error", error => { fail(error); reject(error); }); child.once("close", (code, signal) => { if (!completed) fail(new Error(`Helper exited before completion with ${stopped(code, signal)}`)); resolve(code); }); });
 const ready = new Promise<void>((resolve, reject) => {
   child.stdout.on("data", (data: Buffer) => {
     try {
@@ -157,7 +163,8 @@ const ready = new Promise<void>((resolve, reject) => {
       }
     } catch (error) { fail(error); reject(error); }
   });
-  child.once("exit", () => { if (!completed && !backend) reject(new Error("Helper exited before ready")); });
+  // "close" comes after stderr ends, so the error carries all of the diagnostics.
+  child.once("close", (code, signal) => { if (!completed && !backend) reject(new Error(`Helper exited before ready with ${stopped(code, signal)}`)); });
 });
 try {
   if (!inference) {
