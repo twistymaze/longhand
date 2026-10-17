@@ -26,6 +26,11 @@ class ListNotesTests(support.StorageFolderTest):
         self.assertEqual(notes[BUDGET]["tags"], ["Finance", "Team::Planning"])
         self.assertEqual(notes[BUDGET]["state"], "ready")
 
+    def test_a_session_md_with_a_byte_order_mark_is_not_ready(self):
+        self.write("\ufeff" + self.read(BUDGET, "session.md"), BUDGET, "session.md")
+        notes = {note["path"]: note for note in self.listed()}
+        self.assertNotEqual(notes[BUDGET]["state"], "ready")
+
     def test_busy_notes_have_a_busy_flag(self):
         busy = sorted(note["path"] for note in self.listed("--busy"))
         self.assertEqual(busy, sorted([DESIGN, STANDUP, VENDOR]))

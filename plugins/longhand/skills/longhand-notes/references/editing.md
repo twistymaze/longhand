@@ -19,6 +19,7 @@ longhand_tags:
 - Write each value on one line. Put a value in quotes when it has `: `, ` #`, or starts with a character such as `[`, `{`, `'`, `"`, `&`, `*`, `!`, `|`, `>`, `%`, `@` or `` ` ``. Also put a value in quotes when YAML can read it as a number, `true`, `false` or `null`.
 - Use single quotes (`'It''s here'`) or double quotes (`"A \"quoted\" title"`).
 - Do not use block values (`|` or `>`), anchors or nested keys. `check.py` cannot read them and reports the file as not checked.
+- Save the file as UTF-8 with no byte order mark. Longhand cannot read a `session.md` that starts with one.
 - A frontmatter that does not parse does not hide the note, but after about one minute Longhand shows a notice for it. Correct it at once.
 
 ## Change the title

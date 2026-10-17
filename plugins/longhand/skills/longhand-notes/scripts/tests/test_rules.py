@@ -94,7 +94,6 @@ class FrontmatterTests(unittest.TestCase):
             ("---\ntitle: \"A \\\"quoted\\\" title\"\nlonghand_tags: [a, 'b, c', \"d\"]\n---\n",
              ('A "quoted" title', ["a", "b, c", "d"])),
             ("---\r\ntitle: 'It''s here' # a comment\r\nlonghand_tags: []\r\n---\r\n", ("It's here", [])),
-            ("﻿---\ntitle: Plain\nlonghand_tags: One tag\n---\n", ("Plain", ["One tag"])),
             ("---\n---\n", (None, [])),
             ("---\ntitle:\nother: value\n---", (None, [])),
             ("---\ntitle: Release 2.0 plan\nrating: 3\n---\n", ("Release 2.0 plan", [])),
@@ -117,6 +116,8 @@ class FrontmatterTests(unittest.TestCase):
             ("---\nlonghand_tags:\n- 12\n---\n", None),
             ("---\n  indented: value\n---\n", 2),
             ("---\nsession_id: abc\n---\n", None),
+            # SessionMd::parse in crates/session-core does not remove a byte order mark.
+            ("\ufeff---\ntitle: Plain\n---\n", None),
         ]
         for text, line in cases:
             with self.subTest(text=text):

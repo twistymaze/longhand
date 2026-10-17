@@ -132,6 +132,7 @@ PROMPT_TEXT_LIMIT = 4000
 TITLE_TEXT_LIMIT = 1000
 BACKGROUND_TEXT_LIMIT = 4000
 TITLE_MARKER = "<!-- longhand: title instructions -->"
+BYTE_ORDER_MARK = "\ufeff"
 # The largest prompt file that Longhand reads, in bytes.
 PROMPT_MAX_FILE_BYTES = PROMPT_TEXT_LIMIT * 4 + TITLE_TEXT_LIMIT * 4 + len(TITLE_MARKER) + 2 + 4096
 BACKGROUND_MAX_FILE_BYTES = BACKGROUND_TEXT_LIMIT * 4
@@ -619,8 +620,6 @@ def read_frontmatter(text):
     """The keys of a YAML frontmatter: a dict of key to Scalar, or to a list
     of Scalar. Raises Unreadable for a form that this reader cannot read,
     with the line in the file."""
-    if text.startswith("\ufeff"):
-        text = text[1:]
     bounds = frontmatter_bounds(text)
     if bounds is None:
         raise Unreadable("the file has no frontmatter between two --- lines", 1)
@@ -673,6 +672,9 @@ def read_frontmatter(text):
 
 def read_session_md(text):
     """(title or None, tags) of a `session.md`. Raises Unreadable."""
+    if text.startswith(BYTE_ORDER_MARK):
+        # `SessionMd::parse` in crates/session-core does not remove it.
+        raise Unreadable("starts with a byte order mark, which Longhand cannot read. Save it without one.", None)
     fields = read_frontmatter(text)
     if "session_id" in fields:
         raise Unreadable(
@@ -748,6 +750,7 @@ def read_note(root, relative, note_type, at=None):
         "title": None,
         "tags": [],
         "session_md": "ok",
+        "session_md_bom": False,
         "busy": [],
     }
     if record is not None and isinstance(record.get("session_id"), str):
@@ -757,7 +760,9 @@ def read_note(root, relative, note_type, at=None):
     session_path = os.path.join(folder, SESSION_FILE)
     if os.path.isfile(session_path):
         try:
-            note["title"], note["tags"] = read_session_md(read_text(session_path))
+            text = read_text(session_path)
+            note["session_md_bom"] = text.startswith(BYTE_ORDER_MARK)
+            note["title"], note["tags"] = read_session_md(text)
         except Unreadable as error:
             note["session_md"] = error.describe(SESSION_FILE)
         except (OSError, UnicodeDecodeError) as error:
@@ -830,7 +835,7 @@ def parse_prompt(text):
     """The parts of a prompt file, as `parse_prompt_file` in
     `crates/shared-settings/src/prompts.rs` reads them: a dict with id,
     name, text, title_text and open."""
-    if text.startswith("\ufeff"):
+    if text.startswith(BYTE_ORDER_MARK):
         text = text[1:]
     parsed = {"id": None, "name": None, "text": "", "title_text": "", "open": False}
     lines = split_inclusive(text)
@@ -880,7 +885,7 @@ def prompt_file_names(root):
 def read_prompts(root):
     """Each prompt file by its file name: id (the id in the file, or the
     id that Longhand makes from the file name), id_in_file, name, size,
-    open, over_limit and a hash of its texts."""
+    open, over_limit, empty and a hash of its texts."""
     folder = os.path.join(root, LONGHAND_FOLDER, PROMPTS_FOLDER)
     out = {}
     for name in prompt_file_names(root):
@@ -891,7 +896,7 @@ def read_prompts(root):
             parsed = parse_prompt(read_text(path))
         except (OSError, UnicodeDecodeError) as error:
             info.update({"unreadable": str(error), "id": file_name_id(name), "id_in_file": None,
-                         "name": None, "open": False, "over_limit": False, "texts": None})
+                         "name": None, "open": False, "over_limit": False, "empty": False, "texts": None})
             out[name] = info
             continue
         info.update(
@@ -904,6 +909,11 @@ def read_prompts(root):
                 "over_limit": info["too_large"]
                 or len(parsed["text"]) > PROMPT_TEXT_LIMIT
                 or len(parsed["title_text"]) > TITLE_TEXT_LIMIT,
+                # `read_entry` in prompts.rs does not use a prompt whose
+                # trimmed text is empty.
+                "empty": not parsed["open"]
+                and not info["too_large"]
+                and all(char in WHITE_SPACE for char in parsed["text"]),
                 "texts": hashlib.sha256(
                     (parsed["text"] + "\0" + parsed["title_text"]).encode("utf-8")
                 ).hexdigest(),
