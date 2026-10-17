@@ -606,6 +606,14 @@ impl Store {
 /// note. Its payload is the generation as a JSON string.
 pub const GENERATION_KEY: &str = "recognition-generation-v1";
 
+/// The key prefix of the blocks that a live NeMo worker writes. The epoch
+/// follows it: `nemo/{epoch}/`.
+pub const LIVE_NEMO_PREFIX: &str = "nemo/";
+
+/// The key prefix of the native-final copy of the live NeMo blocks. The
+/// epoch follows it: `native-final/{epoch}/`.
+pub const NATIVE_FINAL_PREFIX: &str = "native-final/";
+
 impl Store {
     /// Delete the output rows and the epoch row of one generation. A
     /// replaced generation has no reader.
@@ -652,19 +660,24 @@ impl Store {
         else {
             return Ok(());
         };
+        // The epoch starts after the prefix. SQLite counts characters from 1.
+        let epoch_start = NATIVE_FINAL_PREFIX.chars().count() as i64 + 1;
+        let end = format!("{NATIVE_FINAL_PREFIX}{}", char::MAX);
         let epochs = {
             let mut stmt = tx.prepare(
-                "SELECT DISTINCT substr(key, 14, instr(substr(key, 14), '/') - 1) \
+                "SELECT DISTINCT substr(key, ?3, instr(substr(key, ?3), '/') - 1) \
                  FROM recognition_output \
-                 WHERE session_id=?1 AND generation=?2 \
-                 AND key >= 'native-final/' AND key < 'native-final0' \
-                 AND instr(substr(key, 14), '/') > 0",
+                 WHERE session_id=?1 AND generation=?2 AND key >= ?4 AND key < ?5 \
+                 AND instr(substr(key, ?3), '/') > 0",
             )?;
-            stmt.query_map(params![id, generation], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?
+            stmt.query_map(
+                params![id, generation, epoch_start, NATIVE_FINAL_PREFIX, end],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
         };
         for epoch in epochs {
-            delete_prefix(&tx, id, &generation, &format!("nemo/{epoch}/"))?;
+            delete_prefix(&tx, id, &generation, &format!("{LIVE_NEMO_PREFIX}{epoch}/"))?;
         }
         tx.commit()?;
         Ok(())

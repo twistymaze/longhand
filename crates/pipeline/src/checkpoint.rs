@@ -47,11 +47,15 @@ pub fn segment_done_key(index: u32) -> String {
     format!("seg-{index:04}-done")
 }
 
-/// The segment index of a `seg-NNNN-...` key. Other keys give `None`.
+/// The segment index of a `seg-NNNN-...` key. Other keys give `None`. An
+/// index of 10000 or more has more than four digits.
 pub fn segment_of(key: &str) -> Option<u32> {
-    key.strip_prefix("seg-")
-        .and_then(|rest| rest.get(..4))
-        .and_then(|digits| digits.parse().ok())
+    let rest = key.strip_prefix("seg-")?;
+    let digits = rest.split('-').next()?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -108,4 +112,22 @@ pub fn mark_complete(
     segments: usize,
 ) -> Result<(), StageError> {
     put(store, session_id, stage, DONE, &StageDone { segments })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The keys of segment 10000 and after have more than four digits.
+    #[test]
+    fn segment_of_reads_the_index_of_each_segment_key() {
+        assert_eq!(segment_of(&segment_key(3)), Some(3));
+        assert_eq!(segment_of(&window_key(7, 3)), Some(7));
+        assert_eq!(segment_of(&plan_key(12_345)), Some(12_345));
+        assert_eq!(segment_of(&window_key(10_000, 0)), Some(10_000));
+        assert_eq!(segment_of(&segment_done_key(42)), Some(42));
+        assert_eq!(segment_of("recognition-generation-v1"), None);
+        assert_eq!(segment_of("seg-"), None);
+        assert_eq!(segment_of("seg-+12-done"), None);
+    }
 }

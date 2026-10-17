@@ -1192,6 +1192,62 @@ fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
         std::fs::read_to_string(saved.path.join(TRANSCRIPT_FILE)).unwrap(),
         transcript
     );
+
+    // The save of a resumed note updates the folder in place, and also
+    // removes the live blocks of each epoch that has a final copy.
+    {
+        let mut s = store.lock().unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::UserResume {
+                space_ok: true,
+                audio_intact: true,
+            },
+        )
+        .unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::UserStop {
+                at: common::at(200),
+                retained_audio: true,
+            },
+        )
+        .unwrap();
+        s.dequeue_session("s", "test", common::at(200)).unwrap();
+    }
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), transcript).unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    put(format!("nemo/{:020}/word/0", 3), 3);
+    put(format!("native-final/{:020}/row/0", 3), 3);
+    pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    let mut keys = vec![];
+    store
+        .lock()
+        .unwrap()
+        .visit_recognition("s", "g", |block| {
+            keys.push(block.key);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        keys,
+        [
+            format!("native-final/{:020}/row/0", 1),
+            format!("native-final/{:020}/row/0", 3),
+            format!("nemo/{:020}/word/0", 2),
+        ]
+    );
 }
 
 #[test]

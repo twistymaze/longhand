@@ -720,7 +720,7 @@ pub fn visit_catchup_blocks(
     let mut live_ranges = std::collections::BTreeMap::<u64, Vec<SampleRange>>::new();
     let mut live_inputs = std::collections::BTreeMap::<u64, SampleRange>::new();
     store.visit_recognition(id, generation, |block| {
-        if block.key.starts_with("nemo/") && !completed.contains_key(&block.scope.epoch) {
+        if block.key.starts_with(LIVE_NEMO_PREFIX) && !completed.contains_key(&block.scope.epoch) {
             if let Some(range) = block.coverage.received {
                 live_inputs
                     .entry(block.scope.epoch)
@@ -755,8 +755,8 @@ pub fn visit_catchup_blocks(
                 Ok(())
             };
         }
-        let native_final = block.key.starts_with("native-final/");
-        let native_live = block.key.starts_with("nemo/");
+        let native_final = block.key.starts_with(NATIVE_FINAL_PREFIX);
+        let native_live = block.key.starts_with(LIVE_NEMO_PREFIX);
         if native_final && !completed.contains_key(&block.scope.epoch) {
             return Ok(());
         }
