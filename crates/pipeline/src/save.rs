@@ -1415,14 +1415,10 @@ fn summarize_again(
     // Regenerate Summary explicitly accepts the current transcript text.
     // An external edit removes the reusable recognition reference.
     // A missing transcript counts as a hand edit after the wait for the
-    // sync (R8), but there is nothing to summarize.
-    let canonical = std::fs::read(home.join(TRANSCRIPT_FILE)).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            StageError::Failed("The transcript is missing.".into())
-        } else {
-            unreadable(&home.join(TRANSCRIPT_FILE), &e.to_string())
-        }
-    })?;
+    // sync (R8), but there is nothing to summarize. The read has a time
+    // limit: a file that does not download must not keep the turn.
+    let canonical = crate::summarize::transcript_bytes(&home)?
+        .ok_or_else(|| StageError::Failed("The transcript is missing.".into()))?;
     let current_hash = folder::fingerprint(&canonical);
     let changed = || {
         StageError::Failed(
