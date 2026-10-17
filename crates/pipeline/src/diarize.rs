@@ -3,7 +3,7 @@
 //! beside its processing audio and checkpointed; then every analysis is
 //! clustered together, the turns smoothed, and the result checkpointed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use diarize::{
     DiarizeError, DiarizeRequest, SpeakerAnalyzer, SpeakerBounds, Turn, WINDOW_SAMPLES,
@@ -63,6 +63,19 @@ pub fn units(segments: &[Segment]) -> u64 {
     segments.iter().map(segment_units).sum()
 }
 
+/// A segment that [`run`] must analyse after it counts the saved work.
+struct Pending<'a> {
+    /// The place of the segment in `segments` and in the analyses.
+    position: usize,
+    segment: &'a Segment,
+    key: String,
+    file: PathBuf,
+    /// True when the segment has an index of features from the recording.
+    indexed: bool,
+    /// The features from the recording, when they read.
+    live: Option<diarize::Analysis>,
+}
+
 /// Analyse each segment, then cluster them together. `speakers` is planned
 /// for the whole note; each segment adds its [`segment_units`].
 #[allow(clippy::too_many_arguments)]
@@ -87,25 +100,19 @@ pub fn run(
         let checkpointed =
             checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?.is_some()
                 && file.exists();
-        let done = if checkpointed {
+        if checkpointed {
             match read_analysis(&file) {
-                Ok(analysis) => Some(analysis),
-                Err(e) => {
-                    log::warn!(
-                        "the speaker analysis of segment {} of {session_id} does not read: {e}; \
-                         analysing it again",
-                        segment.index
-                    );
-                    None
+                Ok(analysis) => {
+                    speakers.saved(segment_units(segment));
+                    analyses.push(Some(analysis));
+                    continue;
                 }
+                Err(e) => log::warn!(
+                    "the speaker analysis of segment {} of {session_id} does not read: {e}; \
+                     analysing it again",
+                    segment.index
+                ),
             }
-        } else {
-            None
-        };
-        if done.is_some() {
-            speakers.saved(segment_units(segment));
-            analyses.push(done);
-            continue;
         }
         // Features saved during recording need no new analysis. When they
         // do not read, the segment is analysed again from its audio.
@@ -118,11 +125,28 @@ pub fn run(
         if live.is_some() {
             speakers.saved(segment_units(segment));
         }
+        // The loop below fills this slot. Each pending segment gets an
+        // analysis or the stage stops with an error.
         analyses.push(None);
-        pending.push((position, segment, key, file, indexed, live));
+        pending.push(Pending {
+            position,
+            segment,
+            key,
+            file,
+            indexed,
+            live,
+        });
     }
     speakers.at(0);
-    for (position, segment, key, file, indexed, live) in pending {
+    for Pending {
+        position,
+        segment,
+        key,
+        file,
+        indexed,
+        live,
+    } in pending
+    {
         let units = segment_units(segment);
         let counted = live.is_some();
         control.proceed()?;

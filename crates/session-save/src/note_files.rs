@@ -119,6 +119,17 @@ impl std::fmt::Display for TagsNotText {
 
 impl std::error::Error for TagsNotText {}
 
+impl TagsNotText {
+    /// True when `err` holds a [`TagsNotText`] refusal.
+    pub fn is(err: &io::Error) -> bool {
+        err.get_ref().is_some_and(|e| e.is::<TagsNotText>())
+    }
+
+    fn into_io(self) -> io::Error {
+        io::Error::new(io::ErrorKind::InvalidData, self)
+    }
+}
+
 /// [`patch_session_md`] for a patch that sets the tags. A write of the
 /// tags would remove an item of `longhand_tags` that is not text. Thus,
 /// when the file has such an item, the file stays as it is and the error
@@ -136,7 +147,7 @@ fn patch_with(dir: &Path, patch: &FrontmatterPatch, tags: bool) -> io::Result<St
         && let Some(text) = &current
         && SessionMd::parse(text).is_ok_and(|read| read.tags_not_text)
     {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, TagsNotText));
+        return Err(TagsNotText.into_io());
     }
     let text = match &current {
         Some(text) => patch

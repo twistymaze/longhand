@@ -978,8 +978,8 @@ impl LiveWorker {
 
 impl Drop for LiveWorker {
     /// A worker that drops with no [`LiveWorker::end`] ends as
-    /// [`LiveEnd::Keep`], as the closed channel does. Capture drops it so
-    /// when it closes a segment with an error.
+    /// [`LiveEnd::Keep`], as the closed channel does. Capture drops the
+    /// worker when it closes a segment with an error.
     fn drop(&mut self) {
         let mut how = self.capture_end.lock().unwrap_or_else(|e| e.into_inner());
         if how.is_none() {
@@ -1154,11 +1154,11 @@ pub(crate) enum Step<T> {
     Wait,
 }
 
-/// Decide the next step of a worker. Read the end before the frame:
-/// capture closes the last chunk before it sets the end, so a read that
-/// finds no frame after the end is set finishes. When the end is set
-/// during the read, the worker waits and reads again, so it also reads
-/// the last chunk.
+/// Decide the next step of a worker. Read the end before the frame.
+/// Capture closes the last chunk before it sets the end. Thus, when the
+/// end is set before the read and the read finds no frame, the worker
+/// finishes. When the end is set during the read, the worker waits and
+/// reads again, so it also reads the last chunk.
 pub(crate) fn next_step<T, E>(
     end: &CaptureEnd,
     read: impl FnOnce() -> Result<Option<T>, E>,

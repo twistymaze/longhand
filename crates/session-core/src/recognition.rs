@@ -598,9 +598,7 @@ impl Store {
         generation: &str,
         prefix: &str,
     ) -> crate::jobs::Result<()> {
-        let pattern = prefix_pattern(prefix);
-        self.conn.execute("DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!'",params![id,generation,pattern])?;
-        Ok(())
+        delete_prefix(&self.conn, id, generation, prefix)
     }
 }
 
@@ -621,6 +619,7 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
+
     /// Put a result or speaker index, and delete the blocks under the
     /// `(generation, prefix)` of the index that it replaces, in one
     /// transaction. A fault keeps the old index and its blocks.
@@ -633,16 +632,14 @@ impl Store {
         replaced: Option<(&str, &str)>,
     ) -> crate::jobs::Result<()> {
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO checkpoints (session_id, stage, key, payload) VALUES (?1, ?2, ?3, ?4)",
-            params![id, crate::jobs::stage_key(stage), key, payload],
-        )?;
+        crate::jobs::put_checkpoint_in(&tx, id, stage, key, payload)?;
         if let Some((generation, prefix)) = replaced {
-            tx.execute("DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!'",params![id,generation,prefix_pattern(prefix)])?;
+            delete_prefix(&tx, id, generation, prefix)?;
         }
         tx.commit()?;
         Ok(())
     }
+
     /// Delete the live NeMo blocks (`nemo/{epoch}/`) of each epoch of the
     /// current generation that has a native-final copy
     /// (`native-final/{epoch}/`). The save of the note calls this.
@@ -656,12 +653,18 @@ impl Store {
             return Ok(());
         };
         let epochs = {
-            let mut stmt = tx.prepare("SELECT DISTINCT substr(key, 14, instr(substr(key, 14), '/') - 1) FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE 'native-final/%/%'")?;
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT substr(key, 14, instr(substr(key, 14), '/') - 1) \
+                 FROM recognition_output \
+                 WHERE session_id=?1 AND generation=?2 \
+                 AND key >= 'native-final/' AND key < 'native-final0' \
+                 AND instr(substr(key, 14), '/') > 0",
+            )?;
             stmt.query_map(params![id, generation], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?
         };
         for epoch in epochs {
-            tx.execute("DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!'",params![id,generation,prefix_pattern(&format!("nemo/{epoch}/"))])?;
+            delete_prefix(&tx, id, &generation, &format!("nemo/{epoch}/"))?;
         }
         tx.commit()?;
         Ok(())
@@ -696,6 +699,24 @@ pub(crate) fn delete_generation(
     conn.execute(
         "DELETE FROM recognition_epochs WHERE session_id=?1 AND generation=?2",
         params![id, generation],
+    )?;
+    Ok(())
+}
+
+/// Delete the output rows of one generation whose key starts with `prefix`.
+/// The key range uses the primary-key index. Keys are ASCII text that the
+/// app writes, so the range holds the same rows as a prefix match.
+fn delete_prefix(
+    conn: &rusqlite::Connection,
+    id: &str,
+    generation: &str,
+    prefix: &str,
+) -> crate::jobs::Result<()> {
+    let end = format!("{prefix}{}", char::MAX);
+    conn.execute(
+        "DELETE FROM recognition_output \
+         WHERE session_id=?1 AND generation=?2 AND key >= ?3 AND key < ?4",
+        params![id, generation, prefix, end],
     )?;
     Ok(())
 }

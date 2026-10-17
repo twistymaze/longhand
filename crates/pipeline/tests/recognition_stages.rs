@@ -189,7 +189,7 @@ fn setup_audio(
         &store,
         "route",
         Stage::Transcribe,
-        "recognition-generation-v1",
+        session_core::recognition::GENERATION_KEY,
         &"speaker-analysis",
     )
     .unwrap();

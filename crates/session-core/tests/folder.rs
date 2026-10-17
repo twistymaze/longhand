@@ -863,8 +863,8 @@ fn the_body_of_a_summary_md_has_no_frontmatter() {
     assert_eq!(Summary::body_of("---\nNo end.\n"), "---\nNo end.");
 }
 
-// Only the first line `# Transcript` is the heading
-// of the file. A `# ` line that a person or an agent adds is a text line.
+// Only the first line `# Transcript` is the heading of the file. A `# `
+// line that a person or an agent adds is a text line.
 #[test]
 fn an_added_heading_in_transcript_md_is_a_text_line() {
     let text = "# Transcript\n\n- [00:00:01] Speaker 1: We start.\n\n# Decisions\n\n- [00:00:09] Speaker 2: We end.\n# Transcript\n";
@@ -893,8 +893,8 @@ fn an_added_heading_in_transcript_md_is_a_text_line() {
     assert_eq!(Transcript::parse(&transcript.render()), transcript);
 }
 
-// A summary that starts with a rule shows in full.
-// Only a block with keys, or an empty pair of rules, is a frontmatter.
+// A summary that starts with a rule shows in full. Only a block with keys,
+// or an empty pair of rules, is a frontmatter.
 #[test]
 fn a_summary_that_starts_with_a_rule_shows_in_full() {
     let ruled = "---\n\n## Overview\n\nText.\n\n---\n\n## Next\n";
@@ -908,8 +908,8 @@ fn a_summary_that_starts_with_a_rule_shows_in_full() {
     );
 }
 
-// No body that Longhand writes reads as a
-// frontmatter, also a rule, a `Key: value` line and a second rule.
+// No body that Longhand writes reads as a frontmatter, also a rule, a
+// `Key: value` line and a second rule.
 #[test]
 fn a_summary_body_that_starts_with_a_rule_reads_back_in_full() {
     for body in [
@@ -924,8 +924,8 @@ fn a_summary_body_that_starts_with_a_rule_reads_back_in_full() {
     }
 }
 
-// A tag or a title that YAML reads as a number
-// keeps the text that the user wrote.
+// A tag or a title that YAML reads as a number keeps the text that the user
+// wrote.
 #[test]
 fn a_tag_or_a_title_that_reads_as_a_number_keeps_its_text() {
     let read =
@@ -937,8 +937,8 @@ fn a_tag_or_a_title_that_reads_as_a_number_keeps_its_text() {
     assert_eq!(read.tags, ["1.50"]);
 }
 
-// A tag item that is not text marks the tags as
-// tags that a tag edit cannot write. No value or an empty list is no tags.
+// A tag item that is not text marks the tags as tags that a tag edit cannot
+// write. No value or an empty list is no tags.
 #[test]
 fn a_tag_item_that_is_not_text_marks_the_tags() {
     for text in [

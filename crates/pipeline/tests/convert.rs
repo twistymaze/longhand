@@ -400,8 +400,8 @@ fn the_summary_data_of_an_old_note_moves_into_longhand_json() {
     );
 }
 
-// The body of an old summary that starts with a
-// rule is written by the rule of `render_body`, so that it shows in full.
+// The body of an old summary that starts with a rule is written by the rule
+// of `render_body`, so that it shows in full.
 #[test]
 fn an_old_summary_whose_body_starts_with_a_rule_converts_to_the_body_in_full() {
     let (_dir, root) = storage();

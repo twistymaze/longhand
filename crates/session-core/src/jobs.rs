@@ -425,6 +425,22 @@ pub(crate) fn stage_key(stage: Stage) -> String {
         .expect("stage serializes to a string")
 }
 
+/// Put one checkpoint row on `conn`. A caller can give a transaction.
+pub(crate) fn put_checkpoint_in(
+    conn: &Connection,
+    session_id: &str,
+    stage: Stage,
+    key: &str,
+    payload: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO checkpoints (session_id, stage, key, payload) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params![session_id, stage_key(stage), key, payload],
+    )?;
+    Ok(())
+}
+
 /// The `sessions` columns that [`read_session`] reads, in its order.
 const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, asr_model, \
      home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot, \
@@ -2079,11 +2095,7 @@ impl Store {
         key: &str,
         payload: &str,
     ) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO checkpoints (session_id, stage, key, payload) VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, stage_key(stage), key, payload],
-        )?;
-        Ok(())
+        put_checkpoint_in(&self.conn, session_id, stage, key, payload)
     }
 
     pub fn checkpoint_value(

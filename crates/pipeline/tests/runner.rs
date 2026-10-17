@@ -8076,8 +8076,7 @@ async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_
     assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
     let folder = saved_folder(&a, "s");
     let audio = std::fs::read(folder.join("audio/segment-01.opus")).unwrap();
-    // The old part has two paragraphs of one speaker and
-    // a silence.
+    // The old part has two paragraphs of one speaker and a silence.
     let old_part = [
         TranscriptLine::Turn {
             position_ms: 1_000,

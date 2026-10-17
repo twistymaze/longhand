@@ -47,6 +47,13 @@ pub fn segment_done_key(index: u32) -> String {
     format!("seg-{index:04}-done")
 }
 
+/// The segment index of a `seg-NNNN-...` key. Other keys give `None`.
+pub fn segment_of(key: &str) -> Option<u32> {
+    key.strip_prefix("seg-")
+        .and_then(|rest| rest.get(..4))
+        .and_then(|digits| digits.parse().ok())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageDone {
     pub segments: usize,

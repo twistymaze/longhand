@@ -240,9 +240,7 @@ fn write_file(
         };
         note_files::patch_session_md_tags(folder, &note_files::with_tags(patch, &tags)).map_err(
             |e| {
-                if e.get_ref()
-                    .is_some_and(|e| e.is::<note_files::TagsNotText>())
-                {
+                if note_files::TagsNotText::is(&e) {
                     log::warn!(
                         "could not change the tags in {SESSION_FILE} in {}: {e}",
                         folder.display()

@@ -245,10 +245,9 @@ fn a_tag_edit_keeps_the_text_of_a_tag_that_reads_as_a_number() {
 
 #[test]
 fn a_tag_edit_of_a_note_with_a_tag_item_that_is_not_text_is_refused_with_no_write() {
-    // The write would remove the item, so the file
-    // stays as it is and the message tells the user to fix it. A tag
-    // rename leaves the note for a later pass, as for a `session.md` that
-    // does not parse.
+    // The write would remove the item, so the file stays as it is and the
+    // message tells the user to fix it. A tag rename leaves the note for a
+    // later pass, as for a `session.md` that does not parse.
     let (_dir, root) = storage();
     let b = computer();
     let home = b.save_note("n", &root, started(), &["Customer::Mayo"]);

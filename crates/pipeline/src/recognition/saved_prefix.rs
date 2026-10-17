@@ -213,8 +213,7 @@ fn candidate(
         Ok(())
     })
     .map_err(|e| failed(e.to_string()))?;
-    let generation: Option<String> =
-        checkpoint::get(store, id, Stage::Transcribe, "recognition-generation-v1")?;
+    let generation: Option<String> = checkpoint::get(store, id, Stage::Transcribe, GENERATION_KEY)?;
     let expected = super::durable::configured_fingerprints(
         store,
         id,
@@ -325,14 +324,7 @@ mod tests {
                 }
                 wav.finalize().unwrap();
             }
-            checkpoint::put(
-                &store,
-                "s",
-                Stage::Transcribe,
-                "recognition-generation-v1",
-                &"g",
-            )
-            .unwrap();
+            checkpoint::put(&store, "s", Stage::Transcribe, GENERATION_KEY, &"g").unwrap();
             let case = Self {
                 temp,
                 store,
@@ -506,7 +498,7 @@ mod tests {
                     &case.store,
                     "s",
                     Stage::Transcribe,
-                    "recognition-generation-v1",
+                    GENERATION_KEY,
                     &"other",
                 )
                 .unwrap(),

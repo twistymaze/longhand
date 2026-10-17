@@ -104,10 +104,9 @@ fn a_recognition_transcript_has_a_line_between_segments() {
         ]
     );
 }
-// A note seeded from its transcript.md keeps the
-// paragraphs of its old part when the recognition route writes the
-// transcript again. The rows come from the seeded windows, as in the
-// transcribe step of the route.
+// A note seeded from its transcript.md keeps the paragraphs of its old part
+// when the recognition route writes the transcript again. The rows come
+// from the seeded windows, as in the transcribe step of the route.
 #[test]
 fn a_seeded_recognition_transcript_keeps_the_old_paragraphs() {
     use session_core::folder::TranscriptLine;

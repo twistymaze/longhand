@@ -9,6 +9,7 @@ use asr::{
 };
 use models::recognition::{ExecutionSpec, SpeakerCount};
 use session_core::note_folder::NoteFiles;
+use session_core::recognition::GENERATION_KEY;
 use session_core::{Segment, Stage};
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
 
@@ -38,8 +39,7 @@ pub fn snapshot(store: &SharedStore, id: &str) -> Result<Option<ExecutionSpec>, 
 /// A processing attempt keeps its generation across checkpoints. A replacement
 /// that clears recognition checkpoints must create a fresh generation.
 pub(super) fn generation(store: &SharedStore, id: &str) -> Result<String, StageError> {
-    const KEY: &str = "recognition-generation-v1";
-    if let Some(saved) = checkpoint::get(store, id, Stage::Transcribe, KEY)? {
+    if let Some(saved) = checkpoint::get(store, id, Stage::Transcribe, GENERATION_KEY)? {
         return Ok(saved);
     }
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -49,7 +49,7 @@ pub(super) fn generation(store: &SharedStore, id: &str) -> Result<String, StageE
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    checkpoint::put(store, id, Stage::Transcribe, KEY, &value)?;
+    checkpoint::put(store, id, Stage::Transcribe, GENERATION_KEY, &value)?;
     Ok(value)
 }
 pub fn saved_result(store: &SharedStore, id: &str) -> Result<Option<RouteResult>, StageError> {
@@ -778,11 +778,7 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
         // A structural or finality error does not name the failed segments.
         // Transcribe every segment again from its audio, and keep the live rows.
         for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
-            let Some(index) = key
-                .strip_prefix("seg-")
-                .and_then(|rest| rest.get(..4))
-                .and_then(|digits| digits.parse::<u32>().ok())
-            else {
+            let Some(index) = checkpoint::segment_of(&key) else {
                 continue;
             };
             if key.starts_with(&checkpoint::window_prefix(index))

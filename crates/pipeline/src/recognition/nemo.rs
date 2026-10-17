@@ -1,5 +1,5 @@
 use super::{Route, RouteResult, failed, join_separate};
-use crate::live::Step;
+use crate::live::{Step, next_step};
 use crate::progress::SpeakerMeter;
 use crate::{Control, StageError, runner::EngineProvider};
 use asr::{
@@ -1087,7 +1087,7 @@ pub(crate) fn run_live(
             return Ok(());
         }
         if !flushed {
-            match crate::live::next_step(end, || reader.next_frame())? {
+            match next_step(end, || reader.next_frame())? {
                 Step::Frame(frame) => {
                     resampler.push(&frame.pcm, &mut |s| pending.extend_from_slice(s))
                 }

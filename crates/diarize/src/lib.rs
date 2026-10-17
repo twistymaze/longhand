@@ -230,8 +230,9 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
     if windows > 0 && (step == 0 || step > WINDOW_SAMPLES) {
         return Err(invalid("the analysis hop is not valid"));
     }
-    // `analyze()` makes no window for no samples, and else one window more
-    // than the hops that the samples after the first window need.
+    // `analyze()` makes no window when there are no samples. Otherwise it
+    // makes one window for the first `WINDOW_SAMPLES` and one more for each
+    // hop.
     let cover = match windows {
         0 => Some(0),
         _ => (windows - 1)

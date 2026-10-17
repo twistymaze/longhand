@@ -884,9 +884,9 @@ mod tests {
             .collect()
     }
 
-    // A seeded piece ends before the silence that follows
-    // it, and otherwise more than a paragraph pause before the next turn, so
-    // the join writes the silence lines and paragraph starts again.
+    // A seeded piece ends before the silence that follows it, and otherwise
+    // more than a paragraph pause before the next turn, so the join writes
+    // the silence lines and paragraph starts again.
     #[test]
     fn seeded_pieces_end_where_the_transcript_shows_their_end() {
         let store = store_with_segment_of(120_000);
@@ -904,8 +904,8 @@ mod tests {
         );
     }
 
-    // A turn at the segment start does not give a
-    // `(0, 0)` piece, which the recognition route widens to the whole window.
+    // A turn at the segment start does not give a `(0, 0)` piece, which the
+    // recognition route widens to the whole window.
     #[test]
     fn a_seeded_turn_at_the_segment_start_is_not_an_empty_piece() {
         let store = store_with_segment();
@@ -919,9 +919,8 @@ mod tests {
         assert_eq!(seeded_pieces(&store)[0], (0, 1));
     }
 
-    // A heading that a person adds is a line that
-    // is not a turn. The seed would lose it, so every segment is
-    // transcribed again from its audio.
+    // A heading that a person adds is a line that is not a turn. The seed
+    // would lose it, so every segment is transcribed again from its audio.
     #[test]
     fn a_transcript_with_an_added_heading_seeds_nothing() {
         let store = store_with_segment();
