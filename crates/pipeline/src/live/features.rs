@@ -1,6 +1,6 @@
 //! Persist segmentation and embedding windows during capture. Clustering runs
 //! after Stop. The native analyzer handles accelerated inference fallback.
-use super::{CaptureEnd, LiveConfig, LiveEnd, archive};
+use super::{CaptureEnd, LiveConfig, LiveEnd, Step, archive};
 use crate::{SharedStore, StageError, checkpoint};
 use diarize::{Analysis, SpeakerAnalyzer};
 use session_core::Stage;
@@ -68,13 +68,13 @@ pub fn extract(
                 pending.extend_from_slice(pcm);
                 total += pcm.len();
             };
-            match source.next_frame()? {
-                Some(frame) => resample.push(&frame.pcm, &mut append),
-                None if end.lock().unwrap_or_else(|e| e.into_inner()).is_some() => {
+            match super::next_step(end, || source.next_frame())? {
+                Step::Frame(frame) => resample.push(&frame.pcm, &mut append),
+                Step::Finish => {
                     resample.finish(&mut append);
                     flushed = true;
                 }
-                None => {
+                Step::Wait => {
                     std::thread::sleep(Duration::from_millis(100));
                     continue;
                 }

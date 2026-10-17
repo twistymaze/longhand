@@ -1,4 +1,5 @@
 use super::{Route, RouteResult, failed, join_separate};
+use crate::live::Step;
 use crate::progress::SpeakerMeter;
 use crate::{Control, StageError, runner::EngineProvider};
 use asr::{
@@ -1086,13 +1087,15 @@ pub(crate) fn run_live(
             return Ok(());
         }
         if !flushed {
-            match reader.next_frame()? {
-                Some(frame) => resampler.push(&frame.pcm, &mut |s| pending.extend_from_slice(s)),
-                None if end.lock().unwrap_or_else(|e| e.into_inner()).is_some() => {
+            match crate::live::next_step(end, || reader.next_frame())? {
+                Step::Frame(frame) => {
+                    resampler.push(&frame.pcm, &mut |s| pending.extend_from_slice(s))
+                }
+                Step::Finish => {
                     resampler.finish(&mut |s| pending.extend_from_slice(s));
                     flushed = true;
                 }
-                None => {
+                Step::Wait => {
                     std::thread::sleep(Duration::from_millis(100));
                     continue;
                 }

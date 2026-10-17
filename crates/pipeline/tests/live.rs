@@ -1411,6 +1411,71 @@ fn offline_asr_starts_speaker_work_without_loading_the_text_model() {
     assert!(r.script.loads.lock().unwrap().is_empty());
 }
 
+/// Start a speaker worker whose recognition hook waits until capture's end
+/// is set, and records the end that it saw.
+fn speaker_worker_that_waits_for_the_end(
+    r: &Run,
+) -> (
+    Workers,
+    live::LiveTap,
+    live::LiveWorker,
+    Arc<Mutex<Option<LiveEnd>>>,
+) {
+    let engine = access(&slot(None, &r.script), &r.script, CancellationToken::new());
+    let saw = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&saw);
+    let workers = Workers::new(r.store.clone(), engine).with_recognition(Arc::new(
+        move |_, _, cancel, end, _| {
+            loop {
+                if cancel.is_cancelled() {
+                    return Err(pipeline::StageError::Cancelled);
+                }
+                let how = *end.lock().unwrap();
+                if how.is_some() {
+                    *seen.lock().unwrap() = how;
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        },
+    ));
+    let mut config = LiveConfig::new(ID, 0, "offline", 16_000);
+    config.text_enabled = false;
+    config.speakers_enabled = true;
+    let (tap, worker) = workers
+        .start(
+            config,
+            always_voiced(PartPolicy::default()),
+            Box::new(r.seen.clone()),
+        )
+        .unwrap();
+    (workers, tap, worker, saw)
+}
+
+#[test]
+fn a_dropped_worker_ends_as_keep_for_every_reader() {
+    let r = Run::new();
+    let (workers, tap, worker, saw) = speaker_worker_that_waits_for_the_end(&r);
+    // Capture closes the segment with an error: the worker drops with no
+    // end().
+    drop(tap);
+    drop(worker);
+    wait_until("the worker ends", || !workers.busy());
+    assert_eq!(*saw.lock().unwrap(), Some(LiveEnd::Keep));
+    workers.shutdown();
+}
+
+#[test]
+fn a_dropped_worker_keeps_the_end_that_capture_sent() {
+    let r = Run::new();
+    let (workers, tap, worker, saw) = speaker_worker_that_waits_for_the_end(&r);
+    drop(tap);
+    worker.end(LiveEnd::Discard);
+    wait_until("the worker ends", || !workers.busy());
+    assert_eq!(*saw.lock().unwrap(), Some(LiveEnd::Discard));
+    workers.shutdown();
+}
+
 #[test]
 fn live_pyannote_extracts_bounded_windows_and_keeps_the_tail_for_clustering() {
     struct Analyzer(Arc<Mutex<Vec<usize>>>);
