@@ -42,7 +42,6 @@ rfd = { version = "0.16", default-features = false, features = ["common-controls
 # tauri uses the same crate for its paths.
 dirs = "6"
 # Free space on the destination volume, as anarlog measures it.
-sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 
 audio = { path = "../crates/audio" }
 audio-cpal = { path = "../crates/audio-cpal" }

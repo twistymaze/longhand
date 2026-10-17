@@ -118,7 +118,7 @@ pub fn check(dir: &Path, floor_bytes: u64) -> DestinationStatus {
             message: e.to_string(),
         };
     }
-    let free_bytes = available_space(dir);
+    let free_bytes = recorder::storage::available_space(dir);
     match free_bytes {
         Some(free) if free < floor_bytes => DestinationStatus::LowSpace {
             path,
@@ -149,24 +149,6 @@ fn probe_writable(dir: &Path) -> std::io::Result<()> {
         .create_new(true)
         .open(&probe)?;
     std::fs::remove_file(&probe)
-}
-
-/// Free space on the volume holding `dir`: the deepest mount point that
-/// contains it, as anarlog's `check_storage` resolves it. `None` when no
-/// mount matches, which callers treat as unknown rather than full.
-pub fn available_space(dir: &Path) -> Option<u64> {
-    let canonical = dir.canonicalize().ok()?;
-    let disks = sysinfo::Disks::new_with_refreshed_list();
-    disks
-        .list()
-        .iter()
-        .filter(|disk| {
-            disk.mount_point()
-                .canonicalize()
-                .is_ok_and(|mount| canonical.starts_with(mount))
-        })
-        .max_by_key(|disk| disk.mount_point().components().count())
-        .map(|disk| disk.available_space())
 }
 
 #[cfg(test)]
@@ -310,7 +292,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(matches!(
             check(dir.path(), 0),
-            DestinationStatus::Ready { .. }
+            DestinationStatus::Ready {
+                free_bytes: Some(_),
+                ..
+            }
         ));
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
