@@ -650,13 +650,32 @@ pub fn seed_from_transcript(
         return Ok(false);
     }
     segments.sort_by_key(|s| s.offset_ms);
-    let mut turns: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
+    // (start, text, silence after the turn) of each turn, by segment.
+    let mut turns: BTreeMap<u32, Vec<(u64, String, Option<u64>)>> = BTreeMap::new();
+    // The segment of the last turn after the last pause or gap line. A
+    // silence line after it is the silence after that turn.
+    let mut last: Option<u32> = None;
     for line in transcript.lines {
-        let TranscriptLine::Turn {
-            position_ms, text, ..
-        } = line
-        else {
-            continue;
+        let (position_ms, text) = match line {
+            TranscriptLine::Turn {
+                position_ms, text, ..
+            } => (position_ms, text),
+            TranscriptLine::Silence { duration_ms } => {
+                if let Some((_, _, silence)) = last
+                    .and_then(|index| turns.get_mut(&index))
+                    .and_then(|own| own.last_mut())
+                {
+                    *silence = Some(silence.unwrap_or(0) + duration_ms);
+                }
+                continue;
+            }
+            // A silence after a pause or a gap line is at the start of the
+            // next segment. The join measures it from the segment start.
+            TranscriptLine::Pause { .. } | TranscriptLine::Gap { .. } => {
+                last = None;
+                continue;
+            }
+            TranscriptLine::Text { .. } => continue,
         };
         // The last segment that starts at or before the turn, or the first.
         let segment = segments
@@ -667,19 +686,31 @@ pub fn seed_from_transcript(
         let at = position_ms
             .saturating_sub(segment.offset_ms)
             .min(segment.duration_ms);
-        turns.entry(segment.index).or_default().push((at, text));
+        turns
+            .entry(segment.index)
+            .or_default()
+            .push((at, text, None));
+        last = Some(segment.index);
     }
     for segment in &segments {
         let own = turns.remove(&segment.index).unwrap_or_default();
+        // A piece ends where the old transcript shows its end:
+        // before the silence after it, or else more than a paragraph pause
+        // before the next turn or the segment end. The join then writes the
+        // silence lines and paragraph starts again. A piece is empty only at
+        // the segment end: the recognition route widens a `(0, 0)` piece to
+        // its window, and a piece after the segment end fails the check.
         let pieces: Vec<AsrSegment> = own
             .iter()
             .enumerate()
-            .map(|(i, (start_ms, text))| AsrSegment {
+            .map(|(i, (start_ms, text, silence))| AsrSegment {
                 start_ms: *start_ms,
                 end_ms: own
                     .get(i + 1)
-                    .map_or(segment.duration_ms, |(next, _)| *next)
-                    .max(*start_ms),
+                    .map_or(segment.duration_ms, |(next, _, _)| *next)
+                    .saturating_sub(silence.unwrap_or(crate::join::PARAGRAPH_PAUSE_MS + 1))
+                    .max(*start_ms + 1)
+                    .min(segment.duration_ms),
                 text: text.clone(),
             })
             .collect();
@@ -770,6 +801,11 @@ mod tests {
 
     /// A store with the note "n" and one recorded segment of one minute.
     fn store_with_segment() -> Store {
+        store_with_segment_of(60_000)
+    }
+
+    /// A store with the note "n" and one recorded segment of `duration_ms`.
+    fn store_with_segment_of(duration_ms: u64) -> Store {
         let started = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
         let mut store = Store::open_in_memory().unwrap();
         store.create_session("n", started, None).unwrap();
@@ -779,9 +815,9 @@ mod tests {
                 &Segment {
                     index: 0,
                     offset_ms: 0,
-                    duration_ms: 60_000,
+                    duration_ms,
                     wall_start: started,
-                    wall_end: started + TimeDelta::minutes(1),
+                    wall_end: started + TimeDelta::milliseconds(duration_ms as i64),
                     audio_file: "audio/segment-01.opus".into(),
                     channels: 1,
                     ends_in_pause: false,
@@ -822,6 +858,125 @@ mod tests {
             folder.path().join("transcript.md"),
             "# Transcript\n\n- [00:00:01] Speaker 1: We start with the budget.\n\
              The team then agreed on the plan.\n",
+        )
+        .unwrap();
+        assert!(!seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert!(
+            store
+                .checkpoints("n", Stage::Transcribe)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The (start, end) of each seeded piece of segment 0.
+    fn seeded_pieces(store: &Store) -> Vec<(u64, u64)> {
+        let key = crate::checkpoint::window_key(0, 0);
+        let (_, payload) = store
+            .checkpoints("n", Stage::Transcribe)
+            .unwrap()
+            .into_iter()
+            .find(|(k, _)| *k == key)
+            .unwrap();
+        let window: super::WindowResult = serde_json::from_str(&payload).unwrap();
+        window
+            .segments
+            .iter()
+            .map(|s| (s.start_ms, s.end_ms))
+            .collect()
+    }
+
+    // A seeded piece ends before the silence that follows it, and otherwise
+    // more than a paragraph pause before the next turn, so the join writes
+    // the silence lines and paragraph starts again.
+    #[test]
+    fn seeded_pieces_end_where_the_transcript_shows_their_end() {
+        let store = store_with_segment_of(120_000);
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: A.\n\n--- silence 00:01:10 ---\n\n\
+             - [00:01:20] Speaker 1: B.\n- [00:01:25] Speaker 1: C.\n",
+        )
+        .unwrap();
+        assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert_eq!(
+            seeded_pieces(&store),
+            vec![(1_000, 10_000), (80_000, 82_999), (85_000, 117_999)]
+        );
+    }
+
+    // A turn at the segment start does not give a `(0, 0)` piece, which the
+    // recognition route widens to the whole window.
+    #[test]
+    fn a_seeded_turn_at_the_segment_start_is_not_an_empty_piece() {
+        let store = store_with_segment();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:00] Speaker 1: A.\n- [00:00:00] Speaker 2: B.\n",
+        )
+        .unwrap();
+        assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert_eq!(seeded_pieces(&store)[0], (0, 1));
+    }
+
+    // A silence after a gap line is at the start of the next segment. It
+    // does not shorten the last piece before the gap.
+    #[test]
+    fn a_silence_after_a_gap_line_does_not_shorten_the_piece_before_it() {
+        let store = store_with_segment_of(60_000);
+        let started = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        store
+            .put_segment(
+                "n",
+                &Segment {
+                    index: 1,
+                    offset_ms: 120_000,
+                    duration_ms: 120_000,
+                    wall_start: started + TimeDelta::milliseconds(120_000),
+                    wall_end: started + TimeDelta::milliseconds(240_000),
+                    audio_file: "audio/segment-02.opus".into(),
+                    channels: 1,
+                    ends_in_pause: false,
+                },
+            )
+            .unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: A.\n\n--- gap 00:01:00 ---\n\n\
+             --- silence 00:01:10 ---\n\n- [00:03:20] Speaker 1: B.\n",
+        )
+        .unwrap();
+        assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert_eq!(seeded_pieces(&store), vec![(1_000, 57_999)]);
+    }
+
+    // A turn at the segment end gives a piece that ends at the segment end,
+    // not after it. A piece after the segment end fails the result check.
+    #[test]
+    fn a_seeded_turn_at_the_segment_end_ends_at_the_segment_end() {
+        let store = store_with_segment();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: A.\n- [00:01:00] Speaker 2: B.\n",
+        )
+        .unwrap();
+        assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert_eq!(seeded_pieces(&store)[1], (60_000, 60_000));
+    }
+
+    // A heading that a person adds is a line that is not a turn. The seed
+    // would lose it, so every segment is transcribed again from its audio.
+    #[test]
+    fn a_transcript_with_an_added_heading_seeds_nothing() {
+        let store = store_with_segment();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n# Decisions\n\n- [00:00:01] Speaker 1: We start with the budget.\n",
         )
         .unwrap();
         assert!(!seed_from_transcript(&store, "n", folder.path()).unwrap());

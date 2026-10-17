@@ -16,6 +16,9 @@ use crate::jobs::{Title, TitleSource};
 use crate::note_folder::SESSION_FILE;
 use crate::timeline::Segment;
 
+mod session_md;
+pub use session_md::SessionMd;
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum FolderError {
     #[error("{file}: missing YAML frontmatter")]
@@ -409,48 +412,6 @@ impl SessionDoc {
     }
 }
 
-// ---------------------------------------------------------------- session.md user fields (KTD3)
-
-/// The user fields of a `session.md`: its title and its tags. The read
-/// accepts any other key, because the file is the user's.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SessionMd {
-    /// A number or a boolean reads as its text.
-    pub title: Option<String>,
-    /// The `longhand_tags` list. One text value reads as one tag.
-    pub tags: Vec<String>,
-}
-
-impl SessionMd {
-    /// Parse the frontmatter of a `session.md`. An error gives the line in
-    /// the file.
-    pub fn parse(text: &str) -> Result<Self, FolderError> {
-        let (start, end, _) = frontmatter_bounds(text)
-            .ok_or(FolderError::MissingFrontmatter { file: SESSION_FILE })?;
-        let map = parse_mapping(SESSION_FILE, &text[start..end])?;
-        let tags = match map.get("longhand_tags") {
-            Some(serde_yaml::Value::Sequence(items)) => {
-                items.iter().filter_map(scalar_text).collect()
-            }
-            Some(value) => scalar_text(value).into_iter().collect(),
-            None => Vec::new(),
-        };
-        Ok(Self {
-            title: map.get("title").and_then(scalar_text),
-            tags,
-        })
-    }
-}
-
-fn scalar_text(value: &serde_yaml::Value) -> Option<String> {
-    match value {
-        serde_yaml::Value::String(text) => Some(text.clone()),
-        serde_yaml::Value::Number(n) => Some(n.to_string()),
-        serde_yaml::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
-
 /// The byte ranges of a frontmatter in `text`: the start and the end of
 /// its YAML, and the start of the body. The YAML includes the line end of
 /// its last line. The frontmatter can be empty, and the file can have LF or
@@ -471,6 +432,16 @@ fn frontmatter_bounds(text: &str) -> Option<(usize, usize, usize)> {
         at += line.len();
     }
     None
+}
+
+/// Whether the frontmatter YAML `yaml` has only blank lines, or is a
+/// mapping with at least one key.
+fn holds_keys_or_nothing(yaml: &str) -> bool {
+    yaml.trim().is_empty()
+        || matches!(
+            serde_yaml::from_str::<serde_yaml::Value>(yaml),
+            Ok(serde_yaml::Value::Mapping(map)) if !map.is_empty()
+        )
 }
 
 /// Parse frontmatter YAML as a mapping. An empty frontmatter, or one with
@@ -822,13 +793,19 @@ impl Transcript {
 
     /// Read a `transcript.md`. The read never fails: a line that is not in
     /// a form that Longhand writes is a [`TranscriptLine::Text`] line, so a
-    /// person or an agent can edit the file (R7, KTD7).
+    /// person or an agent can edit the file (R7, KTD7). Only a first line
+    /// `# Transcript` is the heading of the file. Another `# ` line, for
+    /// example a heading that a person adds, is a text line.
     pub fn parse(text: &str) -> Self {
         let mut has_speakers = true;
         let mut lines = Vec::new();
+        let mut first = true;
         for raw in text.lines() {
             let line = raw.trim_end();
-            if line.is_empty() || line.starts_with("# ") {
+            if line.is_empty() {
+                continue;
+            }
+            if std::mem::take(&mut first) && line == "# Transcript" {
                 continue;
             }
             if line == NO_SPEAKERS_NOTE || line == SPEAKERS_OFF_NOTE {
@@ -946,16 +923,29 @@ impl Summary {
     /// The text of a `summary.md` in the new layout: the body only, with
     /// no frontmatter. `longhand.json` holds the summary data (R1).
     pub fn render_body(&self) -> String {
-        format!("{}\n", self.body.trim_end())
+        Self::body_text(&self.body)
+    }
+
+    /// The text of a `summary.md` with the body `body` and no frontmatter.
+    /// A body that starts with a `---` line gets an empty line before it,
+    /// so that no part of the body reads as a frontmatter.
+    pub fn body_text(body: &str) -> String {
+        let body = body.trim_end();
+        let rule = body.lines().next().is_some_and(|line| line == "---");
+        format!("{}{body}\n", if rule { "\n" } else { "" })
     }
 
     /// The body of the `summary.md` text `text`, trimmed. A frontmatter at
     /// the start, for example one that an agent added, is not part of the
-    /// body (R7, KTD7).
+    /// body (R7, KTD7). A frontmatter is empty or holds keys: other text
+    /// between two `---` lines at the start, for example a heading after a
+    /// rule, is part of the body.
     pub fn body_of(text: &str) -> &str {
         match frontmatter_bounds(text) {
-            Some((_, _, body)) => text[body..].trim(),
-            None => text.trim(),
+            Some((start, end, body)) if holds_keys_or_nothing(&text[start..end]) => {
+                text[body..].trim()
+            }
+            _ => text.trim(),
         }
     }
 

@@ -1,6 +1,6 @@
 //! Persist segmentation and embedding windows during capture. Clustering runs
 //! after Stop. The native analyzer handles accelerated inference fallback.
-use super::{CaptureEnd, LiveConfig, LiveEnd, archive};
+use super::{CaptureEnd, LiveConfig, LiveEnd, Step, archive, next_step};
 use crate::{SharedStore, StageError, checkpoint};
 use diarize::{Analysis, SpeakerAnalyzer};
 use session_core::Stage;
@@ -68,13 +68,13 @@ pub fn extract(
                 pending.extend_from_slice(pcm);
                 total += pcm.len();
             };
-            match source.next_frame()? {
-                Some(frame) => resample.push(&frame.pcm, &mut append),
-                None if end.lock().unwrap_or_else(|e| e.into_inner()).is_some() => {
+            match next_step(end, || source.next_frame())? {
+                Step::Frame(frame) => resample.push(&frame.pcm, &mut append),
+                Step::Finish => {
                     resample.finish(&mut append);
                     flushed = true;
                 }
-                None => {
+                Step::Wait => {
                     std::thread::sleep(Duration::from_millis(100));
                     continue;
                 }
@@ -265,6 +265,8 @@ pub fn saved(store: &SharedStore, id: &str, segment: u32) -> Result<bool, StageE
 }
 
 /// Read the persisted features for final clustering; no native inference.
+/// `None` when the features are not complete, or when a window file does
+/// not read: the caller then analyses the segment again.
 pub fn restore(
     store: &SharedStore,
     id: &str,
@@ -283,10 +285,27 @@ pub fn restore(
         let saved: Window =
             checkpoint::get(store, id, Stage::Diarize, &window_key(segment, window))?
                 .ok_or_else(|| StageError::Failed("live feature checkpoint is absent".into()))?;
-        let mut analysis = diarize::read_analysis(&dir.join("live-features").join(saved.file))?;
-        if analysis.step != index.step {
-            return Err(StageError::Failed("live feature hop mismatch".into()));
-        }
+        let path = dir.join("live-features").join(&saved.file);
+        // Each file holds the analysis of one live window.
+        let mut analysis = match diarize::read_analysis(&path) {
+            Ok(analysis) if analysis.step == index.step && analysis.activities.len() == 1 => {
+                analysis
+            }
+            Ok(_) => {
+                log::warn!(
+                    "live speaker features {} of {id} do not match their index",
+                    path.display()
+                );
+                return Ok(None);
+            }
+            Err(e) => {
+                log::warn!(
+                    "live speaker features {} of {id} do not read: {e}",
+                    path.display()
+                );
+                return Ok(None);
+            }
+        };
         for embedding in &mut analysis.embeddings {
             embedding.window = window;
         }

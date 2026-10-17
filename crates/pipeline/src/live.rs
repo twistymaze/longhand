@@ -390,7 +390,9 @@ pub enum LiveEnd {
 pub struct Inputs {
     pub frames: Receiver<LiveFrame>,
     /// Sent after the frames end. A closed channel counts as
-    /// [`LiveEnd::Keep`].
+    /// [`LiveEnd::Keep`]. A dropped [`LiveWorker`] also sets
+    /// [`LiveEnd::Keep`] in its [`CaptureEnd`], so every reader sees the
+    /// same end.
     pub end: Receiver<LiveEnd>,
     /// A quit: stop at once and save nothing more.
     pub cancel: CancellationToken,
@@ -974,6 +976,18 @@ impl LiveWorker {
     }
 }
 
+impl Drop for LiveWorker {
+    /// A worker that drops with no [`LiveWorker::end`] ends as
+    /// [`LiveEnd::Keep`], as the closed channel does. Capture drops the
+    /// worker when it closes a segment with an error.
+    fn drop(&mut self) {
+        let mut how = self.capture_end.lock().unwrap_or_else(|e| e.into_inner());
+        if how.is_none() {
+            *how = Some(LiveEnd::Keep);
+        }
+    }
+}
+
 /// Counts a worker as running until it drops.
 struct Running(Arc<AtomicUsize>);
 
@@ -1126,5 +1140,62 @@ pub fn recognize(
         features::extract(store, config, analyzer.as_mut(), cancel, end)
     } else {
         crate::recognition::nemo::run_live(store, config, provider, cancel, end, sink)
+    }
+}
+
+/// What a worker that reads the archive of its segment does next.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Step<T> {
+    /// Process this frame.
+    Frame(T),
+    /// Capture ended the segment and no frame is left: finish.
+    Finish,
+    /// The recorder has not closed the next chunk yet: wait and read again.
+    Wait,
+}
+
+/// Decide the next step of a worker. Read the end before the frame.
+/// Capture closes the last chunk before it sets the end. Thus, when the
+/// end is set before the read and the read finds no frame, the worker
+/// finishes. When the end is set during the read, the worker waits and
+/// reads again, so it also reads the last chunk.
+pub(crate) fn next_step<T, E>(
+    end: &CaptureEnd,
+    read: impl FnOnce() -> Result<Option<T>, E>,
+) -> Result<Step<T>, E> {
+    let ended = end.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    Ok(match read()? {
+        Some(frame) => Step::Frame(frame),
+        None if ended => Step::Finish,
+        None => Step::Wait,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn a_chunk_that_capture_closes_during_the_read_is_read_before_the_finish() {
+        let end: CaptureEnd = Arc::new(Mutex::new(None));
+        let queued = Mutex::new(VecDeque::new());
+        // The first read finds no frame. Capture then closes the last
+        // chunk and sets the end before the worker reads the end.
+        let read = || -> Result<Option<u32>, ()> {
+            let mut queued = queued.lock().unwrap();
+            if let Some(frame) = queued.pop_front() {
+                return Ok(Some(frame));
+            }
+            let mut how = end.lock().unwrap();
+            if how.is_none() {
+                *how = Some(LiveEnd::Keep);
+                queued.push_back(7);
+            }
+            Ok(None)
+        };
+        assert_eq!(next_step(&end, read), Ok(Step::Wait));
+        assert_eq!(next_step(&end, read), Ok(Step::Frame(7)));
+        assert_eq!(next_step(&end, read), Ok(Step::Finish));
     }
 }

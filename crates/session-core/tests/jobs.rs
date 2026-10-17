@@ -1308,6 +1308,110 @@ fn a_resume_of_a_queued_transcribe_again_is_a_resume_of_the_saved_note() {
     assert!(store.fail_transcribe_again("s1", "x").is_err());
 }
 
+/// Recognition rows and an epoch row of `generation`, and the generation
+/// checkpoint of the Transcribe stage that names it.
+fn recognize(store: &mut Store, generation: &str) {
+    use session_core::recognition::SpeakerScope;
+    use session_core::recognition::{Coverage, GENERATION_KEY, OutputBlock, SampleRange};
+    let range = SampleRange {
+        start: 0,
+        end: 16000,
+    };
+    let block = OutputBlock {
+        key: "result/00000000000000000001/row/0".into(),
+        scope: SpeakerScope {
+            generation: generation.into(),
+            epoch: 1,
+        },
+        revision: 1,
+        coverage: Coverage {
+            received: Some(range),
+            computed: Some(range),
+            provisional: None,
+            committed: Some(range),
+        },
+        rows: vec![],
+        speakers: vec![],
+    };
+    store.commit_recognition("s1", &block).unwrap();
+    store
+        .restart_recognition_epoch("s1", generation, 0, 0)
+        .unwrap();
+    store
+        .put_checkpoint(
+            "s1",
+            Stage::Transcribe,
+            GENERATION_KEY,
+            &serde_json::to_string(generation).unwrap(),
+        )
+        .unwrap();
+}
+
+/// True when `generation` has recognition rows or an epoch row.
+fn has_rows(store: &mut Store, generation: &str) -> bool {
+    let mut rows = 0;
+    store
+        .visit_recognition("s1", generation, |_| {
+            rows += 1;
+            Ok(())
+        })
+        .unwrap();
+    // A generation with no epoch row starts again at epoch 1.
+    let epoch = store
+        .restart_recognition_epoch("s1", generation, 0, 0)
+        .unwrap()
+        .scope
+        .epoch;
+    rows > 0 || epoch > 1
+}
+
+/// A saved note with the rows of generation `old`, in a Transcribe Again
+/// run that wrote the rows of generation `new`.
+fn transcribed_again() -> Store {
+    let mut store = saved_with_checkpoints();
+    recognize(&mut store, "old");
+    store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    store.dequeue("run", t(11)).unwrap();
+    recognize(&mut store, "new");
+    store
+}
+
+#[test]
+fn a_saved_transcribe_again_drops_the_rows_of_the_previous_generation() {
+    let mut store = transcribed_again();
+    store.finish_transcribe_again("s1", None).unwrap();
+    assert!(!has_rows(&mut store, "old"));
+    assert!(has_rows(&mut store, "new"));
+}
+
+#[test]
+fn a_failed_transcribe_again_drops_its_rows_and_keeps_the_previous_generation() {
+    let mut store = transcribed_again();
+    store.fail_transcribe_again("s1", "failed").unwrap();
+    assert!(!has_rows(&mut store, "new"));
+    assert!(has_rows(&mut store, "old"));
+}
+
+#[test]
+fn a_cancelled_transcribe_again_drops_its_rows_and_keeps_the_previous_generation() {
+    let mut store = transcribed_again();
+    resume(&mut store);
+    assert!(!has_rows(&mut store, "new"));
+    assert!(has_rows(&mut store, "old"));
+}
+
+#[test]
+fn a_transcribe_again_that_keeps_the_generation_keeps_its_rows() {
+    // The exact value is compared: rows that a restore uses stay.
+    let mut store = saved_with_checkpoints();
+    recognize(&mut store, "same");
+    store.transcribe_again("s1", WHISPER, &again(10)).unwrap();
+    store.dequeue("run", t(11)).unwrap();
+    recognize(&mut store, "same");
+    store.fail_transcribe_again("s1", "failed").unwrap();
+    assert!(has_rows(&mut store, "same"));
+}
+
 fn usb_mic() -> CaptureChoice {
     CaptureChoice {
         microphone: Some(Microphone {

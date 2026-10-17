@@ -1,4 +1,5 @@
 use super::{Route, RouteResult, failed, join_separate};
+use crate::live::{Step, next_step};
 use crate::progress::SpeakerMeter;
 use crate::{Control, StageError, runner::EngineProvider};
 use asr::{
@@ -8,6 +9,7 @@ use asr::{
 use models::recognition::ExecutionSpec;
 use nemo_runtime::Helper;
 use serde_json::{Value, json};
+use session_core::recognition::{LIVE_NEMO_PREFIX, NATIVE_FINAL_PREFIX};
 use std::{
     path::Path,
     time::{Duration, Instant},
@@ -27,7 +29,7 @@ struct StoredEpoch {
     output: Option<super::durable::EpochOutput>,
 }
 fn epoch_prefix(scope: &SpeakerScope) -> String {
-    format!("native-final/{:020}/", scope.epoch)
+    format!("{NATIVE_FINAL_PREFIX}{:020}/", scope.epoch)
 }
 fn epoch_key(start: u64) -> String {
     format!("recognition-epoch-{start:020}")
@@ -303,7 +305,7 @@ pub(super) fn run_file(
         crate::lock(store).delete_recognition_prefix(
             session,
             &scope.generation,
-            &format!("nemo/{:020}/", scope.epoch),
+            &format!("{LIVE_NEMO_PREFIX}{:020}/", scope.epoch),
         )?;
         if let Some(meter) = speakers.as_deref_mut() {
             meter.finished(end - start);
@@ -348,7 +350,7 @@ struct Output {
 }
 impl Output {
     fn prefix(&self, kind: &str) -> String {
-        format!("nemo/{:020}/{kind}/", self.scope.epoch)
+        format!("{LIVE_NEMO_PREFIX}{:020}/{kind}/", self.scope.epoch)
     }
     fn block(
         &self,
@@ -462,7 +464,7 @@ impl Output {
                     // The marker selects only a complete snapshot. Commit it before
                     // deleting old rows so a crash cannot expose a partial revision.
                     self.put(&self.block(
-                        format!("nemo/{:020}/turn-commit", self.scope.epoch),
+                        format!("{LIVE_NEMO_PREFIX}{:020}/turn-commit", self.scope.epoch),
                         pending.0,
                         None,
                         vec![],
@@ -1086,13 +1088,15 @@ pub(crate) fn run_live(
             return Ok(());
         }
         if !flushed {
-            match reader.next_frame()? {
-                Some(frame) => resampler.push(&frame.pcm, &mut |s| pending.extend_from_slice(s)),
-                None if end.lock().unwrap_or_else(|e| e.into_inner()).is_some() => {
+            match next_step(end, || reader.next_frame())? {
+                Step::Frame(frame) => {
+                    resampler.push(&frame.pcm, &mut |s| pending.extend_from_slice(s))
+                }
+                Step::Finish => {
                     resampler.finish(&mut |s| pending.extend_from_slice(s));
                     flushed = true;
                 }
-                None => {
+                Step::Wait => {
                     std::thread::sleep(Duration::from_millis(100));
                     continue;
                 }

@@ -6,7 +6,7 @@
 use std::io;
 use std::path::Path;
 
-use session_core::folder::{FrontmatterPatch, SessionDoc};
+use session_core::folder::{FrontmatterPatch, SessionDoc, SessionMd};
 use session_core::note_folder::{Layout, NoteFiles, READ_TIMEOUT, SESSION_FILE, read_optional};
 use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord, NoteRecordRead};
 
@@ -100,8 +100,55 @@ pub fn write_doc(dir: &Path, doc: &SessionDoc) -> io::Result<()> {
 /// A frontmatter that does not parse gives an error, and the file stays as
 /// it is.
 pub fn patch_session_md(dir: &Path, patch: &FrontmatterPatch) -> io::Result<String> {
+    patch_with(dir, patch, false)
+}
+
+/// The refusal of a tag write: `longhand_tags` in `session.md` holds an
+/// item that is not text ([`SessionMd::tags_not_text`]).
+#[derive(Debug)]
+pub struct TagsNotText;
+
+impl std::fmt::Display for TagsNotText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{TAGS_KEY} in {SESSION_FILE} has an item that is not text"
+        )
+    }
+}
+
+impl std::error::Error for TagsNotText {}
+
+impl TagsNotText {
+    /// True when `err` holds a [`TagsNotText`] refusal.
+    pub fn is(err: &io::Error) -> bool {
+        err.get_ref().is_some_and(|e| e.is::<TagsNotText>())
+    }
+
+    fn into_io(self) -> io::Error {
+        io::Error::new(io::ErrorKind::InvalidData, self)
+    }
+}
+
+/// [`patch_session_md`] for a patch that sets the tags. A write of the
+/// tags would remove an item of `longhand_tags` that is not text. Thus,
+/// when the file has such an item, the file stays as it is and the error
+/// holds [`TagsNotText`].
+pub fn patch_session_md_tags(dir: &Path, patch: &FrontmatterPatch) -> io::Result<String> {
+    patch_with(dir, patch, true)
+}
+
+/// Apply `patch` to the `session.md` in `dir`. With `tags`, a file whose
+/// tags have an item that is not text gives [`TagsNotText`].
+fn patch_with(dir: &Path, patch: &FrontmatterPatch, tags: bool) -> io::Result<String> {
     let path = dir.join(SESSION_FILE);
     let current = read_optional(&path)?;
+    if tags
+        && let Some(text) = &current
+        && SessionMd::parse(text).is_ok_and(|read| read.tags_not_text)
+    {
+        return Err(TagsNotText.into_io());
+    }
     let text = match &current {
         Some(text) => patch
             .apply(SESSION_FILE, text)

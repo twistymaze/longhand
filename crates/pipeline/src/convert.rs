@@ -269,14 +269,15 @@ pub fn convert_folder(
 
 /// The text of the old-layout `summary.md` text `text` without the summary
 /// data. The other keys, the comments and the body stay. When no other key
-/// or comment stays, the text is the body only.
+/// or comment stays, the text is the body only, written as
+/// [`Summary::body_text`] writes it.
 fn without_summary_data(text: &str) -> Result<String, FolderError> {
     let patched = SUMMARY_KEYS
         .iter()
         .fold(FrontmatterPatch::new(), |patch, key| patch.remove(key))
         .apply(SUMMARY_FILE, text)?;
     Ok(if empty_frontmatter(&patched) {
-        format!("{}\n", Summary::body_of(&patched))
+        Summary::body_text(Summary::body_of(&patched))
     } else {
         patched
     })

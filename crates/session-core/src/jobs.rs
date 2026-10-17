@@ -11,6 +11,7 @@ use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::folder::{PendingType, SessionDoc, SpeakerCount};
+use crate::recognition;
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
 
@@ -417,11 +418,27 @@ pub struct Store {
     pub(crate) conn: Connection,
 }
 
-fn stage_key(stage: Stage) -> String {
+pub(crate) fn stage_key(stage: Stage) -> String {
     serde_json::to_value(stage)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .expect("stage serializes to a string")
+}
+
+/// Put one checkpoint row on `conn`. A caller can give a transaction.
+pub(crate) fn put_checkpoint_in(
+    conn: &Connection,
+    session_id: &str,
+    stage: Stage,
+    key: &str,
+    payload: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO checkpoints (session_id, stage, key, payload) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params![session_id, stage_key(stage), key, payload],
+    )?;
+    Ok(())
 }
 
 /// The `sessions` columns that [`read_session`] reads, in its order.
@@ -1109,6 +1126,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         write_state(&tx, id, &next)?;
         apply_queue_effects(&tx, id, &current.state, &next, &event)?;
+        drop_run_generation(&tx, id)?;
         for stage in AGAIN_STAGES {
             restore_previous(&tx, id, stage)?;
         }
@@ -2077,11 +2095,7 @@ impl Store {
         key: &str,
         payload: &str,
     ) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR REPLACE INTO checkpoints (session_id, stage, key, payload) VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, stage_key(stage), key, payload],
-        )?;
-        Ok(())
+        put_checkpoint_in(&self.conn, session_id, stage, key, payload)
     }
 
     pub fn checkpoint_value(
@@ -2284,7 +2298,41 @@ fn move_checkpoints(tx: &Transaction, id: &str, from: &str, to: &str) -> Result<
     Ok(())
 }
 
+/// Delete the recognition rows of the generation that the Transcribe
+/// checkpoints under the stage name `from` hold, when the checkpoints under
+/// `kept` hold a different generation. The values are compared
+/// exactly, so the rows of the kept generation always stay.
+fn delete_replaced_generation(tx: &Transaction, id: &str, from: &str, kept: &str) -> Result<()> {
+    let Some(replaced) = recognition::generation_in(tx, id, from)? else {
+        return Ok(());
+    };
+    if recognition::generation_in(tx, id, kept)?.as_deref() != Some(replaced.as_str()) {
+        recognition::delete_generation(tx, id, &replaced)?;
+    }
+    Ok(())
+}
+
+/// A failed or cancelled Transcribe Again run: delete the rows of the
+/// generation that the run wrote. The previous checkpoints come back after
+/// this, so the rows of the previous generation stay.
+fn drop_run_generation(tx: &Transaction, id: &str) -> Result<()> {
+    delete_replaced_generation(
+        tx,
+        id,
+        &stage_key(Stage::Transcribe),
+        &previous_key(Stage::Transcribe),
+    )
+}
+
+/// Delete the checkpoints set aside before a Transcribe Again run, and the
+/// rows of their generation when the run replaced it.
 fn delete_previous(tx: &Transaction, id: &str) -> Result<()> {
+    delete_replaced_generation(
+        tx,
+        id,
+        &previous_key(Stage::Transcribe),
+        &stage_key(Stage::Transcribe),
+    )?;
     for stage in AGAIN_STAGES {
         tx.execute(
             "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
@@ -2307,6 +2355,7 @@ fn cancel_transcribe_again(tx: &Transaction, id: &str) -> Result<()> {
     if model.is_none() {
         return Ok(());
     }
+    drop_run_generation(tx, id)?;
     for stage in AGAIN_STAGES {
         tx.execute(
             "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",

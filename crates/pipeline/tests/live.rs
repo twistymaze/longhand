@@ -1411,6 +1411,71 @@ fn offline_asr_starts_speaker_work_without_loading_the_text_model() {
     assert!(r.script.loads.lock().unwrap().is_empty());
 }
 
+/// Start a speaker worker whose recognition hook waits until capture's end
+/// is set, and records the end that it saw.
+fn speaker_worker_that_waits_for_the_end(
+    r: &Run,
+) -> (
+    Workers,
+    live::LiveTap,
+    live::LiveWorker,
+    Arc<Mutex<Option<LiveEnd>>>,
+) {
+    let engine = access(&slot(None, &r.script), &r.script, CancellationToken::new());
+    let saw = Arc::new(Mutex::new(None));
+    let seen = Arc::clone(&saw);
+    let workers = Workers::new(r.store.clone(), engine).with_recognition(Arc::new(
+        move |_, _, cancel, end, _| {
+            loop {
+                if cancel.is_cancelled() {
+                    return Err(pipeline::StageError::Cancelled);
+                }
+                let how = *end.lock().unwrap();
+                if how.is_some() {
+                    *seen.lock().unwrap() = how;
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        },
+    ));
+    let mut config = LiveConfig::new(ID, 0, "offline", 16_000);
+    config.text_enabled = false;
+    config.speakers_enabled = true;
+    let (tap, worker) = workers
+        .start(
+            config,
+            always_voiced(PartPolicy::default()),
+            Box::new(r.seen.clone()),
+        )
+        .unwrap();
+    (workers, tap, worker, saw)
+}
+
+#[test]
+fn a_dropped_worker_ends_as_keep_for_every_reader() {
+    let r = Run::new();
+    let (workers, tap, worker, saw) = speaker_worker_that_waits_for_the_end(&r);
+    // Capture closes the segment with an error: the worker drops with no
+    // end().
+    drop(tap);
+    drop(worker);
+    wait_until("the worker ends", || !workers.busy());
+    assert_eq!(*saw.lock().unwrap(), Some(LiveEnd::Keep));
+    workers.shutdown();
+}
+
+#[test]
+fn a_dropped_worker_keeps_the_end_that_capture_sent() {
+    let r = Run::new();
+    let (workers, tap, worker, saw) = speaker_worker_that_waits_for_the_end(&r);
+    drop(tap);
+    worker.end(LiveEnd::Discard);
+    wait_until("the worker ends", || !workers.busy());
+    assert_eq!(*saw.lock().unwrap(), Some(LiveEnd::Discard));
+    workers.shutdown();
+}
+
 #[test]
 fn live_pyannote_extracts_bounded_windows_and_keeps_the_tail_for_clustering() {
     struct Analyzer(Arc<Mutex<Vec<usize>>>);
@@ -1422,11 +1487,7 @@ fn live_pyannote_extracts_bounded_windows_and_keeps_the_tail_for_clustering() {
         ) -> Result<diarize::Analysis, diarize::DiarizeError> {
             let total = audio.sample_count()?;
             self.0.lock().unwrap().push(total);
-            Ok(diarize::Analysis {
-                total,
-                step: 31_860,
-                ..Default::default()
-            })
+            Ok(windowed_analysis(total))
         }
     }
     let r = Run::new();
@@ -1638,11 +1699,7 @@ fn after_stop_reuses_verified_pyannote_windows_after_live_interruption() {
             {
                 cancel.cancel();
             }
-            Ok(diarize::Analysis {
-                total,
-                step: 31_860,
-                ..Default::default()
-            })
+            Ok(windowed_analysis(total))
         }
     }
     let r = Run::new();
@@ -1746,4 +1803,159 @@ fn after_stop_reuses_verified_pyannote_windows_after_live_interruption() {
         .unwrap()
         .is_some()
     );
+}
+
+/// An analysis of `total` samples with the layout that `analyze()` makes:
+/// one window per 31 860-sample hop, each with one embedding.
+fn windowed_analysis(total: usize) -> diarize::Analysis {
+    let step = 31_860;
+    let windows = match total {
+        0 => 0,
+        _ => total.saturating_sub(diarize::WINDOW_SAMPLES).div_ceil(step) + 1,
+    };
+    diarize::Analysis {
+        total,
+        step,
+        activities: vec![
+            pyannote_local::segmentation::WindowActivity {
+                frames: vec![[true, false, false]; 10],
+            };
+            windows
+        ],
+        embeddings: (0..windows)
+            .map(|window| diarize::WindowEmbedding {
+                window,
+                local_speaker: 0,
+                embedding: vec![1.0, 0.0],
+                anchor: true,
+            })
+            .collect(),
+    }
+}
+
+/// Records the sample count of each analysis and returns [`windowed_analysis`].
+struct Windowed(Arc<Mutex<Vec<usize>>>);
+impl diarize::SpeakerAnalyzer for Windowed {
+    fn analyze(
+        &mut self,
+        audio: &mut dyn diarize::AudioSource,
+        _: &diarize::DiarizeRequest<'_>,
+    ) -> Result<diarize::Analysis, diarize::DiarizeError> {
+        let total = audio.sample_count()?;
+        self.0.lock().unwrap().push(total);
+        Ok(windowed_analysis(total))
+    }
+}
+
+/// Run the diarize stage on `segment` with the units of two segments, so a
+/// segment that is counted two times shows as more than 50 percent.
+fn diarize_and_report(
+    r: &Run,
+    dir: &std::path::Path,
+    segment: &session_core::Segment,
+    calls: &Arc<Mutex<Vec<usize>>>,
+) -> Result<Vec<u8>, pipeline::StageError> {
+    let mut seen = Vec::new();
+    let mut sink = |work: pipeline::progress::SpeakerWork| seen.extend(work.percent);
+    let mut speakers = pipeline::progress::SpeakerMeter::new(&mut sink);
+    speakers.plan(2 * pipeline::diarize::segment_units(segment), 0);
+    pipeline::diarize::run(
+        &r.store,
+        ID,
+        dir,
+        std::slice::from_ref(segment),
+        None,
+        &mut Windowed(calls.clone()),
+        &Unattended,
+        &mut speakers,
+    )?;
+    Ok(seen)
+}
+
+fn has_turns(r: &Run) -> bool {
+    checkpoint::get::<Vec<diarize::Turn>>(&r.store, ID, Stage::Diarize, pipeline::diarize::TURNS)
+        .unwrap()
+        .is_some()
+}
+
+/// Put `u64::MAX` as the window count of the analysis file at `path`.
+fn damage_window_count(path: &std::path::Path) {
+    let mut raw = std::fs::read(path).unwrap();
+    raw[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+    std::fs::write(path, raw).unwrap();
+}
+
+#[test]
+fn a_damaged_speaker_analysis_is_analysed_again_and_counted_once() {
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let segment = write_segment(dir.path(), 0, 0, 16000, &vec![0.1; 31 * 16000], false);
+    assemble::assemble_segment(
+        &dir.path().join(RECOVERY_DIR),
+        dir.path(),
+        &segment,
+        &Unattended,
+    )
+    .unwrap();
+    let calls = Arc::new(Mutex::new(vec![]));
+    diarize_and_report(&r, dir.path(), &segment, &calls).unwrap();
+    assert_eq!(calls.lock().unwrap().len(), 1);
+    let file = diarize::analysis_path(&dir.path().join(pipeline::proc_file(&segment.audio_file)));
+    damage_window_count(&file);
+
+    let percents = diarize_and_report(&r, dir.path(), &segment, &calls).unwrap();
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        2,
+        "the damaged segment is analysed again"
+    );
+    assert!(percents.iter().all(|p| *p <= 50), "{percents:?}");
+    assert!(
+        diarize::read_analysis(&file).is_ok(),
+        "the new analysis replaces the file"
+    );
+    assert!(has_turns(&r));
+}
+
+#[test]
+fn a_damaged_live_feature_window_falls_back_to_the_full_analysis() {
+    let r = Run::new();
+    let dir = tempfile::tempdir().unwrap();
+    let segment = write_segment(dir.path(), 0, 0, 16000, &vec![0.1; 31 * 16000], false);
+    let config =
+        LiveConfig::new(ID, 0, "offline", 16000).with_archive(dir.path().join(RECOVERY_DIR), 0);
+    let calls = Arc::new(Mutex::new(vec![]));
+    pipeline::live::features::extract(
+        &r.store,
+        &config,
+        &mut Windowed(calls.clone()),
+        &CancellationToken::new(),
+        &Arc::new(Mutex::new(Some(LiveEnd::Keep))),
+    )
+    .unwrap();
+    let live_windows = calls.lock().unwrap().len();
+    assert_eq!(live_windows, 12);
+    let mut files: Vec<_> = std::fs::read_dir(dir.path().join("live-features"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    files.sort();
+    damage_window_count(&files[3]);
+    assemble::assemble_segment(
+        &dir.path().join(RECOVERY_DIR),
+        dir.path(),
+        &segment,
+        &Unattended,
+    )
+    .unwrap();
+
+    let percents = diarize_and_report(&r, dir.path(), &segment, &calls).unwrap();
+    let calls = calls.lock().unwrap();
+    assert_eq!(
+        calls[live_windows..],
+        [31 * 16000],
+        "one full analysis of the segment"
+    );
+    assert!(percents.iter().all(|p| *p <= 50), "{percents:?}");
+    assert!(has_turns(&r));
 }

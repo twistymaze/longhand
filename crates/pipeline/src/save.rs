@@ -400,6 +400,9 @@ pub fn run(
         })?,
     )?;
     guard.finish_transcribe_again(session_id, None)?;
+    // No Retry of this run follows the save. The native-final copies of
+    // the finished live epochs stay; their live blocks go.
+    guard.delete_finished_live_blocks(session_id)?;
     guard.apply(session_id, &Event::Saved)?;
     let path = reconcile_after_done(&guard, session_id, path, fs);
     Ok(Saved { path, copied })
@@ -540,6 +543,7 @@ fn update_home(
     )?;
     // After `Done`: a crash before this line runs the bookkeeping again.
     guard.finish_transcribe_again(session_id, summary_error.as_deref())?;
+    guard.delete_finished_live_blocks(session_id)?;
     let published = NoteFiles::read(&home)?.doc;
     guard.promote_result_snapshot(session_id, published.recognition_snapshot.as_ref())?;
     guard.set_speaker_count(session_id, published.speaker_count)?;

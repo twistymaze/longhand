@@ -862,3 +862,100 @@ fn the_body_of_a_summary_md_has_no_frontmatter() {
     // all body.
     assert_eq!(Summary::body_of("---\nNo end.\n"), "---\nNo end.");
 }
+
+// Only the first line `# Transcript` is the heading of the file. A `# `
+// line that a person or an agent adds is a text line.
+#[test]
+fn an_added_heading_in_transcript_md_is_a_text_line() {
+    let text = "# Transcript\n\n- [00:00:01] Speaker 1: We start.\n\n# Decisions\n\n- [00:00:09] Speaker 2: We end.\n# Transcript\n";
+    let transcript = Transcript::parse(text);
+    assert_eq!(
+        transcript.lines,
+        [
+            TranscriptLine::Turn {
+                position_ms: 1_000,
+                speaker: Some(1),
+                text: "We start.".into(),
+            },
+            TranscriptLine::Text {
+                text: "# Decisions".into(),
+            },
+            TranscriptLine::Turn {
+                position_ms: 9_000,
+                speaker: Some(2),
+                text: "We end.".into(),
+            },
+            TranscriptLine::Text {
+                text: "# Transcript".into(),
+            },
+        ]
+    );
+    assert_eq!(Transcript::parse(&transcript.render()), transcript);
+}
+
+// A summary that starts with a rule shows in full. Only a block with keys,
+// or an empty pair of rules, is a frontmatter.
+#[test]
+fn a_summary_that_starts_with_a_rule_shows_in_full() {
+    let ruled = "---\n\n## Overview\n\nText.\n\n---\n\n## Next\n";
+    assert_eq!(Summary::body_of(ruled), ruled.trim());
+    let heading = "---\n## Summary\n---\nX";
+    assert_eq!(Summary::body_of(heading), heading);
+    assert_eq!(Summary::body_of("---\n---\n\nBody\n"), "Body");
+    assert_eq!(
+        Summary::body_of("---\naliases: [Budget]\n---\n\nBody\n"),
+        "Body"
+    );
+}
+
+// No body that Longhand writes reads as a frontmatter, also a rule, a
+// `Key: value` line and a second rule.
+#[test]
+fn a_summary_body_that_starts_with_a_rule_reads_back_in_full() {
+    for body in [
+        "---\n\n## Overview\n\nText.",
+        "---\nOwner: Anna\n---\n\nText.",
+    ] {
+        let summary = Summary {
+            meta: SummaryMeta::stub(),
+            body: body.into(),
+        };
+        assert_eq!(Summary::body_of(&summary.render_body()), body);
+    }
+}
+
+// A tag or a title that YAML reads as a number keeps the text that the user
+// wrote.
+#[test]
+fn a_tag_or_a_title_that_reads_as_a_number_keeps_its_text() {
+    let read =
+        SessionMd::parse("---\ntitle: 1.50\nlonghand_tags:\n- 1.50\n- 007\n- true\n---\n").unwrap();
+    assert_eq!(read.title.as_deref(), Some("1.50"));
+    assert_eq!(read.tags, ["1.50", "007", "true"]);
+    assert!(!read.tags_not_text);
+    let read = SessionMd::parse("---\nlonghand_tags: 1.50\n---\n").unwrap();
+    assert_eq!(read.tags, ["1.50"]);
+}
+
+// A tag item that is not text marks the tags as tags that a tag edit cannot
+// write. No value or an empty list is no tags.
+#[test]
+fn a_tag_item_that_is_not_text_marks_the_tags() {
+    for text in [
+        "---\nlonghand_tags:\n- a\n- ~\n---\n",
+        "---\nlonghand_tags:\n- a\n- [b]\n---\n",
+        "---\nlonghand_tags:\n- a\n- b: c\n---\n",
+        "---\nlonghand_tags:\n  a: b\n---\n",
+    ] {
+        assert!(SessionMd::parse(text).unwrap().tags_not_text, "{text}");
+    }
+    for text in [
+        "---\nlonghand_tags:\n---\n",
+        "---\nlonghand_tags: []\n---\n",
+        "---\ntitle: a\n---\n",
+    ] {
+        let read = SessionMd::parse(text).unwrap();
+        assert!(!read.tags_not_text, "{text}");
+        assert!(read.tags.is_empty(), "{text}");
+    }
+}

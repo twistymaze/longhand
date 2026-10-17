@@ -189,7 +189,7 @@ fn setup_audio(
         &store,
         "route",
         Stage::Transcribe,
-        "recognition-generation-v1",
+        session_core::recognition::GENERATION_KEY,
         &"speaker-analysis",
     )
     .unwrap();
@@ -547,6 +547,75 @@ fn changed_preprocessing_invalidates_completed_transcription() {
     spec.preprocessing_revision.push_str("-changed");
     run(&spec);
     assert!(provider.calls.load(Ordering::SeqCst) > calls);
+}
+
+#[test]
+fn changed_preprocessing_deletes_the_rows_of_the_replaced_generation() {
+    let (temp, store, mut spec, segments) = setup(SpeakerSource::Off);
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let dir = temp.path().join("route");
+    let run = |spec: &ExecutionSpec| {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            spec,
+            &provider,
+            Stage::Transcribe,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap()
+    };
+    let generation = || -> String {
+        let value = store
+            .lock()
+            .unwrap()
+            .checkpoint_value(
+                "route",
+                Stage::Transcribe,
+                session_core::recognition::GENERATION_KEY,
+            )
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&value).unwrap()
+    };
+    let rows = |generation: &str| {
+        let mut rows = 0;
+        store
+            .lock()
+            .unwrap()
+            .visit_recognition("route", generation, |_| {
+                rows += 1;
+                Ok(())
+            })
+            .unwrap();
+        rows
+    };
+    run(&spec);
+    let old = generation();
+    assert!(rows(&old) > 0);
+    spec.preprocessing_revision.push_str("-changed");
+    run(&spec);
+    let new = generation();
+    assert_ne!(new, old);
+    assert!(rows(&new) > 0);
+    assert_eq!(rows(&old), 0, "the replaced generation keeps no rows");
+    // A generation with no epoch row starts again at epoch 1.
+    let epoch = store
+        .lock()
+        .unwrap()
+        .restart_recognition_epoch("route", &old, 0, 0)
+        .unwrap()
+        .scope
+        .epoch;
+    assert_eq!(epoch, 1, "the replaced generation keeps no epoch row");
 }
 
 #[test]
@@ -1303,8 +1372,35 @@ fn saved_resume_case(tail: &[f32]) -> SavedResume {
     saved_resume_audio(&common::speech(), tail)
 }
 fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
-    let (temp, store, spec, mut segments) = setup_audio(SpeakerSource::Nemotron, old.to_vec());
-    let saved_turns = seed_speakers(&store, &segments, 0);
+    saved_resume_with(
+        SpeakerSource::Nemotron,
+        old,
+        tail,
+        |temp, store, spec, segments, provider| {
+            run_to_verify(temp, store, spec, segments, provider).unwrap();
+        },
+    )
+}
+/// Process and save a note, then resume it with `tail` as a new segment.
+/// `first_run` does the first Transcribe, Join and Verify.
+fn saved_resume_with(
+    source: SpeakerSource,
+    old: &[f32],
+    tail: &[f32],
+    first_run: impl FnOnce(
+        &tempfile::TempDir,
+        &pipeline::SharedStore,
+        &ExecutionSpec,
+        &[session_core::Segment],
+        &Provider,
+    ),
+) -> SavedResume {
+    let (temp, store, spec, mut segments) = setup_audio(source, old.to_vec());
+    let saved_turns = if source == SpeakerSource::Off {
+        vec![]
+    } else {
+        seed_speakers(&store, &segments, 0)
+    };
     let dir = temp.path().join("route");
     let home = temp.path().join("saved");
     let provider = Provider {
@@ -1313,25 +1409,14 @@ fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
         fail_speaker: false,
         native_tokens: false,
     };
-    for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
-        pipeline::recognition::execute(
-            &store,
-            "route",
-            &dir,
-            &segments,
-            &spec,
-            &provider,
-            stage,
-            &Unattended,
-            &mut |_| {},
-        )
-        .unwrap();
-    }
+    first_run(&temp, &store, &spec, &segments, &provider);
     let original = pipeline::recognition::saved_result(&store, "route")
         .unwrap()
         .unwrap();
-    assert!(!original.rows.is_empty());
-    assert!(original.rows.iter().all(|row| row.speaker.is_some()));
+    if source != SpeakerSource::Off {
+        assert!(!original.rows.is_empty());
+        assert!(original.rows.iter().all(|row| row.speaker.is_some()));
+    }
     let record = store.lock().unwrap().session("route").unwrap().unwrap();
     let doc = pipeline::save::session_doc(&record, &segments, &dir).unwrap();
     assert!(doc.recognition_artifact.is_some());
@@ -2142,5 +2227,93 @@ fn voiced_sound_without_words_and_without_a_gap_fill_fails_verify() {
     assert!(
         error.to_string().contains("has speech but no text"),
         "{error}"
+    );
+}
+#[test]
+fn a_resumed_note_keeps_the_verify_pass_of_its_saved_gap_filled_segment() {
+    let case = saved_resume_with(
+        SpeakerSource::Off,
+        &common::speech(),
+        &common::speech(),
+        |temp, store, spec, segments, _| {
+            save_wordless_live_part(temp, store, spec, segments);
+            run_to_verify(temp, store, spec, segments, &wordless()).unwrap();
+        },
+    );
+    case.provider.calls.store(0, Ordering::SeqCst);
+    for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
+        pipeline::recognition::execute(
+            &case.store,
+            "route",
+            &case.dir,
+            &case.segments,
+            &case.spec,
+            &case.provider,
+            stage,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap_or_else(|error| panic!("{stage:?}: {error}"));
+    }
+    assert_eq!(
+        case.provider.calls.load(Ordering::SeqCst),
+        case.appended_windows(),
+        "only the appended audio is recognized"
+    );
+}
+#[test]
+fn a_retry_without_a_failure_record_recognizes_the_audio_again() {
+    let (temp, store, spec, segments) = setup(SpeakerSource::Off);
+    let provider = wordless();
+    run_to_verify(&temp, &store, &spec, &segments, &provider).unwrap_err();
+    assert!(
+        pipeline::checkpoint::get::<pipeline::verify::VerifyFailure>(
+            &store,
+            "route",
+            Stage::Verify,
+            pipeline::verify::FAILED,
+        )
+        .unwrap()
+        .is_none(),
+        "this failure has no failure record"
+    );
+    pipeline::live::save_part(
+        &store,
+        "route",
+        0,
+        0,
+        &asr::LivePart {
+            start_ms: 0,
+            end_ms: segments[0].duration_ms,
+            words: vec![],
+        },
+    )
+    .unwrap();
+    let live = pipeline::checkpoint::live_key(0, 0);
+    pipeline::recognition::prepare_retry(&store, "route").unwrap();
+    let keys: Vec<String> = store
+        .lock()
+        .unwrap()
+        .checkpoints("route", Stage::Transcribe)
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    for key in &keys {
+        assert!(
+            !key.starts_with(&pipeline::checkpoint::window_prefix(0))
+                && *key != pipeline::checkpoint::segment_done_key(0)
+                && *key != pipeline::checkpoint::plan_key(0),
+            "a retry kept the Transcribe key {key}"
+        );
+    }
+    assert!(keys.contains(&live), "a retry keeps the live rows");
+    let loads = provider.0.loads.load(Ordering::SeqCst);
+    // The live row can let this run pass through a gap fill. Either way, the
+    // run must send audio to the model again.
+    let _ = run_to_verify(&temp, &store, &spec, &segments, &provider);
+    assert!(
+        provider.0.loads.load(Ordering::SeqCst) > loads,
+        "the retry must send the audio to the model again"
     );
 }

@@ -175,9 +175,19 @@ impl SpeakerAnalyzer for FakeAnalyzer {
         if let Some(report) = request.on_progress {
             report(1.0);
         }
+        // The window layout of `analyze()` with no speech, so the file of
+        // a saved segment reads again on a resume.
+        use pyannote_local::segmentation::{WINDOW_SAMPLES, WindowActivity};
+        let total = audio.sample_count().map_err(DiarizeError::Engine)?;
+        let step = 32_000;
+        let windows = match total {
+            0 => 0,
+            _ => total.saturating_sub(WINDOW_SAMPLES).div_ceil(step) + 1,
+        };
         Ok(Analysis {
-            total: audio.sample_count().map_err(DiarizeError::Engine)?,
-            step: 32_000,
+            total,
+            step,
+            activities: vec![WindowActivity { frames: vec![] }; windows],
             ..Analysis::default()
         })
     }
@@ -1086,6 +1096,158 @@ fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
     );
     assert!(part.is_file(), "the working folder and its chunks stay");
     assert!(working.join(TRANSCRIPT_FILE).is_file());
+}
+
+#[test]
+fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
+    use session_core::recognition::{
+        Coverage, GENERATION_KEY, OutputBlock, SampleRange, SpeakerScope,
+    };
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    assert!(library::scan::write_marker(dest.path()));
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .dequeue_session("s", "test", common::at(100))
+        .unwrap();
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let working = root.path().join("s");
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    let transcript = "# Transcript\n\n**Speaker 1** [00:00]\nHello.\n";
+    std::fs::write(working.join(TRANSCRIPT_FILE), transcript).unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    checkpoint::put(&store, "s", Stage::Transcribe, GENERATION_KEY, &"g").unwrap();
+    let range = SampleRange {
+        start: 0,
+        end: 16000,
+    };
+    let put = |key: String, epoch| {
+        let block = OutputBlock {
+            key,
+            scope: SpeakerScope {
+                generation: "g".into(),
+                epoch,
+            },
+            revision: 1,
+            coverage: Coverage {
+                received: Some(range),
+                computed: Some(range),
+                provisional: None,
+                committed: Some(range),
+            },
+            rows: vec![],
+            speakers: vec![],
+        };
+        store
+            .lock()
+            .unwrap()
+            .commit_recognition("s", &block)
+            .unwrap();
+    };
+    // Epoch 1 is finished: it has a final copy. A live worker still
+    // writes epoch 2.
+    put(format!("nemo/{:020}/word/0", 1), 1);
+    put(format!("native-final/{:020}/row/0", 1), 1);
+    put(format!("nemo/{:020}/word/0", 2), 2);
+
+    let saved = pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+
+    let mut keys = vec![];
+    store
+        .lock()
+        .unwrap()
+        .visit_recognition("s", "g", |block| {
+            keys.push(block.key);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        keys,
+        [
+            format!("native-final/{:020}/row/0", 1),
+            format!("nemo/{:020}/word/0", 2),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(saved.path.join(TRANSCRIPT_FILE)).unwrap(),
+        transcript
+    );
+
+    // The save of a resumed note updates the folder in place, and also
+    // removes the live blocks of each epoch that has a final copy.
+    {
+        let mut s = store.lock().unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::UserResume {
+                space_ok: true,
+                audio_intact: true,
+            },
+        )
+        .unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::UserStop {
+                at: common::at(200),
+                retained_audio: true,
+            },
+        )
+        .unwrap();
+        s.dequeue_session("s", "test", common::at(200)).unwrap();
+    }
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    std::fs::write(working.join(TRANSCRIPT_FILE), transcript).unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    put(format!("nemo/{:020}/word/0", 3), 3);
+    put(format!("native-final/{:020}/row/0", 3), 3);
+    pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+    let mut keys = vec![];
+    store
+        .lock()
+        .unwrap()
+        .visit_recognition("s", "g", |block| {
+            keys.push(block.key);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        keys,
+        [
+            format!("native-final/{:020}/row/0", 1),
+            format!("native-final/{:020}/row/0", 3),
+            format!("nemo/{:020}/word/0", 2),
+        ]
+    );
 }
 
 #[test]
@@ -7961,10 +8123,45 @@ async fn a_regeneration_keeps_a_record_that_another_computer_wrote_after_the_rea
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_the_new_segment() {
-    // Covers AE3.
+    // Covers AE3. The first recording is long enough for a silence line.
     let a = rig().await;
-    let folder = saved_note(&a, None).await;
+    let mut first = conversation();
+    first.resize(first.len() + 16_000 * 90, 0.0);
+    queue_session(&a.store, &a.root, "s", 100, Some("m"), &[(16_000, first)]);
+    add_notes(&a.store, "s");
+    assert_eq!(a.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let folder = saved_folder(&a, "s");
     let audio = std::fs::read(folder.join("audio/segment-01.opus")).unwrap();
+    // The old part has two paragraphs of one speaker and a silence.
+    let old_part = [
+        TranscriptLine::Turn {
+            position_ms: 1_000,
+            speaker: Some(1),
+            text: "We start with the budget.".into(),
+        },
+        TranscriptLine::Turn {
+            position_ms: 5_000,
+            speaker: Some(1),
+            text: "Then we look at the plan.".into(),
+        },
+        TranscriptLine::Silence {
+            duration_ms: 70_000,
+        },
+        TranscriptLine::Turn {
+            position_ms: 80_000,
+            speaker: Some(1),
+            text: "We are back.".into(),
+        },
+    ];
+    std::fs::write(
+        folder.join(TRANSCRIPT_FILE),
+        Transcript {
+            has_speakers: true,
+            lines: old_part.to_vec(),
+        }
+        .render(),
+    )
+    .unwrap();
     let said = first_recording_text(&folder);
     let b = other_computer(&a).await;
     sync(&b, &a.dest);
@@ -7986,6 +8183,29 @@ async fn a_note_resumed_on_another_computer_keeps_its_text_and_transcribes_only_
         .count();
     assert_eq!(gaps, 1, "both recordings");
     assert_eq!(first_recording_text(&folder), said);
+    // The speakers come from the new speaker analysis, so the check
+    // compares the lines of the old part without them.
+    let without_speakers = |lines: &[TranscriptLine]| -> Vec<TranscriptLine> {
+        lines
+            .iter()
+            .take_while(|line| !matches!(line, TranscriptLine::Gap { .. }))
+            .map(|line| match line {
+                TranscriptLine::Turn {
+                    position_ms, text, ..
+                } => TranscriptLine::Turn {
+                    position_ms: *position_ms,
+                    speaker: None,
+                    text: text.clone(),
+                },
+                other => other.clone(),
+            })
+            .collect()
+    };
+    assert_eq!(
+        without_speakers(&transcript.lines),
+        without_speakers(&old_part),
+        "the old paragraphs and the silence stay"
+    );
     assert_eq!(calls(&b), windows_of(&b, 1), "only the new segment");
     assert_fingerprints_match(&folder);
 

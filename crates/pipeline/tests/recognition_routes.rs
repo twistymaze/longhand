@@ -104,6 +104,67 @@ fn a_recognition_transcript_has_a_line_between_segments() {
         ]
     );
 }
+// A note seeded from its transcript.md keeps the paragraphs of its old part
+// when the recognition route writes the transcript again. The rows come
+// from the seeded windows, as in the transcribe step of the route.
+#[test]
+fn a_seeded_recognition_transcript_keeps_the_old_paragraphs() {
+    use session_core::folder::TranscriptLine;
+    let mut store = session_core::Store::open_in_memory().unwrap();
+    let started = chrono::DateTime::parse_from_rfc3339("2026-10-10T07:00:00+00:00").unwrap();
+    store.create_session("n", started, None).unwrap();
+    store
+        .put_segment("n", &segment(0, 0, 120_000, false))
+        .unwrap();
+    let folder = tempfile::tempdir().unwrap();
+    std::fs::write(
+        folder.path().join("transcript.md"),
+        "# Transcript\n\n- [00:00:01] A.\n- [00:00:05] B.\n",
+    )
+    .unwrap();
+    assert!(pipeline::transcribe::seed_from_transcript(&store, "n", folder.path()).unwrap());
+    let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+    let rows = pipeline::transcribe::results(&store, "n")
+        .unwrap()
+        .into_iter()
+        .flat_map(|window| {
+            window
+                .segments
+                .into_iter()
+                .map(move |s| {
+                    let mut r = row();
+                    r.range = SampleRange {
+                        start: (window.start_ms + s.start_ms) * 16,
+                        end: (window.start_ms + s.end_ms) * 16,
+                    };
+                    r.text = s.text;
+                    r
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let result = RouteResult {
+        route: Route::Off,
+        coverage: vec![SampleRange {
+            start: 0,
+            end: 120_000 * 16,
+        }],
+        rows,
+        speakers: vec![],
+        coverage_limitations: vec![],
+    };
+    let lines = pipeline::recognition::transcript(&result, &[segment(0, 0, 120_000, false)]).lines;
+    let got: Vec<(u64, String)> = lines
+        .into_iter()
+        .filter_map(|l| match l {
+            TranscriptLine::Turn {
+                position_ms, text, ..
+            } => Some((position_ms, text)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(got, [(1_000, "A.".into()), (5_000, "B.".into())]);
+}
 fn turn(start: u64, end: u64, id: u32) -> SpeakerTurn {
     SpeakerTurn {
         range: SampleRange { start, end },

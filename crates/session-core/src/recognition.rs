@@ -598,10 +598,140 @@ impl Store {
         generation: &str,
         prefix: &str,
     ) -> crate::jobs::Result<()> {
-        let pattern = prefix_pattern(prefix);
-        self.conn.execute("DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!'",params![id,generation,pattern])?;
+        delete_prefix(&self.conn, id, generation, prefix)
+    }
+}
+
+/// The Transcribe checkpoint that names the recognition generation of the
+/// note. Its payload is the generation as a JSON string.
+pub const GENERATION_KEY: &str = "recognition-generation-v1";
+
+/// The key prefix of the blocks that a live NeMo worker writes. The epoch
+/// follows it: `nemo/{epoch}/`.
+pub const LIVE_NEMO_PREFIX: &str = "nemo/";
+
+/// The key prefix of the native-final copy of the live NeMo blocks. The
+/// epoch follows it: `native-final/{epoch}/`.
+pub const NATIVE_FINAL_PREFIX: &str = "native-final/";
+
+impl Store {
+    /// Delete the output rows and the epoch row of one generation. A
+    /// replaced generation has no reader.
+    pub fn delete_recognition_generation(
+        &mut self,
+        id: &str,
+        generation: &str,
+    ) -> crate::jobs::Result<()> {
+        let tx = self.conn.transaction()?;
+        delete_generation(&tx, id, generation)?;
+        tx.commit()?;
         Ok(())
     }
+
+    /// Put a result or speaker index, and delete the blocks under the
+    /// `(generation, prefix)` of the index that it replaces, in one
+    /// transaction. A fault keeps the old index and its blocks.
+    pub fn replace_recognition_index(
+        &mut self,
+        id: &str,
+        stage: crate::Stage,
+        key: &str,
+        payload: &str,
+        replaced: Option<(&str, &str)>,
+    ) -> crate::jobs::Result<()> {
+        let tx = self.conn.transaction()?;
+        crate::jobs::put_checkpoint_in(&tx, id, stage, key, payload)?;
+        if let Some((generation, prefix)) = replaced {
+            delete_prefix(&tx, id, generation, prefix)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Delete the live NeMo blocks (`nemo/{epoch}/`) of each epoch of the
+    /// current generation that has a native-final copy
+    /// (`native-final/{epoch}/`). The save of the note calls this.
+    /// An epoch that a live worker still writes has no native-final copy,
+    /// so its blocks stay.
+    pub fn delete_finished_live_blocks(&mut self, id: &str) -> crate::jobs::Result<()> {
+        let tx = self.conn.transaction()?;
+        let Some(generation) =
+            generation_in(&tx, id, &crate::jobs::stage_key(crate::Stage::Transcribe))?
+        else {
+            return Ok(());
+        };
+        // The epoch starts after the prefix. SQLite counts characters from 1.
+        let epoch_start = NATIVE_FINAL_PREFIX.chars().count() as i64 + 1;
+        let end = format!("{NATIVE_FINAL_PREFIX}{}", char::MAX);
+        let epochs = {
+            let mut stmt = tx.prepare(
+                "SELECT DISTINCT substr(key, ?3, instr(substr(key, ?3), '/') - 1) \
+                 FROM recognition_output \
+                 WHERE session_id=?1 AND generation=?2 AND key >= ?4 AND key < ?5 \
+                 AND instr(substr(key, ?3), '/') > 0",
+            )?;
+            stmt.query_map(
+                params![id, generation, epoch_start, NATIVE_FINAL_PREFIX, end],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for epoch in epochs {
+            delete_prefix(&tx, id, &generation, &format!("{LIVE_NEMO_PREFIX}{epoch}/"))?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+/// The generation that the checkpoints of the stage name `stage` hold.
+pub(crate) fn generation_in(
+    conn: &rusqlite::Connection,
+    id: &str,
+    stage: &str,
+) -> crate::jobs::Result<Option<String>> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload FROM checkpoints WHERE session_id=?1 AND stage=?2 AND key=?3",
+            params![id, stage, GENERATION_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(payload.map(|p| serde_json::from_str(&p)).transpose()?)
+}
+
+pub(crate) fn delete_generation(
+    conn: &rusqlite::Connection,
+    id: &str,
+    generation: &str,
+) -> crate::jobs::Result<()> {
+    conn.execute(
+        "DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2",
+        params![id, generation],
+    )?;
+    conn.execute(
+        "DELETE FROM recognition_epochs WHERE session_id=?1 AND generation=?2",
+        params![id, generation],
+    )?;
+    Ok(())
+}
+
+/// Delete the output rows of one generation whose key starts with `prefix`.
+/// The key range uses the primary-key index. Keys are ASCII text that the
+/// app writes, so the range holds the same rows as a prefix match.
+fn delete_prefix(
+    conn: &rusqlite::Connection,
+    id: &str,
+    generation: &str,
+    prefix: &str,
+) -> crate::jobs::Result<()> {
+    let end = format!("{prefix}{}", char::MAX);
+    conn.execute(
+        "DELETE FROM recognition_output \
+         WHERE session_id=?1 AND generation=?2 AND key >= ?3 AND key < ?4",
+        params![id, generation, prefix, end],
+    )?;
+    Ok(())
 }
 
 fn prefix_pattern(prefix: &str) -> String {

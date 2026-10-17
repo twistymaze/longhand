@@ -3,7 +3,7 @@
 //! beside its processing audio and checkpointed; then every analysis is
 //! clustered together, the turns smoothed, and the result checkpointed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use diarize::{
     DiarizeError, DiarizeRequest, SpeakerAnalyzer, SpeakerBounds, Turn, WINDOW_SAMPLES,
@@ -63,6 +63,19 @@ pub fn units(segments: &[Segment]) -> u64 {
     segments.iter().map(segment_units).sum()
 }
 
+/// A segment that [`run`] must analyse after it counts the saved work.
+struct Pending<'a> {
+    /// The place of the segment in `segments` and in the analyses.
+    position: usize,
+    segment: &'a Segment,
+    key: String,
+    file: PathBuf,
+    /// True when the segment has an index of features from the recording.
+    indexed: bool,
+    /// The features from the recording, when they read.
+    live: Option<diarize::Analysis>,
+}
+
 /// Analyse each segment, then cluster them together. `speakers` is planned
 /// for the whole note; each segment adds its [`segment_units`].
 #[allow(clippy::too_many_arguments)]
@@ -76,40 +89,81 @@ pub fn run(
     control: &dyn Control,
     speakers: &mut SpeakerMeter,
 ) -> Result<(), StageError> {
-    // Count the saved work first, so the first value covers it.
+    // Count the saved work first, so the first value covers it. A segment
+    // is done when its checkpoint exists and its file reads; the stage
+    // keeps that analysis for the clustering below.
+    let mut analyses: Vec<Option<diarize::Analysis>> = Vec::with_capacity(segments.len());
     let mut pending = Vec::with_capacity(segments.len());
-    for segment in segments {
+    for (position, segment) in segments.iter().enumerate() {
         let key = checkpoint::segment_key(segment.index);
         let file = analysis_path(&session_dir.join(proc_file(&segment.audio_file)));
-        let done = checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?
-            .is_some()
-            && file.exists();
-        // Features saved during recording need no new analysis.
-        let counted = done || crate::live::features::saved(store, session_id, segment.index)?;
-        if counted {
+        let checkpointed =
+            checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?.is_some()
+                && file.exists();
+        if checkpointed {
+            match read_analysis(&file) {
+                Ok(analysis) => {
+                    speakers.saved(segment_units(segment));
+                    analyses.push(Some(analysis));
+                    continue;
+                }
+                Err(e) => log::warn!(
+                    "the speaker analysis of segment {} of {session_id} does not read: {e}; \
+                     analysing it again",
+                    segment.index
+                ),
+            }
+        }
+        // Features saved during recording need no new analysis. When they
+        // do not read, the segment is analysed again from its audio.
+        let indexed = crate::live::features::saved(store, session_id, segment.index)?;
+        let live = if indexed {
+            crate::live::features::restore(store, session_id, session_dir, segment.index)?
+        } else {
+            None
+        };
+        if live.is_some() {
             speakers.saved(segment_units(segment));
         }
-        if !done {
-            pending.push((segment, key, file, counted));
-        }
+        // The loop below fills this slot. Each pending segment gets an
+        // analysis or the stage stops with an error.
+        analyses.push(None);
+        pending.push(Pending {
+            position,
+            segment,
+            key,
+            file,
+            indexed,
+            live,
+        });
     }
     speakers.at(0);
-    for (segment, key, file, counted) in pending {
+    for Pending {
+        position,
+        segment,
+        key,
+        file,
+        indexed,
+        live,
+    } in pending
+    {
         let units = segment_units(segment);
+        let counted = live.is_some();
         control.proceed()?;
-        let live_analysis =
-            match crate::live::features::restore(store, session_id, session_dir, segment.index)? {
-                Some(analysis) => Some(analysis),
-                None => crate::live::features::complete(
-                    store,
-                    session_id,
-                    session_dir,
-                    segment,
-                    analyzer,
-                    control,
-                    &mut |fraction| speakers.at_fraction(units, fraction),
-                )?,
-            };
+        let live_analysis = match live {
+            Some(analysis) => Some(analysis),
+            // Complete features that do not read are not completed again.
+            None if indexed => None,
+            None => crate::live::features::complete(
+                store,
+                session_id,
+                session_dir,
+                segment,
+                analyzer,
+                control,
+                &mut |fraction| speakers.at_fraction(units, fraction),
+            )?,
+        };
         if let Some(analysis) = live_analysis {
             write_analysis(&file, &analysis)?;
             checkpoint::put(
@@ -126,6 +180,7 @@ pub fn run(
             if !counted {
                 speakers.finished(units);
             }
+            analyses[position] = Some(analysis);
             continue;
         }
         let mut source = WavAudioSource::open(&session_dir.join(proc_file(&segment.audio_file)))
@@ -180,18 +235,16 @@ pub fn run(
             analysis.activities.len(),
             analysis.embeddings.len()
         );
+        analyses[position] = Some(analysis);
     }
 
     // Clustering, smoothing, and the writes give no fraction (KTD3).
     speakers.unmeasured();
     control.proceed()?;
-    let mut analyses = Vec::with_capacity(segments.len());
-    for segment in segments {
-        analyses.push(read_analysis(&analysis_path(
-            &session_dir.join(proc_file(&segment.audio_file)),
-        ))?);
-    }
-    let refs: Vec<_> = analyses.iter().collect();
+    let refs: Vec<_> = analyses
+        .iter()
+        .map(|analysis| analysis.as_ref().expect("each segment has an analysis"))
+        .collect();
     let raw = cluster_session(&refs, bounds(speaker_count));
     let per_segment: Vec<_> = segments.iter().map(|s| s.index).zip(raw).collect();
     let turns = smooth(&per_segment);

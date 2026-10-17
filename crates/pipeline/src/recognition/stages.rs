@@ -9,6 +9,7 @@ use asr::{
 };
 use models::recognition::{ExecutionSpec, SpeakerCount};
 use session_core::note_folder::NoteFiles;
+use session_core::recognition::GENERATION_KEY;
 use session_core::{Segment, Stage};
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
 
@@ -38,8 +39,7 @@ pub fn snapshot(store: &SharedStore, id: &str) -> Result<Option<ExecutionSpec>, 
 /// A processing attempt keeps its generation across checkpoints. A replacement
 /// that clears recognition checkpoints must create a fresh generation.
 pub(super) fn generation(store: &SharedStore, id: &str) -> Result<String, StageError> {
-    const KEY: &str = "recognition-generation-v1";
-    if let Some(saved) = checkpoint::get(store, id, Stage::Transcribe, KEY)? {
+    if let Some(saved) = checkpoint::get(store, id, Stage::Transcribe, GENERATION_KEY)? {
         return Ok(saved);
     }
     static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -49,7 +49,7 @@ pub(super) fn generation(store: &SharedStore, id: &str) -> Result<String, StageE
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default(),
         SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
-    checkpoint::put(store, id, Stage::Transcribe, KEY, &value)?;
+    checkpoint::put(store, id, Stage::Transcribe, GENERATION_KEY, &value)?;
     Ok(value)
 }
 pub fn saved_result(store: &SharedStore, id: &str) -> Result<Option<RouteResult>, StageError> {
@@ -157,7 +157,7 @@ pub(crate) fn execute_prepared(
             progress,
         ),
         Stage::Join => write_transcript(store, id, dir, segments),
-        Stage::Verify => verify(store, id, dir, segments),
+        Stage::Verify => verify(store, id, dir, segments, saved),
         _ => Err(failed("stage is not part of the recognition route")),
     }?;
     if let Some(mut prefix) = prefix {
@@ -654,11 +654,14 @@ fn verify(
     id: &str,
     dir: &Path,
     segments: &[Segment],
+    saved: usize,
 ) -> Result<(), StageError> {
     let result = saved_result(store, id)?.ok_or_else(|| failed("recognition result is absent"))?;
     validate_result(&result, &ranges(dir, segments)?)?;
     let windows = transcribe::results(store, id)?;
-    for segment in segments {
+    // The saved prefix passed Verify in the saved run, and its window
+    // checkpoints are gone. Judge only the segments that this run transcribed.
+    for segment in &segments[saved..] {
         let plan = transcribe::plan_segment(dir, segment, &[])?;
         let speech = plan
             .speech
@@ -770,18 +773,18 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
         }
     }
-    if let Some(failure) = failure {
-        for segment in failure.segments {
-            guard.delete_checkpoint(
-                id,
-                Stage::Transcribe,
-                &format!("recognition-segment-{}", segment.segment),
-            )?;
-        }
-    } else {
-        // A structural/finality error has no timed coverage measurement.
+    // With a failure record, `verify::prepare_retry` deleted the redo windows.
+    if failure.is_none() {
+        // A structural or finality error does not name the failed segments.
+        // Transcribe every segment again from its audio, and keep the live rows.
         for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
-            if key.starts_with("recognition-segment-") {
+            let Some(index) = checkpoint::segment_of(&key) else {
+                continue;
+            };
+            if key.starts_with(&checkpoint::window_prefix(index))
+                || key == checkpoint::segment_done_key(index)
+                || key == checkpoint::plan_key(index)
+            {
                 guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
             }
         }
