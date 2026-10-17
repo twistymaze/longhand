@@ -105,6 +105,33 @@ async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
 }
 
 #[tokio::test]
+async fn a_tls_failure_is_not_sent_again() {
+    // A server that answers plain HTTP to an https URL fails the TLS
+    // handshake. A retry gets the same failure, so the user must see the
+    // error at once.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("https://{}/v1", listener.local_addr().unwrap());
+    let connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = Arc::clone(&connections);
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut buf = [0u8; 8192];
+            let _ = socket.read(&mut buf).await;
+            let _ = socket.write_all(b"HTTP/1.1 400 X\r\n\r\n").await;
+            drop(socket);
+        }
+    });
+    let client = Client::new(endpoint(&base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_millis(10); 3]);
+    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
+    assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn a_request_with_no_retry_waits_fails_at_once_without_the_network() {
     let client = Client::new(endpoint(&common::closed_base(), None)).unwrap();
     let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
