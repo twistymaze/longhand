@@ -157,7 +157,7 @@ pub(crate) fn execute_prepared(
             progress,
         ),
         Stage::Join => write_transcript(store, id, dir, segments),
-        Stage::Verify => verify(store, id, dir, segments),
+        Stage::Verify => verify(store, id, dir, segments, saved),
         _ => Err(failed("stage is not part of the recognition route")),
     }?;
     if let Some(mut prefix) = prefix {
@@ -654,11 +654,14 @@ fn verify(
     id: &str,
     dir: &Path,
     segments: &[Segment],
+    saved: usize,
 ) -> Result<(), StageError> {
     let result = saved_result(store, id)?.ok_or_else(|| failed("recognition result is absent"))?;
     validate_result(&result, &ranges(dir, segments)?)?;
     let windows = transcribe::results(store, id)?;
-    for segment in segments {
+    // The saved prefix passed Verify in the saved run, and its window
+    // checkpoints are gone. Judge only the segments that this run transcribed.
+    for segment in &segments[saved..] {
         let plan = transcribe::plan_segment(dir, segment, &[])?;
         let speech = plan
             .speech
@@ -770,18 +773,22 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
         }
     }
-    if let Some(failure) = failure {
-        for segment in failure.segments {
-            guard.delete_checkpoint(
-                id,
-                Stage::Transcribe,
-                &format!("recognition-segment-{}", segment.segment),
-            )?;
-        }
-    } else {
-        // A structural/finality error has no timed coverage measurement.
+    // With a failure record, `verify::prepare_retry` deleted the redo windows.
+    if failure.is_none() {
+        // A structural or finality error does not name the failed segments.
+        // Transcribe every segment again from its audio, and keep the live rows.
         for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
-            if key.starts_with("recognition-segment-") {
+            let Some(index) = key
+                .strip_prefix("seg-")
+                .and_then(|rest| rest.get(..4))
+                .and_then(|digits| digits.parse::<u32>().ok())
+            else {
+                continue;
+            };
+            if key.starts_with(&checkpoint::window_prefix(index))
+                || key == checkpoint::segment_done_key(index)
+                || key == checkpoint::plan_key(index)
+            {
                 guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
             }
         }
