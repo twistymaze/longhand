@@ -147,13 +147,18 @@ fn pieces(text: &str, room: usize) -> Vec<String> {
                 out.push(word.to_string());
                 continue;
             }
-            let per = (room as f64 * crate::tokens::BYTES_PER_TOKEN)
-                .floor()
-                .max(1.0) as usize;
-            let chars: Vec<char> = word.chars().collect();
-            for c in chars.chunks(per) {
-                out.push(c.iter().collect());
+            // Cost by bytes: a character can be more than one byte. A piece
+            // always takes at least one character, so the loop moves on.
+            let mut piece = String::new();
+            for c in word.chars() {
+                if !piece.is_empty()
+                    && crate::tokens::estimate_bytes(piece.len() + c.len_utf8()) > room
+                {
+                    out.push(std::mem::take(&mut piece));
+                }
+                piece.push(c);
             }
+            out.push(piece);
         }
     }
     out

@@ -12,7 +12,12 @@ pub const MESSAGE_FRAMING: usize = 8;
 pub const MARGIN: f64 = 0.15;
 
 pub fn estimate(text: &str) -> usize {
-    (text.len() as f64 / BYTES_PER_TOKEN).ceil() as usize
+    estimate_bytes(text.len())
+}
+
+/// The estimate for a text of `bytes` bytes.
+pub fn estimate_bytes(bytes: usize) -> usize {
+    (bytes as f64 / BYTES_PER_TOKEN).ceil() as usize
 }
 
 pub fn estimate_messages<'a>(texts: impl IntoIterator<Item = &'a str>) -> usize {
