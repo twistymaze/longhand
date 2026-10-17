@@ -36,7 +36,7 @@ use uuid::Uuid;
 
 use crate::file::{
     FileRead, SaveError, SettingsFile, SharedFields, SharedValue, Unavailable, check_root,
-    longhand_folder, read_settings, save_settings, write_new,
+    longhand_folder, read_prefix, read_settings, save_settings, write_new,
 };
 use crate::inside::{check_write_folder, inside_file};
 
@@ -634,22 +634,17 @@ fn read_entry(root: &Path, folder: &Path, file_name: String) -> Found {
 
 /// The first [`HEAD_BYTES`] of the file at `path`.
 fn read_head(path: &Path) -> io::Result<Vec<u8>> {
-    use std::io::Read;
-    let mut head = Vec::new();
-    std::fs::File::open(path)?
-        .take(HEAD_BYTES)
-        .read_to_end(&mut head)?;
-    Ok(head)
+    read_prefix(path, HEAD_BYTES)
 }
 
 /// The summary text and the title text of the file of `prompt`. For a file
 /// over [`MAX_FILE_BYTES`], this reads the whole file: the scan has no text
 /// for it. Only a change of the prompt calls this.
-fn full_texts(folder: &Path, prompt: &PromptFile) -> Result<(String, String), PromptError> {
+fn full_texts(root: &Path, prompt: &PromptFile) -> Result<(String, String), PromptError> {
     if !prompt.too_large {
         return Ok((prompt.text.clone(), prompt.title_text.clone()));
     }
-    let contents = match read_prompt_file(folder, &prompt.file_name) {
+    let contents = match read_prompt_file(root, &prompt.file_name) {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.utf8_error()))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(PromptError::NoSuchPrompt),
@@ -659,15 +654,11 @@ fn full_texts(folder: &Path, prompt: &PromptFile) -> Result<(String, String), Pr
     Ok((parsed.text, parsed.title_text))
 }
 
-/// The bytes of the file `file_name` in the prompt folder `folder`. A
+/// The bytes of the prompt file `file_name` of the storage folder `root`. A
 /// change of a prompt reads the file again, so the file can be a link
 /// now: the read follows a link only to a file in the storage folder.
-fn read_prompt_file(folder: &Path, file_name: &str) -> io::Result<Vec<u8>> {
-    let root = folder
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-    std::fs::read(inside_file(root, &folder.join(file_name))?)
+fn read_prompt_file(root: &Path, file_name: &str) -> io::Result<Vec<u8>> {
+    std::fs::read(inside_file(root, &prompts_folder(root).join(file_name))?)
 }
 
 /// Give each file its id (KTD5), join the files with one id and the same
@@ -941,10 +932,9 @@ pub fn rename_prompt(root: &Path, id: &str, name: &str) -> Result<PromptFile, Pr
         return Err(PromptError::NameTaken);
     }
     settle_copies(root, &scan, id)?;
-    let folder = prompts_folder(root);
-    let (text, title_text) = full_texts(&folder, &prompt)?;
-    rewrite(&folder, &prompt, name, &text, &title_text)?;
-    let file_name = move_to_name(&folder, &prompt.file_name, name)?;
+    let (text, title_text) = full_texts(root, &prompt)?;
+    rewrite(root, &prompt, name, &text, &title_text)?;
+    let file_name = move_to_name(&prompts_folder(root), &prompt.file_name, name)?;
     Ok(PromptFile {
         name: name.to_string(),
         stored_name: name.to_string(),
@@ -963,9 +953,8 @@ pub fn set_prompt_text(root: &Path, id: &str, text: &str) -> Result<PromptFile, 
     let scan = scan_for_change(root)?;
     let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?.clone();
     settle_copies(root, &scan, id)?;
-    let folder = prompts_folder(root);
-    let (_, title_text) = full_texts(&folder, &prompt)?;
-    rewrite(&folder, &prompt, &prompt.stored_name, text, &title_text)?;
+    let (_, title_text) = full_texts(root, &prompt)?;
+    rewrite(root, &prompt, &prompt.stored_name, text, &title_text)?;
     Ok(PromptFile {
         text: text.to_string(),
         title_text,
@@ -989,9 +978,8 @@ pub fn set_prompt_title_text(
     let scan = scan_for_change(root)?;
     let prompt = scan.get(id).ok_or(PromptError::NoSuchPrompt)?.clone();
     settle_copies(root, &scan, id)?;
-    let folder = prompts_folder(root);
-    let (text, _) = full_texts(&folder, &prompt)?;
-    rewrite(&folder, &prompt, &prompt.stored_name, &text, title_text)?;
+    let (text, _) = full_texts(root, &prompt)?;
+    rewrite(root, &prompt, &prompt.stored_name, &text, title_text)?;
     Ok(PromptFile {
         text,
         title_text: title_text.to_string(),
@@ -1089,7 +1077,7 @@ pub fn repair_prompts(root: &Path, missing: &BTreeSet<String>) -> Result<Repaire
             None if prompt.too_large => false,
             None => {
                 rewrite(
-                    &folder,
+                    root,
                     prompt,
                     &prompt.stored_name,
                     &prompt.text,
@@ -1133,14 +1121,13 @@ fn settle_copies(root: &Path, scan: &PromptScan, id: &str) -> Result<(), PromptE
     if !scan.conflicted.contains(id) {
         return Ok(());
     }
-    let folder = prompts_folder(root);
     for copy in scan
         .prompts
         .iter()
         .filter(|p| p.id != id && p.id_in_file.as_deref() == Some(id))
     {
-        let (text, title_text) = full_texts(&folder, copy)?;
-        rewrite(&folder, copy, &copy.stored_name, &text, &title_text)?;
+        let (text, title_text) = full_texts(root, copy)?;
+        rewrite(root, copy, &copy.stored_name, &text, &title_text)?;
     }
     Ok(())
 }
@@ -1148,13 +1135,14 @@ fn settle_copies(root: &Path, scan: &PromptScan, id: &str) -> Result<(), PromptE
 /// Write the file of `prompt` with its id, `name`, `text` and
 /// `title_text`, and remove its duplicates, which have the old texts.
 fn rewrite(
-    folder: &Path,
+    root: &Path,
     prompt: &PromptFile,
     name: &str,
     text: &str,
     title_text: &str,
 ) -> Result<(), PromptError> {
-    let extra = match read_prompt_file(folder, &prompt.file_name).and_then(|bytes| {
+    let folder = &prompts_folder(root);
+    let extra = match read_prompt_file(root, &prompt.file_name).and_then(|bytes| {
         String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
     }) {
         Ok(contents) => parse_prompt_file(&contents).extra,
@@ -1259,7 +1247,7 @@ mod tests {
         std::fs::write(&target, secret).unwrap();
         std::fs::remove_file(&path).unwrap();
         std::os::unix::fs::symlink(&target, &path).unwrap();
-        assert!(rewrite(&folder, &prompt, "Weekly", "Recap text.", "").is_err());
+        assert!(rewrite(root.path(), &prompt, "Weekly", "Recap text.", "").is_err());
         assert!(
             std::fs::symlink_metadata(&path)
                 .unwrap()
@@ -1271,7 +1259,7 @@ mod tests {
             too_large: true,
             ..prompt
         };
-        assert!(full_texts(&folder, &large).is_err());
+        assert!(full_texts(root.path(), &large).is_err());
     }
 
     #[test]

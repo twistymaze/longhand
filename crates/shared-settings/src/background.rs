@@ -51,6 +51,15 @@ pub enum BackgroundUnavailable {
     Unreadable(String),
 }
 
+impl BackgroundUnavailable {
+    /// The file links to a file outside the storage folder. A save
+    /// replaces the link with a file, so the user can change the
+    /// Background.
+    pub fn is_outside_link(&self) -> bool {
+        matches!(self, Self::Unreadable(cause) if cause == OUTSIDE_FILE)
+    }
+}
+
 /// The result of a read of the Background file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackgroundRead {
@@ -151,8 +160,7 @@ pub fn save_background(root: &Path, text: &str) -> Result<(), BackgroundError> {
     match read_background(root) {
         // The save replaces the link with a file. It does not read or
         // change the file outside the storage folder.
-        BackgroundRead::NotAvailable(BackgroundUnavailable::Unreadable(cause))
-            if cause == OUTSIDE_FILE => {}
+        BackgroundRead::NotAvailable(cause) if cause.is_outside_link() => {}
         BackgroundRead::NotAvailable(cause) => {
             return Err(BackgroundError::FileNotAvailable(cause));
         }

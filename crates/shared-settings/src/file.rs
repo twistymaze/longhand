@@ -484,12 +484,18 @@ const MAX_SETTINGS_BYTES: u64 = 1 << 20;
 /// The bytes of the file at `path`, or `None` when it holds more than
 /// `limit` bytes. The read stops after `limit + 1` bytes.
 fn read_limited(path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
+    let bytes = read_prefix(path, limit + 1)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
+}
+
+/// The first `count` bytes of the file at `path`, or all of a shorter file.
+pub(crate) fn read_prefix(path: &Path, count: u64) -> io::Result<Vec<u8>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
-        .take(limit + 1)
+        .take(count)
         .read_to_end(&mut bytes)?;
-    Ok((bytes.len() as u64 <= limit).then_some(bytes))
+    Ok(bytes)
 }
 
 /// Refuse a storage folder `root` that is not a folder that exists and
