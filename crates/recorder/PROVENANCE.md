@@ -27,4 +27,4 @@ Borrowed material in this crate, one record per file (R27). `src/wav.rs` and the
 - Source paths: `crates/listener-core/src/actors/recorder/chunks.rs` (`check_storage`, `storage_budget`, `DISK_RESERVE_BYTES`)
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — the 256 MB `audio-recovery/` cap removed (KTD4); the free-space lookup is injectable for tests
+- Status: modified — the 256 MB `audio-recovery/` cap removed (KTD4); the free-space lookup is injectable for tests. `available_space` is new: it asks the operating system for the one volume of the folder (NSURL volume keys on macOS, `GetDiskFreeSpaceExW` on Windows), not for every mount through sysinfo

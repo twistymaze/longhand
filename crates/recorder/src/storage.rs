@@ -75,20 +75,89 @@ pub fn system_probe() -> SpaceProbe {
     Box::new(available_space)
 }
 
-/// The deepest mount point containing `dir`, as anarlog resolves it.
+/// Free bytes on the volume that holds `dir`; `None` when unknown, for
+/// example when `dir` does not exist.
+///
+/// It asks only that volume, with one system call. A list of all mounted
+/// volumes asks each of them, and a network volume that does not answer can
+/// then stop the caller, also the thread that writes the audio.
+#[cfg(target_os = "macos")]
 pub fn available_space(dir: &Path) -> Option<u64> {
-    let canonical = dir.canonicalize().ok()?;
-    let disks = sysinfo::Disks::new_with_refreshed_list();
-    disks
-        .list()
-        .iter()
-        .filter(|disk| {
-            disk.mount_point()
-                .canonicalize()
-                .is_ok_and(|mount| canonical.starts_with(mount))
-        })
-        .max_by_key(|disk| disk.mount_point().components().count())
-        .map(|disk| disk.available_space())
+    use objc2_foundation::{
+        NSArray, NSNumber, NSString, NSURL, NSURLVolumeAvailableCapacityForImportantUsageKey,
+        NSURLVolumeAvailableCapacityKey,
+    };
+    // The writer thread has no autorelease pool, so make one for each call.
+    objc2::rc::autoreleasepool(|_| {
+        let url = NSURL::fileURLWithPath(&NSString::from_str(dir.to_str()?));
+        // SAFETY: the keys are constant NSString values that Foundation
+        // defines.
+        let (important, available) = unsafe {
+            (
+                NSURLVolumeAvailableCapacityForImportantUsageKey,
+                NSURLVolumeAvailableCapacityKey,
+            )
+        };
+        let values = url
+            .resourceValuesForKeys_error(&NSArray::from_slice(&[important, available]))
+            .ok()?;
+        let figure = |key| {
+            values
+                .objectForKey(key)
+                .and_then(|value| value.downcast_ref::<NSNumber>().map(|n| n.longLongValue()))
+                .and_then(|bytes| u64::try_from(bytes).ok())
+        };
+        capacity(figure(important), figure(available))
+    })
+}
+
+/// The figure that Finder shows: the capacity for important usage, which
+/// counts space that macOS can free (purgeable files), and the plain
+/// available capacity when the first is missing or 0.
+#[cfg(any(target_os = "macos", test))]
+fn capacity(important: Option<u64>, available: Option<u64>) -> Option<u64> {
+    important.filter(|&bytes| bytes != 0).or(available)
+}
+
+/// Free bytes on the volume that holds `dir`; `None` when unknown, for
+/// example when `dir` does not exist. See the macOS version.
+#[cfg(windows)]
+pub fn available_space(dir: &Path) -> Option<u64> {
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let name = directory_name(dir);
+    let mut free = 0u64;
+    // SAFETY: `name` is a NUL-terminated wide string that lives for the
+    // call, and the out pointer is a valid u64; the API accepts null for the
+    // two figures that are not read.
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut free,
+        )
+    };
+    (ok != 0).then_some(free)
+}
+
+/// `dir` as a NUL-terminated wide string that ends in a separator:
+/// `GetDiskFreeSpaceExW` needs it for a UNC name (`\\server\share\`).
+#[cfg(windows)]
+fn directory_name(dir: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut name: Vec<u16> = dir.as_os_str().encode_wide().collect();
+    if !matches!(name.last(), Some(&c) if c == u16::from(b'\\') || c == u16::from(b'/')) {
+        name.push(u16::from(b'\\'));
+    }
+    name.push(0);
+    name
+}
+
+/// No lookup on other systems (Longhand ships for macOS and Windows): the
+/// figure is unknown, which the checks let pass.
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn available_space(_dir: &Path) -> Option<u64> {
+    None
 }
 
 /// `Err(available)` when a known figure is under the floor. An unknown
@@ -158,5 +227,70 @@ mod tests {
     fn the_system_probe_finds_the_temp_volume() {
         let dir = tempfile::tempdir().unwrap();
         assert!(available_space(dir.path()).is_some_and(|b| b > 0));
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_has_no_figure() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(available_space(&dir.path().join("gone")), None);
+    }
+
+    #[test]
+    fn the_capacity_for_important_usage_comes_first_and_zero_means_missing() {
+        assert_eq!(capacity(Some(50), Some(40)), Some(50));
+        assert_eq!(capacity(Some(0), Some(40)), Some(40));
+        assert_eq!(capacity(None, Some(40)), Some(40));
+        assert_eq!(capacity(None, None), None);
+    }
+
+    /// Free space can change between the calls, so the figure is checked
+    /// against a figure from before and after it, with a tolerance for
+    /// writes by other processes.
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn the_figure_matches_the_mount_list_figure_for_the_volume() {
+        const TOLERANCE: u64 = 1 << 30;
+        let dir = tempfile::tempdir().unwrap();
+        let before = sysinfo_space(dir.path());
+        let ours = available_space(dir.path()).unwrap();
+        let after = sysinfo_space(dir.path());
+        let (low, high) = (before.min(after), before.max(after));
+        assert!(
+            ours + TOLERANCE >= low && ours <= high + TOLERANCE,
+            "{ours} is not between {low} and {high}"
+        );
+    }
+
+    /// The free space of the deepest mount point that contains `dir`, from
+    /// the list of all mounts, as sysinfo reports it.
+    #[cfg(any(target_os = "macos", windows))]
+    fn sysinfo_space(dir: &Path) -> u64 {
+        let canonical = dir.canonicalize().unwrap();
+        sysinfo::Disks::new_with_refreshed_list()
+            .list()
+            .iter()
+            .filter(|disk| {
+                disk.mount_point()
+                    .canonicalize()
+                    .is_ok_and(|mount| canonical.starts_with(mount))
+            })
+            .max_by_key(|disk| disk.mount_point().components().count())
+            .map(|disk| disk.available_space())
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_folder_gets_one_trailing_separator() {
+        use std::os::windows::ffi::OsStrExt;
+        let wide = |s: &str| std::ffi::OsStr::new(s).encode_wide().collect::<Vec<_>>();
+        for (path, expected) in [
+            (r"\\server\share", "\\\\server\\share\\\0"),
+            (r"\\server\share\notes", "\\\\server\\share\\notes\\\0"),
+            (r"C:\Users\a\", "C:\\Users\\a\\\0"),
+            ("C:/Users/a/", "C:/Users/a/\0"),
+        ] {
+            assert_eq!(directory_name(Path::new(path)), wide(expected), "{path}");
+        }
     }
 }

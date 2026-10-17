@@ -2637,8 +2637,6 @@ syn 2.0.119
 syn 3.0.6
 synstructure 0.14.0
     Copyright 2016 Nika Layzell
-sysinfo 0.38.4
-    Copyright (c) 2015 Guillaume Gomez
 tauri 2.11.6
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-codegen 2.6.3

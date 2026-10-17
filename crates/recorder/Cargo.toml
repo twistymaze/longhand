@@ -9,10 +9,17 @@ publish.workspace = true
 audio = { path = "../audio" }
 futures-util = "0.3"
 log.workspace = true
-sysinfo = { version = "0.38", default-features = false, features = ["disk"] }
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "sync"] }
 tokio-util = "0.7"
+
+# The free-space lookup asks the operating system for one volume.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSError", "NSObject", "NSString", "NSURL", "NSValue"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 audio-mock = { path = "../audio-mock" }
@@ -20,6 +27,7 @@ hound = "3.5.1"
 session-core = { path = "../session-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 tempfile = "3"
-# The soak reads its own resident memory.
+# The soak reads its own resident memory; a storage test compares the
+# free-space figure with the mount list.
 sysinfo = { version = "0.38", default-features = false, features = ["disk", "system"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
