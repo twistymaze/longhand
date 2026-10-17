@@ -3,11 +3,12 @@
 mod common;
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use common::{Reply, serve};
 use summarize::client::{Label, RequestKind};
 use summarize::context::{self, DEFAULT_LIMIT};
-use summarize::{Budget, BudgetSource, Client, Endpoint};
+use summarize::{Budget, BudgetSource, Client, Endpoint, Limits};
 
 fn probe_label() -> Label {
     Label::note("s1", RequestKind::Probe)
@@ -182,6 +183,60 @@ async fn a_server_error_from_a_probe_is_an_error_not_the_default() {
         assert!(
             matches!(probed, Err(summarize::SummarizeError::Http { status: s, .. }) if s == status),
             "HTTP {status}: {probed:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_first_probe_that_hits_its_deadline_is_an_error_not_the_default() {
+    // A slow network or a busy server gives no answer in time. That tells
+    // nothing about the context, so the run must not keep the default.
+    let mock = serve(HashMap::from([("/v1/model/info", Reply::Hang)])).await;
+    let quick = Limits {
+        connect: Duration::from_secs(1),
+        response: Duration::from_millis(300),
+        idle: Duration::from_millis(300),
+        total: Duration::from_secs(1),
+        max_bytes: 1 << 20,
+    };
+    let client = Client::with_limits(
+        Endpoint {
+            base_url: mock.base.clone(),
+            model: "m".into(),
+            credential: None,
+        },
+        Limits::completion(),
+        quick,
+    )
+    .unwrap();
+    let probed = context::probe(&client, &probe_label()).await;
+    assert!(
+        matches!(probed, Err(summarize::SummarizeError::Deadline("response"))),
+        "{probed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_first_probe_refused_as_unauthorized_goes_on_to_the_next_probe() {
+    // A key can be limited to the completion routes, so 401 or 403 on the
+    // first probe does not prove a bad key. The chain goes on.
+    let vllm = r#"{"data":[{"id":"m","max_model_len":32768}]}"#;
+    for status in [401, 403] {
+        let mock = serve(HashMap::from([
+            ("/v1/model/info", Reply::Json(status, "{}".into())),
+            ("/v1/models", Reply::Json(200, vllm.into())),
+        ]))
+        .await;
+        let probed = context::probe(&client(&mock.base, "m"), &probe_label())
+            .await
+            .unwrap();
+        assert_eq!(
+            probed,
+            Some(Budget {
+                limit: 32_768,
+                source: BudgetSource::Vllm
+            }),
+            "HTTP {status}"
         );
     }
 }

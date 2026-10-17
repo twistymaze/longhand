@@ -505,7 +505,8 @@ impl Client {
                     // Only a failed connection proves that the endpoint did
                     // not receive the request. A connection that closes
                     // later can follow a request that the endpoint runs.
-                    if e.is_connect() {
+                    // A TLS failure is final: a retry gets the same failure.
+                    if e.is_connect() && !is_tls_failure(&e) {
                         Failure::NotReached(without_url(e))
                     } else {
                         Failure::Answered(SummarizeError::Transport(without_url(e)))
@@ -561,6 +562,19 @@ impl From<SummarizeError> for Failure {
     fn from(e: SummarizeError) -> Self {
         Self::Answered(e)
     }
+}
+
+/// True when a TLS error (for example a certificate problem) is in the
+/// cause chain of `e`.
+fn is_tls_failure(e: &reqwest::Error) -> bool {
+    let mut cause = std::error::Error::source(e);
+    while let Some(c) = cause {
+        if c.is::<native_tls::Error>() {
+            return true;
+        }
+        cause = c.source();
+    }
+    false
 }
 
 /// The error with each of its causes, with no URL. reqwest's own text is

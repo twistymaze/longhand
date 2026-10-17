@@ -6401,6 +6401,61 @@ async fn regenerate_summary_with_no_transcript_refuses() {
     assert_eq!(std::fs::read(home.join("session.md")).unwrap(), written);
 }
 
+// A `transcript.md` that does not download fails the regeneration after
+// the read time limit, and the regeneration frees its turn in the summary
+// queue. A FIFO blocks its read until a writer opens it, as an online-only
+// file blocks its read until it downloads.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test(flavor = "multi_thread")]
+async fn regenerate_summary_whose_transcript_does_not_download_fails_and_frees_the_turn() {
+    let r = rig().await;
+    let _mock = numbered_summaries(&r).await;
+    let home = saved_note(&r, None).await;
+    let transcript = home.join(TRANSCRIPT_FILE);
+    let text = std::fs::read(&transcript).unwrap();
+    let summary = read(&home, "summary.md");
+    fifo_at(&transcript);
+
+    // The guard stops a read that waits with no time limit.
+    let regenerated = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        r.runner.regenerate_summary("s"),
+    )
+    .await;
+    // Each read that waits on the FIFO gets an end of file and stops. With
+    // no reader, the open fails at once.
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        #[cfg(target_os = "macos")]
+        const O_NONBLOCK: i32 = 0x0004;
+        #[cfg(target_os = "linux")]
+        const O_NONBLOCK: i32 = 0o4000;
+        while let Ok(writer) = std::fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(O_NONBLOCK)
+            .open(&transcript)
+        {
+            drop(writer);
+        }
+    }
+    let error = regenerated
+        .expect("the regeneration waits on the read with no time limit")
+        .unwrap_err();
+    assert!(error.to_string().contains("cannot be read"), "{error}");
+    assert_eq!(read(&home, "summary.md"), summary);
+
+    // The file downloads. The next regeneration gets the turn.
+    std::fs::remove_file(&transcript).unwrap();
+    std::fs::write(&transcript, &text).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        r.runner.regenerate_summary("s"),
+    )
+    .await
+    .expect("the next regeneration gets the turn")
+    .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_run_uses_the_speaker_count_of_the_note_and_not_the_settings_default() {
     // Covers AE2.

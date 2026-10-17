@@ -79,6 +79,54 @@ fn one_turn_longer_than_a_chunk_splits_at_sentences_keeping_label_and_time() {
     assert_eq!(rejoined.join(" "), long.text);
 }
 
+/// The text of each owned part, in order.
+fn part_texts(chunks: &[Chunk]) -> Vec<String> {
+    chunks
+        .iter()
+        .flat_map(|c| c.lines[c.first_new..].iter())
+        .map(|l| match l {
+            Line::Turn(t) => t.text.clone(),
+            Line::Pause { .. } => panic!("no pause in the input"),
+        })
+        .collect()
+}
+
+#[test]
+fn a_long_word_in_a_multibyte_script_splits_under_the_allowance() {
+    // Chinese has no spaces, and each character is three bytes.
+    let long = Turn {
+        position_ms: 0,
+        speaker: Some(1),
+        text: "漢".repeat(3000),
+    };
+    let chunks = chunk(&[long.clone().into()], 300);
+    assert!(chunks.len() > 1);
+    assert!(
+        chunks.iter().all(|c| cost(c) <= 300),
+        "{:?}",
+        chunks.iter().map(cost).collect::<Vec<_>>()
+    );
+    assert_eq!(part_texts(&chunks).concat(), long.text);
+}
+
+#[test]
+fn a_long_emoji_word_at_a_very_small_allowance_gives_one_character_per_part() {
+    let long = Turn {
+        position_ms: 0,
+        speaker: Some(1),
+        text: "😀".repeat(20),
+    };
+    let empty = Turn {
+        text: String::new(),
+        ..long.clone()
+    };
+    // Room for one token of text: less than one emoji.
+    let allowance = estimate(&render_line(&empty.into())) + 2;
+    let parts = part_texts(&chunk(&[long.clone().into()], allowance));
+    assert_eq!(parts.len(), 20);
+    assert!(parts.iter().all(|p| p == "😀"), "{parts:?}");
+}
+
 /// The turns of `turns(n)` with a 14-minute pause line before every
 /// seventh turn.
 fn with_pauses(n: usize) -> Vec<Line> {

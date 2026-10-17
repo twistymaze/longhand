@@ -770,6 +770,38 @@ fn the_longest_texts_of_four_byte_characters_fit_and_round_trip() {
     assert_eq!(prompt.title_text, title);
 }
 
+// A rename keeps an id with a line end that another computer or an agent
+// wrote in quotes. The front matter of the file stays one block.
+#[test]
+fn a_quoted_id_with_a_line_end_stays_the_same_after_a_rename() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        "---\nid: \"recap\\n---\\nInjected\"\nname: Recap\n---\n\nRecap text.\n",
+    );
+    let id = scan(root.path()).prompts[0].id.clone();
+    assert_eq!(id, "recap\n---\nInjected");
+    rename_prompt(root.path(), &id, "Weekly").unwrap();
+    let scanned = scan(root.path());
+    let prompt = scanned.get(&id).unwrap();
+    assert_eq!(prompt.name, "Weekly");
+    assert_eq!(prompt.text, "Recap text.");
+}
+
+// The longest file name stem with `.md` and the temporary names of the
+// write still fits the 255-byte limit of a file name.
+#[test]
+fn a_prompt_with_the_longest_file_name_is_made_and_made_again() {
+    let root = folder();
+    let name = "n".repeat(197);
+    create_prompt(root.path(), &name, "Text.").unwrap();
+    create_prompt(root.path(), &name, "Text.").unwrap();
+    let names = file_names(root.path());
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.iter().any(|n| n.len() == 200), "{names:?}");
+}
+
 #[test]
 fn two_files_with_one_id_and_one_summary_text_but_two_title_texts_are_a_conflict() {
     let root = folder();
@@ -1164,4 +1196,109 @@ fn a_repair_does_not_rewrite_a_file_with_no_id_over_the_size_limit() {
             .is_empty()
     );
     assert_eq!(read_file(root.path(), "Huge.md"), contents);
+}
+
+/// A folder outside the storage folder with the prompt file `Recap.md` of
+/// the id `recap-id`. Returns the folder and the file.
+#[cfg(unix)]
+fn outside_prompt() -> (tempfile::TempDir, PathBuf, String) {
+    let outside = tempfile::tempdir().unwrap();
+    let contents = render_prompt_file("recap-id", "Recap", "Outside text.");
+    let path = outside.path().join("Recap.md");
+    fs::write(&path, &contents).unwrap();
+    (outside, path, contents)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_prompt_that_links_outside_the_folder_is_unusable_and_not_missing() {
+    let root = folder();
+    let (_outside, target, contents) = outside_prompt();
+    std::os::unix::fs::symlink(&target, prompts_dir(root.path()).join("Recap.md")).unwrap();
+    let scan = scan(root.path());
+    assert!(scan.get("recap-id").is_none());
+    assert!(scan.prompts.iter().all(|p| p.text != "Outside text."));
+    assert!(!scan.is_missing("recap-id"));
+    assert_repair_keeps(root.path(), "recap-id", "Recap.md", contents.as_bytes());
+    assert!(
+        fs::symlink_metadata(prompts_dir(root.path()).join("Recap.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_prompt_that_links_to_a_file_in_the_folder_is_a_prompt() {
+    let root = folder();
+    let contents = render_prompt_file("recap-id", "Recap", "Inside text.");
+    let target = root.path().join("Recap source.md");
+    fs::write(&target, &contents).unwrap();
+    std::os::unix::fs::symlink(&target, prompts_dir(root.path()).join("Recap.md")).unwrap();
+    let scan = scan(root.path());
+    assert_eq!(scan.get("recap-id").unwrap().text, "Inside text.");
+    assert_repair_keeps(root.path(), "recap-id", "Recap.md", contents.as_bytes());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_prompt_that_links_to_a_file_that_does_not_exist_is_not_missing() {
+    let root = folder();
+    std::os::unix::fs::symlink(
+        root.path().join("gone.md"),
+        prompts_dir(root.path()).join("Recap.md"),
+    )
+    .unwrap();
+    let scan = scan(root.path());
+    assert!(scan.get("recap-id").is_none());
+    assert!(!scan.is_missing("recap-id"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_prompts_folder_that_links_outside_gives_no_prompt_and_takes_no_file() {
+    let root = folder();
+    let (outside, _target, _contents) = outside_prompt();
+    fs::remove_dir(prompts_dir(root.path())).unwrap();
+    std::os::unix::fs::symlink(outside.path(), prompts_dir(root.path())).unwrap();
+    let scan = scan(root.path());
+    assert!(scan.get("recap-id").is_none());
+    assert!(!scan.is_missing("recap-id"));
+    assert!(create_prompt(root.path(), "Weekly", "Weekly text.").is_err());
+    let names: Vec<_> = fs::read_dir(outside.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["Recap.md"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_prompt_whose_metadata_cannot_be_read_is_not_missing() {
+    // The folder lists its names, and each file in it cannot be examined.
+    use std::os::unix::fs::PermissionsExt;
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        &render_prompt_file("recap-id", "Recap", "Recap text."),
+    );
+    save_settings(
+        root.path(),
+        &[SharedValue::ActiveSummaryPrompt("recap-id".into())],
+    )
+    .unwrap();
+    let dir = prompts_dir(root.path());
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o444)).unwrap();
+    let scan = scan_prompts(root.path());
+    let missing: BTreeSet<String> = ["recap-id".to_string()].into();
+    let repaired = repair_prompts(root.path(), &missing);
+    let on_disk = settings_on_disk(root.path());
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let scan = scan.unwrap();
+    assert!(scan.get("recap-id").is_none());
+    assert!(!scan.is_missing("recap-id"));
+    assert!(repaired.unwrap().is_empty());
+    assert_eq!(on_disk["active_summary_prompt"], "recap-id");
 }

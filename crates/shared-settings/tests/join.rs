@@ -1016,3 +1016,45 @@ fn a_conflict_copy_of_the_background_does_not_stop_the_join() {
         "A copy."
     );
 }
+
+#[test]
+fn a_prompt_with_the_longest_file_name_and_the_background_reach_a_folder_with_settings() {
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(
+        cache_of_b(
+            old.path(),
+            vec![prompt("long-b", &"n".repeat(197), "B's text.")],
+        ),
+        "B's Background.",
+    );
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder).unwrap();
+    assert_eq!(joined.written.prompt_files.len(), 1);
+    assert!(joined.written.background_file);
+}
+
+// A prompt that cannot be written does not stop the Background. The join
+// still gives the error, so that it runs again.
+#[cfg(unix)]
+#[test]
+fn a_prompt_that_cannot_be_written_does_not_stop_the_background() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = folder_of_a();
+    let old = tempfile::tempdir().unwrap();
+    let cache = with_background(
+        cache_of_b(
+            old.path(),
+            vec![prompt("standup-b", "Standup", "B's standup.")],
+        ),
+        "B's Background.",
+    );
+    let prompts = root.path().join(".longhand").join("prompts");
+    fs::set_permissions(&prompts, fs::Permissions::from_mode(0o555)).unwrap();
+    let joined = join(root.path(), Some(&cache), JoinKind::ChangeOfFolder);
+    fs::set_permissions(&prompts, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(joined.is_err());
+    assert_eq!(
+        fs::read_to_string(root.path().join(".longhand").join("background.md")).unwrap(),
+        "B's Background."
+    );
+}

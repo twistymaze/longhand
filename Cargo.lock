@@ -5622,6 +5622,7 @@ name = "summarize"
 version = "0.1.0"
 dependencies = [
  "log",
+ "native-tls",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

@@ -108,7 +108,11 @@ impl SharedView {
 
     /// Whether a save of the Background can write now (R5, KTD3).
     pub fn background_writable(&self) -> bool {
-        self.files_writable && self.background_unavailable.is_none()
+        self.files_writable
+            && self
+                .background_unavailable
+                .as_ref()
+                .is_none_or(BackgroundUnavailable::is_outside_link)
     }
 
     /// The settings file exists and does not parse (R22). The settings come

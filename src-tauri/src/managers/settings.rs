@@ -581,10 +581,13 @@ fn background_read_only(shared: &SharedSnapshot) -> Option<String> {
         SharedAvailability::ReadOnly { cause } if !shared.files_writable() => {
             Some(cause.message().to_string())
         }
+        // A Background file that links outside the storage folder is not
+        // read, and a save replaces the link, so the Background can change.
         SharedAvailability::ReadOnly { .. } | SharedAvailability::Available => shared
             .view
             .background_unavailable
             .as_ref()
+            .filter(|_| !shared.view.background_writable())
             .map(ToString::to_string),
     }
 }

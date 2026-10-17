@@ -1060,23 +1060,23 @@ mod tests {
             fast(),
         )
         .unwrap();
-        // FSEvents can start the stream after the first change, and then
-        // it reports nothing. Write `session.md` again until a change
-        // arrives, but never run a full scan.
-        std::thread::sleep(Duration::from_millis(500));
+        // FSEvents can start the stream after the first change, and a busy
+        // fseventsd (for example after many other tests) can report
+        // nothing for many seconds. Write `session.md` again until the
+        // change arrives, and never run a full scan. The limit only stops
+        // a test that hangs; the test waits for the change, not for a time.
         let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
-        let mut changes = None;
-        for _ in 0..5 {
-            match emitted.recv_timeout(Duration::from_secs(2)) {
-                Ok(c) if !c.changed.is_empty() => {
-                    changes = Some(c);
-                    break;
-                }
+        let limit = Instant::now() + Duration::from_secs(120);
+        let changes = loop {
+            match emitted.recv_timeout(Duration::from_secs(1)) {
+                Ok(c) if !c.changed.is_empty() => break c,
                 Ok(_) => {}
-                Err(_) => session_save::note_files::write_doc(&dir, &doc("a1")).unwrap(),
+                Err(_) => {
+                    assert!(Instant::now() < limit, "no LibraryChanged");
+                    session_save::note_files::write_doc(&dir, &doc("a1")).unwrap();
+                }
             }
-        }
-        let changes = changes.expect("no LibraryChanged in 10 seconds");
+        };
         assert_eq!(changes.changed, ["a1"]);
         assert!(changes.removed.is_empty());
         assert!(store.lock().unwrap().session("a1").unwrap().is_some());

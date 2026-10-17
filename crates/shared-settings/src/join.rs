@@ -77,8 +77,7 @@ pub fn join(root: &Path, cache: Option<&Cache>, kind: JoinKind) -> io::Result<Jo
             if kind == JoinKind::ChangeOfFolder
                 && let Some(cache) = cache
             {
-                written.prompt_files = merge_prompts(root, &prompts_of(cache))?;
-                written.background_file = write_new_background(root, &cache.background)?;
+                merge_cache(root, cache, &mut written)?;
             }
         }
         FileRead::Missing => {
@@ -94,8 +93,7 @@ pub fn join(root: &Path, cache: Option<&Cache>, kind: JoinKind) -> io::Result<Jo
                 if let Some(cache) = cache
                     && (written.settings_file || kind == JoinKind::ChangeOfFolder)
                 {
-                    written.prompt_files = merge_prompts(root, &prompts_of(cache))?;
-                    written.background_file = write_new_background(root, &cache.background)?;
+                    merge_cache(root, cache, &mut written)?;
                 }
             }
         }
@@ -135,12 +133,26 @@ fn prompts_of(cache: &Cache) -> Vec<Prompt> {
     prompts
 }
 
+/// Add the prompts and the Background of `cache` that the folder does not
+/// have. A prompt that cannot be written does not stop the other prompts
+/// or the Background. The first error comes back after them, so that the
+/// old cache stays and the next join tries again.
+fn merge_cache(root: &Path, cache: &Cache, written: &mut Written) -> io::Result<()> {
+    let prompts = merge_prompts(root, &prompts_of(cache), &mut written.prompt_files);
+    let background = write_new_background(root, &cache.background);
+    prompts?;
+    written.background_file = background?;
+    Ok(())
+}
+
 /// Add each prompt of `prompts` that the folder does not have (R22). A
 /// prompt with the same name and the same texts, or with the same id and
 /// the same texts, is there already. The texts are the summary text and
 /// the title text (KTD9). A prompt with the same name and other texts gets
-/// a free name. Returns the file names that it wrote.
-fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
+/// a free name. Adds the file names that it wrote to `written`. A write
+/// error does not stop the next prompts; the first error comes back at
+/// the end.
+fn merge_prompts(root: &Path, prompts: &[Prompt], written: &mut Vec<String>) -> io::Result<()> {
     let scan = scan_prompts(root).map_err(|cause| io::Error::other(cause.to_string()))?;
     // The id, the names and the texts of each prompt in the folder.
     let mut folder: Vec<(String, Vec<String>, (String, String))> = scan
@@ -154,7 +166,7 @@ fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
             )
         })
         .collect();
-    let mut written = Vec::new();
+    let mut failed = None;
     for prompt in prompts {
         if is_built_in(&prompt.id) || prompt.text.trim().is_empty() {
             continue;
@@ -183,9 +195,16 @@ fn merge_prompts(root: &Path, prompts: &[Prompt]) -> io::Result<Vec<String>> {
             )
             .collect();
         let name = free_prompt_name(prompt.name.trim(), taken.iter().map(String::as_str));
-        let file_name = write_new_prompt(root, &id, &name, &prompt.text, &prompt.title_text)?;
-        folder.push((id, vec![name], texts));
-        written.push(file_name);
+        match write_new_prompt(root, &id, &name, &prompt.text, &prompt.title_text) {
+            Ok(file_name) => {
+                folder.push((id, vec![name], texts));
+                written.push(file_name);
+            }
+            Err(e) => {
+                log::warn!("the prompt {} cannot be written: {e}", prompt.id);
+                failed.get_or_insert(e);
+            }
+        }
     }
-    Ok(written)
+    failed.map_or(Ok(()), Err)
 }
