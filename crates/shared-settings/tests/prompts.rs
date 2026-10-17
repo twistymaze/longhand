@@ -770,6 +770,38 @@ fn the_longest_texts_of_four_byte_characters_fit_and_round_trip() {
     assert_eq!(prompt.title_text, title);
 }
 
+// A rename keeps an id with a line end that another computer or an agent
+// wrote in quotes. The front matter of the file stays one block.
+#[test]
+fn a_quoted_id_with_a_line_end_stays_the_same_after_a_rename() {
+    let root = folder();
+    write_file(
+        root.path(),
+        "Recap.md",
+        "---\nid: \"recap\\n---\\nInjected\"\nname: Recap\n---\n\nRecap text.\n",
+    );
+    let id = scan(root.path()).prompts[0].id.clone();
+    assert_eq!(id, "recap\n---\nInjected");
+    rename_prompt(root.path(), &id, "Weekly").unwrap();
+    let scanned = scan(root.path());
+    let prompt = scanned.get(&id).unwrap();
+    assert_eq!(prompt.name, "Weekly");
+    assert_eq!(prompt.text, "Recap text.");
+}
+
+// The longest file name stem with `.md` and the temporary names of the
+// write still fits the 255-byte limit of a file name.
+#[test]
+fn a_prompt_with_the_longest_file_name_is_made_and_made_again() {
+    let root = folder();
+    let name = "n".repeat(197);
+    create_prompt(root.path(), &name, "Text.").unwrap();
+    create_prompt(root.path(), &name, "Text.").unwrap();
+    let names = file_names(root.path());
+    assert_eq!(names.len(), 2, "{names:?}");
+    assert!(names.iter().any(|n| n.len() == 200), "{names:?}");
+}
+
 #[test]
 fn two_files_with_one_id_and_one_summary_text_but_two_title_texts_are_a_conflict() {
     let root = folder();

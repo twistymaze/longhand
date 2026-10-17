@@ -869,3 +869,31 @@ fn a_file_without_the_widget_and_new_note_keys_has_them_absent() {
     assert_eq!(defaults.show_recording_widget, Field::Known(true));
     assert_eq!(defaults.new_note_records, Field::Known(true));
 }
+
+#[test]
+fn a_settings_file_over_the_size_limit_is_not_read_and_a_patch_refuses() {
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"schema_version": 1, "pad": "x".repeat(1 << 20)}),
+    );
+    let path = root.path().join(".longhand").join(SETTINGS_FILE);
+    let before = fs::read(&path).unwrap();
+    assert!(matches!(
+        read_settings(root.path()),
+        FileRead::NotAvailable(Unavailable::DoesNotParse(_))
+    ));
+    assert!(save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn a_settings_file_just_under_the_size_limit_reads() {
+    let root = folder();
+    let pad = (1 << 20) - 100;
+    write_raw(
+        root.path(),
+        &json!({"schema_version": 1, "pad": "x".repeat(pad)}),
+    );
+    assert!(matches!(read_settings(root.path()), FileRead::Parsed(_)));
+}

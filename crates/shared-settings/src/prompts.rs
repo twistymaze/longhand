@@ -27,6 +27,7 @@
 //! computer gives each file the same id without a write. A scan never
 //! writes.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -51,8 +52,9 @@ const KEY_NAME: &str = "name";
 const FALLBACK_STEM: &str = "Prompt";
 
 /// The most bytes in the part of a file name before `.md`. A free name
-/// adds a number and the atomic write adds a temporary prefix and suffix,
-/// and the total must stay below the 255-byte limit of macOS and Windows.
+/// adds a number, and the atomic write of an existing file adds a
+/// temporary prefix and suffix of 22 bytes. The total must stay below the
+/// 255-byte limit of macOS and Windows.
 const MAX_STEM_BYTES: usize = 197;
 
 /// The line in the body of a prompt file between the summary text and
@@ -277,6 +279,7 @@ pub fn render_prompt_file_with_title(id: &str, name: &str, text: &str, title_tex
 }
 
 fn render(id: &str, name: &str, extra: &[String], text: &str, title_text: &str) -> String {
+    let id = id_text(id);
     let name = serde_json::to_string(name).expect("a string serializes");
     let mut out = format!("{FRONT_MATTER_LINE}\n{KEY_ID}: {id}\n{KEY_NAME}: {name}\n");
     for line in extra {
@@ -389,6 +392,23 @@ fn front_matter(contents: &str) -> Option<Parsed> {
     }
     parsed.open = true;
     Some(parsed)
+}
+
+/// The front matter text of `id`. A plain id is written as it is, so the
+/// ids that Longhand makes stay `id: <uuid>`. Any other id is a JSON
+/// string in quotes, so that a read gives the same id: an id that another
+/// computer or an agent wrote in quotes can hold a line end, a control
+/// character, a quote at its start or spaces at its ends.
+fn id_text(id: &str) -> Cow<'_, str> {
+    let plain = !id.is_empty()
+        && id.trim() == id
+        && !id.starts_with('"')
+        && !id.chars().any(char::is_control);
+    if plain {
+        Cow::Borrowed(id)
+    } else {
+        Cow::Owned(serde_json::to_string(id).expect("a string serializes"))
+    }
 }
 
 /// A front matter value: a JSON string in quotes, or the text as it is.
@@ -1193,6 +1213,20 @@ mod tests {
         assert_eq!(parsed.text, text);
         assert_eq!(parsed.title_text, "");
         assert!(parsed.extra.is_empty());
+    }
+
+    // An id that another computer or an agent wrote in quotes can hold a
+    // line end or spaces at its ends. A write keeps the id as it is.
+    #[test]
+    fn an_id_that_is_not_plain_parses_back() {
+        for id in ["a\n---\nb", " a ", "a\r", "\"x\"", "a\tb"] {
+            let parsed = parse_prompt_file(&render(id, "N", &[], "Text.", ""));
+            assert_eq!(parsed.id.as_deref(), Some(id), "{id:?}");
+            assert_eq!(parsed.name.as_deref(), Some("N"), "{id:?}");
+            assert_eq!(parsed.text, "Text.", "{id:?}");
+        }
+        let plain = "6f1c7a3e-2b1d-4c8e-9f0a-1b2c3d4e5f60";
+        assert!(render(plain, "N", &[], "Text.", "").starts_with(&format!("---\nid: {plain}\n")));
     }
 
     #[test]

@@ -453,8 +453,14 @@ pub fn read_settings(root: &Path) -> FileRead {
     if let Err(cause) = check_root(root) {
         return FileRead::NotAvailable(cause);
     }
-    let bytes = match std::fs::read(settings_path(root)) {
-        Ok(bytes) => bytes,
+    let bytes = match read_limited(&settings_path(root), MAX_SETTINGS_BYTES) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return FileRead::NotAvailable(Unavailable::DoesNotParse(ParseError {
+                message: "the file is too large".into(),
+                line: None,
+            }));
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => return FileRead::Missing,
         Err(e) => return FileRead::NotAvailable(Unavailable::Unreadable(e.to_string())),
     };
@@ -469,6 +475,21 @@ pub fn read_settings(root: &Path) -> FileRead {
             line: Some(e.line()).filter(|&line| line > 0),
         })),
     }
+}
+
+/// The most bytes that the settings file can hold. A synced file can be
+/// of any size, and the read must not use all the memory.
+const MAX_SETTINGS_BYTES: u64 = 1 << 20;
+
+/// The bytes of the file at `path`, or `None` when it holds more than
+/// `limit` bytes. The read stops after `limit + 1` bytes.
+fn read_limited(path: &Path, limit: u64) -> io::Result<Option<Vec<u8>>> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    Ok((bytes.len() as u64 <= limit).then_some(bytes))
 }
 
 /// Refuse a storage folder `root` that is not a folder that exists and
@@ -541,8 +562,12 @@ fn settings_bytes(raw: &Map<String, Value>) -> Vec<u8> {
 /// file is complete before it gets its name, as with `write_atomic`. The
 /// temporary name starts with `.`, so no scan reads it. Returns false, and
 /// writes nothing, when the name is taken.
+///
+/// The staged name does not hold `name`, because `write_atomic` adds its
+/// own temporary name to it, and a long `name` would then go past the
+/// 255-byte limit of a file name.
 pub(crate) fn write_new(dir: &Path, name: &str, contents: &[u8]) -> io::Result<bool> {
-    let staged = format!(".{name}.{}.new", uuid::Uuid::new_v4().simple());
+    let staged = format!(".{}.new", uuid::Uuid::new_v4().simple());
     session_save::home_write::write_atomic(dir, &staged, contents)?;
     let placed = session_save::rename::rename_noreplace(&dir.join(&staged), &dir.join(name));
     if let Err(e) = placed {
