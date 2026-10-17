@@ -440,7 +440,7 @@ fn prepare_fingerprints(
                 .and_then(|s| s.parse::<u64>().ok())
                 .is_some_and(|start| start >= active[0].offset_ms * 16)
     };
-    let guard = lock(store);
+    let mut guard = lock(store);
     for stage in [
         Stage::Diarize,
         Stage::Join,
@@ -460,19 +460,28 @@ fn prepare_fingerprints(
             guard.clear_checkpoints(id, stage)?;
         }
     }
+    let generation: Option<String> = guard
+        .checkpoint_value(id, Stage::Transcribe, GENERATION_KEY)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?;
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
         // A source proof describes recorded audio, not a result. A later
         // Resume must check the proofs of earlier segments again.
         let keep_proof = key.starts_with("live-source-") || key.starts_with("live-snapshot-");
         let keep_live =
             keep_proof || live_matches && (key.contains("-live-") || key == LIVE_IDENTITY_KEY);
-        let keep_asr = timed && (key.starts_with("seg-") || key == "recognition-generation-v1");
+        let keep_asr = timed && (key.starts_with("seg-") || key == GENERATION_KEY);
         let keep_prefix = prefix.is_some()
-            && (key == "recognition-generation-v1"
-                || key == super::saved_prefix::KEY
-                || keep_live_epoch(&key));
+            && (key == GENERATION_KEY || key == super::saved_prefix::KEY || keep_live_epoch(&key));
         if !keep_live && !keep_asr && !keep_prefix && key != "live-invalidation-reasons" {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
+            // The next attempt makes a new generation. Nothing reads the
+            // rows of the replaced one.
+            if key == GENERATION_KEY
+                && let Some(generation) = &generation
+            {
+                guard.delete_recognition_generation(id, generation)?;
+            }
         }
     }
     drop(guard);
@@ -907,22 +916,56 @@ pub(super) fn persist_result(
             speakers: vec![turn.clone()],
         });
     commit_blocks(store, id, rows.chain(speakers))?;
-    checkpoint::put(
+    put_index(
         store,
         id,
         Stage::Transcribe,
         super::RESULT_KEY,
+        &generation,
+        &prefix,
         &ResultIndex {
             version: 1,
             route: result.route,
-            generation,
-            prefix,
+            generation: generation.clone(),
+            prefix: prefix.clone(),
             coverage: result.coverage.clone(),
             limitations: result.coverage_limitations.clone(),
             rows: result.rows.len(),
             speakers: result.speakers.len(),
         },
     )
+}
+/// Put a result or speaker index after its blocks are written. The put
+/// also deletes the blocks of the index that it replaces in the same
+/// generation, in one transaction. The `previous_*` copies of a
+/// Transcribe Again run are not read here, so their blocks stay.
+fn put_index(
+    store: &SharedStore,
+    id: &str,
+    stage: Stage,
+    key: &str,
+    generation: &str,
+    prefix: &str,
+    index: &impl serde::Serialize,
+) -> Result<(), StageError> {
+    let mut guard = lock(store);
+    let old: Option<serde_json::Value> = guard
+        .checkpoint_value(id, stage, key)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?;
+    let replaced = old.as_ref().and_then(|old| {
+        let same = old.get("generation")?.as_str()? == generation;
+        let old = old.get("prefix")?.as_str()?;
+        (same && old != prefix).then_some(old)
+    });
+    guard.replace_recognition_index(
+        id,
+        stage,
+        key,
+        &serde_json::to_string(index)?,
+        replaced.map(|old| (generation, old)),
+    )?;
+    Ok(())
 }
 pub(super) fn load_result(
     store: &SharedStore,
@@ -1005,15 +1048,17 @@ pub fn persist_speakers(
         speakers: vec![turn.clone()],
     });
     commit_blocks(store, id, blocks)?;
-    checkpoint::put(
+    put_index(
         store,
         id,
         Stage::Diarize,
         super::SPEAKERS_KEY,
+        &generation,
+        &prefix,
         &SpeakerIndex {
             version: 1,
-            generation,
-            prefix,
+            generation: generation.clone(),
+            prefix: prefix.clone(),
             count: turns.len(),
         },
     )
@@ -1672,5 +1717,157 @@ mod tests {
         replacement.last_mut().unwrap().finality = Finality::Final;
         persist_speakers(&store, "test", &replacement).unwrap();
         assert_eq!(load_speakers(&store, "test").unwrap().unwrap(), replacement);
+    }
+
+    /// The distinct `{kind}/{sequence}/` prefixes that have blocks.
+    fn stored_prefixes(store: &SharedStore, generation: &str, kind: &str) -> Vec<String> {
+        let mut prefixes = std::collections::BTreeSet::new();
+        lock(store)
+            .visit_recognition("test", generation, |block| {
+                if let Some(rest) = block.key.strip_prefix(&format!("{kind}/")) {
+                    let sequence = rest.split('/').next().unwrap_or_default();
+                    prefixes.insert(format!("{kind}/{sequence}/"));
+                }
+                Ok(())
+            })
+            .unwrap();
+        prefixes.into_iter().collect()
+    }
+
+    #[test]
+    fn a_new_result_or_speaker_index_removes_the_blocks_of_the_index_it_replaces() {
+        let (_temp, store, _, _) = audio_fixture();
+        let generation = super::super::stages::generation(&store, "test").unwrap();
+        let scope = SpeakerScope {
+            generation: generation.clone(),
+            epoch: 1,
+        };
+        let range = SampleRange {
+            start: 0,
+            end: 16000,
+        };
+        let turn = SpeakerTurn {
+            range,
+            timing: TimingPrecision::NativeSegment,
+            speaker: SpeakerKey {
+                scope: scope.clone(),
+                input_start_sample: 0,
+                local_id: 1,
+            },
+            finality: Finality::Final,
+        };
+        let result = RouteResult {
+            route: super::super::Route::Off,
+            rows: vec![RecognitionSegment {
+                id: RecognitionId {
+                    scope,
+                    input_start_sample: 0,
+                    ordinal: 0,
+                },
+                range,
+                timing: TimingPrecision::NativeSegment,
+                text: "words".into(),
+                speaker: None,
+                revision: 1,
+                text_finality: Finality::Final,
+                speaker_finality: Finality::Final,
+            }],
+            speakers: vec![turn.clone()],
+            coverage: vec![range],
+            coverage_limitations: vec![],
+        };
+        for _ in 0..2 {
+            persist_result(&store, "test", &result).unwrap();
+            persist_speakers(&store, "test", std::slice::from_ref(&turn)).unwrap();
+        }
+
+        let results: ResultIndex =
+            checkpoint::get(&store, "test", Stage::Transcribe, super::super::RESULT_KEY)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            stored_prefixes(&store, &generation, "result"),
+            [results.prefix]
+        );
+        let speakers: SpeakerIndex =
+            checkpoint::get(&store, "test", Stage::Diarize, super::super::SPEAKERS_KEY)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            stored_prefixes(&store, &generation, "speakers"),
+            [speakers.prefix]
+        );
+        assert_eq!(
+            load_result(&store, "test").unwrap().unwrap().rows,
+            result.rows
+        );
+        assert_eq!(load_speakers(&store, "test").unwrap().unwrap(), vec![turn]);
+    }
+
+    #[test]
+    fn a_retry_after_a_verify_failure_keeps_the_live_text_of_a_finished_epoch() {
+        // The Retry deletes the epoch checkpoint. Catch-up then reads the
+        // live blocks, so they stay until the note is saved.
+        let (_temp, store, _, _) = audio_fixture();
+        let generation = super::super::stages::generation(&store, "test").unwrap();
+        let scope = SpeakerScope {
+            generation: generation.clone(),
+            epoch: 1,
+        };
+        let range = SampleRange {
+            start: 0,
+            end: 16000,
+        };
+        for key in [
+            format!("nemo/{:020}/word/0", 1),
+            format!("native-final/{:020}/row/0", 1),
+        ] {
+            let block = OutputBlock {
+                key,
+                scope: scope.clone(),
+                revision: 1,
+                coverage: Coverage {
+                    received: Some(range),
+                    computed: Some(range),
+                    provisional: None,
+                    committed: Some(range),
+                },
+                rows: vec![RecognitionSegment {
+                    id: RecognitionId {
+                        scope: scope.clone(),
+                        input_start_sample: 0,
+                        ordinal: 0,
+                    },
+                    range,
+                    timing: TimingPrecision::NativeSegment,
+                    text: "live".into(),
+                    speaker: None,
+                    revision: 1,
+                    text_finality: Finality::Final,
+                    speaker_finality: Finality::Final,
+                }],
+                speakers: vec![],
+            };
+            lock(&store).commit_recognition("test", &block).unwrap();
+        }
+        checkpoint::put(
+            &store,
+            "test",
+            Stage::Transcribe,
+            &format!("recognition-epoch-{:020}", 0),
+            &serde_json::json!({ "scope": scope, "range": range,
+                "output": { "text": true, "speakers": false } }),
+        )
+        .unwrap();
+
+        super::super::stages::prepare_retry(&store, "test").unwrap();
+
+        let mut words = vec![];
+        visit_catchup_blocks(&lock(&store), "test", &generation, |block| {
+            words.extend(block.rows.into_iter().map(|row| row.text));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(words, ["live"]);
     }
 }

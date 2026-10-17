@@ -1089,6 +1089,102 @@ fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
 }
 
 #[test]
+fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
+    use session_core::recognition::{
+        Coverage, GENERATION_KEY, OutputBlock, SampleRange, SpeakerScope,
+    };
+    let store = store();
+    let root = tempfile::tempdir().unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    assert!(library::scan::write_marker(dest.path()));
+    queue_session(
+        &store,
+        root.path(),
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    store
+        .lock()
+        .unwrap()
+        .dequeue_session("s", "test", common::at(100))
+        .unwrap();
+    let segments = store.lock().unwrap().segments("s").unwrap();
+    let working = root.path().join("s");
+    std::fs::create_dir_all(working.join("audio")).unwrap();
+    std::fs::write(working.join(&segments[0].audio_file), b"opus").unwrap();
+    let transcript = "# Transcript\n\n**Speaker 1** [00:00]\nHello.\n";
+    std::fs::write(working.join(TRANSCRIPT_FILE), transcript).unwrap();
+    checkpoint::mark_complete(&store, "s", Stage::Verify, 1).unwrap();
+    checkpoint::put(&store, "s", Stage::Transcribe, GENERATION_KEY, &"g").unwrap();
+    let range = SampleRange {
+        start: 0,
+        end: 16000,
+    };
+    let put = |key: String, epoch| {
+        let block = OutputBlock {
+            key,
+            scope: SpeakerScope {
+                generation: "g".into(),
+                epoch,
+            },
+            revision: 1,
+            coverage: Coverage {
+                received: Some(range),
+                computed: Some(range),
+                provisional: None,
+                committed: Some(range),
+            },
+            rows: vec![],
+            speakers: vec![],
+        };
+        store
+            .lock()
+            .unwrap()
+            .commit_recognition("s", &block)
+            .unwrap();
+    };
+    // Epoch 1 is finished: it has a final copy. A live worker still
+    // writes epoch 2.
+    put(format!("nemo/{:020}/word/0", 1), 1);
+    put(format!("native-final/{:020}/row/0", 1), 1);
+    put(format!("nemo/{:020}/word/0", 2), 2);
+
+    let saved = pipeline::save::run(
+        &store,
+        "s",
+        &working,
+        &segments,
+        Some(dest.path()),
+        &session_save::RealFs,
+        &pipeline::Unattended,
+    )
+    .unwrap();
+
+    let mut keys = vec![];
+    store
+        .lock()
+        .unwrap()
+        .visit_recognition("s", "g", |block| {
+            keys.push(block.key);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        keys,
+        [
+            format!("native-final/{:020}/row/0", 1),
+            format!("nemo/{:020}/word/0", 2),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(saved.path.join(TRANSCRIPT_FILE)).unwrap(),
+        transcript
+    );
+}
+
+#[test]
 fn a_first_save_whose_files_cannot_be_written_releases_its_claim() {
     // Nothing moved, so Resume works again, and the next claim names the
     // folder from the title at that time.

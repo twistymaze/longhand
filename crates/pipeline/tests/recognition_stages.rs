@@ -550,6 +550,75 @@ fn changed_preprocessing_invalidates_completed_transcription() {
 }
 
 #[test]
+fn changed_preprocessing_deletes_the_rows_of_the_replaced_generation() {
+    let (temp, store, mut spec, segments) = setup(SpeakerSource::Off);
+    let provider = Provider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        loads: Arc::new(AtomicUsize::new(0)),
+        fail_speaker: false,
+        native_tokens: false,
+    };
+    let dir = temp.path().join("route");
+    let run = |spec: &ExecutionSpec| {
+        pipeline::recognition::execute(
+            &store,
+            "route",
+            &dir,
+            &segments,
+            spec,
+            &provider,
+            Stage::Transcribe,
+            &Unattended,
+            &mut |_| {},
+        )
+        .unwrap()
+    };
+    let generation = || -> String {
+        let value = store
+            .lock()
+            .unwrap()
+            .checkpoint_value(
+                "route",
+                Stage::Transcribe,
+                session_core::recognition::GENERATION_KEY,
+            )
+            .unwrap()
+            .unwrap();
+        serde_json::from_str(&value).unwrap()
+    };
+    let rows = |generation: &str| {
+        let mut rows = 0;
+        store
+            .lock()
+            .unwrap()
+            .visit_recognition("route", generation, |_| {
+                rows += 1;
+                Ok(())
+            })
+            .unwrap();
+        rows
+    };
+    run(&spec);
+    let old = generation();
+    assert!(rows(&old) > 0);
+    spec.preprocessing_revision.push_str("-changed");
+    run(&spec);
+    let new = generation();
+    assert_ne!(new, old);
+    assert!(rows(&new) > 0);
+    assert_eq!(rows(&old), 0, "the replaced generation keeps no rows");
+    // A generation with no epoch row starts again at epoch 1.
+    let epoch = store
+        .lock()
+        .unwrap()
+        .restart_recognition_epoch("route", &old, 0, 0)
+        .unwrap()
+        .scope
+        .epoch;
+    assert_eq!(epoch, 1, "the replaced generation keeps no epoch row");
+}
+
+#[test]
 fn join_writes_portable_output_referenced_by_the_manifest() {
     let (temp, store, spec, segments) = setup(SpeakerSource::Off);
     let provider = Provider {
