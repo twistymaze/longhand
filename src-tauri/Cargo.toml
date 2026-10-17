@@ -41,7 +41,6 @@ rfd = { version = "0.16", default-features = false, features = ["common-controls
 # The log file path for the alert after a build error (src/startup.rs).
 # tauri uses the same crate for its paths.
 dirs = "6"
-# Free space on the destination volume, as anarlog measures it.
 
 audio = { path = "../crates/audio" }
 audio-cpal = { path = "../crates/audio-cpal" }
