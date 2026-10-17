@@ -1,6 +1,7 @@
 ---
 title: Rules for settings that several computers share through a synced folder
 date: 2026-09-29
+last_updated: 2026-10-17
 category: integration-issues
 module: "Shared settings (crates/shared-settings/src/file.rs, prompts.rs, view.rs, join.rs; src-tauri/src/managers/shared.rs)"
 problem_type: integration_issue
@@ -15,7 +16,7 @@ symptoms:
   - "An older version that saves the whole file removes fields that a newer version added"
   - "A sync service makes copies of the file with names such as `settings 2.json`, and a computer uses the wrong one"
 resolution_type: design_rule
-tags: [sync, storage-folder, shared-settings, conflict-copy, schema-version, prompts, icloud, one-library]
+tags: [sync, storage-folder, shared-settings, conflict-copy, schema-version, prompts, icloud, one-library, symlink, outside-link, size-limit]
 related_components: [library, summarize]
 ---
 
@@ -49,7 +50,19 @@ These rules come from building this feature. Each rule guards against a fault th
 
 9. **The cache copy stands in only for a prompt file that exists and cannot be used now. A missing file is missing at once.** A prompt file can exist and still not be usable for a time: a sync delivered only a part of it (a front matter block with no closing line), it cannot be read, it has no prompt text, or it is not UTF-8. The scan puts its id in `PromptScan::unusable` (the id in the file, or the `file_name_id` when the file has no id), so the prompt is not missing. A file whose id the scan cannot read sets `unknown_unusable`, and then no custom prompt is missing. For such a prompt, `resolve` in `view.rs` uses the last copy in the cache. A prompt whose file is not in the folder has no cache stand-in: a summary uses the default prompt at once. The settings that name a missing prompt (the active prompt and the type prompt choices) clear only at a write that a user change on this computer causes, after the prompt has been missing for about one minute (`MISSING_PROMPT_WAIT`), and only for a prompt that this computer read before. The wait keeps the settings while a sync service delivers a rename as a delete and then a create. The clear needs a `settings.json` that parses.
 
+   A prompt file whose details cannot be read (a `metadata` error other than `NotFound`, for example no permission) is also unusable, not missing (`read_entry` in `prompts.rs`, PR #31).
+
    A prompt over the size limit has two cases. A file over `MAX_FILE_BYTES` is too large for the scan: the scan reads only its front matter, Settings lists it with no text and an over-limit flag, and a summary uses the default prompt. The file exists, so the prompt is not missing and the settings that name it stay. A file under that size whose prompt text or title text is over its character limit, for example after an edit outside Longhand, is listed with an over-limit flag, and a run uses its whole text (`PromptFile::over_limit`).
+
+10. **Follow a link in `.longhand` only to a file in the storage folder.** A sync service can deliver a link: `background.md`, a prompt file, the `prompts` folder or the whole `.longhand` folder can link to a place outside the storage folder. The Background and the prompt texts go to the summary service, so a link must not make a file that the user did not put in the storage folder into a Background or a prompt. The rules are in `crates/shared-settings/src/inside.rs` (PR #31):
+    - `inside_file` accepts a path only when its canonical path starts with the canonical storage folder. `Path::starts_with` compares by component, so a sibling folder such as `storage-other` does not match `storage`.
+    - `canonicalize` runs only when `has_link` finds a link, or a part that cannot be examined, on the path under the storage folder. A path with no link is used as it is, because `canonicalize` fails on some network and virtual drives of Windows.
+    - A Background that is refused is `Unreadable`. A prompt that is refused is `Found::Unusable(None)`, never missing (rule 9), so the wait for missing prompts does not start.
+    - Each write into `.longhand` calls `check_write_folder`. It examines the nearest part of the path that exists, and refuses a folder that resolves outside the storage folder.
+    - A Background save can replace a `background.md` link that points outside (`BackgroundUnavailable::is_outside_link`), because the save writes a new file in place of the link and does not touch the target. This is true only when the `.longhand` folder itself is in the storage folder. `read_background` examines the folder first: before that check, Settings offered a Background save that always failed for a linked `.longhand` folder.
+    - Accepted limits: the check runs before the open, so a link that a sync puts in place between the two is followed once. `settings.json` text does not go to the summary service, and its writes do not use this check.
+
+11. **Limit what a read and a write can do with a damaged file.** A `settings.json` larger than 1 MiB (`MAX_SETTINGS_BYTES`, read with `read_limited` in `file.rs`) is not read whole. It is `DoesNotParse` (rule 4), so nothing writes over it. `write_new` stages the new file as `.{uuid}.new`, not as the target name plus a suffix, so a prompt with the longest allowed name can still be written. The join writes each prompt that it can, then the Background, and returns the first error, so one prompt that cannot be written does not stop the others and the next join tries again (`merge_cache` in `join.rs`).
 
 ## Also
 
@@ -62,6 +75,7 @@ These rules come from building this feature. Each rule guards against a fault th
 
 - Each new field in the shared file needs a `Field` value, a `KEY_` name equal to the local key, and a `SharedValue` variant. A test must show that a save of another field keeps it.
 - Each new automatic reader of `.longhand` needs a test with a file that does not parse, a file with a newer `schema_version`, and a conflict copy such as `settings 2.json`. The test must assert that nothing is written.
+- Each new reader or writer of a file in `.longhand` uses `inside_file` or `check_write_folder`, and has a test with a link that points outside the storage folder (a file link and a linked folder).
 - Test two computers on a real synced folder before a release. The manual test in the plan (Verification Contract) does this on two Macs with one iCloud Drive folder.
 
 ## Related Issues

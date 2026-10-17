@@ -15,8 +15,8 @@ root_cause: missing_validation
 resolution_type: code_fix
 severity: high
 framework_version: rust 1.94.0
-last_updated: 2026-10-15
-tags: [summary, summary-regeneration, context-probe, budget, plan, checkpoint, stale-state, not-reachable, retry, sleep, wake, darkwake, network, context-limit, server-error]
+last_updated: 2026-10-17
+tags: [summary, summary-regeneration, context-probe, budget, plan, checkpoint, stale-state, not-reachable, retry, sleep, wake, darkwake, network, context-limit, server-error, tls, deadline]
 related_components: [summarize, background_job]
 ---
 
@@ -86,6 +86,13 @@ Tests: `a_server_error_from_a_probe_is_an_error_not_the_default` and `a_server_e
 
 **Rule added:** when a fix stops a bad value from being saved, also repair the values that earlier versions already saved. Here, the check that decides whether a saved plan can be used again (`agrees_with`) did that repair.
 
+## Follow-up: a probe time limit and TLS failures (PR #31)
+
+The line numbers above are from PR #15 and PR #17 and are now out of date. Find the code by the function names: `probe`, `answer` and `is_server_problem` in `crates/summarize/src/context.rs`, and `send`, `send_once` and `is_tls_failure` in `crates/summarize/src/client.rs`.
+
+- **A first probe that reaches its time limit is an error.** `answer` treats `SummarizeError::Deadline` on the first probe like `Transport`: the run stops before it saves a plan. Before, a first probe that timed out was a miss, so a slow or sleeping network gave the default plan again. A 401 or 403 on the first probe stays a miss, because some gateways refuse only the probe route. Tests in `crates/summarize/tests/context.rs` pin both cases.
+- **A TLS failure is not sent again.** reqwest reports a failed TLS handshake as an error with `is_connect()` true. The request did not arrive, but a new try gives the same failure, and the retry waits made the user wait about 7 minutes for a certificate fault. `send_once` now finds a `native_tls::Error` in the error's source chain (`is_tls_failure`) and returns the error at once. `native-tls` is a direct dependency of `summarize` for this check. Accepted limit: a reset during the handshake is also wrapped as a `native_tls::Error`, so it is not retried either.
+
 ## Related Issues
 
 - [summary-regeneration-failed-with-no-working-folder.md](summary-regeneration-failed-with-no-working-folder.md): another Regenerate Summary failure, with a different cause.
@@ -93,3 +100,4 @@ Tests: `a_server_error_from_a_probe_is_an_error_not_the_default` and `a_server_e
 - [resume-during-processing-deleted-live-text-proofs.md](resume-during-processing-deleted-live-text-proofs.md): discard checkpoints that cannot be trusted instead of resuming them.
 - PR #15.
 - PR #17.
+- PR #31.
