@@ -378,3 +378,91 @@ fn a_cache_from_an_older_version_has_an_empty_background() {
     let cache: Cache = serde_json::from_value(json).unwrap();
     assert_eq!(cache.background, "");
 }
+
+/// A folder outside the storage folder with the file `name` that holds
+/// `text`.
+#[cfg(unix)]
+fn outside_file(name: &str, text: &str) -> (tempfile::TempDir, PathBuf) {
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join(name);
+    fs::write(&path, text).unwrap();
+    (outside, path)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_background_that_links_outside_the_folder_is_not_available() {
+    let root = folder();
+    let (_outside, target) = outside_file("secret.md", "Outside text.");
+    std::os::unix::fs::symlink(&target, background_path(root.path())).unwrap();
+    assert!(matches!(
+        read_background(root.path()),
+        BackgroundRead::NotAvailable(BackgroundUnavailable::Unreadable(_))
+    ));
+    let loaded = load(root.path(), None);
+    assert_ne!(loaded.view.background, "Outside text.");
+    assert!(loaded.view.background_unavailable.is_some());
+    assert!(
+        fs::symlink_metadata(background_path(root.path()))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "Outside text.");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_background_that_links_to_a_file_in_the_folder_reads_the_text() {
+    let root = folder();
+    let target = root.path().join("Background text.md");
+    fs::write(&target, "Inside text.").unwrap();
+    std::os::unix::fs::symlink(&target, background_path(root.path())).unwrap();
+    assert_eq!(
+        read_background(root.path()),
+        BackgroundRead::Text("Inside text.".into())
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_background_that_links_to_a_file_that_does_not_exist_is_not_available() {
+    let root = folder();
+    std::os::unix::fs::symlink(root.path().join("gone.md"), background_path(root.path())).unwrap();
+    assert!(matches!(
+        read_background(root.path()),
+        BackgroundRead::NotAvailable(BackgroundUnavailable::Unreadable(_))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_replaces_a_link_outside_the_folder_with_a_file() {
+    let root = folder();
+    let (_outside, target) = outside_file("secret.md", "Outside text.");
+    std::os::unix::fs::symlink(&target, background_path(root.path())).unwrap();
+    save_background(root.path(), "New text.").unwrap();
+    let meta = fs::symlink_metadata(background_path(root.path())).unwrap();
+    assert!(meta.file_type().is_file());
+    assert_eq!(
+        read_background(root.path()),
+        BackgroundRead::Text("New text.".into())
+    );
+    assert_eq!(fs::read_to_string(&target).unwrap(), "Outside text.");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_save_into_a_longhand_folder_that_links_outside_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let settings = serde_json::to_vec(&default_settings()).unwrap();
+    fs::write(outside.path().join("settings.json"), settings).unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join(".longhand")).unwrap();
+    assert!(save_background(root.path(), "New text.").is_err());
+    let names: Vec<_> = fs::read_dir(outside.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["settings.json"]);
+}

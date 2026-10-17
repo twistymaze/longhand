@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 pub use summarize::prompts::BACKGROUND_TEXT_LIMIT;
 
 use crate::file::{FileRead, Unavailable, check_root, longhand_folder, read_settings, write_new};
+use crate::inside::{OUTSIDE_FILE, check_write_folder, inside_file};
 use crate::prompts::format_count;
 
 /// The name of the Background file in the hidden Longhand folder.
@@ -93,9 +94,19 @@ pub fn read_background(root: &Path) -> BackgroundRead {
         return BackgroundRead::NotAvailable(BackgroundUnavailable::Folder(cause));
     }
     let path = background_path(root);
+    // `symlink_metadata` tells only whether the entry exists. A link to a
+    // file that does not exist exists.
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return BackgroundRead::Missing,
+        Err(e) => return unreadable(e.to_string()),
+    }
+    let path = match inside_file(root, &path) {
+        Ok(path) => path,
+        Err(e) => return unreadable(e.to_string()),
+    };
     let meta = match std::fs::metadata(&path) {
         Ok(meta) => meta,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return BackgroundRead::Missing,
         Err(e) => return unreadable(e.to_string()),
     };
     if !meta.is_file() {
@@ -137,9 +148,17 @@ pub fn save_background(root: &Path, text: &str) -> Result<(), BackgroundError> {
     if text.chars().count() > BACKGROUND_TEXT_LIMIT {
         return Err(BackgroundError::TooLong);
     }
-    if let BackgroundRead::NotAvailable(cause) = read_background(root) {
-        return Err(BackgroundError::FileNotAvailable(cause));
+    match read_background(root) {
+        // The save replaces the link with a file. It does not read or
+        // change the file outside the storage folder.
+        BackgroundRead::NotAvailable(BackgroundUnavailable::Unreadable(cause))
+            if cause == OUTSIDE_FILE => {}
+        BackgroundRead::NotAvailable(cause) => {
+            return Err(BackgroundError::FileNotAvailable(cause));
+        }
+        BackgroundRead::Text(_) | BackgroundRead::Missing => {}
     }
+    check_write_folder(root, &longhand_folder(root))?;
     session_save::home_write::write_atomic(
         &longhand_folder(root),
         BACKGROUND_FILE,
@@ -157,6 +176,7 @@ pub(crate) fn write_new_background(root: &Path, text: &str) -> io::Result<bool> 
         return Ok(false);
     }
     let folder = longhand_folder(root);
+    check_write_folder(root, &folder)?;
     std::fs::create_dir_all(&folder)?;
     write_new(&folder, BACKGROUND_FILE, text.as_bytes())
 }

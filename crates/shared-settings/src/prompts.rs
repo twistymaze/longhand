@@ -38,6 +38,7 @@ use crate::file::{
     FileRead, SaveError, SettingsFile, SharedFields, SharedValue, Unavailable, check_root,
     longhand_folder, read_settings, save_settings, write_new,
 };
+use crate::inside::{check_write_folder, inside_file};
 
 /// The folder in the hidden Longhand folder that holds the prompt files.
 pub const PROMPTS_FOLDER: &str = "prompts";
@@ -500,7 +501,7 @@ pub fn scan_prompts(root: &Path) -> Result<PromptScan, Unavailable> {
         let Ok(file_name) = item.file_name().into_string() else {
             continue;
         };
-        match read_entry(&folder, file_name) {
+        match read_entry(root, &folder, file_name) {
             Found::Prompt(entry) => entries.push(entry),
             Found::Unusable(Some(id)) => {
                 unusable.insert(id);
@@ -535,8 +536,9 @@ enum Found {
 /// The prompt in `folder/file_name`. A hidden or temporary name, and a
 /// name that is not `.md`, are not prompt files. A file over
 /// [`MAX_FILE_BYTES`] is a prompt with no text (R21): the scan reads only
-/// its front matter.
-fn read_entry(folder: &Path, file_name: String) -> Found {
+/// its front matter. A link is followed only to a file in the storage
+/// folder `root`: any other link is a prompt file that cannot be used.
+fn read_entry(root: &Path, folder: &Path, file_name: String) -> Found {
     if file_name.starts_with('.') || file_name.starts_with("~$") {
         return Found::Other;
     }
@@ -550,8 +552,28 @@ fn read_entry(folder: &Path, file_name: String) -> Found {
         return Found::Other;
     }
     let path = folder.join(&file_name);
-    let Ok(meta) = std::fs::metadata(&path) else {
-        return Found::Other;
+    // Only a file that is not there is not a prompt file. A file that
+    // cannot be examined can be a prompt that the settings name (rule 9).
+    // `symlink_metadata` tells only whether the entry exists.
+    let cannot_read = |e: io::Error| {
+        log::warn!(
+            "shared settings: cannot read the prompt file {}: {e}",
+            path.display()
+        );
+        Found::Unusable(None)
+    };
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Found::Other,
+        Err(e) => return cannot_read(e),
+    }
+    let path = match inside_file(root, &path) {
+        Ok(path) => path,
+        Err(e) => return cannot_read(e),
+    };
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) => return cannot_read(e),
     };
     if !meta.is_file() {
         return Found::Other;
@@ -627,7 +649,7 @@ fn full_texts(folder: &Path, prompt: &PromptFile) -> Result<(String, String), Pr
     if !prompt.too_large {
         return Ok((prompt.text.clone(), prompt.title_text.clone()));
     }
-    let contents = match std::fs::read(folder.join(&prompt.file_name)) {
+    let contents = match read_prompt_file(folder, &prompt.file_name) {
         Ok(bytes) => String::from_utf8(bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.utf8_error()))?,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(PromptError::NoSuchPrompt),
@@ -635,6 +657,17 @@ fn full_texts(folder: &Path, prompt: &PromptFile) -> Result<(String, String), Pr
     };
     let parsed = parse_prompt_file(&contents);
     Ok((parsed.text, parsed.title_text))
+}
+
+/// The bytes of the file `file_name` in the prompt folder `folder`. A
+/// change of a prompt reads the file again, so the file can be a link
+/// now: the read follows a link only to a file in the storage folder.
+fn read_prompt_file(folder: &Path, file_name: &str) -> io::Result<Vec<u8>> {
+    let root = folder
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    std::fs::read(inside_file(root, &folder.join(file_name))?)
 }
 
 /// Give each file its id (KTD5), join the files with one id and the same
@@ -827,6 +860,7 @@ pub(crate) fn write_new_prompt(
     title_text: &str,
 ) -> io::Result<String> {
     let folder = prompts_folder(root);
+    check_write_folder(root, &folder)?;
     std::fs::create_dir_all(&folder)?;
     let contents = render(id, name, &[], text, title_text);
     let mut taken = names_in_folder(&folder)?;
@@ -1120,8 +1154,9 @@ fn rewrite(
     text: &str,
     title_text: &str,
 ) -> Result<(), PromptError> {
-    let path = folder.join(&prompt.file_name);
-    let extra = match std::fs::read_to_string(&path) {
+    let extra = match read_prompt_file(folder, &prompt.file_name).and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }) {
         Ok(contents) => parse_prompt_file(&contents).extra,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(PromptError::NoSuchPrompt),
         Err(e) => return Err(e.into()),
@@ -1203,6 +1238,41 @@ pub(crate) fn format_count(n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_refuses_a_file_that_links_outside_after_the_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = prompts_folder(root.path());
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("Recap.md");
+        std::fs::write(
+            &path,
+            render_prompt_file("recap-id", "Recap", "Recap text."),
+        )
+        .unwrap();
+        let scan = scan_prompts(root.path()).unwrap();
+        let prompt = scan.get("recap-id").unwrap().clone();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("secret.md");
+        let secret = "---\nid: recap-id\nsecret: outside value\n---\nOutside text.\n";
+        std::fs::write(&target, secret).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(rewrite(&folder, &prompt, "Weekly", "Recap text.", "").is_err());
+        assert!(
+            std::fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), secret);
+        let large = PromptFile {
+            too_large: true,
+            ..prompt
+        };
+        assert!(full_texts(&folder, &large).is_err());
+    }
 
     #[test]
     fn a_rendered_file_parses_back() {
