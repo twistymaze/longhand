@@ -363,7 +363,7 @@ class LonghandAndSyncWorkTests(support.StorageFolderTest):
 class ByteOrderMarkTests(support.StorageFolderTest):
     def test_a_session_md_with_a_byte_order_mark_is_a_problem(self):
         snapshot = self.snapshot()
-        self.write("﻿" + BUDGET_SESSION, BUDGET, "session.md")
+        self.write("\ufeff" + BUDGET_SESSION, BUDGET, "session.md")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
         self.assertIn("byte order mark", section(out, "Problems"))
@@ -371,7 +371,7 @@ class ByteOrderMarkTests(support.StorageFolderTest):
     def test_a_prompt_with_a_byte_order_mark_passes(self):
         snapshot = self.snapshot()
         text = self.read(".longhand/prompts", "Action items.md").replace("owner.", "owner and date.")
-        self.write("﻿" + text, ".longhand/prompts", "Action items.md")
+        self.write("\ufeff" + text, ".longhand/prompts", "Action items.md")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PASS, out)
 

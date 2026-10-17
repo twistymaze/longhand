@@ -95,7 +95,7 @@ def is_work_folder(name):
 
 def other_entries(root):
     """The files and folders that are not Longhand files, by their paths in
-    the storage folder, each with "folder" or "file": names at the root that
+    the storage folder, each with True for a folder: names at the root that
     are not note folders, type folders, `.longhand` or the agent
     instructions; entries in a type folder that are not note folders; and
     hidden files in `.longhand`."""
@@ -103,7 +103,7 @@ def other_entries(root):
     out = {}
 
     def add(relative, path):
-        out[relative] = "folder" if os.path.isdir(path) else "file"
+        out[relative] = os.path.isdir(path)
 
     for name in sorted(os.listdir(root)):
         path = os.path.join(root, name)
@@ -123,7 +123,7 @@ def other_entries(root):
     for relative in lh.folder_files(folder):
         parts = relative.split("/")
         if any(lh.is_hidden(part) for part in parts) and not is_skipped(parts[-1]):
-            out[lh.LONGHAND_FOLDER + "/" + relative] = "file"
+            out[lh.LONGHAND_FOLDER + "/" + relative] = False
     return out
 
 
@@ -641,10 +641,10 @@ def compare_other_entries(report, before_state, after_state):
     new. Return whether a new Longhand work folder is present."""
     known = set(before_state["other_entries"]) | set(before_state["type_folders"])
     longhand_works = False
-    for path, kind in sorted(after_state["other_entries"].items()):
+    for path, is_folder in sorted(after_state["other_entries"].items()):
         if path in known:
             continue
-        if kind == "file":
+        if not is_folder:
             report.problems.append("%s is a new file that Longhand does not know. Remove it." % path)
         elif is_work_folder(path.split("/")[-1]):
             longhand_works = True
