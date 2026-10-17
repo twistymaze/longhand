@@ -2870,13 +2870,21 @@ export type UpdateState =
  */
 { state: "downloading"; version: string; downloaded: number; total: number | null } | 
 /**
- * The download or the signature check failed (R18).
+ * The download, the signature check or the install failed (R18).
  */
 { state: "failed"; version: string; error: string } | 
 /**
- * The build is downloaded while busy. The ready question shows when busy ends (R17).
+ * A download error while busy. It shows when busy ends (R3 of the
+ * notice timing plan).
  */
-{ state: "ready_held"; version: string } | 
+{ state: "failed_held"; version: string; error: string } | 
+/**
+ * The build is downloaded while busy. The ready question shows when busy
+ * ends (R17). `confirmed` is true when the user chose the build ("Relaunch
+ * Now" or a download), so a quit installs it also when a newer release
+ * replaced it (KTD8).
+ */
+{ state: "ready_held"; version: string; confirmed: boolean } | 
 /**
  * The build is downloaded: "Relaunch Now" or "Later" (R17).
  */

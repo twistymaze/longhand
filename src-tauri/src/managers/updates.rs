@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use specta::Type;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_store::StoreExt;
@@ -31,6 +31,7 @@ use flow::{Delays, Effect, Facts, Flow, Input};
 
 const STORE_PATH: &str = "updates.json";
 const DELAYS_KEY: &str = "delays";
+const INSTALL_FAILURE_KEY: &str = "install_failure";
 /// The first automatic check comes 30 seconds after launch (KTD8).
 const LAUNCH_DELAY: Duration = Duration::from_secs(30);
 const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
@@ -75,6 +76,62 @@ enum Message {
     /// A Longhand window became the key window, so a waiting notice can
     /// show (R1).
     Activated,
+    /// The restart claim failed, because a note is open.
+    RestartRefused,
+}
+
+/// A failed install at quit or at launch, in `updates.json`. The error shows
+/// once (`shown`). Until the next install or download starts, the launch
+/// does not try that install again.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct InstallFailure {
+    version: String,
+    error: String,
+    shown: bool,
+}
+
+impl InstallFailure {
+    fn new(version: &str, error: impl Into<String>) -> Self {
+        Self {
+            version: version.to_string(),
+            error: error.into(),
+            shown: false,
+        }
+    }
+}
+
+/// True when the launch must not install: a failure names a build newer
+/// than the running one. The saved archive can be gone, because a check that
+/// fails removes it.
+fn launch_skips_install(failure: Option<&InstallFailure>, current: &str) -> bool {
+    failure.is_some_and(|f| flow::newer(&f.version, current))
+}
+
+/// At the start of the manager: the record to keep. A failure of a build
+/// that is not newer than the running one is old, so it goes.
+fn failure_at_start(failure: Option<InstallFailure>, current: &str) -> Option<InstallFailure> {
+    failure.filter(|f| flow::newer(&f.version, current))
+}
+
+/// True when the window now shows the error of a failure that it did not
+/// show before, so the record can say that it showed. A launch with no
+/// window, or a quit before the error shows, keeps it for the next launch.
+fn shows_failure(failure: &InstallFailure, state: &UpdateState, visible: bool) -> bool {
+    !failure.shown
+        && visible
+        && matches!(state, UpdateState::Failed { version, .. } if *version == failure.version)
+}
+
+/// True when a step starts an install or a download, so a recorded failure
+/// goes: the user chose to try again, or chose another build.
+fn starts_install_or_download(before: &UpdateState, after: &UpdateState) -> bool {
+    let installs_or_downloads = |s: &UpdateState| {
+        matches!(
+            s,
+            UpdateState::Installing { .. } | UpdateState::Downloading { .. }
+        )
+    };
+    installs_or_downloads(after) && !installs_or_downloads(before)
 }
 
 /// True when the update window may be visible (KTD2): the flow wants it,
@@ -101,6 +158,8 @@ pub struct UpdateManager {
     /// The `Update` of the build that a quit installs. A later check does
     /// not replace it, so a confirmed install stays (KTD8).
     install_update: Mutex<Option<Update>>,
+    /// The recorded install failure, if any.
+    failure: Mutex<Option<InstallFailure>>,
     busy: Box<dyn Fn() -> bool + Send + Sync>,
     was_busy: AtomicBool,
     messages: mpsc::UnboundedSender<Message>,
@@ -159,6 +218,35 @@ fn write_delays(app: &AppHandle, delays: &Delays) {
     }
 }
 
+fn read_failure(app: &AppHandle) -> Option<InstallFailure> {
+    app.store(STORE_PATH)
+        .ok()
+        .and_then(|store| store.get(INSTALL_FAILURE_KEY))
+        .and_then(|value| serde_json::from_value(value).ok())
+}
+
+/// Write the failure, or remove it with none.
+fn write_failure(app: &AppHandle, failure: Option<&InstallFailure>) {
+    let result = app
+        .store(STORE_PATH)
+        .map_err(|e| e.to_string())
+        .and_then(|store| {
+            match failure {
+                Some(f) => store.set(
+                    INSTALL_FAILURE_KEY,
+                    serde_json::to_value(f).map_err(|e| e.to_string())?,
+                ),
+                // No record: nothing to save.
+                None if !store.delete(INSTALL_FAILURE_KEY) => return Ok(()),
+                None => {}
+            }
+            store.save().map_err(|e| e.to_string())
+        });
+    if let Err(e) = result {
+        log::warn!("updates: cannot save the install failure: {e}");
+    }
+}
+
 async fn check(app: &AppHandle, timeout: Duration) -> Result<Option<Update>, String> {
     let url = tauri::Url::parse(MANIFEST_URL).map_err(|e| e.to_string())?;
     app.updater_builder()
@@ -178,12 +266,23 @@ impl UpdateManager {
     pub fn new(app: &AppHandle, busy: impl Fn() -> bool + Send + Sync + 'static) -> Arc<Self> {
         let current = current_version(app);
         let saved = updates_dir(app).and_then(|dir| archive::newest_saved(&dir, &current));
+        let stored = read_failure(app);
+        let failure = failure_at_start(stored.clone(), &current);
+        if failure != stored {
+            write_failure(app, failure.as_ref());
+        }
+        let mut flow = Flow::new(current, read_delays(app), saved);
+        if let Some(f) = &failure {
+            let error = (!f.shown).then(|| f.error.clone());
+            flow.install_failed(f.version.clone(), error);
+        }
         let (messages, receiver) = mpsc::unbounded_channel();
         Arc::new(Self {
             app: app.clone(),
-            flow: Mutex::new(Flow::new(current, read_delays(app), saved)),
+            flow: Mutex::new(flow),
             update: Mutex::new(None),
             install_update: Mutex::new(None),
+            failure: Mutex::new(failure),
             busy: Box::new(busy),
             was_busy: AtomicBool::new(false),
             messages,
@@ -276,6 +375,7 @@ impl UpdateManager {
             Message::TrayOpen => inputs.push(Input::TrayOpen),
             Message::Choice(choice) => inputs.push(Input::Choice(choice)),
             Message::Busy | Message::Activated => {}
+            Message::RestartRefused => inputs.push(Input::RestartRefused),
             Message::Checked(result) => {
                 let result = result.map(|update| {
                     let version = update.as_ref().map(|u| u.version.clone());
@@ -321,6 +421,9 @@ impl UpdateManager {
             )
         };
         self.keep_install_update(install.as_deref());
+        if starts_install_or_download(&before, &state) && lock(&self.failure).take().is_some() {
+            write_failure(&self.app, None);
+        }
         // A request on a shown notice changes only with_key, and the page
         // must get it too.
         if state != before || with_key != with_key_before {
@@ -343,6 +446,7 @@ impl UpdateManager {
             crate::window::longhand_window_active(&self.app)
         });
         crate::window::show_update_window(&self.app, visible, with_key, asked_now);
+        self.note_failure_shown(&state, visible);
         crate::tray::set_update_item(&self.app, tray);
         for effect in effects {
             match effect {
@@ -353,17 +457,30 @@ impl UpdateManager {
                 // The `RunEvent::Exit` arm stops processing and installs
                 // (`install_at_exit`), then tauri starts the new build. A
                 // recording can start after the busy check above, so the
-                // claim checks again. If the claim fails, the busy message
-                // from the recording start holds the build (KD6).
+                // claim checks again. If the claim fails, the flow holds the
+                // build or asks again (KD6).
                 Effect::Restart => {
                     if self.app.state::<Arc<CaptureManager>>().claim_restart() {
                         self.app.request_restart();
                     } else {
-                        log::info!("updates: a recording started, so the restart waits");
-                        self.send(Message::Busy);
+                        log::info!("updates: a note is open, so the restart waits");
+                        self.send(Message::RestartRefused);
                     }
                 }
             }
+        }
+    }
+
+    /// Record that the window showed the install error, so a later launch
+    /// does not show it again.
+    fn note_failure_shown(&self, state: &UpdateState, visible: bool) {
+        let mut failure = lock(&self.failure);
+        if let Some(f) = failure
+            .as_mut()
+            .filter(|f| shows_failure(f, state, visible))
+        {
+            f.shown = true;
+            write_failure(&self.app, Some(f));
         }
     }
 
@@ -439,7 +556,11 @@ impl UpdateManager {
             .filter(|u| u.version == version)
         else {
             log::warn!("updates: {version} waits for install, but no update is known");
-            return;
+            let failure = InstallFailure::new(
+                &version,
+                "Longhand could not check for the update before it quit.",
+            );
+            return write_failure(&self.app, Some(&failure));
         };
         let Some(dir) = updates_dir(&self.app) else {
             return;
@@ -448,7 +569,10 @@ impl UpdateManager {
             .and_then(|bytes| update.install(bytes).map_err(|e| e.to_string()));
         match result {
             Ok(()) => log::info!("updates: installed {version} at exit"),
-            Err(e) => log::error!("updates: cannot install {version} at exit: {e}"),
+            Err(e) => {
+                log::error!("updates: cannot install {version} at exit: {e}");
+                write_failure(&self.app, Some(&InstallFailure::new(&version, e)));
+            }
         }
     }
 }
@@ -484,6 +608,11 @@ pub fn install_at_launch(app: &AppHandle) {
     let Some(saved) = archive::newest_saved(&dir, &current) else {
         return;
     };
+    // The same install failed before. The manager shows the error, and
+    // "Try Again" installs (R18).
+    if launch_skips_install(read_failure(app).as_ref(), &current) {
+        return log::info!("updates: {saved} failed to install before; no install at launch");
+    }
     if !crate::managers::settings::get_settings(app).check_updates_automatically {
         return;
     }
@@ -513,7 +642,11 @@ pub fn install_at_launch(app: &AppHandle) {
             tauri_plugin_single_instance::destroy(app);
             app.restart();
         }
-        Err(e) => log::error!("updates: cannot install {saved} at launch: {e}"),
+        Err(e) => {
+            log::error!("updates: cannot install {saved} at launch: {e}");
+            // The manager starts later in this launch and shows the error.
+            write_failure(app, Some(&InstallFailure::new(&saved, e)));
+        }
     }
 }
 
@@ -568,5 +701,64 @@ mod tests {
             "https://github.com/twistymaze/longhand/releases/latest/download/latest.json"
         );
         assert!(tauri::Url::parse(MANIFEST_URL).is_ok());
+    }
+
+    #[test]
+    fn a_failed_install_shows_once_and_stops_the_install_at_launch_until_the_next_install() {
+        // A failure at quit.
+        let failure = Some(InstallFailure::new("1.0.4", "read-only"));
+        assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
+        // The next launch keeps it, and the error shows only when the window
+        // shows it.
+        let mut failure = failure_at_start(failure, "1.0.3").unwrap();
+        let failed = UpdateState::Failed {
+            version: "1.0.4".into(),
+            error: "read-only".into(),
+        };
+        assert!(!shows_failure(&failure, &failed, false), "no window");
+        assert!(
+            !shows_failure(&failure, &UpdateState::Idle, true),
+            "another state"
+        );
+        assert!(shows_failure(&failure, &failed, true));
+        failure.shown = true;
+        assert!(!shows_failure(&failure, &failed, true), "once");
+        // The launch after that still does not install.
+        let failure = failure_at_start(Some(failure), "1.0.3");
+        assert!(launch_skips_install(failure.as_ref(), "1.0.3"));
+        assert!(failure.is_some(), "the record stays until the next install");
+        // "Try Again" or "Relaunch Now" removes it.
+        let downloading = UpdateState::Downloading {
+            version: "1.0.4".into(),
+            downloaded: 0,
+            total: None,
+        };
+        let ready = UpdateState::Ready {
+            version: "1.0.4".into(),
+        };
+        let installing = UpdateState::Installing {
+            version: "1.0.4".into(),
+        };
+        assert!(starts_install_or_download(&failed, &downloading));
+        assert!(starts_install_or_download(&ready, &installing));
+        assert!(
+            !starts_install_or_download(&downloading, &downloading),
+            "progress"
+        );
+        assert!(
+            !starts_install_or_download(&installing, &ready),
+            "a refused restart"
+        );
+    }
+
+    #[test]
+    fn an_install_failure_of_an_installed_build_goes() {
+        for current in ["1.0.4", "1.0.5"] {
+            let failure = Some(InstallFailure::new("1.0.4", "read-only"));
+            assert!(!launch_skips_install(failure.as_ref(), current));
+            assert_eq!(failure_at_start(failure, current), None);
+        }
+        assert_eq!(failure_at_start(None, "1.0.3"), None);
+        assert!(!launch_skips_install(None, "1.0.3"));
     }
 }
