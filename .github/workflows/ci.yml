@@ -66,6 +66,11 @@ jobs:
           - os: windows-latest
             runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
+    # The feature ideas check reads the merged pull requests. A job block
+    # replaces the workflow block, so it names `contents` again.
+    permissions:
+      contents: read
+      pull-requests: read
     # A self-hosted runner runs one job at a time, so a hung job must not hold it
     # for GitHub's default of 6 hours.
     timeout-minutes: 60
@@ -147,9 +152,15 @@ jobs:
         run: bun install --frozen-lockfile
 
       # Frontmatter and links of the feature ideas (docs/ideas/README.md).
+      # The token lets `gh` list the merged pull requests; an idea whose plan
+      # shipped is a warning here, not a failure.
       - name: Feature ideas
         if: runner.os == 'macOS'
-        run: bun scripts/ideas.ts check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bun test scripts/ideas.test.ts
+          bun scripts/ideas.ts check
 
       # uv runs the skill scripts and their tests, and a Rust test runs
       # check.py through uv (KTD13 of the safe agent edits plan). It is

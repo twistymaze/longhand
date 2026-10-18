@@ -7,7 +7,7 @@
 //   bun scripts/ideas.ts [folder...] [--area <area>]   list ideas (Done shows only a count unless you name it)
 //   bun scripts/ideas.ts move <slug> <folder>           git mv the idea and change every link to it
 //   bun scripts/ideas.ts check                          find frontmatter errors and broken links
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, normalize, relative, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
@@ -59,6 +59,14 @@ function linkingFiles(): string[] {
 const linkPattern = /(\]\()([^)\s#]+?\.md)(#[^)]*)?\)/g;
 const rootPathPattern = /(?<![\w/.])docs\/ideas\/[\w/-]+\.md/g;
 
+// A pattern for the path of the folder `abs` from the root, as text in a
+// document. A dot after the path that starts a file extension is part of
+// another name, for example `<slug>-screenshots.png`.
+function rootPathOf(abs: string): RegExp {
+  const path = relative(root, abs).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\w/.])${path}(?![\\w-]|\\.\\w)`, "g");
+}
+
 // Change the links in one file after `from` moved to `to`. When the file itself
 // moved, `fileBefore` is its old path, so that its relative links resolve from
 // the folder where they were written.
@@ -79,26 +87,45 @@ function move(slug: string, folder: string) {
   if (!idea) fail(`No idea "${slug}" in docs/ideas/.`);
   const to = join(ideasDir, folder, `${slug}.md`);
   if (idea.path === to) fail(`${slug} is already in ${folder}/.`);
+  // The private screenshots of an idea are in a gitignored folder beside it,
+  // so git mv does not move them.
+  const shotsFrom = join(dirname(idea.path), `${slug}-screenshots`);
+  const shotsTo = join(dirname(to), `${slug}-screenshots`);
+  if (existsSync(shotsTo)) fail(`${relative(root, shotsTo)} is already there. Move or remove it first.`);
+  const shots = existsSync(shotsFrom);
+  const shotsPath = rootPathOf(shotsFrom);
   const git = Bun.spawnSync(["git", "mv", idea.path, to], { cwd: root, stderr: "pipe" });
   if (git.exitCode !== 0) fail(`git mv failed: ${git.stderr.toString()}`);
+  if (shots) renameSync(shotsFrom, shotsTo);
   let changed = 0;
   for (const file of linkingFiles()) {
     const before = file === to ? idea.path : file;
     const text = readFileSync(file, "utf8");
-    const next = rewriteLinks(text, file, before, idea.path, to);
+    let next = rewriteLinks(text, file, before, idea.path, to);
+    if (shots) next = next.replace(shotsPath, relative(root, shotsTo));
     if (next !== text) {
       writeFileSync(file, next);
       changed++;
     }
   }
-  console.log(`Moved ${slug} to ${folder}/. Changed links in ${changed} file(s).`);
+  console.log(`Moved ${slug}${shots ? ` and ${slug}-screenshots/` : ""} to ${folder}/. Changed links in ${changed} file(s).`);
   if (folder === "parked" && !/^## Why parked/m.test(readFileSync(to, "utf8")))
     console.log(`Add a "## Why parked" section to ${relative(root, to)}.`);
 }
 
+// In CI the check reports a shipped idea as a warning: the idea moves in a
+// docs commit after the merge, and that commit runs no CI, so a failure on
+// the push of the merged PR would stop its release.
+const inCi = Boolean(process.env.CI);
+
 // The branch names of the PRs that merged into main. A merge commit subject
-// is "Merge pull request #N from <owner>/<branch>".
-function mergedBranches(): Set<string> {
+// is "Merge pull request #N from <owner>/<branch>". A squash merge names no
+// branch, so GitHub gives the rest. `unread` says why GitHub gave nothing.
+// `gh pr list` gives at most this number of PRs. When it gives that many, an
+// older PR can be missing, so the check says that it did not read them all.
+const prLimit = 1000;
+
+function mergedBranches(): { branches: Set<string>; unread?: string } {
   const ref = Bun.spawnSync(["git", "rev-parse", "--verify", "--quiet", "origin/main"], { cwd: root }).exitCode === 0 ? "origin/main" : "HEAD";
   const git = Bun.spawnSync(["git", "log", ref, "--merges", "--format=%s"], { cwd: root, stderr: "pipe" });
   const branches = new Set<string>();
@@ -106,24 +133,53 @@ function mergedBranches(): Set<string> {
     const m = /^Merge pull request #\d+ from [^/]+\/(.+)$/.exec(line.trim());
     if (m) branches.add(m[1]);
   }
-  return branches;
+  let gh: ReturnType<typeof Bun.spawnSync>;
+  try {
+    gh = Bun.spawnSync(["gh", "pr", "list", "--state", "merged", "--base", "main", "--limit", String(prLimit), "--json", "headRefName"], {
+      cwd: root,
+      stderr: "pipe",
+    });
+  } catch {
+    return { branches, unread: "gh is not installed" };
+  }
+  if (gh.exitCode !== 0) return { branches, unread: gh.stderr.toString().trim().split("\n")[0] || `gh exited ${gh.exitCode}` };
+  let prs: { headRefName: string }[];
+  try {
+    prs = JSON.parse(gh.stdout.toString());
+  } catch {
+    return { branches, unread: "gh gave output that is not JSON" };
+  }
+  for (const pr of prs) branches.add(pr.headRefName);
+  if (prs.length >= prLimit) return { branches, unread: `more than ${prLimit} merged PRs` };
+  return { branches };
 }
 
 // An idea in next/ whose plan topic has a merged branch has shipped and must
 // move to done/. Plan branches are named worktree-<topic> or codex/<topic>.
+// It returns the problems and, in CI, prints the shipped ideas as warnings.
 function shippedButOpen(ideas: Idea[]): string[] {
   const open = ideas.filter((i) => i.folder !== "done" && i.meta.plan);
-  if (open.length === 0) return [];
-  const branches = mergedBranches();
+  // CI reads the merged PRs also when no plan is open, so that a missing
+  // token or `gh` shows at once and not when the next plan starts.
+  if (open.length === 0 && !inCi) return [];
+  const { branches, unread } = mergedBranches();
   const errors: string[] = [];
+  if (unread) {
+    const line = `Shipped-plan check: merged PRs not read (${unread}); merge commits only.`;
+    if (inCi) errors.push(line);
+    else console.error(line);
+  }
   for (const i of open) {
     const planPath = join(root, String(i.meta.plan));
     if (!existsSync(planPath)) continue;
     const topic = /^topic:\s*(\S+)\s*$/m.exec(readFileSync(planPath, "utf8"))?.[1];
     if (!topic) continue;
     const branch = [`worktree-${topic}`, `codex/${topic}`].find((b) => branches.has(b));
-    if (branch)
-      errors.push(`${relative(root, i.path)}: branch ${branch} of its plan merged; move it with "bun scripts/ideas.ts move ${i.slug} done" and write the PR in its file`);
+    if (!branch) continue;
+    const where = relative(root, i.path);
+    const text = `branch ${branch} of its plan merged; move it with "bun scripts/ideas.ts move ${i.slug} done" and write the PR in its file`;
+    if (inCi) console.log(`::warning file=${where}::${text}`);
+    else errors.push(`${where}: ${text}`);
   }
   return errors;
 }
