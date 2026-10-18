@@ -115,7 +115,10 @@ describe("Background", () => {
       // No delay between keys: the test moves the clock itself.
       const user = userEvent.setup({ delay: null });
       await user.click(box());
-      await user.keyboard("Erv");
+      await user.keyboard("Er");
+      // A change before the delay ends starts the delay again.
+      await advance(800);
+      await user.keyboard("v");
       await advance(950);
       expect(saves(tauri)).toEqual([]);
       await advance(50);

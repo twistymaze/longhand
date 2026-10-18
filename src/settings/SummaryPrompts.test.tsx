@@ -215,8 +215,11 @@ describe("SummaryPrompts", () => {
       // No delay between keys: the test moves the clock itself.
       const user = userEvent.setup({ delay: null });
       await selectCustom(user);
+      // Each change before the delay ends starts the delay again.
       await setText(textArea(), "Short", user);
+      await advance(800);
       await setText(textArea(), "Short re", user);
+      await advance(800);
       await setText(textArea(), "Short note", user);
       await advance(950);
       expect(textCalls(tauri)).toEqual([]);

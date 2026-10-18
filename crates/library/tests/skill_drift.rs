@@ -10,7 +10,7 @@
 //! `python3` when uv is not installed. With neither, a test prints why it
 //! does not run and passes, except when `CI` is set: then it fails.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -165,6 +165,29 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
     }
 }
 
+/// The parsed field of each shared setting. The match has no `_` arm, so a
+/// new setting fails to compile here. Give it its field, add the field to the
+/// pattern in `every_setting_writes_a_known_value_for_each_shared_setting`,
+/// and add a value for it to `every_setting()`.
+fn field_of(value: &SharedValue) -> &'static str {
+    match value {
+        SharedValue::ActiveSummaryPrompt(_) => "active_summary_prompt",
+        SharedValue::DefaultSpeakerCount(_) => "default_speaker_count",
+        SharedValue::AsrModel(_) => "asr_model",
+        SharedValue::LiveTranscript(_) => "live_transcript",
+        SharedValue::SpeakerSource(_) => "speaker_source",
+        SharedValue::SpeakerProcessingMode(_) => "speaker_processing_mode",
+        SharedValue::RecognitionLanguage(_) => "recognition_language",
+        SharedValue::CheckUpdatesAutomatically(_) => "check_updates_automatically",
+        SharedValue::AudioRemoval(_) => "audio_removal",
+        SharedValue::NoteTypes(_) => "note_types",
+        SharedValue::DefaultNoteType(_) => "default_note_type",
+        SharedValue::NoteTypePrompts(_) => "note_type_prompts",
+        SharedValue::ShowRecordingWidget(_) => "show_recording_widget",
+        SharedValue::NewNoteRecords(_) => "new_note_records",
+    }
+}
+
 /// A value for every shared setting.
 /// `every_setting_writes_a_known_value_for_each_shared_setting` checks
 /// that the list is complete.
@@ -190,8 +213,14 @@ fn every_setting() -> Vec<SharedValue> {
     ]
 }
 
-/// Fail when `field` does not hold a value that this build knows.
-fn assert_known<T: std::fmt::Debug>(name: &str, field: &Field<T>) {
+/// Fail when `field` does not hold a value that this build knows. Record
+/// `name` as checked.
+fn assert_known<T: std::fmt::Debug>(
+    checked: &mut BTreeSet<&'static str>,
+    name: &'static str,
+    field: &Field<T>,
+) {
+    checked.insert(name);
     assert!(
         matches!(field, Field::Known(_)),
         "every_setting() writes no known value for {name}: {field:?}"
@@ -233,20 +262,50 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         new_note_records,
     } = file.fields;
     assert_eq!(schema_version, Some(SCHEMA_VERSION));
-    assert_known("active_summary_prompt", &active_summary_prompt);
-    assert_known("default_speaker_count", &default_speaker_count);
-    assert_known("asr_model", &asr_model);
-    assert_known("live_transcript", &live_transcript);
-    assert_known("speaker_source", &speaker_source);
-    assert_known("speaker_processing_mode", &speaker_processing_mode);
-    assert_known("recognition_language", &recognition_language);
-    assert_known("check_updates_automatically", &check_updates_automatically);
-    assert_known("audio_removal", &audio_removal);
-    assert_known("note_types", &note_types);
-    assert_known("default_note_type", &default_note_type);
-    assert_known("note_type_prompts", &note_type_prompts);
-    assert_known("show_recording_widget", &show_recording_widget);
-    assert_known("new_note_records", &new_note_records);
+    let mut checked = BTreeSet::new();
+    assert_known(
+        &mut checked,
+        "active_summary_prompt",
+        &active_summary_prompt,
+    );
+    assert_known(
+        &mut checked,
+        "default_speaker_count",
+        &default_speaker_count,
+    );
+    assert_known(&mut checked, "asr_model", &asr_model);
+    assert_known(&mut checked, "live_transcript", &live_transcript);
+    assert_known(&mut checked, "speaker_source", &speaker_source);
+    assert_known(
+        &mut checked,
+        "speaker_processing_mode",
+        &speaker_processing_mode,
+    );
+    assert_known(&mut checked, "recognition_language", &recognition_language);
+    assert_known(
+        &mut checked,
+        "check_updates_automatically",
+        &check_updates_automatically,
+    );
+    assert_known(&mut checked, "audio_removal", &audio_removal);
+    assert_known(&mut checked, "note_types", &note_types);
+    assert_known(&mut checked, "default_note_type", &default_note_type);
+    assert_known(&mut checked, "note_type_prompts", &note_type_prompts);
+    assert_known(
+        &mut checked,
+        "show_recording_widget",
+        &show_recording_widget,
+    );
+    assert_known(&mut checked, "new_note_records", &new_note_records);
+    // Each value names one parsed field, and each parsed field has one value.
+    let settings = every_setting();
+    let written: BTreeSet<&str> = settings.iter().map(field_of).collect();
+    assert_eq!(
+        written.len(),
+        settings.len(),
+        "every_setting() repeats a setting"
+    );
+    assert_eq!(written, checked);
 }
 
 /// A storage folder that the real writers made: a note with every record,
