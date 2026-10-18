@@ -159,6 +159,9 @@ A named text in Settings that tells the model what a summary contains and how it
 ### Background
 One free-form Markdown text in Settings, above the summary prompts, where the user writes what a summary model should know: their name, their work, the names and terms that often occur and the words that the transcript often gets wrong. It is shared settings. Every model call of Summarize includes it in the system prompt, and it applies to every summary prompt. It is the user's own text, not data, but the fixed rules still win over it. It counts as evidence for names: a name is used when the transcript, the notes and the Background together make clear who a person is. Do not call it "context", which is the model's context window ("Context limit").
 
+### AI provider
+The service that runs the summary model: OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LM Studio, or Custom (an OpenAI-compatible address that the user enters). One AI provider is active at a time on each computer. Each provider keeps its own API key, model and address, so a switch back needs no re-entry. The setting stays on each computer and is not shared. A new install has no provider. The UI pane is "AI Provider". "Endpoint" is the older term for the Custom address, in older code and docs.
+
 ### Summary queue
 The queue for work that sends requests to the summary endpoint and writes note folders: the Summarize and Save stages of a note, Regenerate Summary, and title jobs. It runs one job at a time. A new note goes before a regeneration, and a regeneration goes before a title job. The audio stages of other notes do not wait for it, and a recording does not pause it.
 
