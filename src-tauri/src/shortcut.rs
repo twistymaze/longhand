@@ -245,7 +245,7 @@ fn register_chord(app: &AppHandle, kind: ShortcutKind, chord: &str) -> Result<()
             // With no open note the press does nothing (R15).
             ShortcutKind::Widget => {
                 let app = app.clone();
-                tauri::async_runtime::spawn(async move { crate::widget::toggle_open_note(&app) });
+                tauri::async_runtime::spawn_blocking(move || crate::widget::toggle_open_note(&app));
             }
         }
     };

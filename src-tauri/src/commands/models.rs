@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State};
 
+use super::blocking;
 use crate::managers::capture::CaptureManager;
 use crate::managers::models::{self, ModelStatus, ModelsManager, SpeakerModelsStatus};
 use crate::managers::processing::ProcessingManager;
@@ -54,10 +55,22 @@ pub fn cancel_model_downloads(manager: State<'_, Arc<ModelsManager>>) {
 /// (KTD12).
 #[tauri::command]
 #[specta::specta]
-pub fn delete_model(
+pub async fn delete_model(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
     capture: State<'_, Arc<CaptureManager>>,
+    model_id: String,
+) -> Result<(), String> {
+    let (manager, capture) = (Arc::clone(&manager), Arc::clone(&capture));
+    blocking(move || delete_held(app, manager, capture, model_id)).await
+}
+
+/// The delete of [`delete_model`]. It waits for the capture state and the
+/// store.
+fn delete_held(
+    app: AppHandle,
+    manager: Arc<ModelsManager>,
+    capture: Arc<CaptureManager>,
     model_id: String,
 ) -> Result<(), String> {
     let processing = app.try_state::<Arc<ProcessingManager>>();

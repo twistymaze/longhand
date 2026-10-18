@@ -18,6 +18,7 @@ use tauri::{AppHandle, State};
 use library::scan::{NoteRead, READ_TIMEOUT, Read, RemoteState, Waiting, read_note, read_timed};
 use library::status::LibraryStatus;
 
+use super::blocking;
 use crate::managers::capture::CaptureManager;
 use crate::managers::live::{LiveManager, LiveTranscript};
 use crate::managers::processing::{ProcessingManager, SpeakerProgressView, WaitView, stage_name};
@@ -609,9 +610,18 @@ fn storage_unavailable(status: &LibraryStatus, record: &SessionRecord) -> bool {
 /// folder.
 #[tauri::command]
 #[specta::specta]
-pub fn list_sessions(
+pub async fn list_sessions(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
+) -> Result<Vec<SessionEntry>, String> {
+    let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
+    blocking(move || session_entries(&capture, &processing)).await
+}
+
+/// The list of [`list_sessions`].
+fn session_entries(
+    capture: &CaptureManager,
+    processing: &ProcessingManager,
 ) -> Result<Vec<SessionEntry>, String> {
     let status = processing.library_status();
     // The waits read the capture state, so they come before the store lock.
@@ -751,22 +761,26 @@ fn library_notices_of(
 /// scan: the command reads no folder.
 #[tauri::command]
 #[specta::specta]
-pub fn library_notices(
+pub async fn library_notices(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
     conversion: State<'_, Conversion>,
 ) -> Result<LibraryNotices, String> {
-    let records = {
-        let store = capture.shared_store();
-        let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store.sessions().map_err(|e| e.to_string())?
-    };
+    let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
     let state = conversion.lock().clone();
-    Ok(library_notices_of(
-        processing.library_status(),
-        &state,
-        &records,
-    ))
+    blocking(move || {
+        let records = {
+            let store = capture.shared_store();
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            store.sessions().map_err(|e| e.to_string())?
+        };
+        Ok(library_notices_of(
+            processing.library_status(),
+            &state,
+            &records,
+        ))
+    })
+    .await
 }
 
 /// Convert the notes in the old layout to the new layout (U5, R10, R12).
@@ -802,10 +816,21 @@ fn has_files(dir: &Path) -> bool {
 
 #[tauri::command]
 #[specta::specta]
-pub fn session_detail(
+pub async fn session_detail(
     app: AppHandle,
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<SessionDetail, String> {
+    let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
+    blocking(move || detail_of(app, capture, processing, session_id)).await
+}
+
+/// The detail of [`session_detail`].
+fn detail_of(
+    app: AppHandle,
+    capture: Arc<CaptureManager>,
+    processing: Arc<ProcessingManager>,
     session_id: String,
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
@@ -932,17 +957,21 @@ pub struct LoadedNotes {
 /// fingerprint that [`save_session_notes`] checks.
 #[tauri::command]
 #[specta::specta]
-pub fn load_session_notes(
+pub async fn load_session_notes(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
 ) -> Result<LoadedNotes, String> {
-    let markdown = capture
-        .session_notes(&session_id)
-        .map_err(|e| e.to_string())?;
-    Ok(LoadedNotes {
-        fingerprint: pipeline::save::notes_fingerprint(&markdown),
-        markdown,
+    let capture = Arc::clone(&capture);
+    blocking(move || {
+        let markdown = capture
+            .session_notes(&session_id)
+            .map_err(|e| e.to_string())?;
+        Ok(LoadedNotes {
+            fingerprint: pipeline::save::notes_fingerprint(&markdown),
+            markdown,
+        })
     })
+    .await
 }
 
 /// What a notes save did.
@@ -1252,8 +1281,9 @@ impl From<pipeline::tags::TagCount> for TagEntry {
 /// text. This reads the store only.
 #[tauri::command]
 #[specta::specta]
-pub fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry>, String> {
-    tag_entries(&capture.shared_store())
+pub async fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry>, String> {
+    let store = capture.shared_store();
+    blocking(move || tag_entries(&store)).await
 }
 
 /// The tag list of the store `store`.
@@ -1269,31 +1299,35 @@ pub fn tag_entries(store: &pipeline::SharedStore) -> Result<Vec<TagEntry>, Strin
 /// recording, and then follows the live events.
 #[tauri::command]
 #[specta::specta]
-pub fn live_transcript(
+pub async fn live_transcript(
     capture: State<'_, Arc<CaptureManager>>,
     live: State<'_, Arc<LiveManager>>,
     session_id: String,
 ) -> Result<LiveTranscript, String> {
-    live.transcript(&capture.shared_store(), &session_id)
+    let (store, live) = (capture.shared_store(), Arc::clone(&live));
+    blocking(move || live.transcript(&store, &session_id)).await
 }
 
 /// The saved transcript and summary, read from the session's folder.
 #[tauri::command]
 #[specta::specta]
-pub fn session_document(
+pub async fn session_document(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
 ) -> Result<SessionDocument, String> {
-    let home = {
-        let store = capture.shared_store();
-        let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store
-            .session(&session_id)
-            .map_err(|e| e.to_string())?
-            .and_then(|r| r.home_path)
-            .ok_or_else(|| "this note has not finished processing yet".to_string())?
-    };
-    read_document(Path::new(&home))
+    let store = capture.shared_store();
+    blocking(move || {
+        let home = {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            store
+                .session(&session_id)
+                .map_err(|e| e.to_string())?
+                .and_then(|r| r.home_path)
+                .ok_or_else(|| "this note has not finished processing yet".to_string())?
+        };
+        read_document(Path::new(&home))
+    })
+    .await
 }
 
 /// The documents of the note folder `folder`, as they are on disk. While

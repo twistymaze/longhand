@@ -13,6 +13,7 @@ use specta::Type;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use super::blocking;
 use crate::managers::agent_block::AgentBlockStatus;
 use crate::managers::audio_removal::{self, AudioRemovalManager};
 use crate::managers::capture::CaptureManager;
@@ -133,9 +134,9 @@ fn choose_recognition(
     Ok(settings::get_settings(app))
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_default_speaker_count(
+pub async fn set_default_speaker_count(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
     count: Option<SpeakerCountSetting>,
@@ -143,14 +144,15 @@ pub fn set_default_speaker_count(
     if let Some(count) = &count {
         count.validate()?;
     }
-    choose_recognition(&app, &manager, |c| c.default_speaker_count = count)
+    let manager = Arc::clone(&manager);
+    blocking(move || choose_recognition(&app, &manager, |c| c.default_speaker_count = count)).await
 }
 
 /// Choose the recognition model (R5, R18). The model in use stays until
 /// every file of the chosen configuration is on disk.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn select_asr_model(
+pub async fn select_asr_model(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
     model_id: String,
@@ -159,18 +161,20 @@ pub fn select_asr_model(
         Some(m) if m.kind == models::ModelKind::Asr => {}
         _ => return Err(format!("'{model_id}' is not a recognition model")),
     }
-    choose_recognition(&app, &manager, |c| c.asr_model = model_id)
+    let manager = Arc::clone(&manager);
+    blocking(move || choose_recognition(&app, &manager, |c| c.asr_model = model_id)).await
 }
 
 /// Turn the live transcript of streaming models on or off (R18, KD9).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_live_transcript(
+pub async fn set_live_transcript(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
     enabled: bool,
 ) -> Result<Settings, String> {
-    choose_recognition(&app, &manager, |c| c.live_transcript = enabled)
+    let manager = Arc::clone(&manager);
+    blocking(move || choose_recognition(&app, &manager, |c| c.live_transcript = enabled)).await
 }
 
 /// Start the failed downloads of the chosen recognition configuration
@@ -267,13 +271,16 @@ pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Setting
 /// Choose what New Note and the recording shortcut do (R8): start a note
 /// that records, or open a note that does not record. The value goes into
 /// the shared settings file.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_new_note_records(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.new_note_records = enabled;
-        Ok(())
+pub async fn set_new_note_records(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.new_note_records = enabled;
+            Ok(())
+        })
     })
+    .await
 }
 
 /// Choose whether a recording that stops and cannot restart plays the
@@ -290,24 +297,33 @@ pub fn set_alert_sound(app: AppHandle, enabled: bool) -> Result<Settings, String
 /// Choose whether a new note shows the recording widget (R11). The next
 /// note reads the new value (R14). The value goes into the shared settings
 /// file.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_show_recording_widget(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.show_recording_widget = enabled;
-        Ok(())
+pub async fn set_show_recording_widget(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.show_recording_widget = enabled;
+            Ok(())
+        })
     })
+    .await
 }
 
 /// Choose whether the app checks for updates by itself (R10). The next
 /// scheduled check reads the new value.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| {
-        s.check_updates_automatically = enabled;
-        Ok(())
+pub async fn set_check_updates_automatically(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<Settings, String> {
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.check_updates_automatically = enabled;
+            Ok(())
+        })
     })
+    .await
 }
 
 /// Choose when the audio of a saved note goes, or turn automatic removal
@@ -316,26 +332,29 @@ pub fn set_check_updates_automatically(app: AppHandle, enabled: bool) -> Result<
 /// days outside the range is refused and changes nothing. After a saved
 /// change that turns the setting on or shortens the delay, a removal pass
 /// starts (R17, KTD6). The Settings window asks for the confirmation first.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_audio_removal(
+pub async fn set_audio_removal(
     app: AppHandle,
     removal: settings::AudioRemovalSetting,
 ) -> Result<Settings, String> {
     removal.validate()?;
-    // The comparison starts from the file, not from the cache: the cache can
-    // be older than a change that another computer made.
-    let before = read_removal_delay(&app);
-    let updated = settings::update_settings(&app, |s| {
-        s.audio_removal = removal;
-        Ok(())
-    })?;
-    if audio_removal::removes_more(before, shared_removal_delay(&app))
-        && let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>()
-    {
-        pass.run_now();
-    }
-    Ok(updated)
+    blocking(move || {
+        // The comparison starts from the file, not from the cache: the cache
+        // can be older than a change that another computer made.
+        let before = read_removal_delay(&app);
+        let updated = settings::update_settings(&app, |s| {
+            s.audio_removal = removal;
+            Ok(())
+        })?;
+        if audio_removal::removes_more(before, shared_removal_delay(&app))
+            && let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>()
+        {
+            pass.run_now();
+        }
+        Ok(updated)
+    })
+    .await
 }
 
 /// The delay of the audio removal setting in the shared settings now, or
@@ -445,18 +464,22 @@ pub fn summary_prompts(app: AppHandle) -> SummaryPromptList {
 }
 
 // The prompt commands change the files of the storage folder through the
-// shared settings manager (R14). They run off the main thread, because a
+// shared settings manager (R14). They run on a blocking thread, because a
 // read of a synced folder can wait for the sync service.
 
 /// Add a summary prompt named "New prompt" with the Topic summary text (R3).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn create_summary_prompt(
+pub async fn create_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
 ) -> Result<Settings, String> {
-    shared.create_prompt()?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.create_prompt()?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
 /// The prompt that `restore_summary_prompt` added, and the settings after it.
@@ -469,127 +492,165 @@ pub struct RestoredPrompt {
 /// Add a summary prompt with a name and texts, in one write. The Settings
 /// window keeps the unsaved texts of a prompt that another computer deleted
 /// with it.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn restore_summary_prompt(
+pub async fn restore_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     name: String,
     text: String,
     title_text: String,
 ) -> Result<RestoredPrompt, String> {
-    let id = shared.restore_prompt(&name, &text, &title_text)?;
-    Ok(RestoredPrompt {
-        id,
-        settings: settings::get_settings(&app),
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        let id = shared.restore_prompt(&name, &text, &title_text)?;
+        Ok(RestoredPrompt {
+            id,
+            settings: settings::get_settings(&app),
+        })
     })
+    .await
 }
 
 /// Add a copy of a summary prompt, named "X copy" (R3).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn duplicate_summary_prompt(
+pub async fn duplicate_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
 ) -> Result<Settings, String> {
-    shared.duplicate_prompt(&id)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.duplicate_prompt(&id)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn rename_summary_prompt(
+pub async fn rename_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
     name: String,
 ) -> Result<Settings, String> {
-    shared.rename_prompt(&id, &name)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.rename_prompt(&id, &name)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_summary_prompt_text(
+pub async fn set_summary_prompt_text(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
     text: String,
 ) -> Result<Settings, String> {
-    shared.set_prompt_text(&id, &text)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.set_prompt_text(&id, &text)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
 /// Save the title text of a custom summary prompt. It can be empty (R4).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_summary_prompt_title_text(
+pub async fn set_summary_prompt_title_text(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
     text: String,
 ) -> Result<Settings, String> {
-    shared.set_prompt_title_text(&id, &text)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.set_prompt_title_text(&id, &text)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
 /// Delete a custom summary prompt. The Topic summary becomes active when the
 /// deleted prompt was active (R4).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn delete_summary_prompt(
+pub async fn delete_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
 ) -> Result<Settings, String> {
-    shared.delete_prompt(&id)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.delete_prompt(&id)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
 /// Make a summary prompt the one that the next summary uses (R1).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn activate_summary_prompt(
+pub async fn activate_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
 ) -> Result<Settings, String> {
-    shared.activate_prompt(&id)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.activate_prompt(&id)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
 /// Save the Background text that each summary uses (R4, R5). An empty
 /// text is a valid Background.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_background(
+pub async fn set_background(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     text: String,
 ) -> Result<Settings, String> {
-    shared.set_background(&text)?;
-    Ok(settings::get_settings(&app))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        shared.set_background(&text)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
 }
 
 /// The state of the agent instructions in `AGENTS.md` and `CLAUDE.md` of
 /// the storage folder (R29). This writes nothing.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn agent_instructions_status(
-    shared: State<'_, Arc<SharedSettingsManager>>,
-) -> AgentBlockStatus {
-    shared.agent_block_status()
+pub async fn agent_instructions_status(app: AppHandle) -> AgentBlockStatus {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<SharedSettingsManager>>()
+            .agent_block_status()
+    })
+    .await
+    .unwrap_or_else(|e| AgentBlockStatus::Unavailable {
+        reason: e.to_string(),
+    })
 }
 
 /// Add the agent instructions to `AGENTS.md` and `CLAUDE.md` of the storage
 /// folder (R29). The error names the file that Longhand could not write.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn add_agent_instructions(
+pub async fn add_agent_instructions(
     shared: State<'_, Arc<SharedSettingsManager>>,
 ) -> Result<AgentBlockStatus, String> {
-    shared.add_agent_block()
+    let shared = Arc::clone(&shared);
+    blocking(move || shared.add_agent_block()).await
 }
 
 /// The type folders and the home folders of the storage folder, from the
@@ -616,58 +677,71 @@ pub(crate) fn storage_folders(app: &AppHandle) -> Result<StorageFolders, String>
 
 /// The note types and the default type (R2, R7, R34, KTD9): the shared
 /// list plus each type folder that holds a note. This never writes.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn note_types(
+pub async fn note_types(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
 ) -> Result<NoteTypeList, String> {
-    Ok(shared.note_types(&storage_folders(&app)?))
+    let shared = Arc::clone(&shared);
+    blocking(move || Ok(shared.note_types(&storage_folders(&app)?))).await
 }
 
 /// Add a note type to the shared list (R3). The name goes through the type
 /// name check (R28), and a name that the list has is refused.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn add_note_type(
+pub async fn add_note_type(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     name: String,
 ) -> Result<NoteTypeList, String> {
-    let folders = storage_folders(&app)?;
-    shared.add_note_type(&name, &folders)?;
-    settings::emit_settings_changed(&app);
-    Ok(shared.note_types(&folders))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        let folders = storage_folders(&app)?;
+        shared.add_note_type(&name, &folders)?;
+        settings::emit_settings_changed(&app);
+        Ok(shared.note_types(&folders))
+    })
+    .await
 }
 
 /// Make a note type the default type, or General for `None` (R7, R23).
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_default_note_type(
+pub async fn set_default_note_type(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     name: Option<String>,
 ) -> Result<NoteTypeList, String> {
-    let folders = storage_folders(&app)?;
-    shared.set_default_note_type(name.as_deref(), &folders)?;
-    settings::emit_settings_changed(&app);
-    Ok(shared.note_types(&folders))
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        let folders = storage_folders(&app)?;
+        shared.set_default_note_type(name.as_deref(), &folders)?;
+        settings::emit_settings_changed(&app);
+        Ok(shared.note_types(&folders))
+    })
+    .await
 }
 
 /// Choose the summary prompt of a note type, or "Default" for `None` (R1,
 /// R2). The name "General" is General.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_note_type_prompt(
+pub async fn set_note_type_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
     name: String,
     prompt_id: Option<String>,
 ) -> Result<NoteTypeList, String> {
-    let folders = storage_folders(&app)?;
-    let list = shared.set_note_type_prompt(&name, prompt_id.as_deref(), &folders)?;
-    settings::emit_settings_changed(&app);
-    Ok(list)
+    let shared = Arc::clone(&shared);
+    blocking(move || {
+        let folders = storage_folders(&app)?;
+        let list = shared.set_note_type_prompt(&name, prompt_id.as_deref(), &folders)?;
+        settings::emit_settings_changed(&app);
+        Ok(list)
+    })
+    .await
 }
 
 /// What a type rename, merge or delete did (R6, R31).
@@ -958,8 +1032,15 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
 /// runs or is paused.
 #[tauri::command]
 #[specta::specta]
-pub fn move_status(processing: State<'_, Arc<ProcessingManager>>) -> Option<MoveStatus> {
-    processing.move_status()
+pub async fn move_status(app: AppHandle) -> Option<MoveStatus> {
+    tauri::async_runtime::spawn_blocking(move || {
+        app.state::<Arc<ProcessingManager>>().move_status()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        log::error!("could not read the Move status: {e}");
+        None
+    })
 }
 
 /// The cause that Show in Finder gives when the storage folder is not
@@ -981,19 +1062,23 @@ fn folder_to_show(folder: &str) -> Result<PathBuf, String> {
 /// gets no file path permission.
 #[tauri::command]
 #[specta::specta]
-pub fn show_storage_folder(app: AppHandle) -> Result<(), String> {
+pub async fn show_storage_folder(app: AppHandle) -> Result<(), String> {
     use tauri_plugin_opener::OpenerExt;
-    let folder = folder_to_show(&settings::get_settings(&app).storage_folder)?;
-    app.opener()
-        .open_path(folder.to_string_lossy(), None::<&str>)
-        .map_err(|e| format!("The storage folder could not open: {e}"))
+    blocking(move || {
+        let folder = folder_to_show(&settings::get_settings(&app).storage_folder)?;
+        app.opener()
+            .open_path(folder.to_string_lossy(), None::<&str>)
+            .map_err(|e| format!("The storage folder could not open: {e}"))
+    })
+    .await
 }
 
 /// Continue a paused Move (R10, AE13).
 #[tauri::command]
 #[specta::specta]
-pub fn retry_move(processing: State<'_, Arc<ProcessingManager>>) -> Result<(), String> {
-    processing.retry_move()
+pub async fn retry_move(processing: State<'_, Arc<ProcessingManager>>) -> Result<(), String> {
+    let processing = Arc::clone(&processing);
+    blocking(move || processing.retry_move()).await
 }
 
 #[tauri::command]
@@ -1561,18 +1646,22 @@ pub async fn change_interface_zoom(
 
 /// Choose the complete recognition configuration (R18). The configuration
 /// in use stays until every file of the chosen configuration is on disk.
-#[tauri::command(async)]
+#[tauri::command]
 #[specta::specta]
-pub fn set_recognition_defaults(
+pub async fn set_recognition_defaults(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
     config: models::recognition::RecognitionConfig,
 ) -> Result<Settings, String> {
     models::recognition::resolve(&config).map_err(|e| e.to_string())?;
-    let choice = settings::RecognitionChoice::from_config(&config);
-    let result = choose_recognition(&app, &manager, |c| *c = choice)?;
-    // The files of the chosen configuration download first. The rest of
-    // the bundle follows (KTD5).
-    manager.start_bundle_downloads(&app, &config.asr_model, &[])?;
-    Ok(result)
+    let manager = Arc::clone(&manager);
+    blocking(move || {
+        let choice = settings::RecognitionChoice::from_config(&config);
+        let result = choose_recognition(&app, &manager, |c| *c = choice)?;
+        // The files of the chosen configuration download first. The rest
+        // of the bundle follows (KTD5).
+        manager.start_bundle_downloads(&app, &config.asr_model, &[])?;
+        Ok(result)
+    })
+    .await
 }

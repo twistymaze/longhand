@@ -161,9 +161,18 @@ pub struct ShowSession {
 
 /// Show the main window. While a session records or is interrupted, the
 /// window also shows that session's page (R3), because the user who opens
-/// Longhand from the tray during a recording wants the recording.
+/// Longhand from the tray during a recording wants the recording. The
+/// window shows at once. The status read waits while a microphone opens,
+/// so it runs on a blocking thread.
 pub(crate) fn open_longhand(app: &AppHandle) {
     show_main_window(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || show_recording_page(&app));
+}
+
+/// Show the page of the session that records or is interrupted, if any.
+/// It reads the capture status: call it off the main thread.
+fn show_recording_page(app: &AppHandle) {
     let Some(capture) = app.try_state::<Arc<CaptureManager>>() else {
         return;
     };
@@ -244,7 +253,13 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let tray = builder
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => open_longhand(app),
-            "widget" => crate::widget::toggle_open_note(app),
+            "widget" => {
+                // The status read waits while a microphone opens.
+                let app = app.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    crate::widget::toggle_open_note(&app);
+                });
+            }
             "settings" => open_settings(app),
             "check-updates" => crate::managers::updates::check_for_updates(app),
             "update" => crate::managers::updates::tray_open(app),

@@ -16,13 +16,7 @@ use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager};
 use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
 
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| e.to_string())?
-}
+use super::blocking;
 
 /// The note type of a new note (R23, R24 of the note types plan).
 #[derive(Deserialize, Type, Debug, Clone, PartialEq, Eq)]

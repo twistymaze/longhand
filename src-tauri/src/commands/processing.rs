@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use super::blocking;
 use crate::managers::processing::ProcessingManager;
 
 /// The transcription model of a Transcribe Again run, for the dialog.
@@ -96,21 +97,23 @@ pub async fn regenerate_summary(
 /// audio (`retry_starts_over` of the note detail).
 #[tauri::command]
 #[specta::specta]
-pub fn retry_session(
+pub async fn retry_session(
     processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
     start_over: bool,
 ) -> Result<(), String> {
-    processing.retry(&session_id, start_over)
+    let processing = Arc::clone(&processing);
+    blocking(move || processing.retry(&session_id, start_over)).await
 }
 
 /// Try a blocked session's secret store again. Reading a locked keychain
 /// item is what asks macOS to unlock it (R20b).
 #[tauri::command]
 #[specta::specta]
-pub fn unblock_session(
+pub async fn unblock_session(
     processing: State<'_, Arc<ProcessingManager>>,
     session_id: String,
 ) -> Result<(), String> {
-    processing.unblock(&session_id)
+    let processing = Arc::clone(&processing);
+    blocking(move || processing.unblock(&session_id)).await
 }

@@ -349,6 +349,21 @@ describe("TypeAndTags", () => {
     expect([...menu.querySelectorAll("button")].map((i) => i.textContent)).toEqual(["General", "New", "New Type…"]);
   });
 
+  test("a tag read that ends after a newer read does not replace the newer list", async () => {
+    const reads: ((l: typeof tagList) => void)[] = [];
+    mockRow({ list_tags: () => new Promise<typeof tagList>((r) => reads.push(r)) });
+    const { user } = renderRow({ noteType: null, tags: [] });
+    await user.click(screen.getByRole("button", { name: "Add Tag" }));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: "Add Tag" }));
+    await waitFor(() => expect(reads).toHaveLength(2));
+    await act(async () => reads[1]([{ text: "alpha", key: "alpha", count: 1 }]));
+    await act(async () => reads[0]([{ text: "ancient", key: "ancient", count: 1 }]));
+    await user.keyboard("a");
+    await waitFor(() => expect(screen.getByRole("option", { name: "alpha" })).toBeTruthy());
+    expect(screen.queryByRole("option", { name: "ancient" })).toBeNull();
+  });
+
   test("Escape while the type is created does not give the type to the note", async () => {
     let finish: (l: NoteTypeList) => void = () => {};
     const tauri = mockRow({ add_note_type: () => new Promise<NoteTypeList>((r) => (finish = r)) });

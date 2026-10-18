@@ -172,6 +172,30 @@ describe("DestinationPicker", () => {
     view.unmount();
   });
 
+  test("a status read that ends after the Move finished does not show the Move again", async () => {
+    let reply: (status: MoveStatus) => void = () => {};
+    const { tauri, view } = picker({ move_status: () => new Promise<MoveStatus>((resolve) => (reply = resolve)) });
+    await act(() => tauri.emit("move-progress", { moved: 10, total: 10, state: "finished" }));
+    expect(await screen.findByText(/^Moved 10 notes/)).toBeTruthy();
+    await act(async () => reply(moving));
+    expect(screen.queryByText("3 of 10 notes moved")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(screen.getByText(/^Moved 10 notes/)).toBeTruthy();
+    view.unmount();
+  });
+
+  test("a status read that ends after newer Move events gives only the folder", async () => {
+    const replies: ((status: MoveStatus) => void)[] = [];
+    const { tauri, view } = picker({ move_status: () => new Promise<MoveStatus>((resolve) => replies.push(resolve)) });
+    await act(() => tauri.emit("move-progress", { moved: 4, total: 10, state: "running" }));
+    await act(() => tauri.emit("move-progress", { moved: 5, total: 10, state: "running" }));
+    expect(await screen.findByText("5 of 10 notes moved")).toBeTruthy();
+    await act(async () => replies.forEach((reply) => reply(moving)));
+    expect(await screen.findByText(/to “Notes”/)).toBeTruthy();
+    expect(screen.getByText("5 of 10 notes moved")).toBeTruthy();
+    view.unmount();
+  });
+
   test("a Move that waits for a busy note says so", async () => {
     const { view } = picker({ move_status: () => ({ ...moving, state: "waiting" }) });
     expect(await screen.findByText(/waits for a note that is in use/)).toBeTruthy();
