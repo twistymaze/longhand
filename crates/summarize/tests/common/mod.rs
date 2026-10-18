@@ -58,6 +58,8 @@ pub struct Seen {
     pub method: String,
     pub path: String,
     pub authorization: Option<String>,
+    /// Every header, with its name in lowercase.
+    pub headers: Vec<(String, String)>,
     pub body: String,
 }
 
@@ -175,8 +177,10 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Seen> {
     let path = first.next()?.to_string();
     let mut length = 0;
     let mut authorization = None;
+    let mut headers = Vec::new();
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
             match k.trim().to_ascii_lowercase().as_str() {
                 "content-length" => length = v.trim().parse().unwrap_or(0),
                 "authorization" => authorization = Some(v.trim().to_string()),
@@ -195,8 +199,68 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Seen> {
         method,
         path,
         authorization,
+        headers,
         body: String::from_utf8_lossy(&buf[header_end..]).to_string(),
     })
+}
+
+impl Seen {
+    /// The value of the header `name` (lowercase), if the request had it.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The body as JSON.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body).unwrap()
+    }
+}
+
+/// An OpenAI Chat Completions reply with `text` and `finish_reason`.
+pub fn chat_reply(text: &str, finish_reason: &str) -> String {
+    serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": finish_reason}]
+    })
+    .to_string()
+}
+
+/// An Anthropic Messages reply with `text` and `stop_reason`.
+pub fn anthropic_reply(text: &str, stop_reason: &str) -> String {
+    serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "m",
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })
+    .to_string()
+}
+
+/// A Gemini `generateContent` reply with `text` and `finishReason`.
+pub fn gemini_reply(text: &str, finish_reason: &str) -> String {
+    serde_json::json!({
+        "candidates": [{
+            "content": {"parts": [{"text": text}], "role": "model"},
+            "finishReason": finish_reason
+        }]
+    })
+    .to_string()
+}
+
+/// An Ollama `/api/chat` reply with `text` and `done_reason`.
+pub fn ollama_reply(text: &str, done_reason: &str) -> String {
+    serde_json::json!({
+        "model": "m",
+        "message": {"role": "assistant", "content": text},
+        "done": true,
+        "done_reason": done_reason
+    })
+    .to_string()
 }
 
 pub fn completion(text: &str) -> String {

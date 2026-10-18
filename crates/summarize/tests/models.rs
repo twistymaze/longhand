@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use common::{Reply, serve};
 use serde_json::json;
 use summarize::models::parse_ids;
-use summarize::{Client, Endpoint, Limits, ModelList, list_models};
+use summarize::{Client, Endpoint, Limits, ModelList, Provider, list_models};
 
 fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
     Endpoint {
+        provider: Provider::Custom,
         base_url: base.into(),
         model: String::new(),
         credential: credential.map(str::to_string),

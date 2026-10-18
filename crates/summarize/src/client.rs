@@ -1,4 +1,7 @@
-//! Chat completions against the one configured endpoint (R30, R30a).
+//! Summary requests to the one configured endpoint (R30, R30a). Rig sends
+//! each summary request through [`Transport`] (KTD1, KTD2). This module
+//! builds the request, sends it, and maps the reply and each error to a
+//! [`Completion`] or a [`SummarizeError`] (KTD4).
 //!
 //! The client follows no redirects: a 3xx is a typed failure naming where
 //! it pointed, so nothing the app does by itself sends the transcript or
@@ -11,24 +14,58 @@
 //! Each request writes one log line when it starts and one when it ends
 //! (R13). The lines give the [`Label`] of the caller, the host, the model,
 //! the duration and the HTTP status or the kind of error. They never give
-//! the URL path, the credential, the prompt or the reply.
+//! the URL path, the credential, the prompt or the reply. A
+//! [`SummarizeError`] made from a Rig result holds only text that Longhand
+//! writes, never the text of a Rig or reqwest error.
 
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
 
 use reqwest::Url;
+use rig_core::ProviderError;
+use rig_core::completion::{
+    CompletionRequest, CompletionResponse, FinishReason, Message as RigMessage,
+};
+use rig_core::driver::Model;
+use rig_core::providers::anthropic::wire::{AnthropicConfig, Messages};
+use rig_core::providers::gemini::GeminiConfig;
+use rig_core::providers::gemini::completion::GenerateContent;
+use rig_core::providers::ollama::{Chat as OllamaChat, OllamaConfig};
+use rig_core::providers::openai::OpenAIConfig;
+use rig_core::providers::openai::wire::{Auth, Chat, Dialect, OPENAI, OPENROUTER};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::time::timeout;
+
+use crate::provider::{Provider, Route};
+use crate::transport::{Transport, TransportError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
-    /// OpenAI-style base, usually ending in `/v1`.
+    /// The provider, which selects the request route (KTD2).
+    pub provider: Provider,
+    /// The address of the provider. For an OpenAI-compatible provider, it
+    /// is the base of the API, usually ending in `/v1`. An empty address
+    /// selects [`Provider::default_address`].
     pub base_url: String,
     pub model: String,
-    /// The bearer credential stored for this endpoint's host, if any. A
-    /// local server may need none.
+    /// The credential stored for this endpoint's provider and host, if
+    /// any. A local server may need none.
     pub credential: Option<String>,
+}
+
+impl Endpoint {
+    /// The address that requests go to: `base_url`, or the default
+    /// address of the provider when `base_url` is empty. `None` when both
+    /// are empty.
+    pub fn address(&self) -> Option<&str> {
+        let typed = self.base_url.trim();
+        if typed.is_empty() {
+            self.provider.default_address()
+        } else {
+            Some(typed)
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,11 +255,27 @@ fn describe(label: &Label, host: &str, model: &str) -> String {
 fn result_text(result: &Result<(reqwest::StatusCode, Vec<u8>), SummarizeError>) -> String {
     match result {
         Ok((status, _)) => format!("HTTP {}", status.as_u16()),
-        Err(SummarizeError::Redirect { status, .. }) => format!("redirect, HTTP {status}"),
-        Err(SummarizeError::Deadline(what)) => format!("no {what} within the deadline"),
-        Err(SummarizeError::TooLarge(_)) => "reply too large".into(),
-        Err(SummarizeError::Transport(_)) => "connection error".into(),
-        Err(_) => "error".into(),
+        Err(e) => error_text(e),
+    }
+}
+
+/// The result of a summary request for the end line. Rig gives a success
+/// reply only for a 2xx status.
+fn completion_text(result: &Result<Completion, SummarizeError>) -> String {
+    match result {
+        Ok(_) => "HTTP 2xx".into(),
+        Err(e) => error_text(e),
+    }
+}
+
+/// The kind of an error, for the end line.
+fn error_text(error: &SummarizeError) -> String {
+    match error {
+        SummarizeError::Redirect { status, .. } => format!("redirect, HTTP {status}"),
+        SummarizeError::Deadline(what) => format!("no {what} within the deadline"),
+        SummarizeError::TooLarge(_) => "reply too large".into(),
+        SummarizeError::Transport(_) => "connection error".into(),
+        _ => "error".into(),
     }
 }
 
@@ -298,11 +351,87 @@ pub const RETRY_WAITS: [Duration; 10] = [
     Duration::from_secs(60),
 ];
 
+/// The Chat Completions dialect of Custom and LM Studio (KTD2): OpenAI's
+/// request format, the legacy `max_tokens` field for every model id, and
+/// no key header when no key is saved. Longhand never serializes it.
+static GATEWAY: Dialect = Dialect::gateway("longhand-gateway", "", "");
+
+/// The Rig model that sends the summary requests of one endpoint, one kind
+/// for each [`Route`].
+enum Engine {
+    Chat(Box<Model<Chat>>),
+    Anthropic(Box<Model<Messages>>),
+    Gemini(Box<Model<GenerateContent>>),
+    Ollama(Box<Model<OllamaChat>>),
+}
+
+impl Engine {
+    /// The model for `provider` at `address` (KTD2), sending through
+    /// `transport`.
+    fn new(
+        provider: Provider,
+        address: &str,
+        model: &str,
+        key: &str,
+        transport: Transport,
+    ) -> Self {
+        let address = address.trim_end_matches('/');
+        match provider {
+            Provider::OpenAi | Provider::OpenRouter | Provider::LmStudio | Provider::Custom => {
+                let dialect = match provider {
+                    Provider::OpenAi => &OPENAI,
+                    Provider::OpenRouter => &OPENROUTER,
+                    _ => &GATEWAY,
+                };
+                // Today's rule for each OpenAI-compatible provider: the key
+                // goes as a bearer only when there is one.
+                let config = OpenAIConfig::with_key(dialect, key)
+                    .with_base_url(address)
+                    .with_auth(Auth::OptionalBearer);
+                Self::Chat(Box::new(config.connect(transport).chat(model)))
+            }
+            Provider::Anthropic => Self::Anthropic(Box::new(
+                AnthropicConfig::new(key)
+                    .with_base_url(address)
+                    .connect(transport)
+                    .completion(model),
+            )),
+            Provider::Gemini => Self::Gemini(Box::new(
+                GeminiConfig::new(key)
+                    .with_base_url(address)
+                    .connect(transport)
+                    .completion(model),
+            )),
+            Provider::Ollama => {
+                // Ollama's native API is at the root, beside `/v1`.
+                let root = address.strip_suffix("/v1").unwrap_or(address);
+                let mut config = OllamaConfig::new().with_base_url(root);
+                if !key.is_empty() {
+                    config = config.with_api_key(key);
+                }
+                Self::Ollama(Box::new(config.connect(transport).native_completion(model)))
+            }
+        }
+    }
+
+    async fn call(&self, request: CompletionRequest) -> Result<CompletionResponse, ProviderError> {
+        match self {
+            Self::Chat(model) => model.call(request).await,
+            Self::Anthropic(model) => model.call(request).await,
+            Self::Gemini(model) => model.call(request).await,
+            Self::Ollama(model) => model.call(request).await,
+        }
+    }
+}
+
 pub struct Client {
     endpoint: Endpoint,
     base: Url,
-    http: reqwest::Client,
-    /// The same, with the probe's shorter connect timeout.
+    route: Route,
+    /// The Rig model for summary requests, over a [`Transport`] with the
+    /// completion limits.
+    engine: Engine,
+    /// The probe client, with the probe's shorter connect timeout.
     probe_http: reqwest::Client,
     completion: Limits,
     probe: Limits,
@@ -321,19 +450,32 @@ impl Client {
         completion: Limits,
         probe: Limits,
     ) -> Result<Self, SummarizeError> {
-        let base = Url::parse(endpoint.base_url.trim())
-            .map_err(|e| SummarizeError::BadUrl(format!("{}: {e}", endpoint.base_url)))?;
+        let address = endpoint
+            .address()
+            .ok_or_else(|| SummarizeError::BadUrl(endpoint.base_url.clone()))?
+            .to_string();
+        let base =
+            Url::parse(&address).map_err(|e| SummarizeError::BadUrl(format!("{address}: {e}")))?;
         if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
-            return Err(SummarizeError::BadUrl(endpoint.base_url.clone()));
+            return Err(SummarizeError::BadUrl(address));
         }
-        let client =
-            |connect| http_client(connect).map_err(|e| SummarizeError::Transport(e.to_string()));
-        let http = client(completion.connect)?;
-        let probe_http = client(probe.connect)?;
+        let probe_http =
+            http_client(probe.connect).map_err(|e| SummarizeError::Transport(without_url(e)))?;
+        let transport = Transport::with_limits(completion).map_err(|e| match e {
+            TransportError::Request(text) => SummarizeError::Transport(text),
+            _ => SummarizeError::Transport("the HTTP client could not be made".into()),
+        })?;
+        let key = endpoint
+            .credential
+            .as_deref()
+            .filter(|key| !key.is_empty())
+            .unwrap_or_default();
+        let engine = Engine::new(endpoint.provider, &address, &endpoint.model, key, transport);
         Ok(Self {
+            route: endpoint.provider.route(),
             endpoint,
             base,
-            http,
+            engine,
             probe_http,
             completion,
             probe,
@@ -385,28 +527,38 @@ impl Client {
         let request = self.authorize(self.probe_http.get(url));
         let (status, body) = self.send(label, request, &self.probe).await?;
         if !status.is_success() {
-            return Err(http_error(status.as_u16(), &body));
+            return Err(http_error(Route::OpenAiChat, status.as_u16(), &body));
         }
         serde_json::from_slice(&body).map_err(|e| SummarizeError::Malformed(e.to_string()))
     }
 
+    /// Send `messages` and return the reply, with at most `max_tokens` in
+    /// the reply. `num_ctx` is the context size for an Ollama request
+    /// (KTD7). The other providers do not use it.
     pub async fn complete(
         &self,
         label: &Label,
         messages: &[Message],
         max_tokens: u32,
+        num_ctx: Option<u32>,
     ) -> Result<Completion, SummarizeError> {
         match self
-            .complete_with(label, messages, "max_tokens", max_tokens)
+            .complete_with(label, messages, "max_tokens", max_tokens, num_ctx)
             .await
         {
             // Some hosted reasoning models refuse `max_tokens` by name.
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
-            }) if excerpt.contains("max_completion_tokens") => {
-                self.complete_with(label, messages, "max_completion_tokens", max_tokens)
-                    .await
+            }) if self.route == Route::OpenAiChat && excerpt.contains("max_completion_tokens") => {
+                self.complete_with(
+                    label,
+                    messages,
+                    "max_completion_tokens",
+                    max_tokens,
+                    num_ctx,
+                )
+                .await
             }
             other => other,
         }
@@ -418,23 +570,58 @@ impl Client {
         messages: &[Message],
         cap_field: &str,
         max_tokens: u32,
+        num_ctx: Option<u32>,
     ) -> Result<Completion, SummarizeError> {
-        let mut body = json!({
-            "model": self.endpoint.model,
-            "messages": messages,
-            "stream": false,
-        });
-        body[cap_field] = json!(max_tokens);
-        let request = self
-            .authorize(self.http.post(self.api_url("chat/completions")))
-            .json(&body);
-        let (status, bytes) = self.send(label, request, &self.completion).await?;
-        if !status.is_success() {
-            return Err(http_error(status.as_u16(), &bytes));
+        let request = rig_request(self.route, messages, cap_field, max_tokens, num_ctx);
+        let (host, model) = (self.host(), &self.endpoint.model);
+        log::info!("{}", start_line(label, &host, model));
+        let mut guard = EndGuard::new(label, &host, model);
+        let result = self.call_with_retries(request).await;
+        log::info!(
+            "{}",
+            end_line(
+                label,
+                &host,
+                model,
+                guard.elapsed(),
+                &completion_text(&result)
+            )
+        );
+        guard.disarm();
+        result
+    }
+
+    /// Send `request` through Rig, and send it again after each retry wait
+    /// while it cannot reach the endpoint. Each try has the total deadline
+    /// (KTD1).
+    async fn call_with_retries(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<Completion, SummarizeError> {
+        let mut waits = self.retry_waits.iter();
+        loop {
+            let reply = timeout(self.completion.total, self.engine.call(request.clone()))
+                .await
+                .map_err(|_| SummarizeError::Deadline("complete reply"))?;
+            let error = match reply {
+                Ok(response) => return completion(self.route, &response),
+                Err(error) => error,
+            };
+            match failure(self.route, &error) {
+                Failure::Answered(e) => return Err(e),
+                Failure::NotReached(text) => {
+                    let Some(wait) = waits.next() else {
+                        return Err(SummarizeError::Transport(text));
+                    };
+                    log::warn!(
+                        "could not reach {}: {text}; trying again in {} ms",
+                        self.host(),
+                        wait.as_millis()
+                    );
+                    tokio::time::sleep(*wait).await;
+                }
+            }
         }
-        let reply: Value =
-            serde_json::from_slice(&bytes).map_err(|e| SummarizeError::Malformed(e.to_string()))?;
-        parse_completion(&reply)
     }
 
     /// Send `request`, and log one line at its start and one at its end
@@ -623,50 +810,196 @@ const CONTEXT_SIGNS: &[&str] = &[
     "reduce the length",
 ];
 
-fn http_error(status: u16, body: &[u8]) -> SummarizeError {
+/// Gemini's text for a prompt that is longer than the model accepts.
+const GEMINI_CONTEXT_SIGN: &str = "exceeds the maximum number of tokens";
+
+/// Gemini's texts for a key that it does not accept. Gemini answers such a
+/// key with 400 or 403, not 401.
+const GEMINI_KEY_SIGNS: &[&str] = &["api key not valid", "api_key_invalid"];
+
+/// True when `lower`, a lowercase error body, says that the prompt is too
+/// long for the model on `route`.
+fn names_context(route: Route, lower: &str) -> bool {
+    CONTEXT_SIGNS.iter().any(|s| lower.contains(s))
+        || (route == Route::Gemini && lower.contains(GEMINI_CONTEXT_SIGN))
+}
+
+/// The error for a reply with the failure status `status` and the body
+/// `body` on `route` (KTD4).
+fn http_error(route: Route, status: u16, body: &[u8]) -> SummarizeError {
     let text = String::from_utf8_lossy(body);
     let lower = text.to_lowercase();
-    if matches!(status, 400 | 413 | 422) && CONTEXT_SIGNS.iter().any(|s| lower.contains(s)) {
+    if matches!(status, 400 | 413 | 422) && names_context(route, &lower) {
         return SummarizeError::ContextExceeded;
     }
-    if matches!(status, 401 | 403) {
+    let refused_key = match route {
+        Route::Gemini => {
+            matches!(status, 400 | 401 | 403) && GEMINI_KEY_SIGNS.iter().any(|s| lower.contains(s))
+        }
+        _ => matches!(status, 401 | 403),
+    };
+    if refused_key {
         return SummarizeError::Unauthorized(status);
     }
-    let excerpt: String = text.chars().take(200).collect();
     SummarizeError::Http {
         status,
-        excerpt: excerpt.trim().to_string(),
+        excerpt: excerpt(&text),
     }
 }
 
-pub fn parse_completion(reply: &Value) -> Result<Completion, SummarizeError> {
-    let choice = reply
-        .pointer("/choices/0")
-        .ok_or_else(|| SummarizeError::Malformed("no choices".into()))?;
-    let finish_reason = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    // llama.cpp says so when it cut the prompt to fit.
-    if reply.get("truncated").and_then(Value::as_bool) == Some(true) {
-        return Err(SummarizeError::ContextExceeded);
+/// The start of a provider's error body, as the user sees it.
+fn excerpt(text: &str) -> String {
+    let excerpt: String = text.chars().take(200).collect();
+    excerpt.trim().to_string()
+}
+
+/// The text of a reply that Rig could not read as a completion. The Rig
+/// error is not used, because its text can contain the reply.
+const UNREADABLE: &str = "the reply could not be read";
+
+/// The Rig request for `messages` on `route` (KTD3). On the
+/// OpenAI-compatible route, the additional parameters hold today's
+/// `messages` (string content), `"stream": false` and the reply cap
+/// under `cap_field`, so the body is the same as before Rig. Ollama gets
+/// `num_ctx` when there is one, and always `truncate: false` (KTD7).
+fn rig_request(
+    route: Route,
+    messages: &[Message],
+    cap_field: &str,
+    max_tokens: u32,
+    num_ctx: Option<u32>,
+) -> CompletionRequest {
+    let mut history: Vec<RigMessage> = messages
+        .iter()
+        .map(|m| match m.role {
+            "system" => RigMessage::system(m.content.clone()),
+            "assistant" => RigMessage::assistant(m.content.clone()),
+            _ => RigMessage::user(m.content.clone()),
+        })
+        .collect();
+    let prompt = history.pop().unwrap_or_else(|| RigMessage::user(""));
+    let request = CompletionRequest::new(prompt).messages(history);
+    match route {
+        Route::OpenAiChat => {
+            let mut params = Map::new();
+            params.insert("messages".into(), json!(messages));
+            params.insert("stream".into(), Value::Bool(false));
+            params.insert(cap_field.into(), json!(max_tokens));
+            request.additional_params(Value::Object(params))
+        }
+        Route::Anthropic | Route::Gemini => request.max_tokens(u64::from(max_tokens)),
+        Route::Ollama => {
+            let mut params = Map::new();
+            params.insert("truncate".into(), Value::Bool(false));
+            if let Some(num_ctx) = num_ctx {
+                params.insert("num_ctx".into(), json!(num_ctx));
+            }
+            request
+                .max_tokens(u64::from(max_tokens))
+                .additional_params(Value::Object(params))
+        }
     }
-    if finish_reason.as_deref() == Some("length") {
+}
+
+/// The completion in a Rig reply on `route`, or the error that the reply
+/// signals (KTD4).
+fn completion(route: Route, response: &CompletionResponse) -> Result<Completion, SummarizeError> {
+    let raw = &response.raw;
+    match route {
+        // llama.cpp says so when it cut the prompt to fit.
+        Route::OpenAiChat if raw.get("truncated").and_then(Value::as_bool) == Some(true) => {
+            return Err(SummarizeError::ContextExceeded);
+        }
+        // Rig reads this stop reason as `Length`, but the prompt filled the
+        // context window: a bigger reply cap does not help.
+        Route::Anthropic
+            if raw.get("stop_reason").and_then(Value::as_str)
+                == Some("model_context_window_exceeded") =>
+        {
+            return Err(SummarizeError::ContextExceeded);
+        }
+        _ => {}
+    }
+    let finish_reason = response.finish_reason();
+    if finish_reason == Some(FinishReason::Length) {
         return Err(SummarizeError::ReplyCutOff);
     }
-    let text = choice
-        .pointer("/message/content")
-        .and_then(Value::as_str)
-        .ok_or_else(|| SummarizeError::Malformed("no message content".into()))?
-        .trim()
-        .to_string();
+    let text = response.text().trim().to_string();
     if text.is_empty() {
         return Err(SummarizeError::Malformed("an empty reply".into()));
     }
     Ok(Completion {
         text,
-        finish_reason,
+        finish_reason: finish_reason.map(finish_name),
     })
+}
+
+/// The wire name of a finish reason, as OpenAI spells it.
+fn finish_name(reason: FinishReason) -> String {
+    match reason {
+        FinishReason::Stop => "stop".into(),
+        FinishReason::Length => "length".into(),
+        FinishReason::ToolCalls => "tool_calls".into(),
+        FinishReason::ContentFilter => "content_filter".into(),
+        FinishReason::Other(name) => name,
+        _ => "other".into(),
+    }
+}
+
+/// How a Rig request on `route` failed, as a Longhand error (KTD4). Only a
+/// transport error that proves the endpoint did not receive the request
+/// can be sent again.
+fn failure(route: Route, error: &ProviderError) -> Failure {
+    let answered = |e| Failure::Answered(e);
+    match error {
+        ProviderError::Http(inner) => match TransportError::find(inner) {
+            Some(e) => transport_failure(e),
+            None => answered(SummarizeError::Transport(
+                "the connection to the endpoint failed".into(),
+            )),
+        },
+        ProviderError::ProviderResponse(reply)
+        | ProviderError::InvalidAuthentication(reply)
+        | ProviderError::CacheExpired {
+            response: reply, ..
+        } => answered(match reply.status {
+            Some(status) => http_error(route, status.as_u16(), reply.body.as_bytes()),
+            // An error reply with no status, for example an error in a 2xx
+            // body.
+            None if names_context(route, &reply.body.to_lowercase()) => {
+                SummarizeError::ContextExceeded
+            }
+            None => SummarizeError::Malformed(format!("an error reply: {}", excerpt(&reply.body))),
+        }),
+        ProviderError::Request(_) | ProviderError::Url(_) | ProviderError::UnsupportedOption(_) => {
+            answered(SummarizeError::Transport(
+                "the request could not be made".into(),
+            ))
+        }
+        _ => answered(SummarizeError::Malformed(UNREADABLE.into())),
+    }
+}
+
+/// The Longhand error for a transport error. Each text is written by
+/// Longhand, or is a cause that [`Transport`] got with no URL.
+fn transport_failure(error: &TransportError) -> Failure {
+    let e = match error {
+        TransportError::Unreachable(text) => return Failure::NotReached(text.clone()),
+        TransportError::Redirect { status, location } => SummarizeError::Redirect {
+            status: *status,
+            location: location.clone(),
+        },
+        TransportError::Tls(text)
+        | TransportError::Connection(text)
+        | TransportError::Request(text) => SummarizeError::Transport(text.clone()),
+        TransportError::ResponseDeadline => SummarizeError::Deadline("response"),
+        TransportError::IdleDeadline => SummarizeError::Deadline("data"),
+        TransportError::TooLarge(limit) => SummarizeError::TooLarge(*limit),
+        TransportError::Unsupported(_) => {
+            SummarizeError::Transport("the transport cannot send this request".into())
+        }
+    };
+    Failure::Answered(e)
 }
 
 #[cfg(test)]

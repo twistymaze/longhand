@@ -8,7 +8,7 @@ use std::time::Duration;
 use common::{Reply, serve};
 use summarize::client::{Label, RequestKind};
 use summarize::context::{self, DEFAULT_LIMIT};
-use summarize::{Budget, BudgetSource, Client, Endpoint, Limits};
+use summarize::{Budget, BudgetSource, Client, Endpoint, Limits, Provider};
 
 fn probe_label() -> Label {
     Label::note("s1", RequestKind::Probe)
@@ -16,6 +16,7 @@ fn probe_label() -> Label {
 
 fn client(base: &str, model: &str) -> Client {
     Client::new(Endpoint {
+        provider: Provider::Custom,
         base_url: base.into(),
         model: model.into(),
         credential: None,
@@ -201,6 +202,7 @@ async fn a_first_probe_that_hits_its_deadline_is_an_error_not_the_default() {
     };
     let client = Client::with_limits(
         Endpoint {
+            provider: Provider::Custom,
             base_url: mock.base.clone(),
             model: "m".into(),
             credential: None,

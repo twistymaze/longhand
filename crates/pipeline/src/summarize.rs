@@ -27,7 +27,9 @@ use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
 use summarize::client::{Label, Message, RequestKind};
 use summarize::prompts::{Details, UserText};
-use summarize::{Budget, BudgetSource, Client, Endpoint, SummarizeError, context, prompts, tokens};
+use summarize::{
+    Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, context, prompts, tokens,
+};
 
 use crate::join::TRANSCRIPT_FILE;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
@@ -225,6 +227,7 @@ pub fn send_title_request(
     // endpoint that cannot be reached does not stop the other jobs of the
     // summary queue.
     let client = match Client::new(Endpoint {
+        provider: Provider::Custom,
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
@@ -242,7 +245,7 @@ pub fn send_title_request(
     control.proceed()?;
     let label = Label::note(session_id, RequestKind::Title).queued(queued);
     let reply = runtime.block_on(
-        client.complete(&label, &request.messages, request.cap),
+        client.complete(&label, &request.messages, request.cap, None),
         control,
     )?;
     Ok(reply
@@ -508,6 +511,7 @@ pub fn produce(
         checkpoint::put(store, session_id, Stage::Summarize, PROMPT, &active)?;
     }
     let client = Client::new(Endpoint {
+        provider: Provider::Custom,
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
@@ -979,7 +983,7 @@ impl<'a> Calls<'a> {
         };
         let label = Label::note(self.session_id, kind).queued(self.queued);
         let reply = self.runtime.block_on(
-            self.client.complete(&label, messages, room.reserve),
+            self.client.complete(&label, messages, room.reserve, None),
             self.control,
         )?;
         match reply {

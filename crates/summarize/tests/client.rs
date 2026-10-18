@@ -8,10 +8,11 @@ use std::time::{Duration, Instant};
 
 use common::{Reply, completion, serve};
 use summarize::client::{Label, Message, RequestKind};
-use summarize::{Client, Endpoint, Limits, SummarizeError};
+use summarize::{Client, Endpoint, Limits, Provider, SummarizeError};
 
 fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
     Endpoint {
+        provider: Provider::Custom,
         base_url: base.into(),
         model: "m".into(),
         credential: credential.map(str::to_string),
@@ -42,7 +43,10 @@ async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
     )]))
     .await;
     let client = Client::new(endpoint(&mock.base, Some("secret"))).unwrap();
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     let SummarizeError::Redirect { status, location } = &err else {
         panic!("{err:?}");
     };
@@ -71,7 +75,10 @@ async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure()
             HashMap::from([("/v1/chat/completions", Reply::Json(200, completion("back")))]),
         );
     });
-    let reply = client.complete(&label(), &hello(), 100).await.unwrap();
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
     assert_eq!(reply.text, "back");
 }
 
@@ -94,7 +101,10 @@ async fn a_connection_that_closes_before_the_answer_is_not_sent_again() {
     let client = Client::new(endpoint(&base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
     // The error names the cause, not only "error sending request".
@@ -126,7 +136,10 @@ async fn a_tls_failure_is_not_sent_again() {
     let client = Client::new(endpoint(&base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -134,7 +147,10 @@ async fn a_tls_failure_is_not_sent_again() {
 #[tokio::test]
 async fn a_request_with_no_retry_waits_fails_at_once_without_the_network() {
     let client = Client::new(endpoint(&common::closed_base(), None)).unwrap();
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
 }
 
@@ -161,7 +177,10 @@ async fn a_reply_that_breaks_after_it_starts_is_not_sent_again() {
     let client = Client::new(endpoint(&base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(matches!(err, SummarizeError::Transport(_)), "{err:?}");
     assert_eq!(connections.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
@@ -178,7 +197,10 @@ async fn a_request_that_reaches_the_endpoint_is_not_sent_again() {
     let client = Client::new(endpoint(&mock.base, None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, SummarizeError::Http { status: 500, .. }),
         "{err:?}"
@@ -201,7 +223,10 @@ async fn an_endpoint_that_never_answers_hits_the_deadline() {
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
     let started = Instant::now();
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, SummarizeError::Deadline("response")),
         "{err:?}"
@@ -255,7 +280,10 @@ async fn a_reply_slower_than_the_old_limit_arrives_within_the_new_limit() {
         Limits::probe(),
     )
     .unwrap();
-    let err = client.complete(&label(), &hello(), 100).await.unwrap_err();
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, SummarizeError::Deadline("response")),
         "{err:?}"
@@ -267,7 +295,10 @@ async fn a_reply_slower_than_the_old_limit_arrives_within_the_new_limit() {
         Limits::probe(),
     )
     .unwrap();
-    let reply = client.complete(&label(), &hello(), 100).await.unwrap();
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
     assert_eq!(reply.text, "slow");
 }
 
@@ -280,11 +311,17 @@ async fn the_credential_goes_only_as_a_bearer_to_the_configured_endpoint() {
     .await;
     let with = Client::new(endpoint(&mock.base, Some("sk-test"))).unwrap();
     assert_eq!(
-        with.complete(&label(), &hello(), 100).await.unwrap().text,
+        with.complete(&label(), &hello(), 100, None)
+            .await
+            .unwrap()
+            .text,
         "fine"
     );
     let without = Client::new(endpoint(&mock.base, None)).unwrap();
-    without.complete(&label(), &hello(), 100).await.unwrap();
+    without
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
     let seen = mock.seen.lock().unwrap();
     assert_eq!(seen[0].authorization.as_deref(), Some("Bearer sk-test"));
     assert_eq!(seen[1].authorization, None);
@@ -303,7 +340,7 @@ async fn a_context_rejection_is_pressure_and_a_cut_off_reply_is_not() {
     .await;
     let err = Client::new(endpoint(&mock.base, None))
         .unwrap()
-        .complete(&label(), &hello(), 100)
+        .complete(&label(), &hello(), 100, None)
         .await
         .unwrap_err();
     assert!(err.is_context_pressure(), "{err:?}");
@@ -318,7 +355,7 @@ async fn a_context_rejection_is_pressure_and_a_cut_off_reply_is_not() {
     .await;
     let err = Client::new(endpoint(&cut.base, None))
         .unwrap()
-        .complete(&label(), &hello(), 100)
+        .complete(&label(), &hello(), 100, None)
         .await
         .unwrap_err();
     assert!(matches!(err, SummarizeError::ReplyCutOff));
@@ -343,7 +380,7 @@ async fn a_model_refusing_max_tokens_is_asked_again_with_max_completion_tokens()
     let mock = serve(HashMap::from([("/v1/chat/completions", reply)])).await;
     let text = Client::new(endpoint(&mock.base, None))
         .unwrap()
-        .complete(&label(), &hello(), 50)
+        .complete(&label(), &hello(), 50, None)
         .await
         .unwrap()
         .text;

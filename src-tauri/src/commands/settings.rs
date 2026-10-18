@@ -1203,6 +1203,7 @@ fn list_step(s: &Settings, read: Result<Option<String>, secrets::SecretError>) -
         EndpointGate::RequestWithoutKey => None,
     };
     ListStep::Request(summarize::Endpoint {
+        provider: summarize::Provider::Custom,
         base_url: base_url.to_string(),
         model: String::new(),
         credential,
@@ -1473,6 +1474,7 @@ mod tests {
         assert_eq!(
             list_step(&Settings::default(), Ok(Some("sk-test".into()))),
             ListStep::Request(summarize::Endpoint {
+                provider: summarize::Provider::Custom,
                 base_url: "https://api.openai.com/v1".into(),
                 model: String::new(),
                 credential: Some("sk-test".into()),
@@ -1485,6 +1487,7 @@ mod tests {
         assert_eq!(
             list_step(&saved(LOCAL), Ok(None)),
             ListStep::Request(summarize::Endpoint {
+                provider: summarize::Provider::Custom,
                 base_url: LOCAL.into(),
                 model: String::new(),
                 credential: None,
