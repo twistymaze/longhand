@@ -143,3 +143,13 @@ export const ExternalIcon = ({ className }: IconProps) => (
     <path d="M5.5 10.5 10.5 5.5M6.5 5.5h4v4" strokeWidth={1.5} />
   </Icon>
 );
+
+/// A chip with pins: the AI Provider pane, for the model that writes the
+/// summaries.
+export const ChipIcon = ({ className }: IconProps) => (
+  <Icon className={className}>
+    <rect x="4" y="4" width="8" height="8" rx="1.5" />
+    <rect x="6.5" y="6.5" width="3" height="3" rx="0.5" />
+    <path d="M6.25 1.75V4M9.75 1.75V4M6.25 12v2.25M9.75 12v2.25M1.75 6.25H4M1.75 9.75H4M12 6.25h2.25M12 9.75h2.25" />
+  </Icon>
+);

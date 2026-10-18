@@ -21,7 +21,15 @@ function closeBehaviour(hideFromDock: boolean): string {
     : "Closing the window keeps Longhand in the Dock and the menu bar.";
 }
 
-export type PaneId = "status" | "recording" | "destination" | "types" | "summarization" | "recognition" | "about";
+export type PaneId =
+  | "status"
+  | "recording"
+  | "destination"
+  | "types"
+  | "provider"
+  | "summarization"
+  | "recognition"
+  | "about";
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
@@ -90,10 +98,10 @@ function SetupRow({
           </GoTo>
         </Row>
       );
-    case "endpoint":
+    case "provider":
       return (
-        <Row label="Summaries" detail="No endpoint yet — summaries wait until one is set up">
-          <GoTo pane="summarization" onNavigate={onNavigate}>
+        <Row label="AI provider" detail="Not set up yet. Notes are saved without a summary.">
+          <GoTo pane="provider" onNavigate={onNavigate}>
             Set Up…
           </GoTo>
         </Row>

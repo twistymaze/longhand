@@ -22,8 +22,8 @@ const settings = {
 const tones = (r: Readiness) => Object.fromEntries(paneOrder.map((id) => [id, paneTone(id, r, settings)]));
 
 describe("the sidebar", () => {
-  test("lists the panes in the order General, Storage, Recording, Transcription, Summaries, Types and Tags, About", () => {
-    expect(paneOrder).toEqual(["status", "destination", "recording", "recognition", "summarization", "types", "about"]);
+  test("lists the panes in the order General, Storage, Recording, Transcription, AI Provider, Summaries, Types and Tags, About", () => {
+    expect(paneOrder).toEqual(["status", "destination", "recording", "recognition", "provider", "summarization", "types", "about"]);
   });
 
   test("all ready: no pane has a mark", () => {
@@ -36,14 +36,15 @@ describe("the sidebar", () => {
     expect(t.recording).toBe("caution");
   });
 
-  test("storage and endpoint marks follow the setup items", () => {
+  test("storage and provider marks follow the setup items", () => {
     const t = tones({
       ...ready,
       destination: { kind: "low_space", path: "/x", free_bytes: 1, floor_bytes: 2 },
       endpoint_configured: false,
     });
     expect(t.destination).toBe("caution");
-    expect(t.summarization).toBe("neutral");
+    expect(t.provider).toBe("neutral");
+    expect(t.summarization).toBeNull();
     expect(t.status).toBe("neutral");
   });
 

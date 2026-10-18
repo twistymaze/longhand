@@ -32,7 +32,7 @@ describe("the outstanding setup items", () => {
     const items = outstandingItems({ ...ready, missing_models: ["a", "b"], endpoint_configured: false }, settings, {
       systemAudio: false,
     });
-    expect(items.map((i) => i.id)).toEqual(["models", "endpoint"]);
+    expect(items.map((i) => i.id)).toEqual(["models", "provider"]);
     expect(items.every((i) => !i.blocksRecording)).toBe(true);
   });
 
@@ -40,7 +40,7 @@ describe("the outstanding setup items", () => {
     const items = outstandingItems({ ...ready, microphone_authorized: false, armed: false, endpoint_configured: false }, settings, {
       systemAudio: false,
     });
-    expect(items.map((i) => i.id)).toEqual(["microphone", "endpoint"]);
+    expect(items.map((i) => i.id)).toEqual(["microphone", "provider"]);
     expect(items[0].blocksRecording).toBe(true);
   });
 
@@ -85,7 +85,7 @@ describe("the outstanding setup items", () => {
       "storage",
       "system_audio",
       "models",
-      "endpoint",
+      "provider",
     ]);
   });
 });

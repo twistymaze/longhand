@@ -137,17 +137,17 @@ describe("the setup group", () => {
     expect(group().textContent).not.toContain("processed once");
   });
 
-  test("Covers AE2. Models and endpoint missing: ready to record, with two items that open their panes", async () => {
+  test("Covers AE2. Models and provider missing: ready to record, with two items that open their panes", async () => {
     const { rows, group, opened } = renderSetup({ ...readiness, missing_models: ["a", "b"], endpoint_configured: false });
     expect(rows()).toHaveLength(3);
     expect(rows()[0]).toContain("Ready to record");
     expect(rows()[0]).toContain("The items below do not stop a recording");
     expect(rows()[1]).toContain("2 still to download");
-    expect(rows()[2]).toContain("No endpoint yet");
+    expect(rows()[2]).toContain("Not set up yet");
     const user = userEvent.setup();
     await user.click(within(group()).getByRole("button", { name: "Download…" }));
     await user.click(within(group()).getByRole("button", { name: "Set Up…" }));
-    expect(opened).toEqual(["recognition", "summarization"]);
+    expect(opened).toEqual(["recognition", "provider"]);
   });
 
   test("Covers AE3. Microphone not allowed on macOS: not ready, with Allow in place", () => {

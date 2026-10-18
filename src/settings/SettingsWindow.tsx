@@ -5,8 +5,9 @@
 import { type KeyboardEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type DownloadUpdate, type Readiness, type Settings } from "../bindings";
 import { DestinationPicker } from "./DestinationPicker";
-import { EndpointForm } from "./EndpointForm";
-import { AppIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TagIcon, TranscriptIcon } from "./icons";
+import { ProviderForm } from "./ProviderForm";
+import { SummariesPane } from "./Summaries";
+import { AppIcon, ChipIcon, FolderIcon, InfoIcon, MicrophoneIcon, SlidersIcon, SparkleIcon, TagIcon, TranscriptIcon } from "./icons";
 import { About } from "./About";
 import { type Actions, Models } from "./Models";
 import { RecordingPane } from "./Recording";
@@ -26,10 +27,12 @@ const sections: { label: string; panes: PaneEntry[] }[] = [
     panes: [
       { id: "status", label: "General", icon: <SlidersIcon /> },
       // Where notes go, how they are recorded, then the order of processing:
-      // a note is transcribed, then summarized (R12).
+      // a note is transcribed, then summarized (R12). The AI provider that
+      // writes the summaries comes before the summary settings (R16).
       { id: "destination", label: "Storage", icon: <FolderIcon /> },
       { id: "recording", label: "Recording", icon: <MicrophoneIcon /> },
       { id: "recognition", label: "Transcription", icon: <TranscriptIcon /> },
+      { id: "provider", label: "AI Provider", icon: <ChipIcon /> },
       { id: "summarization", label: "Summaries", icon: <SparkleIcon /> },
       { id: "types", label: "Types and Tags", icon: <TagIcon /> },
     ],
@@ -57,8 +60,10 @@ export function paneTone(id: PaneId, readiness: Readiness, settings: Settings): 
       return readiness.armed ? null : "caution";
     case "destination":
       return has("storage") ? "caution" : null;
+    case "provider":
+      return has("provider") ? "neutral" : null;
     case "summarization":
-      return has("endpoint") ? "neutral" : null;
+      return null;
     case "types":
       return null;
     case "recognition":
@@ -191,7 +196,10 @@ export function SettingsWindow() {
             <DestinationPicker settings={settings} status={readiness.destination} onSettings={onSettings} />
           )}
           {pane === "types" && <TypesAndTags readOnly={readOnlyReason(settings)} />}
-          {pane === "summarization" && <EndpointForm settings={settings} onSettings={onSettings} />}
+          {pane === "provider" && <ProviderForm settings={settings} onSettings={onSettings} />}
+          {pane === "summarization" && (
+            <SummariesPane settings={settings} onSettings={onSettings} onOpenProvider={() => show("provider")} />
+          )}
           {pane === "recognition" && (
             <Models models={models} live={live} actions={actions} settings={settings} defaults={defaults} />
           )}
