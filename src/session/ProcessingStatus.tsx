@@ -266,7 +266,7 @@ export function ProcessingStatus({
             row={labelOf(row, live)}
             detail={detail}
             fraction={progressOf(row, detail, live)}
-            step={row.stage === "summarize" ? live?.layer : undefined}
+            step={row.stage === "summarize" ? (live?.summary_step ?? undefined) : undefined}
             meter={row.stage === "diarize" && row.status === "running" ? speakerMeter(detail, speakers) : null}
             sent={detail.done.includes("summarize")}
           />
@@ -290,9 +290,9 @@ function StageLine({
   fraction: number | null;
   meter?: SpeakerMeter | null;
   sent: boolean;
-  /// The summary layer. Each layer gets a new bar, so the fill does not
+  /// The summary step. Each step gets a new bar, so the fill does not
   /// move back to 0% at the next step.
-  step?: number;
+  step?: string;
 }) {
   return (
     <Row
@@ -348,7 +348,7 @@ export function RegenerateStatus({
         detail={{ ...detail, summary_problem: null }}
         fraction={fraction}
         sent={false}
-        step={live?.layer}
+        step={live?.summary_step ?? undefined}
       />
     </Group>
   );

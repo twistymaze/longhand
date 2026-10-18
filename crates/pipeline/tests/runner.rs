@@ -18,6 +18,7 @@ use pipeline::join::TRANSCRIPT_FILE;
 use pipeline::progress::{SpeakerProgress, SpeakerWork};
 use pipeline::reprocess::{Readiness, Refusal};
 use pipeline::runner::{Outcome, Wait};
+use pipeline::summarize::SummaryStep;
 use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{
     EndpointProblem, EngineProvider, Environment, Runner, RunnerEvent, SharedStore,
@@ -1937,9 +1938,10 @@ async fn a_long_transcript_is_summarized_in_parts_and_merged_in_layers() {
     for c in &calls {
         assert!(summarize::tokens::estimate(c) < 2_048, "{}", c.len());
     }
-    // The progress names the layer of each call, so that the view can say
-    // which step runs. Each layer starts at 0 calls done.
-    let steps: Vec<(u32, usize, usize)> = r
+    // The progress names the step of each call, so that the view can say
+    // what runs: the parts, then one count for the group calls of every
+    // layer, then the final call.
+    let steps: Vec<(SummaryStep, usize, usize)> = r
         .events
         .lock()
         .unwrap()
@@ -1947,25 +1949,43 @@ async fn a_long_transcript_is_summarized_in_parts_and_merged_in_layers() {
         .filter_map(|e| match e {
             RunnerEvent::Progress {
                 stage: Stage::Summarize,
-                layer,
+                summary_step: Some(step),
                 done,
                 total,
                 ..
-            } => Some((*layer, *done, *total)),
+            } => Some((*step, *done, *total)),
             _ => None,
         })
         .collect();
-    assert_eq!(steps.first(), Some(&(0, 0, parts)), "{steps:?}");
-    assert!(steps.contains(&(0, parts, parts)), "{steps:?}");
-    assert!(
-        steps.windows(2).all(|w| w[0].0 <= w[1].0),
-        "the layers go up: {steps:?}"
+    assert_eq!(
+        steps.first(),
+        Some(&(SummaryStep::Parts, 0, parts)),
+        "{steps:?}"
     );
-    let last = *steps.last().unwrap();
-    assert!(last.0 >= 1 && last.1 == last.2, "{steps:?}");
-    for layer in 1..=last.0 {
-        assert!(steps.contains(&(layer, 0, steps.iter().find(|s| s.0 == layer).unwrap().2)));
-    }
+    assert!(
+        steps.contains(&(SummaryStep::Parts, parts, parts)),
+        "{steps:?}"
+    );
+    assert_eq!(steps.last(), Some(&(SummaryStep::Final, 0, 1)), "{steps:?}");
+    let groups: Vec<(usize, usize)> = steps
+        .iter()
+        .filter(|s| s.0 == SummaryStep::Groups)
+        .map(|s| (s.1, s.2))
+        .collect();
+    assert!(groups.len() > 2, "{steps:?}");
+    assert!(
+        groups.windows(2).all(|w| w[0].0 <= w[1].0) && groups.iter().all(|g| g.0 <= g.1),
+        "the group count never goes back: {groups:?}"
+    );
+    let order = |s: &SummaryStep| match s {
+        SummaryStep::Parts => 0,
+        SummaryStep::Groups => 1,
+        SummaryStep::Final => 2,
+    };
+    assert!(
+        steps.windows(2).all(|w| order(&w[0].0) <= order(&w[1].0)),
+        "{steps:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -2288,6 +2308,29 @@ async fn no_endpoint_saves_the_session_with_a_stub_naming_the_setting() {
         }
     );
     assert!(summary.body.contains("no endpoint"), "{}", summary.body);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replies_that_do_not_fit_remove_the_plan_so_a_larger_context_gets_a_new_one() {
+    let r = rig().await;
+    // Every reply is cut off, whatever the room.
+    let reply = http::Reply::Json(
+        200,
+        r#"{"choices":[{"message":{"content":""},"finish_reason":"length"}]}"#.into(),
+    );
+    let _mock = summaries_from(&r, reply, Some(4_096)).await;
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::SummaryUnavailable { message, .. } if message.contains("do not fit")
+    )));
+    // The user raises the model's context length. The next run asks the
+    // endpoint again, so it must not keep the plan of the small context.
+    let plan: Option<serde_json::Value> =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN).unwrap();
+    assert!(plan.is_none(), "{plan:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -9984,6 +10027,47 @@ async fn until_called(mock: &http::Mock) {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     panic!("no completion request arrived");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regeneration_during_the_title_turn_stops_the_title_job_and_gets_the_turn() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    let mock = hanging_endpoint(&r).await;
+    let runner = Arc::clone(&r.runner);
+    let titles = tokio::spawn(async move { runner.run_titles().await });
+    until_called(&mock).await;
+    assert!(is_title_call(&completions(&mock)[0]));
+    let runner = Arc::clone(&r.runner);
+    let regeneration = tokio::spawn(async move { runner.regenerate_summary("s").await });
+    // The regeneration stops the title job, and the job deletes the
+    // request and gives up its turn in the summary queue.
+    let jobs = match tokio::time::timeout(std::time::Duration::from_secs(30), titles).await {
+        Ok(jobs) => jobs.unwrap(),
+        Err(_) => {
+            // A blocked title job holds the store lock, and the runtime
+            // waits for its thread when the test ends. A panic would wait
+            // for ever, so the test stops the process.
+            eprintln!("the title job did not stop: it probably holds the store lock");
+            std::process::abort();
+        }
+    };
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert_eq!(pending(&r), None);
+    // The regeneration gets the turn: its summary call goes out.
+    for _ in 0..1_500 {
+        if !chat_calls(&mock).is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(!chat_calls(&mock).is_empty(), "the summary call went out");
+    r.runner.shutdown();
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(30), regeneration)
+        .await
+        .expect("the regeneration stops")
+        .unwrap();
+    assert!(stopped.is_err());
 }
 
 #[tokio::test(flavor = "multi_thread")]

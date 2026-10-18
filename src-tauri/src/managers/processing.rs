@@ -41,12 +41,12 @@ pub enum ProcessingStep {
     StageStarted {
         stage: String,
     },
-    /// `layer` is the summary layer of a summarize call: 0 for the parts
-    /// of the transcript, 1 or more for the calls that combine summaries.
+    /// `summary_step` is the step of a summary in parts: "parts", "groups"
+    /// or "final". It is `None` for the transcribe stage.
     Progress {
         stage: String,
         segment: u32,
-        layer: u32,
+        summary_step: Option<String>,
         done: u32,
         total: u32,
     },
@@ -298,7 +298,7 @@ impl From<RunnerEvent> for Sent {
                 session_id,
                 stage,
                 segment,
-                layer,
+                summary_step,
                 done,
                 total,
             } => (
@@ -306,7 +306,7 @@ impl From<RunnerEvent> for Sent {
                 ProcessingStep::Progress {
                     stage: stage_name(stage),
                     segment,
-                    layer,
+                    summary_step: summary_step.map(|s| s.name().to_string()),
                     done: done as u32,
                     total: total as u32,
                 },
@@ -2285,7 +2285,7 @@ mod tests {
             session_id: "s".into(),
             stage: session_core::Stage::Transcribe,
             segment: 1,
-            layer: 0,
+            summary_step: None,
             done: 3,
             total: 8,
         });
@@ -2295,7 +2295,7 @@ mod tests {
                 "kind": "progress",
                 "stage": "transcribe",
                 "segment": 1,
-                "layer": 0,
+                "summary_step": null,
                 "done": 3,
                 "total": 8
             })
@@ -2732,7 +2732,7 @@ mod tests {
                 session_id: id(),
                 stage: Stage::Transcribe,
                 segment: 0,
-                layer: 0,
+                summary_step: None,
                 done: 1,
                 total: 2,
             },

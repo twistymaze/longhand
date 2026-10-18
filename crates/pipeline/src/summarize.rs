@@ -326,6 +326,28 @@ fn client_endpoint(endpoint: &SummaryEndpoint) -> Endpoint {
     }
 }
 
+/// The step of a summary in parts that a progress report is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SummaryStep {
+    /// One call for each part of the transcript.
+    Parts,
+    /// The calls that combine the part summaries in groups, in every layer
+    /// before the last.
+    Groups,
+    /// The last call, which writes the summary from all the summaries.
+    Final,
+}
+
+impl SummaryStep {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Parts => "parts",
+            Self::Groups => "groups",
+            Self::Final => "final",
+        }
+    }
+}
+
 fn call_key(layer: usize, index: usize) -> String {
     format!("l{layer:02}-{index:05}")
 }
@@ -517,7 +539,7 @@ pub fn run(
     active: Prompt,
     control: &dyn Control,
     queued: Duration,
-    progress: &mut dyn FnMut(usize, usize, usize),
+    progress: &mut dyn FnMut(SummaryStep, usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
         store,
@@ -554,7 +576,7 @@ pub fn produce(
     active: Prompt,
     control: &dyn Control,
     queued: Duration,
-    progress: &mut dyn FnMut(usize, usize, usize),
+    progress: &mut dyn FnMut(SummaryStep, usize, usize),
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
     let transcript = read_transcript(folder)?;
@@ -671,6 +693,7 @@ pub fn produce(
         ollama: endpoint.provider == Provider::Ollama,
         queued,
         progress: &mut *progress,
+        grouped: 0,
     };
     let done = if !said {
         // Nothing was said (AE16): there is nothing to send.
@@ -707,6 +730,9 @@ pub fn produce(
                     shrinks += 1;
                     let reserve = (room.reserve * 2).min(room.limit / 2);
                     if reserve <= room.reserve {
+                        // The next run asks the endpoint for its limit
+                        // again: the user can raise the context length.
+                        forget_calls(store, session_id)?;
                         return Err(StageError::Failed(
                             "the model's replies do not fit in its context; raise its context length or choose another model".into(),
                         ));
@@ -727,6 +753,7 @@ pub fn produce(
                     checkpoint::put(store, session_id, Stage::Summarize, PLAN, &plan)?;
                 }
                 Err(CutOff { .. }) => {
+                    forget_calls(store, session_id)?;
                     return Err(StageError::Failed(
                         "the endpoint kept cutting off replies".into(),
                     ));
@@ -848,9 +875,12 @@ struct Calls<'a> {
     ollama: bool,
     /// The time that the job waited for its turn in the summary queue.
     queued: Duration,
-    /// Takes the layer, the calls of the layer done, and the calls of the
-    /// layer.
-    progress: &'a mut dyn FnMut(usize, usize, usize),
+    /// Takes the step, the calls of the step done, and the calls of the
+    /// step.
+    progress: &'a mut dyn FnMut(SummaryStep, usize, usize),
+    /// The calls that combined summaries in groups in this attempt, in all
+    /// layers before the last.
+    grouped: usize,
 }
 
 /// The final call: its messages, its reply, which is the summary, and the
@@ -875,6 +905,12 @@ impl<'a> Calls<'a> {
     /// `room`, or `None` for another provider (KTD7).
     fn num_ctx(&self, need: usize, room: Room) -> Option<u32> {
         self.ollama.then(|| context_size(need, room.limit))
+    }
+
+    fn report(&mut self, step: Option<(SummaryStep, usize, usize)>) {
+        if let Some((step, done, total)) = step {
+            (self.progress)(step, done, total);
+        }
     }
 
     fn summarize(&mut self, lines: &[Line], plan: &Plan) -> Result<Final, Outcome> {
@@ -906,7 +942,7 @@ impl<'a> Calls<'a> {
                 tokens::with_margin(cost(&whole)) + room.reserve as usize,
                 room,
             );
-            let reply = self.call_as(WHOLE.into(), 0, 0, &whole, room, 1, num_ctx)?;
+            let reply = self.call_as(WHOLE.into(), 0, 0, &whole, room, 1, None, num_ctx)?;
             return Ok(Final {
                 messages: whole,
                 reply,
@@ -923,7 +959,7 @@ impl<'a> Calls<'a> {
         let chunks: Vec<Chunk> = chunk::chunk(lines, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
-        (self.progress)(0, 0, total);
+        (self.progress)(SummaryStep::Parts, 0, total);
         for (i, c) in chunks.iter().enumerate() {
             summaries.push(self.call(
                 0,
@@ -931,9 +967,11 @@ impl<'a> Calls<'a> {
                 &prompts::part(c, i, total, &notes, user),
                 room,
                 total,
+                Some((SummaryStep::Parts, i + 1, total)),
                 num_ctx,
             )?);
         }
+        self.grouped = 0;
         let mut layer = 1;
         if summaries.len() == 1 {
             // The margins let one chunk hold what one whole call could not:
@@ -942,8 +980,8 @@ impl<'a> Calls<'a> {
             let room = plan.room(1);
             let notes = fit_notes(room, self.notes, text, title_text, user);
             let messages = prompts::merge(&only, true, &notes, text, user);
-            (self.progress)(1, 0, 1);
-            let reply = self.call(1, 0, &messages, room, 1, num_ctx)?;
+            (self.progress)(SummaryStep::Final, 0, 1);
+            let reply = self.call(1, 0, &messages, room, 1, None, num_ctx)?;
             return Ok(Final {
                 messages,
                 reply,
@@ -960,8 +998,8 @@ impl<'a> Calls<'a> {
                 // The last merge: one group holds every summary.
                 let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
                 let messages = prompts::merge(&parts, true, &notes, text, user);
-                (self.progress)(layer, 0, 1);
-                let reply = self.call(layer, 0, &messages, room, 1, num_ctx)?;
+                (self.progress)(SummaryStep::Final, 0, 1);
+                let reply = self.call(layer, 0, &messages, room, 1, None, num_ctx)?;
                 return Ok(Final {
                     messages,
                     reply,
@@ -969,19 +1007,26 @@ impl<'a> Calls<'a> {
                 });
             }
             let mut next = Vec::with_capacity(groups.len());
-            (self.progress)(layer, 0, groups.len());
+            // One count for the group calls of all the layers before the
+            // last. The calls of later layers are an estimate with replies
+            // of the full reserve.
+            let steps = self.grouped
+                + merge_calls(&costs, allowance, room.reserve as usize + 8).saturating_sub(1);
+            (self.progress)(SummaryStep::Groups, self.grouped, steps);
             for (i, g) in groups.iter().enumerate() {
                 if g.len() == 1 {
                     next.push(summaries[g.start].clone());
                     continue;
                 }
                 let parts: Vec<&str> = summaries[g.clone()].iter().map(String::as_str).collect();
+                self.grouped += 1;
                 next.push(self.call(
                     layer,
                     i,
                     &prompts::merge(&parts, false, &notes, text, user),
                     room,
                     groups.len(),
+                    Some((SummaryStep::Groups, self.grouped, steps.max(self.grouped))),
                     num_ctx,
                 )?);
             }
@@ -1057,6 +1102,7 @@ impl<'a> Calls<'a> {
         messages: &[Message],
         room: Room,
         total: usize,
+        step: Option<(SummaryStep, usize, usize)>,
         num_ctx: Option<u32>,
     ) -> Result<String, Outcome> {
         self.call_as(
@@ -1066,12 +1112,15 @@ impl<'a> Calls<'a> {
             messages,
             room,
             total,
+            step,
             num_ctx,
         )
     }
 
-    /// One call, with its result saved under `key`. `num_ctx` is the
-    /// Ollama context size of the request (KTD7).
+    /// One call, with its result saved under `key`. When the call is done,
+    /// also when its result was saved before, the run reports `step`: the
+    /// step, its calls done, and its calls. `num_ctx` is the Ollama context
+    /// size of the request (KTD7).
     #[allow(clippy::too_many_arguments)]
     fn call_as(
         &mut self,
@@ -1081,11 +1130,13 @@ impl<'a> Calls<'a> {
         messages: &[Message],
         room: Room,
         total: usize,
+        step: Option<(SummaryStep, usize, usize)>,
         num_ctx: Option<u32>,
     ) -> Result<String, Outcome> {
         if let Some(done) =
             checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, &key)?
         {
+            self.report(step);
             return Ok(done);
         }
         self.control.proceed()?;
@@ -1111,7 +1162,7 @@ impl<'a> Calls<'a> {
                     &key,
                     &completion.text,
                 )?;
-                (self.progress)(layer, index + 1, total);
+                self.report(step);
                 Ok(completion.text)
             }
             Err(e) if e.is_context_pressure() => Err(Pressure { layer, room }),
@@ -1153,6 +1204,26 @@ fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str, user: UserTe
 /// prompt's fixed parts, the notes, the prompt `text`, the `user` text (the
 /// Background and the note details) and the room for the title turn with
 /// `title_text` (KTD4, KTD11).
+/// The number of merge calls for summaries that cost `costs` under
+/// `allowance`, when each merged summary costs `reply`. The count includes
+/// the last merge, and one summary also gets one merge call. A real merged
+/// summary is often shorter than `reply`, so the run can need fewer calls.
+fn merge_calls(costs: &[usize], allowance: usize, reply: usize) -> usize {
+    let mut costs = costs.to_vec();
+    let mut calls = 0;
+    loop {
+        let groups = chunk::merge_groups(&costs, allowance);
+        if groups.len() <= 1 {
+            return calls + 1;
+        }
+        calls += groups.iter().filter(|g| g.len() > 1).count();
+        costs = groups
+            .iter()
+            .map(|g| if g.len() == 1 { costs[g.start] } else { reply })
+            .collect();
+    }
+}
+
 fn chunk_allowance(room: Room, notes: &str, text: &str, title_text: &str, user: UserText) -> usize {
     tokens::prompt_allowance(room.limit, room.reserve)
         .saturating_sub(prompts::overhead(notes, text, user))
@@ -1211,7 +1282,19 @@ impl Runtime {
 mod tests {
     use summarize::chunk::{Line, Turn};
 
-    use super::{Details, clean_title, input_fingerprint, lines_of, read_transcript};
+    use super::{Details, clean_title, input_fingerprint, lines_of, merge_calls, read_transcript};
+
+    #[test]
+    fn merge_calls_counts_every_layer_and_the_last_merge() {
+        // One summary still gets one merge call.
+        assert_eq!(merge_calls(&[10], 25, 10), 1);
+        // Two groups of two, then one merge of the two results.
+        assert_eq!(merge_calls(&[10, 10, 10, 10], 25, 10), 3);
+        // A group of one is not a call; it goes on to the next layer.
+        assert_eq!(merge_calls(&[10, 10, 10, 10, 10], 25, 10), 4);
+        // Everything fits in one group: only the last merge.
+        assert_eq!(merge_calls(&[5, 5, 5], 100, 5), 1);
+    }
 
     #[test]
     fn a_saved_plan_is_kept_only_while_the_context_limit_setting_gives_its_budget() {

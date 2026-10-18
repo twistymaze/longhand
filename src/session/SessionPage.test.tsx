@@ -1283,7 +1283,7 @@ describe("SessionPage", () => {
     test("a summary in more than one part shows its progress", async () => {
       const { e, page } = await start();
       expect(screen.queryByRole("progressbar")).toBeNull();
-      const live = { s: { stage: "summarize", segment: 0, layer: 0, done: 1, total: 3 } };
+      const live = { s: { stage: "summarize", segment: 0, summary_step: "parts", done: 1, total: 3 } };
       await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), live, starts: { s: 1 } }));
       expect(screen.getByText("33%")).toBeTruthy();
       expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("33");
@@ -1291,7 +1291,7 @@ describe("SessionPage", () => {
 
     test("the progress of an earlier run does not show", async () => {
       const e = entry("s");
-      const live = { s: { stage: "summarize", segment: 0, layer: 0, done: 3, total: 3 } };
+      const live = { s: { stage: "summarize", segment: 0, summary_step: "parts", done: 3, total: 3 } };
       mockPage(e, { endpoint }, { regenerate_summary: pending().run });
       const page = renderPage({ id: "s", sessions: { ...sessionsOf([e]), live } });
       await screen.findByText("We agreed the budget.");
