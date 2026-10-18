@@ -176,6 +176,7 @@ export function SessionPage({
   sessions,
   readiness,
   started = false,
+  shortcutNotice = null,
   onBack,
   onOpenNote,
 }: {
@@ -186,6 +187,10 @@ export function SessionPage({
   /// The user just started this note: its notes editor takes the focus,
   /// as the editor of a recording does.
   started?: boolean;
+  /// The reason of a failed press of the recording shortcut while this
+  /// page shows, or null. The page shows it as the Record button shows its
+  /// error.
+  shortcutNotice?: { text: string } | null;
   onBack: () => void;
   /// Open the page of another note: the new note that holds the text of
   /// this note after another computer removed it (R24).
@@ -223,6 +228,10 @@ export function SessionPage({
   const [staleDocument, setStaleDocument] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // A view change gives a new page, so the notice of a press goes with it.
+  useEffect(() => {
+    if (shortcutNotice) setNotice({ tone: "negative", text: sentence(shortcutNotice.text) });
+  }, [shortcutNotice]);
   const [regenerating, setRegenerating] = useState(false);
   const [speakers, setSpeakers] = useState(false);
   const [microphones, setMicrophones] = useState<MicrophoneList | null>(null);

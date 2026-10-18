@@ -470,3 +470,37 @@ describe("a leave that waits (R18)", () => {
     await finish();
   });
 });
+
+describe("a failed shortcut press", () => {
+  const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
+  const reason = "Microphone: the microphone did not start within 5s.";
+
+  test("shows its reason on Home, and the reason goes at the next view change", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    const back = await screen.findByRole("button", { name: "Back" });
+    expect(screen.queryByText(reason)).toBeNull();
+    await userEvent.setup().click(back);
+    await screen.findByRole("heading", { name: "Notes" });
+    expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  test("shows its reason on the note page that the window shows", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    const back = await screen.findByRole("button", { name: "Back" });
+    await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+
+    await userEvent.setup().click(back);
+    await screen.findByRole("heading", { name: "Notes" });
+    expect(screen.queryByText(reason)).toBeNull();
+  });
+});

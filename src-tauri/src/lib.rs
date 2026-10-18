@@ -153,6 +153,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::live::LivePartSaved,
             managers::live::LiveTranscriptStatus,
             tray::ShowSession,
+            shortcut::ShortcutFailed,
             widget::WidgetPointer,
             widget::WidgetShown,
             window::MainWindowHidden,

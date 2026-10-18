@@ -46,12 +46,21 @@ function MainWindow() {
     started.current = id;
     setRequested(id);
   }).current;
+  // The reason of a failed shortcut press, for the view that the window
+  // showed at the press. The next view change takes it away.
+  const [shortcutNotice, setShortcutNotice] = useState<{ text: string; view: View } | null>(null);
+  const shownView = useRef(view);
+  shownView.current = view;
+  const pressNotice = shortcutNotice?.view === view ? shortcutNotice : null;
   useEffect(() => {
     const unlisteners = [
       events.recordingChanged.listen(({ payload }) => {
         if (payload.session_id && payload.opened) setRequested(payload.session_id);
       }),
       events.showSession.listen(({ payload }) => requestStarted(payload.session_id)),
+      events.shortcutFailed.listen(({ payload }) =>
+        setShortcutNotice({ text: payload.text, view: shownView.current }),
+      ),
     ];
     return () => {
       for (const u of unlisteners) void u.then((f) => f());
@@ -137,6 +146,7 @@ function MainWindow() {
           sessions={sessions}
           readiness={readiness}
           started={view.started ?? false}
+          shortcutNotice={pressNotice}
           onBack={back}
           onOpenNote={(id) => {
             setRequested(id);
@@ -161,6 +171,7 @@ function MainWindow() {
           }
           newNoteRecords={settings?.new_note_records ?? true}
           damagedFile={settings?.shared.damaged_file ?? null}
+          shortcutNotice={view.kind === "home" ? pressNotice : null}
           onOpen={(id) => setView({ kind: "session", id })}
           // A note that does not record opens when the list knows it.
           onStarted={requestStarted}
