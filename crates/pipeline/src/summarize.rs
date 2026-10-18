@@ -517,7 +517,7 @@ pub fn run(
     active: Prompt,
     control: &dyn Control,
     queued: Duration,
-    progress: &mut dyn FnMut(usize, usize),
+    progress: &mut dyn FnMut(usize, usize, usize),
 ) -> Result<(), StageError> {
     let summary = produce(
         store,
@@ -554,7 +554,7 @@ pub fn produce(
     active: Prompt,
     control: &dyn Control,
     queued: Duration,
-    progress: &mut dyn FnMut(usize, usize),
+    progress: &mut dyn FnMut(usize, usize, usize),
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), session_id, false)?;
     let transcript = read_transcript(folder)?;
@@ -848,7 +848,9 @@ struct Calls<'a> {
     ollama: bool,
     /// The time that the job waited for its turn in the summary queue.
     queued: Duration,
-    progress: &'a mut dyn FnMut(usize, usize),
+    /// Takes the layer, the calls of the layer done, and the calls of the
+    /// layer.
+    progress: &'a mut dyn FnMut(usize, usize, usize),
 }
 
 /// The final call: its messages, its reply, which is the summary, and the
@@ -921,6 +923,7 @@ impl<'a> Calls<'a> {
         let chunks: Vec<Chunk> = chunk::chunk(lines, allowance);
         let total = chunks.len();
         let mut summaries = Vec::with_capacity(total);
+        (self.progress)(0, 0, total);
         for (i, c) in chunks.iter().enumerate() {
             summaries.push(self.call(
                 0,
@@ -939,6 +942,7 @@ impl<'a> Calls<'a> {
             let room = plan.room(1);
             let notes = fit_notes(room, self.notes, text, title_text, user);
             let messages = prompts::merge(&only, true, &notes, text, user);
+            (self.progress)(1, 0, 1);
             let reply = self.call(1, 0, &messages, room, 1, num_ctx)?;
             return Ok(Final {
                 messages,
@@ -956,6 +960,7 @@ impl<'a> Calls<'a> {
                 // The last merge: one group holds every summary.
                 let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
                 let messages = prompts::merge(&parts, true, &notes, text, user);
+                (self.progress)(layer, 0, 1);
                 let reply = self.call(layer, 0, &messages, room, 1, num_ctx)?;
                 return Ok(Final {
                     messages,
@@ -964,6 +969,7 @@ impl<'a> Calls<'a> {
                 });
             }
             let mut next = Vec::with_capacity(groups.len());
+            (self.progress)(layer, 0, groups.len());
             for (i, g) in groups.iter().enumerate() {
                 if g.len() == 1 {
                     next.push(summaries[g.start].clone());
@@ -1105,7 +1111,7 @@ impl<'a> Calls<'a> {
                     &key,
                     &completion.text,
                 )?;
-                (self.progress)(index + 1, total);
+                (self.progress)(layer, index + 1, total);
                 Ok(completion.text)
             }
             Err(e) if e.is_context_pressure() => Err(Pressure { layer, room }),

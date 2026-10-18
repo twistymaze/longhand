@@ -1937,6 +1937,35 @@ async fn a_long_transcript_is_summarized_in_parts_and_merged_in_layers() {
     for c in &calls {
         assert!(summarize::tokens::estimate(c) < 2_048, "{}", c.len());
     }
+    // The progress names the layer of each call, so that the view can say
+    // which step runs. Each layer starts at 0 calls done.
+    let steps: Vec<(u32, usize, usize)> = r
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            RunnerEvent::Progress {
+                stage: Stage::Summarize,
+                layer,
+                done,
+                total,
+                ..
+            } => Some((*layer, *done, *total)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(steps.first(), Some(&(0, 0, parts)), "{steps:?}");
+    assert!(steps.contains(&(0, parts, parts)), "{steps:?}");
+    assert!(
+        steps.windows(2).all(|w| w[0].0 <= w[1].0),
+        "the layers go up: {steps:?}"
+    );
+    let last = *steps.last().unwrap();
+    assert!(last.0 >= 1 && last.1 == last.2, "{steps:?}");
+    for layer in 1..=last.0 {
+        assert!(steps.contains(&(layer, 0, steps.iter().find(|s| s.0 == layer).unwrap().2)));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -9140,7 +9169,7 @@ async fn a_regeneration_stopped_before_its_record_changes_nothing_and_keeps_the_
                 &|_| summarize::prompts::built_in(summarize::prompts::TOPIC_SUMMARY_ID).unwrap(),
                 &control,
                 std::time::Duration::ZERO,
-                &mut |_, _| {},
+                &mut |_, _, _| {},
             )
         })
         .await

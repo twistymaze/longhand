@@ -126,6 +126,31 @@ describe("the summarize stage", () => {
     expect(tauri.calls.filter((c) => c.cmd === "open_settings").map((c) => c.args)).toEqual([{ pane: "provider" }]);
   });
 
+  test("a summary in parts names the part, then each step that combines the summaries", () => {
+    const step = (layer: number, done: number, total: number) => ({
+      stage: "summarize",
+      segment: 0,
+      layer,
+      done,
+      total,
+    });
+    const view = (live: ReturnType<typeof step>) => (
+      <ProcessingStatus detail={processing({})} live={live} onChanged={() => {}} />
+    );
+    const { rerender } = render(view(step(0, 4, 16)));
+    expect(screen.getByText("Summarizing part 5 of 16")).toBeTruthy();
+    expect(screen.getByText("25%")).toBeTruthy();
+
+    rerender(view(step(1, 0, 3)));
+    expect(screen.getByText("Combining summaries 1 of 3")).toBeTruthy();
+    expect(screen.getByText("0%")).toBeTruthy();
+
+    // The last step is one call: no count and no bar.
+    rerender(view(step(2, 0, 1)));
+    expect(screen.getByText("Combining summaries")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
   test("before the stage runs with no provider, it says so and links to the AI Provider pane", () => {
     show(processing({ endpoint: null }));
     expect(screen.getByText("No AI provider is set, so the note is saved without a summary.")).toBeTruthy();

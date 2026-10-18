@@ -185,11 +185,15 @@ pub enum RunnerEvent {
         session_id: String,
         wait: Option<Wait>,
     },
-    /// Per window of the transcribe stage.
+    /// Per window of the transcribe stage, and per call of the summarize
+    /// stage. `layer` is the summary layer of the call: 0 for the parts of
+    /// the transcript, 1 or more for the calls that combine summaries. It
+    /// is 0 for the transcribe stage.
     Progress {
         session_id: String,
         stage: Stage,
         segment: u32,
+        layer: u32,
         done: usize,
         total: usize,
     },
@@ -689,11 +693,12 @@ impl Runner {
                 &resolve,
                 &control,
                 queued,
-                &mut |done, total| {
+                &mut |layer, done, total| {
                     (env.events)(RunnerEvent::Progress {
                         session_id: id.clone(),
                         stage: Stage::Summarize,
                         segment: 0,
+                        layer: layer as u32,
                         done,
                         total,
                     })
@@ -1792,6 +1797,7 @@ fn execute(
                     session_id: id.into(),
                     stage,
                     segment: p.segment,
+                    layer: 0,
                     done: p.windows_done,
                     total: p.windows_total,
                 });
@@ -1855,6 +1861,7 @@ fn execute(
                         session_id: id.to_string(),
                         stage,
                         segment: p.segment,
+                        layer: 0,
                         done: p.windows_done,
                         total: p.windows_total,
                     })
@@ -1883,11 +1890,12 @@ fn execute(
                 prompt,
                 control,
                 queued,
-                &mut |done, total| {
+                &mut |layer, done, total| {
                     (env.events)(RunnerEvent::Progress {
                         session_id: id.to_string(),
                         stage,
                         segment: 0,
+                        layer: layer as u32,
                         done,
                         total,
                     })

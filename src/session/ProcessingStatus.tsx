@@ -16,6 +16,7 @@ import {
   stageLabel,
   stageRows,
   stoppedAt,
+  summaryStepLabel,
   waitText,
 } from "../processing/describe";
 import { ConfirmDialog } from "../lib/ConfirmDialog";
@@ -51,8 +52,17 @@ function progressOf(row: StageRow, detail: SessionDetail, live: Live | undefined
   if (row.stage === "transcribe" && detail.windows_total) {
     return (detail.windows_done ?? 0) / detail.windows_total;
   }
-  if (live && live.stage === row.stage && live.total > 0) return live.done / live.total;
+  // A summary step of one call shows no bar: it would stay at 0% for the
+  // whole call.
+  const least = row.stage === "summarize" ? 1 : 0;
+  if (live && live.stage === row.stage && live.total > least) return live.done / live.total;
   return null;
+}
+
+/// The label of `row`. A running summary in parts names its step.
+function labelOf(row: StageRow, live: Live | undefined): StageRow {
+  if (row.stage !== "summarize" || row.status !== "running" || live?.stage !== "summarize") return row;
+  return { ...row, label: summaryStepLabel(live) };
 }
 
 /// A measured percent that has not changed for this long shows activity
@@ -253,9 +263,10 @@ export function ProcessingStatus({
         {stageRows(detail, active ? waits : null).map((row) => (
           <StageLine
             key={row.stage}
-            row={row}
+            row={labelOf(row, live)}
             detail={detail}
             fraction={progressOf(row, detail, live)}
+            step={row.stage === "summarize" ? live?.layer : undefined}
             meter={row.stage === "diarize" && row.status === "running" ? speakerMeter(detail, speakers) : null}
             sent={detail.done.includes("summarize")}
           />
@@ -272,12 +283,16 @@ function StageLine({
   fraction,
   meter,
   sent,
+  step,
 }: {
   row: StageRow;
   detail: SessionDetail;
   fraction: number | null;
   meter?: SpeakerMeter | null;
   sent: boolean;
+  /// The summary layer. Each layer gets a new bar, so the fill does not
+  /// move back to 0% at the next step.
+  step?: number;
 }) {
   return (
     <Row
@@ -301,7 +316,7 @@ function StageLine({
       {fraction !== null && (
         <>
           <span className="text-label-secondary tabular-nums">{Math.round(fraction * 100)}%</span>
-          <ProgressBar fraction={fraction} />
+          <ProgressBar key={step} fraction={fraction} />
         </>
       )}
     </Row>
@@ -323,12 +338,18 @@ export function RegenerateStatus({
   started: boolean;
 }) {
   const row: StageRow = started
-    ? { stage: "summarize", label: stageLabel("summarize"), status: "running" }
+    ? labelOf({ stage: "summarize", label: stageLabel("summarize"), status: "running" }, live)
     : { stage: "summarize", label: waitText("summary_turn"), status: "pending" };
   const fraction = started && live && live.stage === "summarize" && live.total > 1 ? live.done / live.total : null;
   return (
     <Group>
-      <StageLine row={row} detail={{ ...detail, summary_problem: null }} fraction={fraction} sent={false} />
+      <StageLine
+        row={row}
+        detail={{ ...detail, summary_problem: null }}
+        fraction={fraction}
+        sent={false}
+        step={live?.layer}
+      />
     </Group>
   );
 }

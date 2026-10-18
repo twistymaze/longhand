@@ -6,7 +6,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type SessionEntry, type SpeakerProgressView } from "../bindings";
 
-export type Live = { stage: string; segment: number; done: number; total: number };
+/// `layer` is the summary layer of a summarize call: 0 for the parts of the
+/// transcript, 1 or more for the calls that combine summaries.
+export type Live = { stage: string; segment: number; layer: number; done: number; total: number };
 
 export type Sessions = {
   entries: SessionEntry[];

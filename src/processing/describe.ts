@@ -20,6 +20,17 @@ export function stageLabel(stage: string): string {
   return stageLabels[stage as StageName] ?? stage;
 }
 
+/// The step of a summary in parts: "Summarizing part 5 of 16", then
+/// "Combining summaries 1 of 3" for each layer that combines summaries.
+/// `done` counts the calls of the layer that are done, so the step that
+/// runs is the next one. A step of one call has no count.
+export function summaryStepLabel({ layer, done, total }: { layer: number; done: number; total: number }): string {
+  const name = layer === 0 ? "Summarizing" : "Combining summaries";
+  if (total <= 1) return name;
+  const current = Math.min(done + 1, total);
+  return layer === 0 ? `${name} part ${current} of ${total}` : `${name} ${current} of ${total}`;
+}
+
 /// Sessions that Home shows as the recording row, not in its list.
 export function isOpen(state: string): boolean {
   return state === "capturing" || state === "interrupted";

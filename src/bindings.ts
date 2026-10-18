@@ -1974,7 +1974,12 @@ export type ProblemNote = {
  */
 name: string; problem: NoteProblemView }
 export type ProcessingMode = "during_recording" | "after_stop"
-export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: "progress"; stage: string; segment: number; done: number; total: number } | 
+export type ProcessingStep = { kind: "stage_started"; stage: string } | 
+/**
+ * `layer` is the summary layer of a summarize call: 0 for the parts
+ * of the transcript, 1 or more for the calls that combine summaries.
+ */
+{ kind: "progress"; stage: string; segment: number; layer: number; done: number; total: number } | 
 /**
  * The speaker stage's progress over the whole note (KTD1).
  */
