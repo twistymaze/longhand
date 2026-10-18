@@ -1,0 +1,177 @@
+# Finds known vulnerabilities in the Rust and JavaScript dependencies
+# (docs/upkeep/README.md; plan U3, KTD6). This workflow is not a required
+# check, so an advisory that is already on main blocks no PR and no release.
+#
+# - On a PR that changes dependencies, it fails only for an affected package
+#   version that the PR adds (KTD8). On an upkeep/ branch, it also fails when
+#   the PR adds an advisory ignore, a bun audit ignore or a licence (R3).
+# - Each day and on demand, it finds the advisories that the next weekly PR
+#   cannot fix (KTD9), and it finds when the last weekly run is more than
+#   8 days old (KTD13). The notice job then posts one comment that mentions
+#   the maintainer, as the GitHub Actions bot (KTD10). It records the
+#   advisory IDs in the issue body, so each advisory gives one notice only.
+#
+# Advisory text, such as a title, reaches the shell steps only in files.
+# The repository variable UPKEEP_MAINTAINER holds the maintainer's login.
+
+name: Advisories
+
+on:
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - bun.lock
+      - package.json
+      - deny.toml
+      - bunfig.toml
+
+permissions:
+  contents: read
+
+# A daily run is not cancelled, so a notice is never posted without its
+# record in the issue body.
+concurrency:
+  group: advisories-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pull-request:
+    name: New advisories on this PR
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: head
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: head/package.json
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Compare the advisories of the base and the head
+        run: bun head/scripts/upkeep/advisories.ts compare base head
+
+      - name: Refuse a new ignore or licence on an upkeep branch
+        if: ${{ !cancelled() && startsWith(github.head_ref, 'upkeep/') }}
+        run: bun head/scripts/upkeep/advisories.ts ignores base head
+
+  daily:
+    name: Advisories that need a decision
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: read
+    outputs:
+      issue: ${{ steps.issue.outputs.number }}
+      notice: ${{ steps.classify.outputs.notice }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
+        with:
+          tool: cargo-deny@0.20.2
+
+      - name: Read the tracking issue
+        id: issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          number=$(gh api "repos/$REPO/issues?labels=upkeep&state=open&per_page=100" \
+            --jq '[.[] | select(.pull_request == null)] | .[0].number // empty')
+          if [[ -z "$number" ]]; then
+            echo "No open issue has the label upkeep (docs/upkeep/README.md)."
+            exit 1
+          fi
+          gh api "repos/$REPO/issues/$number" --jq '.body // ""' > "$RUNNER_TEMP/issue-body.md"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+
+      # The script applies the allowed updates to the lockfiles of this
+      # checkout, scans again, and then puts back the original lockfiles.
+      - name: Find the advisories that need a decision
+        id: classify
+        run: |
+          bun scripts/upkeep/advisories.ts classify "$RUNNER_TEMP/issue-body.md" "$RUNNER_TEMP/advisories"
+          if [[ -f "$RUNNER_TEMP/advisories/notice.md" ]]; then
+            echo "notice=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.classify.outputs.notice == 'true'
+        with:
+          name: advisories
+          path: ${{ runner.temp }}/advisories/
+          if-no-files-found: error
+          retention-days: 7
+
+  notice:
+    name: Notify the maintainer
+    needs: daily
+    if: needs.daily.outputs.notice == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: package.json
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: advisories
+          path: ${{ runner.temp }}/advisories
+
+      - name: Post the notice and record the advisories in the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE: ${{ needs.daily.outputs.issue }}
+          MAINTAINER: ${{ vars.UPKEEP_MAINTAINER }}
+        run: |
+          if [[ -z "$MAINTAINER" ]]; then
+            echo "The repository variable UPKEEP_MAINTAINER is not set."
+            exit 1
+          fi
+          dir="$RUNNER_TEMP/advisories"
+          { printf '@%s ' "$MAINTAINER"; cat "$dir/notice.md"; } > "$dir/comment.md"
+          gh api "repos/$REPO/issues/$ISSUE/comments" -F body=@"$dir/comment.md" > /dev/null
+          # Read the body again: the weekly routine can change it at any time.
+          gh api "repos/$REPO/issues/$ISSUE" --jq '.body // ""' > "$dir/body.md"
+          bun scripts/upkeep/advisories.ts mark "$dir/result.json" "$dir/body.md" > "$dir/new-body.md"
+          gh api -X PATCH "repos/$REPO/issues/$ISSUE" -F body=@"$dir/new-body.md" > /dev/null
