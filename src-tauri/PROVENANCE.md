@@ -24,7 +24,7 @@ Handy-derived modules in the application crate, one record per file (R27).
 
 - Repository: https://github.com/cjpais/Handy
 - Revision: 29bd2c0d6b4b705df5fd6d2f387e5db5ecc27480
-- Source paths: `src-tauri/src/overlay.rs` (recording overlay panel and window settings, bottom-centre placement in logical points on macOS and physical pixels on Windows, Windows topmost order)
+- Source paths: `src-tauri/src/overlay.rs` (recording overlay panel and window settings, bottom-centre placement in logical points on macOS and physical pixels on Windows, Windows topmost order, `windows_text_scale_factor` and the Windows bounds that grow with the text scale)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
 - Status: modified — one size and the work-area bottom on both platforms; remembers its display and moves to a remaining display; content protection, a mouse tracking area for hover, the per-note show rules and the sync are Longhand's own

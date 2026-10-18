@@ -52,6 +52,7 @@ export function Home({
   chord,
   newNoteRecords = true,
   damagedFile = null,
+  shortcutNotice = null,
   onOpen,
   onStarted,
   onChanged,
@@ -77,6 +78,9 @@ export function Home({
   /// The shared settings file that did not parse for about one minute, or
   /// null (R22). The user must fix it.
   damagedFile?: DamagedFile | null;
+  /// The reason of a failed press of the recording shortcut while Home
+  /// shows, or null. Home shows it as the New Note button shows its error.
+  shortcutNotice?: { text: string } | null;
   onOpen: (id: string) => void;
   /// A note that does not record started. A note that records opens from
   /// the recording event.
@@ -129,6 +133,18 @@ export function Home({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The notice of a failed shortcut press goes when App takes it away.
+  // Another notice that came after it stays.
+  const pressNotice = useRef<Notice | null>(null);
+  useEffect(() => {
+    if (shortcutNotice) {
+      const shown: Notice = { tone: "negative", text: sentence(shortcutNotice.text) };
+      pressNotice.current = shown;
+      setNotice(shown);
+    } else {
+      setNotice((n) => (n !== null && n === pressNotice.current ? null : n));
+    }
+  }, [shortcutNotice]);
   const [starting, setStarting] = useState(false);
   const list = useRef<HTMLDivElement>(null);
   const newNote = useRef<HTMLButtonElement>(null);

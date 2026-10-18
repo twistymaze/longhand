@@ -3058,6 +3058,7 @@ dependencies = [
  "trash",
  "uuid",
  "windows 0.61.3",
+ "winreg 0.55.0",
 ]
 
 [[package]]

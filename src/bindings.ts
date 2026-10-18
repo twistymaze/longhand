@@ -743,6 +743,11 @@ async continueRecording() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Record more into a note with audio, or resume an interrupted note.
+ * Refused with the reason that the note page shows (R12, R21, R23) while
+ * another computer uses the note or did not finish its recording.
+ */
 async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("resume_recording", { sessionId }) };
@@ -1253,6 +1258,7 @@ moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
+shortcutFailed: ShortcutFailed,
 showSession: ShowSession,
 updateStateChanged: UpdateStateChanged,
 widgetPointer: WidgetPointer,
@@ -1272,6 +1278,7 @@ moveProgress: "move-progress",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
+shortcutFailed: "shortcut-failed",
 showSession: "show-session",
 updateStateChanged: "update-state-changed",
 widgetPointer: "widget-pointer",
@@ -2120,7 +2127,13 @@ export type RecordingChanged = {
 /**
  * The session now recording; `None` once nothing is.
  */
-session_id: string | null }
+session_id: string | null; 
+/**
+ * A segment opened for the session: a start, or a resume after a
+ * stop, a pause or an interruption. The main window then shows the
+ * note. A pause, a device switch or a restart gives `false`.
+ */
+opened: boolean }
 export type RecordingStatus = { 
 /**
  * The open session: recording, or interrupted and resumable.
@@ -2597,6 +2610,12 @@ files_writable: boolean;
  * The settings file did not parse for about one minute (R22).
  */
 damaged_file: DamagedFile | null }
+/**
+ * A press of the recording shortcut failed after it passed the arming
+ * checks. The main window shows `text` on the page that it shows, as the
+ * Record and Stop buttons show their errors.
+ */
+export type ShortcutFailed = { text: string }
 /**
  * Which of the four shortcuts a command acts on.
  */

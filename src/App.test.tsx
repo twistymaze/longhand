@@ -117,12 +117,33 @@ describe("App", () => {
 
     status.current = { ...idle, session_id: "rec", state: "capturing", recording: true };
     entries.current = [recordingEntry];
-    await act(() => tauri.emit("recording-changed", { session_id: "rec" }));
+    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: true }));
     const back = await screen.findByRole("button", { name: "Back" });
 
     await userEvent.setup().click(back);
     expect(screen.getByRole("option", { name: /Recording/ })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
+  });
+
+  test("a change of the recording note that opens no segment keeps the note that the user opened", async () => {
+    const b: SessionEntry = { ...recordingEntry, id: "b", title: "Beta", state: "saved" };
+    const status = { current: { ...idle, session_id: "rec", state: "capturing", recording: true } };
+    const tauri = mockApp(status, { current: [{ ...recordingEntry, title: "Alpha" }, b] });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
+    await act(() => tauri.emit("show-session", { session_id: "b" }));
+    const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+    expect(title.value).toBe("Beta");
+
+    // A pause, a device switch or a Computer audio change sends the id with `opened: false`.
+    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: false }));
+    expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Beta");
+
+    // A resume opens a segment and shows the recording note.
+    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: true }));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Alpha"),
+    );
   });
 
   // Covers R9, R11, and a window opened while paused.
@@ -447,5 +468,55 @@ describe("a leave that waits (R18)", () => {
     await act(async () => finishSave());
     await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]));
     await finish();
+  });
+});
+
+describe("a failed shortcut press", () => {
+  const saved = (id: string, title: string): SessionEntry => ({ ...recordingEntry, id, title, state: "saved" });
+  const reason = "Microphone: the microphone did not start within 5s.";
+
+  test("shows its reason on Home, and the reason goes at the next view change", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    const back = await screen.findByRole("button", { name: "Back" });
+    expect(screen.queryByText(reason)).toBeNull();
+    await userEvent.setup().click(back);
+    await screen.findByRole("heading", { name: "Notes" });
+    expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  test("shows its reason on the note page that the window shows", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    const back = await screen.findByRole("button", { name: "Back" });
+    await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+
+    await userEvent.setup().click(back);
+    await screen.findByRole("heading", { name: "Notes" });
+    expect(screen.queryByText(reason)).toBeNull();
+  });
+
+  // A later press that records into the same note gives a new view of that
+  // note, and the page stays.
+  test("its reason goes from the note page when a later press records into that note", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await screen.findByRole("button", { name: "Back" });
+    await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+
+    await act(() => tauri.emit("recording-changed", { session_id: "a", opened: true }));
+    await waitFor(() => expect(screen.queryByText(reason)).toBeNull());
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
   });
 });

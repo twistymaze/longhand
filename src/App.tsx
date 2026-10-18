@@ -33,9 +33,11 @@ function MainWindow() {
   const { settings, readiness } = useAppSettings();
 
   // A recording that starts or resumes, from the shortcut or anywhere, opens
-  // its session's page (KTD2). So does the tray's "Open Longhand" while a
-  // session records (R3). The page opens when the capture status or the
-  // list knows the session, so it never shows a session it cannot find.
+  // its session's page (KTD2), from any view. So does the tray's "Open
+  // Longhand" while a session records (R3). A pause, a device switch or a
+  // restart opens no segment and does not move the view. The page opens
+  // when the capture status or the list knows the session, so it never
+  // shows a session it cannot find.
   const [requested, setRequested] = useState<string | null>(null);
   // The requested note that the user just started: New Note on Home, or
   // the shortcut. The shortcut and the tray send `showSession`. The tray
@@ -45,12 +47,21 @@ function MainWindow() {
     started.current = id;
     setRequested(id);
   }).current;
+  // The reason of a failed shortcut press, for the view that the window
+  // showed at the press. The next view change takes it away.
+  const [shortcutNotice, setShortcutNotice] = useState<{ text: string; view: View } | null>(null);
+  const shownView = useRef(view);
+  shownView.current = view;
+  const pressNotice = shortcutNotice?.view === view ? shortcutNotice : null;
   useEffect(() => {
     const unlisteners = [
       events.recordingChanged.listen(({ payload }) => {
-        if (payload.session_id) setRequested(payload.session_id);
+        if (payload.session_id && payload.opened) setRequested(payload.session_id);
       }),
       events.showSession.listen(({ payload }) => requestStarted(payload.session_id)),
+      events.shortcutFailed.listen(({ payload }) =>
+        setShortcutNotice({ text: payload.text, view: shownView.current }),
+      ),
     ];
     return () => {
       for (const u of unlisteners) void u.then((f) => f());
@@ -136,6 +147,7 @@ function MainWindow() {
           sessions={sessions}
           readiness={readiness}
           started={view.started ?? false}
+          shortcutNotice={pressNotice}
           onBack={back}
           onOpenNote={(id) => {
             setRequested(id);
@@ -160,6 +172,7 @@ function MainWindow() {
           }
           newNoteRecords={settings?.new_note_records ?? true}
           damagedFile={settings?.shared.damaged_file ?? null}
+          shortcutNotice={view.kind === "home" ? pressNotice : null}
           onOpen={(id) => setView({ kind: "session", id })}
           // A note that does not record opens when the list knows it.
           onStarted={requestStarted}

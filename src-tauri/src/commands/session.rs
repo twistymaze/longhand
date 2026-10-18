@@ -18,6 +18,7 @@ use tauri::{AppHandle, State};
 use library::scan::{NoteRead, READ_TIMEOUT, Read, RemoteState, Waiting, read_note, read_timed};
 use library::status::LibraryStatus;
 
+use super::blocking;
 use crate::managers::capture::CaptureManager;
 use crate::managers::live::{LiveManager, LiveTranscript};
 use crate::managers::processing::{ProcessingManager, SpeakerProgressView, WaitView, stage_name};
@@ -331,7 +332,56 @@ pub(crate) fn check_record(
         }
         None => return Err(CANNOT_RECORD.to_string()),
     }
-    match folder_in_use(&record, own_runs, now) {
+    refuse_other_computer(&record, status, own_runs, now)
+}
+
+/// The checks of Resume for the note `id` at `now` (R12, R21, R23): no
+/// other computer records into the note, processes it or did not finish
+/// its recording. An interrupted or recording note is the work of this
+/// computer, so its folder is not read. A stopped note is not open here:
+/// after this computer's work on it ends, another computer can use its
+/// folder, so its folder is read. `own_runs` are this computer's
+/// runs. Returns the reason of a refusal. Reads the folder with no store
+/// lock.
+pub(crate) fn check_resume(
+    store: &pipeline::SharedStore,
+    status: &LibraryStatus,
+    own_runs: &[String],
+    id: &str,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<(), String> {
+    let record = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .session(id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no note {id}"))?
+    };
+    if matches!(
+        record.state,
+        SessionState::Capturing | SessionState::Interrupted { .. }
+    ) {
+        return Ok(());
+    }
+    refuse_other_computer(&record, status, own_runs, now)
+}
+
+/// Why the work of another computer on the note of `record` refuses
+/// Record or Resume at `now` (R21, R23): the latest scan shows it, or a
+/// fresh in-use marker of a run that is not in `own_runs` shows it. Reads
+/// the folder.
+fn refuse_other_computer(
+    record: &SessionRecord,
+    status: &LibraryStatus,
+    own_runs: &[String],
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> Result<(), String> {
+    match status.remote(record).map(RemoteView::from) {
+        Some(RemoteView::InUse) => return Err(IN_USE_ELSEWHERE.to_string()),
+        Some(RemoteView::NotFinished) => return Err(NOT_FINISHED_ELSEWHERE.to_string()),
+        None => {}
+    }
+    match folder_in_use(record, own_runs, now) {
         Ok(false) => Ok(()),
         Ok(true) => Err(IN_USE_ELSEWHERE.to_string()),
         Err(()) => Err(FOLDER_UNAVAILABLE.to_string()),
@@ -565,9 +615,18 @@ fn storage_unavailable(status: &LibraryStatus, record: &SessionRecord) -> bool {
 /// folder.
 #[tauri::command]
 #[specta::specta]
-pub fn list_sessions(
+pub async fn list_sessions(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
+) -> Result<Vec<SessionEntry>, String> {
+    let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
+    blocking(move || session_entries(&capture, &processing)).await
+}
+
+/// The body of [`list_sessions`]. It runs on a blocking thread.
+fn session_entries(
+    capture: &CaptureManager,
+    processing: &ProcessingManager,
 ) -> Result<Vec<SessionEntry>, String> {
     let status = processing.library_status();
     // The waits read the capture state, so they come before the store lock.
@@ -707,22 +766,26 @@ fn library_notices_of(
 /// scan: the command reads no folder.
 #[tauri::command]
 #[specta::specta]
-pub fn library_notices(
+pub async fn library_notices(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
     conversion: State<'_, Conversion>,
 ) -> Result<LibraryNotices, String> {
-    let records = {
-        let store = capture.shared_store();
-        let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store.sessions().map_err(|e| e.to_string())?
-    };
+    let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
     let state = conversion.lock().clone();
-    Ok(library_notices_of(
-        processing.library_status(),
-        &state,
-        &records,
-    ))
+    blocking(move || {
+        let records = {
+            let store = capture.shared_store();
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            store.sessions().map_err(|e| e.to_string())?
+        };
+        Ok(library_notices_of(
+            processing.library_status(),
+            &state,
+            &records,
+        ))
+    })
+    .await
 }
 
 /// Convert the notes in the old layout to the new layout (U5, R10, R12).
@@ -758,10 +821,21 @@ fn has_files(dir: &Path) -> bool {
 
 #[tauri::command]
 #[specta::specta]
-pub fn session_detail(
+pub async fn session_detail(
     app: AppHandle,
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
+    session_id: String,
+) -> Result<SessionDetail, String> {
+    let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
+    blocking(move || detail_of(app, capture, processing, session_id)).await
+}
+
+/// The body of [`session_detail`]. It runs on a blocking thread.
+fn detail_of(
+    app: AppHandle,
+    capture: Arc<CaptureManager>,
+    processing: Arc<ProcessingManager>,
     session_id: String,
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
@@ -888,17 +962,21 @@ pub struct LoadedNotes {
 /// fingerprint that [`save_session_notes`] checks.
 #[tauri::command]
 #[specta::specta]
-pub fn load_session_notes(
+pub async fn load_session_notes(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
 ) -> Result<LoadedNotes, String> {
-    let markdown = capture
-        .session_notes(&session_id)
-        .map_err(|e| e.to_string())?;
-    Ok(LoadedNotes {
-        fingerprint: pipeline::save::notes_fingerprint(&markdown),
-        markdown,
+    let capture = Arc::clone(&capture);
+    blocking(move || {
+        let markdown = capture
+            .session_notes(&session_id)
+            .map_err(|e| e.to_string())?;
+        Ok(LoadedNotes {
+            fingerprint: pipeline::save::notes_fingerprint(&markdown),
+            markdown,
+        })
     })
+    .await
 }
 
 /// What a notes save did.
@@ -1208,8 +1286,9 @@ impl From<pipeline::tags::TagCount> for TagEntry {
 /// text. This reads the store only.
 #[tauri::command]
 #[specta::specta]
-pub fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry>, String> {
-    tag_entries(&capture.shared_store())
+pub async fn list_tags(capture: State<'_, Arc<CaptureManager>>) -> Result<Vec<TagEntry>, String> {
+    let store = capture.shared_store();
+    blocking(move || tag_entries(&store)).await
 }
 
 /// The tag list of the store `store`.
@@ -1225,31 +1304,35 @@ pub fn tag_entries(store: &pipeline::SharedStore) -> Result<Vec<TagEntry>, Strin
 /// recording, and then follows the live events.
 #[tauri::command]
 #[specta::specta]
-pub fn live_transcript(
+pub async fn live_transcript(
     capture: State<'_, Arc<CaptureManager>>,
     live: State<'_, Arc<LiveManager>>,
     session_id: String,
 ) -> Result<LiveTranscript, String> {
-    live.transcript(&capture.shared_store(), &session_id)
+    let (store, live) = (capture.shared_store(), Arc::clone(&live));
+    blocking(move || live.transcript(&store, &session_id)).await
 }
 
 /// The saved transcript and summary, read from the session's folder.
 #[tauri::command]
 #[specta::specta]
-pub fn session_document(
+pub async fn session_document(
     capture: State<'_, Arc<CaptureManager>>,
     session_id: String,
 ) -> Result<SessionDocument, String> {
-    let home = {
-        let store = capture.shared_store();
-        let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store
-            .session(&session_id)
-            .map_err(|e| e.to_string())?
-            .and_then(|r| r.home_path)
-            .ok_or_else(|| "this note has not finished processing yet".to_string())?
-    };
-    read_document(Path::new(&home))
+    let store = capture.shared_store();
+    blocking(move || {
+        let home = {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            store
+                .session(&session_id)
+                .map_err(|e| e.to_string())?
+                .and_then(|r| r.home_path)
+                .ok_or_else(|| "this note has not finished processing yet".to_string())?
+        };
+        read_document(Path::new(&home))
+    })
+    .await
 }
 
 /// The documents of the note folder `folder`, as they are on disk. While
@@ -2858,6 +2941,196 @@ mod record_tests {
             Err(IN_USE_ELSEWHERE.to_string())
         );
         assert!(in_use_elsewhere(&store, &own(), "n", now));
+    }
+
+    // Covers R12, R21: Resume waits while another computer records into
+    // or processes the note, also before a library scan found it.
+    #[test]
+    fn resume_is_refused_while_another_computer_uses_the_note() {
+        let (_root, home, store) = placed_note();
+        store.lock().unwrap().put_segment("n", &segment()).unwrap();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+        // This run's own marker does not count.
+        assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(IN_USE_ELSEWHERE.to_string())
+        );
+    }
+
+    /// The saved note "n" with audio, whose folder in a storage folder
+    /// says that its recording is not saved, and the library status after
+    /// a scan of that folder. `aged`: the records of the folder are older
+    /// than the time that a marker stays fresh.
+    fn not_saved_elsewhere(
+        aged: bool,
+    ) -> (tempfile::TempDir, pipeline::SharedStore, Arc<LibraryStatus>) {
+        use session_core::folder::ResultFlag;
+        let root = tempfile::tempdir().unwrap();
+        assert!(library::scan::write_marker(root.path()));
+        let home = root.path().join("2026-09-30 0900 n");
+        std::fs::create_dir(&home).unwrap();
+        let mut doc = SessionDoc::without_audio("n", opened(), None);
+        doc.result = Some(ResultFlag::NotSaved);
+        session_save::note_files::write_doc(&home, &doc).unwrap();
+        if aged {
+            let age =
+                pipeline::in_use::FRESH_FOR.to_std().unwrap() + std::time::Duration::from_secs(60);
+            std::fs::File::options()
+                .write(true)
+                .open(home.join(NOTE_RECORD_FILE))
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+        }
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("n", opened(), Some(home.to_str().unwrap()))
+            .unwrap();
+        store.put_segment("n", &segment()).unwrap();
+        let scan = library::scan::scan(
+            &[root.path().to_path_buf()],
+            &library::scan::Known::default(),
+            &library::scan::ScanOptions::default(),
+        );
+        let status: Arc<LibraryStatus> = Arc::default();
+        status.apply(
+            &scan,
+            &library::reconcile::Coverage::Full,
+            &store.sessions().unwrap(),
+            &Default::default(),
+            &Default::default(),
+            std::time::Instant::now(),
+        );
+        (root, Arc::new(std::sync::Mutex::new(store)), status)
+    }
+
+    // Covers R12, R21, R23: Resume waits while the latest scan shows the
+    // note in use on another computer, and stays unavailable while another
+    // computer did not finish its recording.
+    #[test]
+    fn resume_is_refused_for_a_note_that_another_computer_uses_or_did_not_finish() {
+        let now = chrono::Local::now().fixed_offset();
+        let (_root, store, status) = not_saved_elsewhere(false);
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(IN_USE_ELSEWHERE.to_string())
+        );
+        let (_root, store, status) = not_saved_elsewhere(true);
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(NOT_FINISHED_ELSEWHERE.to_string())
+        );
+    }
+
+    #[test]
+    fn resume_is_refused_when_the_folder_of_a_saved_note_cannot_be_read() {
+        let (_root, home, store) = placed_note();
+        store.lock().unwrap().put_segment("n", &segment()).unwrap();
+        // A file in the place of the folder: its names cannot be listed.
+        std::fs::remove_dir(&home).unwrap();
+        std::fs::write(&home, b"").unwrap();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(FOLDER_UNAVAILABLE.to_string())
+        );
+    }
+
+    // An earlier run on this computer quit while the note recorded, and
+    // its marker is still fresh. The note is interrupted, and the user
+    // can resume it, also when its folder cannot be read.
+    #[test]
+    fn a_note_that_this_computer_left_interrupted_can_be_resumed() {
+        let (_root, home, store) = placed_note();
+        {
+            let mut store = store.lock().unwrap();
+            store.put_segment("n", &segment()).unwrap();
+            store
+                .apply(
+                    "n",
+                    &Event::UserRecord {
+                        has_segments: false,
+                    },
+                )
+                .unwrap();
+            store
+                .apply(
+                    "n",
+                    &Event::CaptureLost {
+                        reason: session_core::InterruptReason::Crash,
+                        at: opened(),
+                    },
+                )
+                .unwrap();
+        }
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&home, EARLIER_RUN, now).unwrap());
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+
+        std::fs::remove_dir_all(&home).unwrap();
+        std::fs::write(&home, b"").unwrap();
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+    }
+
+    /// The note "n" in its home folder, recorded on this computer and
+    /// stopped, with failed processing.
+    fn failed_note() -> (tempfile::TempDir, PathBuf, pipeline::SharedStore) {
+        let (root, home, store) = placed_note();
+        {
+            let mut store = store.lock().unwrap();
+            store.put_segment("n", &segment()).unwrap();
+            for event in [
+                Event::UserRecord {
+                    has_segments: false,
+                },
+                Event::UserStop {
+                    at: opened(),
+                    retained_audio: true,
+                },
+                Event::Dequeued,
+                Event::StageFailed(session_core::Stage::Transcribe),
+            ] {
+                store.apply("n", &event).unwrap();
+            }
+        }
+        (root, home, store)
+    }
+
+    // Covers R12, R21: a stopped note that permits Resume is not open on
+    // this computer. After this computer's work on it ends, another
+    // computer can use its folder, so Resume waits for that work.
+    #[test]
+    fn resume_of_a_note_with_failed_processing_waits_while_another_computer_uses_it() {
+        let (_root, home, store) = failed_note();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(IN_USE_ELSEWHERE.to_string())
+        );
+    }
+
+    // A stopped note whose folder is not there yet is not in use on
+    // another computer.
+    #[test]
+    fn a_stopped_note_with_no_folder_can_be_resumed() {
+        let (_root, home, store) = failed_note();
+        std::fs::remove_dir(&home).unwrap();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
     }
 }
 

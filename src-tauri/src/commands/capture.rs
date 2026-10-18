@@ -16,13 +16,7 @@ use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager};
 use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
 
-async fn blocking<T: Send + 'static>(
-    f: impl FnOnce() -> Result<T, String> + Send + 'static,
-) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f)
-        .await
-        .map_err(|e| e.to_string())?
-}
+use super::blocking;
 
 /// The note type of a new note (R23, R24 of the note types plan).
 #[derive(Deserialize, Type, Debug, Clone, PartialEq, Eq)]
@@ -189,6 +183,9 @@ pub async fn record_note(
     .await
 }
 
+/// Record more into a note with audio, or resume an interrupted note.
+/// Refused with the reason that the note page shows (R12, R21, R23) while
+/// another computer uses the note or did not finish its recording.
 #[tauri::command]
 #[specta::specta]
 pub async fn resume_recording(
@@ -200,8 +197,17 @@ pub async fn resume_recording(
     // Resume replaces the result of the note (KTD11).
     crate::managers::processing::refuse_while_syncing(processing.library_status(), &session_id)?;
     let manager = Arc::clone(&manager);
+    let checks = Arc::clone(&processing);
     let id = session_id.clone();
     let state = blocking(move || {
+        // The same refusals as Record for another computer's work (R21).
+        crate::commands::session::check_resume(
+            &manager.shared_store(),
+            checks.library_status(),
+            checks.own_runs(),
+            &id,
+            chrono::Local::now().fixed_offset(),
+        )?;
         manager
             .resume_session(&app, &id)
             .map(|state| state.name().to_string())
@@ -334,7 +340,7 @@ pub async fn resume_shortcuts(app: AppHandle) -> Result<(), String> {
 /// The text of an error from a command that opens the microphone. A Stop
 /// that cancelled the open is the user's own request, so its text is empty
 /// and the page shows no message.
-fn open_error(error: CaptureError) -> String {
+pub(crate) fn open_error(error: CaptureError) -> String {
     match error {
         CaptureError::Audio(audio::Error::MicStartCancelled) => String::new(),
         error => error.to_string(),

@@ -106,11 +106,14 @@ export function TypeAndTags({
   useReloadOn(loadTypes);
 
   const [tagList, setTagList] = useState<string[]>([]);
+  // As with the types, only the newest read changes the tag list.
+  const tagRequest = useRef(0);
   const loadTags = async () => {
     clearSelection();
+    const current = ++tagRequest.current;
     try {
       const result = await commands.listTags();
-      if (result.status === "ok") setTagList(result.data.map((t) => t.text));
+      if (current === tagRequest.current && result.status === "ok") setTagList(result.data.map((t) => t.text));
     } catch (e) {
       console.error("The tag list could not be read:", e);
     }

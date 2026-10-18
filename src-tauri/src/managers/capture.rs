@@ -128,6 +128,10 @@ pub struct CaptureTick {
 pub struct RecordingChanged {
     /// The session now recording; `None` once nothing is.
     pub session_id: Option<String>,
+    /// A segment opened for the session: a start, or a resume after a
+    /// stop, a pause or an interruption. The main window then shows the
+    /// note. A pause, a device switch or a restart gives `false`.
+    pub opened: bool,
 }
 
 #[derive(Serialize, Clone, Type, Debug)]
@@ -2158,7 +2162,7 @@ impl CaptureManager {
             capture.system_audio
         );
         self.watch_capture(app, &mut inner, &id);
-        changed(app, Some(&id));
+        opened(app, &id);
         leave_in_background(app, emptied);
         Ok(id)
     }
@@ -2617,7 +2621,7 @@ impl CaptureManager {
         self.copy_old_audio(id);
         self.watch_capture(app, &mut inner, id);
         app.state::<Arc<AlertsManager>>().clear(id);
-        changed(app, Some(id));
+        opened(app, id);
         Ok(())
     }
 
@@ -3095,7 +3099,7 @@ impl CaptureManager {
                 let id = id.to_string();
                 let spawned = std::thread::Builder::new()
                     .name("longhand-restart".into())
-                    .spawn(move || manager.restart(&app, &id, cancel, restarts, loss));
+                    .spawn(move || manager.restart(&app, &id, cancel, restarts, loss, false));
                 if let Err(e) = spawned {
                     log::error!("could not start the restart: {e}");
                 }
@@ -3317,7 +3321,7 @@ impl CaptureManager {
             }
             begin_restart(&mut inner, id)
         };
-        self.restart(app, id, cancel, restarts, loss);
+        self.restart(app, id, cancel, restarts, loss, false);
     }
 
     /// The system is about to sleep (U13): close the segment, so it is whole
@@ -3416,11 +3420,13 @@ impl CaptureManager {
             message: "the microphone did not come back after sleep".into(),
             restartable: true,
         };
-        self.restart(app, &id, cancel, restarts, loss);
+        self.restart(app, &id, cancel, restarts, loss, true);
     }
 
     /// Reopen the microphone within the source budget, sleeping 1, 2 and 4 s
     /// before the attempts; interrupt the session once the budget runs out.
+    /// `resumes` is true for a note that was interrupted: its reopen is a
+    /// resume.
     fn restart(
         self: Arc<Self>,
         app: &AppHandle,
@@ -3428,6 +3434,7 @@ impl CaptureManager {
         cancel: CancellationToken,
         mut restarts: RestartTracker,
         loss: Loss,
+        resumes: bool,
     ) {
         changed(app, Some(id));
 
@@ -3462,7 +3469,11 @@ impl CaptureManager {
                     log::error!("recording the restart of {id} failed: {e}");
                 }
                 drop(inner);
-                changed(app, Some(id));
+                if resumes {
+                    opened(app, id);
+                } else {
+                    changed(app, Some(id));
+                }
             }
             supervisor::Recovery::Exhausted(last) => {
                 drop(inner);
@@ -3569,7 +3580,7 @@ impl CaptureManager {
             drop(inner);
             log::info!("session {id} resumed on its microphone's return");
             app.state::<Arc<AlertsManager>>().clear(id);
-            changed(app, Some(id));
+            opened(app, id);
             return;
         }
         let mut inner = self.inner();
@@ -4164,7 +4175,17 @@ mod faults {
     }
 }
 
+/// The capture state changed, and no segment opened for a note.
 fn changed(app: &AppHandle, session_id: Option<&str>) {
+    emit_changed(app, session_id, false);
+}
+
+/// A segment opened for the note `id`: a start or a resume.
+fn opened(app: &AppHandle, id: &str) {
+    emit_changed(app, Some(id), true);
+}
+
+fn emit_changed(app: &AppHandle, session_id: Option<&str>, opened: bool) {
     crate::tray::recording_changed(app, session_id);
     // A request only: some callers hold the capture lock here (KTD1).
     crate::widget::request(app, crate::widget::Request::Sync);
@@ -4172,6 +4193,7 @@ fn changed(app: &AppHandle, session_id: Option<&str>) {
     crate::managers::updates::recording_changed(app);
     let _ = RecordingChanged {
         session_id: session_id.map(str::to_string),
+        opened,
     }
     .emit(app);
 }

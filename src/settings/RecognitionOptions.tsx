@@ -282,7 +282,14 @@ export function RecognitionOptions({
               if (asr_model === draft.asr_model) return;
               invalidate();
               setEngine(null);
-              setDraft({ ...draft, asr_model });
+              // A language that the new model does not support goes back
+              // to Automatic, so the change can save.
+              const languages = models.find((m) => m.id === asr_model)?.languages;
+              const language =
+                draft.language && languages?.includes(draft.language)
+                  ? draft.language
+                  : null;
+              setDraft({ ...draft, asr_model, language });
             }}
           />
         </div>

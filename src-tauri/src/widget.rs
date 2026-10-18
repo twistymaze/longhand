@@ -321,15 +321,38 @@ pub fn logical_origin(screen: &Screen) -> (f64, f64) {
 }
 
 /// The window bounds in physical pixels of the target display: x, y, width,
-/// height. Windows places windows in physical pixels (KTD7).
+/// height. Windows places windows in physical pixels (KTD7). WebView2
+/// applies the Windows text size `text_scale` as a zoom of the page, so the
+/// window grows with it. The offset under the window uses the display scale
+/// only, so the bottom edge does not move.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn physical_bounds(screen: &Screen) -> (i32, i32, i32, i32) {
+pub fn physical_bounds(screen: &Screen, text_scale: f64) -> (i32, i32, i32, i32) {
     let s = screen.scale;
-    let width = (WIDTH * s).round() as i32;
-    let height = (HEIGHT * s).round() as i32;
+    let content = s * text_scale;
+    let width = (WIDTH * content).round() as i32;
+    let height = (HEIGHT * content).round() as i32;
     let x = screen.key.x + (screen.key.width as i32 - width) / 2;
     let y = screen.work_bottom - height - (BOTTOM_OFFSET * s).round() as i32;
     (x, y, width, height)
+}
+
+/// The Windows text size from its `TextScaleFactor` percentage, from 1.0 to
+/// 2.25. The value is absent until the user changes the text size.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn text_scale_of(percent: Option<u32>) -> f64 {
+    percent.map_or(1.0, |p| (f64::from(p) / 100.0).clamp(1.0, 2.25))
+}
+
+/// The Windows text size (Settings > Accessibility > Text size). It is
+/// separate from the display scale.
+#[cfg(windows)]
+fn windows_text_scale_factor() -> f64 {
+    text_scale_of(
+        winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+            .open_subkey(r"Software\Microsoft\Accessibility")
+            .and_then(|key| key.get_value::<u32, _>("TextScaleFactor"))
+            .ok(),
+    )
 }
 
 /// The window origin on a display in physical pixels, when the pill is at
@@ -346,7 +369,7 @@ pub fn default_position(screen: &Screen) -> (i32, i32) {
     }
     #[cfg(windows)]
     {
-        let (x, y, _, _) = physical_bounds(screen);
+        let (x, y, _, _) = physical_bounds(screen, windows_text_scale_factor());
         (x, y)
     }
 }
@@ -659,7 +682,7 @@ pub fn place_and_show(app: &AppHandle, remembered: Option<DisplayKey>) -> Option
 fn place_windows(window: &tauri::WebviewWindow, screen: &Screen, x: i32, y: i32) {
     use windows::Win32::UI::WindowsAndMessaging::{HWND_TOPMOST, SWP_NOACTIVATE, SetWindowPos};
 
-    let (_, _, width, height) = physical_bounds(screen);
+    let (_, _, width, height) = physical_bounds(screen, windows_text_scale_factor());
     let Ok(hwnd) = window.hwnd() else {
         log::error!("failed to get the recording widget window handle");
         return;
@@ -1093,8 +1116,38 @@ mod tests {
 
     #[test]
     fn the_physical_bounds_are_the_bottom_centre_of_the_work_area() {
-        assert_eq!(physical_bounds(&EXTERNAL), (3024 + 816, 1032 - 76, 288, 64));
-        assert_eq!(physical_bounds(&LAPTOP), (1224, 1894 - 128 - 24, 576, 128));
+        assert_eq!(
+            physical_bounds(&EXTERNAL, 1.0),
+            (3024 + 816, 1032 - 76, 288, 64)
+        );
+        assert_eq!(
+            physical_bounds(&LAPTOP, 1.0),
+            (1224, 1894 - 128 - 24, 576, 128)
+        );
+    }
+
+    #[test]
+    fn a_text_scale_grows_the_window_and_keeps_its_bottom_edge() {
+        let (_, y, _, height) = physical_bounds(&EXTERNAL, 1.0);
+        let bottom = y + height;
+        let (x, y, width, height) = physical_bounds(&EXTERNAL, 1.5);
+        assert_eq!((x, y, width, height), (3024 + 744, 924, 432, 96));
+        assert_eq!(y + height, bottom);
+        // The offset under the window grows with the display scale only.
+        assert_eq!(
+            physical_bounds(&LAPTOP, 1.25),
+            (1152, 1894 - 160 - 24, 720, 160)
+        );
+    }
+
+    #[test]
+    fn the_text_scale_is_clamped_and_is_one_with_no_value() {
+        assert_eq!(text_scale_of(None), 1.0);
+        assert_eq!(text_scale_of(Some(100)), 1.0);
+        assert_eq!(text_scale_of(Some(150)), 1.5);
+        assert_eq!(text_scale_of(Some(80)), 1.0);
+        assert_eq!(text_scale_of(Some(225)), 2.25);
+        assert_eq!(text_scale_of(Some(300)), 2.25);
     }
 
     // A move from a scale-2 display to a scale-1 display uses the scale of

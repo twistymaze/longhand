@@ -276,6 +276,37 @@ describe("recognition defaults", () => {
       ),
     ).toBe(false);
   });
+  test("a model that does not support the chosen language saves with Automatic", async () => {
+    const multi = { ...model(offline, "Whisper"), languages: ["en", "de"] };
+    const catalog = [models[0], multi];
+    const initial = {
+      ...settings,
+      asr_model: offline,
+      live_transcript: false,
+      recognition_language: "de",
+    } as Settings;
+    const { user, tauri } = open(
+      {
+        resolve_recognition: ({ config }) => {
+          const c = config as RecognitionConfig;
+          const chosen = catalog.find((m) => m.id === c.asr_model)!;
+          if (c.language && !chosen.languages.includes(c.language))
+            throw `${chosen.id} does not support language ${c.language}`;
+          return resolve(c);
+        },
+      },
+      initial,
+      catalog,
+    );
+    await ready();
+    await user.click(screen.getByRole("radio", { name: "Parakeet" }));
+    await ready();
+    const saved = tauri.calls
+      .filter((c) => c.cmd === "set_recognition_defaults")
+      .map((c) => c.args.config as RecognitionConfig);
+    expect(saved[saved.length - 1]).toMatchObject({ asr_model: stream, language: null });
+    expect(screen.queryByText(/No compatible choice/)).toBeNull();
+  });
   test("offline text can have independent live speaker analysis", async () => {
     const { user } = open();
     await ready();

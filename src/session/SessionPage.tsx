@@ -176,6 +176,7 @@ export function SessionPage({
   sessions,
   readiness,
   started = false,
+  shortcutNotice = null,
   onBack,
   onOpenNote,
 }: {
@@ -186,6 +187,10 @@ export function SessionPage({
   /// The user just started this note: its notes editor takes the focus,
   /// as the editor of a recording does.
   started?: boolean;
+  /// The reason of a failed press of the recording shortcut while this
+  /// page shows, or null. The page shows it as the Record button shows its
+  /// error.
+  shortcutNotice?: { text: string } | null;
   onBack: () => void;
   /// Open the page of another note: the new note that holds the text of
   /// this note after another computer removed it (R24).
@@ -223,6 +228,19 @@ export function SessionPage({
   const [staleDocument, setStaleDocument] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
+  // The notice of a failed shortcut press goes when App takes it away: at a
+  // view change, also to a new view of this note. Another notice that came
+  // after it stays.
+  const pressNotice = useRef<Notice | null>(null);
+  useEffect(() => {
+    if (shortcutNotice) {
+      const shown: Notice = { tone: "negative", text: sentence(shortcutNotice.text) };
+      pressNotice.current = shown;
+      setNotice(shown);
+    } else {
+      setNotice((n) => (n !== null && n === pressNotice.current ? null : n));
+    }
+  }, [shortcutNotice]);
   const [regenerating, setRegenerating] = useState(false);
   const [speakers, setSpeakers] = useState(false);
   const [microphones, setMicrophones] = useState<MicrophoneList | null>(null);
@@ -509,11 +527,20 @@ export function SessionPage({
     })();
   };
 
+  // The window can show another note before a delete ends. The page has
+  // the note's key, so a mounted page is the note that the window shows.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const deletion = useDeleteSession({
     titleOf: (e) => rowTitle(e),
     onDeleted: () => {
       void sessions.refresh();
-      onBack();
+      if (mounted.current) onBack();
     },
     onFailed: (text) => {
       setNotice({ tone: "negative", text });

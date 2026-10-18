@@ -101,6 +101,9 @@ tauri-plugin-autostart = "=2.5.1"
 # Keeps the recording widget topmost and places it (src/widget.rs), as in
 # Handy. The version that tauri already uses.
 windows = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Reads the Windows text size, so the recording widget window grows with it
+# (src/widget.rs), as in Handy. The version that Cargo.lock already has.
+winreg = "0.55"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-global-shortcut = "=2.3.2"

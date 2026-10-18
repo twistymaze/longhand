@@ -55,8 +55,29 @@ function useMove() {
     current.current = next;
     setMoveState(next);
   }, []);
+  // The number of Move events so far. A status read that started before
+  // the last event is older than that event.
+  const eventCount = useRef(0);
+  // The number of Moves that finished so far. A status read that started
+  // before the last finish can give the folder of another Move.
+  const finishCount = useRef(0);
   const read = useCallback(async () => {
+    const count = eventCount.current;
+    const finishes = finishCount.current;
     const status = await commands.moveStatus();
+    if (finishes !== finishCount.current) {
+      if (current.current && current.current.folder === null) void read();
+      return;
+    }
+    if (count !== eventCount.current) {
+      // The events give no folder and no pause cause: take only those.
+      const m = current.current;
+      if (m && status) {
+        const cause = m.cause ?? (m.state === "paused" ? status.cause : null);
+        setMove({ ...m, folder: m.folder ?? status.new_folder, cause });
+      }
+      return;
+    }
     // A finished Move that the events already reported stays finished.
     if (!status && !current.current) return;
     setMove(
@@ -73,8 +94,10 @@ function useMove() {
   useEffect(() => {
     void read();
     const progress = events.moveProgress.listen(({ payload }) => {
+      eventCount.current += 1;
       const m = current.current;
       if (payload.state === "finished") {
+        finishCount.current += 1;
         setFinished({ moved: payload.moved, folder: m?.folder ?? null });
         setMove(null);
         return;
@@ -91,6 +114,7 @@ function useMove() {
       if (!m) void read();
     });
     const paused = events.movePaused.listen(({ payload }) => {
+      eventCount.current += 1;
       const m = current.current;
       if (m) setMove({ ...m, state: "paused", cause: payload.cause });
       else void read();
