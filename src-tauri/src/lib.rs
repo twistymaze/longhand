@@ -486,12 +486,10 @@ pub fn run() {
             }
         }
         #[cfg(target_os = "macos")]
-        tauri::RunEvent::Reopen { .. } => {
-            // Launching the running bundle again (Finder, Spotlight, Dock) is a
-            // request to see the window it hid on close.
-            if !autostart::background_request(&[]) {
-                window::show_main_window(app);
-            }
+        // Launching the running bundle again (Finder, Spotlight, Dock) is a
+        // request to see the window it hid on close.
+        tauri::RunEvent::Reopen { .. } if !autostart::background_request(&[]) => {
+            window::show_main_window(app);
         }
         _ => {}
     });

@@ -40,7 +40,7 @@ Download Longhand from the [latest release](https://github.com/twistymaze/longha
 You need:
 
 - macOS 15 or later
-- Rust 1.94.0 (the repository's `rust-toolchain.toml` selects it)
+- Rust 1.95.0 (the repository's `rust-toolchain.toml` selects it)
 - [Bun](https://bun.sh)
 - CMake, Ninja and Git
 
