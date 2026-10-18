@@ -1135,10 +1135,31 @@ pub enum EndpointModels {
     KeyRejected,
     KeyCannotList,
     NotListed,
+    // The server has no model list, but its chat route answers. The Model
+    // row is then a text field (R17).
+    ChatOnly,
     Redirected { host: Option<String> },
     ServerError { status: Option<u16> },
     Unreachable,
     NotRequested { reason: ListNotRequested },
+}
+
+/// The result of the connection check (KTD9): the model list outcome, and
+/// the address that worked. For Custom, the address can have `/v1` added
+/// (R14). `None` when no address worked or no request was sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct EndpointCheck {
+    pub models: EndpointModels,
+    pub address: Option<String>,
+}
+
+impl EndpointCheck {
+    fn without_address(models: EndpointModels) -> Self {
+        Self {
+            models,
+            address: None,
+        }
+    }
 }
 
 /// Why Longhand sent no model list request (R4, R16, R17).
@@ -1172,6 +1193,7 @@ impl From<summarize::ModelList> for EndpointModels {
             L::KeyRejected => Self::KeyRejected,
             L::KeyCannotList => Self::KeyCannotList,
             L::NotListed => Self::NotListed,
+            L::ChatOnly => Self::ChatOnly,
             L::Redirected { host } => Self::Redirected { host },
             L::ServerError { status } => Self::ServerError { status },
             L::Unreachable => Self::Unreachable,
@@ -1210,15 +1232,16 @@ fn list_step(s: &Settings, read: Result<Option<String>, secrets::SecretError>) -
     })
 }
 
-/// List the models of the effective endpoint (R5). The command reads the
-/// key itself, so the webview never holds it. It sends no request when the
-/// request gate refuses one (R4, R16, R17).
+/// Check the connection to the effective endpoint and list its models (R5,
+/// KTD9). The command reads the key itself, so the webview never holds it.
+/// It sends no request when the request gate refuses one (R4, R16, R17).
+/// It returns the address that worked, so the caller can save it (R14).
 #[tauri::command]
 #[specta::specta]
 pub async fn list_endpoint_models(
     app: AppHandle,
     manager: State<'_, SecretsManager>,
-) -> Result<EndpointModels, String> {
+) -> Result<EndpointCheck, String> {
     let s = settings::get_settings(&app);
     let base_url = s.effective_endpoint_base_url().to_string();
     // An empty Base URL has no host to read a key for. The gate refuses it.
@@ -1230,14 +1253,18 @@ pub async fn list_endpoint_models(
             .await
     };
     let endpoint = match list_step(&s, read) {
-        ListStep::Done(outcome) => return Ok(outcome),
+        ListStep::Done(outcome) => return Ok(EndpointCheck::without_address(outcome)),
         ListStep::Request(endpoint) => endpoint,
     };
     // A Base URL that is not a valid http or https URL cannot be reached.
     let Ok(client) = summarize::Client::new(endpoint) else {
-        return Ok(EndpointModels::Unreachable);
+        return Ok(EndpointCheck::without_address(EndpointModels::Unreachable));
     };
-    Ok(summarize::list_models(&client).await.into())
+    let checked = summarize::check(&client).await;
+    Ok(EndpointCheck {
+        models: checked.list.into(),
+        address: checked.address,
+    })
 }
 
 fn fingerprint(secret: &str) -> String {
@@ -1546,6 +1573,7 @@ mod tests {
             (ModelList::KeyRejected, EndpointModels::KeyRejected),
             (ModelList::KeyCannotList, EndpointModels::KeyCannotList),
             (ModelList::NotListed, EndpointModels::NotListed),
+            (ModelList::ChatOnly, EndpointModels::ChatOnly),
             (
                 ModelList::Redirected {
                     host: Some("example.com".into()),
@@ -1592,19 +1620,31 @@ mod tests {
             }),
             serde_json::json!({ "kind": "not-requested", "reason": "keychain-locked" })
         );
+        assert_eq!(
+            serde_json::to_value(EndpointCheck {
+                models: EndpointModels::ChatOnly,
+                address: Some("http://127.0.0.1:4000/v1".into()),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "models": { "kind": "chat-only" },
+                "address": "http://127.0.0.1:4000/v1"
+            })
+        );
 
         let bindings = include_str!("../../../src/bindings.ts");
         for declaration in [
             "export type EndpointModels = { kind: \"listed\"; ids: string[] } | \
              { kind: \"key-needed\" } | { kind: \"key-rejected\" } | \
              { kind: \"key-cannot-list\" } | { kind: \"not-listed\" } | \
-             { kind: \"redirected\"; host: string | null } | \
+             { kind: \"chat-only\" } | { kind: \"redirected\"; host: string | null } | \
              { kind: \"server-error\"; status: number | null } | \
              { kind: \"unreachable\" } | \
              { kind: \"not-requested\"; reason: ListNotRequested }",
             "export type ListNotRequested = \"no-base-url\" | \"keychain-locked\" | \
              \"keychain-failed\" | \"key-needed\"",
-            "async listEndpointModels() : Promise<Result<EndpointModels, string>>",
+            "export type EndpointCheck = { models: EndpointModels; address: string | null }",
+            "async listEndpointModels() : Promise<Result<EndpointCheck, string>>",
         ] {
             assert!(
                 bindings.contains(declaration),

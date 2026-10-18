@@ -3,6 +3,7 @@
 mod common;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use common::{Reply, serve};
@@ -322,4 +323,116 @@ fn the_user_setting_wins_over_the_probe() {
         }
     );
     assert_eq!(context::resolve(None, probed), lm);
+}
+
+fn provider_client(provider: Provider, base: &str, model: &str, key: Option<&str>) -> Client {
+    Client::new(Endpoint {
+        provider,
+        base_url: base.into(),
+        model: model.into(),
+        credential: key.map(str::to_string),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn an_ollama_model_reports_its_context_length_from_api_show() {
+    let mock = serve(HashMap::from([(
+        "/api/show",
+        Reply::With(Arc::new(|body: &str| {
+            let request: serde_json::Value = serde_json::from_str(body).unwrap();
+            if request["model"] != "qwen3:8b" {
+                return (404, r#"{"error":"model not found"}"#.into());
+            }
+            (
+                200,
+                r#"{"model_info":{"general.architecture":"qwen3","qwen3.context_length":32768,"qwen3.embedding_length":4096}}"#.into(),
+            )
+        })),
+    )]))
+    .await;
+    let root = mock.base.strip_suffix("/v1").unwrap();
+    let client = provider_client(Provider::Ollama, root, "qwen3:8b", None);
+    assert_eq!(
+        context::probe(&client, &probe_label()).await.unwrap(),
+        Some(Budget {
+            limit: 32_768,
+            source: BudgetSource::Ollama
+        })
+    );
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].method, "POST");
+}
+
+#[test]
+fn the_ollama_context_length_is_read_without_the_architecture_name() {
+    let body = serde_json::json!({"model_info": {"llama.context_length": 8192}});
+    assert_eq!(context::parse_ollama_show(&body), Some(8_192));
+    assert_eq!(context::parse_ollama_show(&serde_json::json!({})), None);
+}
+
+#[tokio::test]
+async fn a_gemini_model_reports_the_input_token_limit_of_its_model_list_entry() {
+    let mock = serve(HashMap::from([(
+        "/v1beta/models?pageSize=1000&key=gk",
+        Reply::Json(
+            200,
+            r#"{"models":[
+                {"name":"models/gemini-2.5-pro","inputTokenLimit":2000000,"outputTokenLimit":65536},
+                {"name":"models/gemini-2.5-flash","inputTokenLimit":1048576,"outputTokenLimit":65536}
+            ]}"#
+            .into(),
+        ),
+    )]))
+    .await;
+    let root = mock.base.strip_suffix("/v1").unwrap();
+    let client = provider_client(Provider::Gemini, root, "gemini-2.5-flash", Some("gk"));
+    assert_eq!(
+        context::probe(&client, &probe_label()).await.unwrap(),
+        Some(Budget {
+            limit: 1_048_576,
+            source: BudgetSource::Gemini
+        })
+    );
+}
+
+#[tokio::test]
+async fn anthropic_and_openai_give_no_probed_limit_so_the_entered_value_or_the_default_applies() {
+    for provider in [Provider::Anthropic, Provider::OpenAi] {
+        // Each route answers with a limit, so a probe request would find one.
+        let mock = serve(HashMap::from([
+            (
+                "/v1/models",
+                Reply::Json(200, r#"{"data":[{"id":"m","max_model_len":4096}]}"#.into()),
+            ),
+            (
+                "/v1/model/info",
+                Reply::Json(
+                    200,
+                    r#"{"data":[{"model_name":"m","model_info":{"max_input_tokens":4096}}]}"#
+                        .into(),
+                ),
+            ),
+        ]))
+        .await;
+        let client = provider_client(provider, &mock.base, "m", Some("k"));
+        let probed = context::probe(&client, &probe_label()).await.unwrap();
+        assert_eq!(probed, None, "{provider:?}");
+        assert!(mock.seen.lock().unwrap().is_empty(), "{provider:?}");
+        assert_eq!(
+            context::resolve(None, probed),
+            Budget {
+                limit: DEFAULT_LIMIT,
+                source: BudgetSource::Default
+            }
+        );
+        assert_eq!(
+            context::resolve(Some(50_000), probed),
+            Budget {
+                limit: 50_000,
+                source: BudgetSource::User
+            }
+        );
+    }
 }

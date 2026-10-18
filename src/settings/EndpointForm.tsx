@@ -159,6 +159,8 @@ function statusLine(
       return ["negative", "The server rejected this API key"];
     case "key-cannot-list":
       return ["caution", "This API key can't list models. Type a model name."];
+    case "chat-only":
+      return ["positive", "Connected · this server lists no models. Type a model name."];
     case "not-listed":
       return [
         "caution",
@@ -241,7 +243,8 @@ export function EndpointForm({
         setModels(null);
         return;
       }
-      result = await commands.listEndpointModels();
+      const checked = await commands.listEndpointModels();
+      result = checked.status === "ok" ? { status: "ok", data: checked.data.models } : checked;
     } catch (e) {
       // The save or the IPC call itself failed. Show the failure on the status line.
       result = { status: "error", error: e instanceof Error ? e.message : String(e) };

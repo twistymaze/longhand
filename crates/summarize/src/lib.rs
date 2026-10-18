@@ -23,7 +23,7 @@ pub mod transport;
 pub use chunk::{Chunk, Line, Turn};
 pub use client::{Client, Completion, Endpoint, Limits, SummarizeError};
 pub use context::{Budget, BudgetSource};
-pub use models::{ModelList, list_models};
+pub use models::{Checked, ModelList, check, list_models};
 pub use prompts::Prompt;
 pub use provider::Provider;
 pub use transport::{Transport, TransportError};

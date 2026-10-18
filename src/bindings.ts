@@ -599,11 +599,12 @@ async repairKeychainAccess() : Promise<Result<null, string>> {
 }
 },
 /**
- * List the models of the effective endpoint (R5). The command reads the
- * key itself, so the webview never holds it. It sends no request when the
- * request gate refuses one (R4, R16, R17).
+ * Check the connection to the effective endpoint and list its models (R5,
+ * KTD9). The command reads the key itself, so the webview never holds it.
+ * It sends no request when the request gate refuses one (R4, R16, R17).
+ * It returns the address that worked, so the caller can save it (R14).
  */
-async listEndpointModels() : Promise<Result<EndpointModels, string>> {
+async listEndpointModels() : Promise<Result<EndpointCheck, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("list_endpoint_models") };
 } catch (e) {
@@ -1481,11 +1482,17 @@ export type DocLine = { kind: "turn"; position_ms: number; speaker: number | nul
 { kind: "text"; text: string }
 export type DownloadUpdate = { kind: "progress"; downloaded: number; total: number } | { kind: "verifying" } | { kind: "completed" } | { kind: "cancelled" } | { kind: "failed"; message: string }
 /**
+ * The result of the connection check (KTD9): the model list outcome, and
+ * the address that worked. For Custom, the address can have `/v1` added
+ * (R14). `None` when no address worked or no request was sent.
+ */
+export type EndpointCheck = { models: EndpointModels; address: string | null }
+/**
  * The result of a model list request, for the Summaries pane (KTD2). It
  * has every `ModelList` outcome, and `NotRequested` when the request gate
  * sends no request (KTD3).
  */
-export type EndpointModels = { kind: "listed"; ids: string[] } | { kind: "key-needed" } | { kind: "key-rejected" } | { kind: "key-cannot-list" } | { kind: "not-listed" } | { kind: "redirected"; host: string | null } | { kind: "server-error"; status: number | null } | { kind: "unreachable" } | { kind: "not-requested"; reason: ListNotRequested }
+export type EndpointModels = { kind: "listed"; ids: string[] } | { kind: "key-needed" } | { kind: "key-rejected" } | { kind: "key-cannot-list" } | { kind: "not-listed" } | { kind: "chat-only" } | { kind: "redirected"; host: string | null } | { kind: "server-error"; status: number | null } | { kind: "unreachable" } | { kind: "not-requested"; reason: ListNotRequested }
 export type EndpointView = { host: string; model: string; 
 /**
  * False when the transcript would cross the network unencrypted.

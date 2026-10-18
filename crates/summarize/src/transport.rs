@@ -14,6 +14,7 @@
 //! it back from a Rig error.
 
 use std::future::Future;
+use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
 use rig_core::http_client::{
@@ -154,6 +155,78 @@ async fn read_body(
                 body.extend_from_slice(&bytes);
             }
         }
+    }
+}
+
+/// A [`Transport`] that keeps the body of the last success reply. The
+/// model list of an OpenAI-compatible server is read from that body,
+/// because Longhand accepts more list shapes than Rig (see
+/// [`crate::models`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Recording {
+    inner: Transport,
+    body: Arc<Mutex<Option<Bytes>>>,
+}
+
+impl Recording {
+    pub(crate) fn new(inner: Transport) -> Self {
+        Self {
+            inner,
+            body: Arc::default(),
+        }
+    }
+
+    /// The body of the last success reply. `None` when no success reply
+    /// came, or its body could not be read.
+    pub(crate) fn body(&self) -> Option<Bytes> {
+        self.body.lock().ok().and_then(|body| body.clone())
+    }
+}
+
+impl HttpClientExt for Recording {
+    fn send<T, U>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
+    where
+        T: Into<Bytes> + Send,
+        U: From<Bytes> + Send + 'static,
+    {
+        let sending = self.inner.send::<T, Bytes>(req);
+        let slot = Arc::clone(&self.body);
+        async move {
+            let response = sending.await?;
+            let success = response.status().is_success();
+            Ok(response.map(|body| -> LazyBody<U> {
+                Box::pin(async move {
+                    let bytes = body.await?;
+                    if success && let Ok(mut kept) = slot.lock() {
+                        *kept = Some(bytes.clone());
+                    }
+                    Ok(U::from(bytes))
+                })
+            }))
+        }
+    }
+
+    fn send_multipart<U>(
+        &self,
+        req: Request<MultipartForm>,
+    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
+    where
+        U: From<Bytes> + Send + 'static,
+    {
+        self.inner.send_multipart(req)
+    }
+
+    fn send_streaming<T>(
+        &self,
+        req: Request<T>,
+    ) -> impl Future<Output = Result<StreamingResponse, Error>> + Send
+    where
+        T: Into<Bytes> + Send,
+    {
+        self.inner.send_streaming(req)
     }
 }
 

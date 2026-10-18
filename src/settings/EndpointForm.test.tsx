@@ -91,8 +91,11 @@ function backend({
     repair_keychain_access: () => null,
     list_endpoint_models: () => {
       const result = list(listIndex++);
-      if (result !== "defer") return result;
-      return new Promise<EndpointModels>((resolve) => pending.push({ resolve }));
+      if (result !== "defer") return { models: result, address: null };
+      return new Promise<EndpointModels>((resolve) => pending.push({ resolve })).then((models) => ({
+        models,
+        address: null,
+      }));
     },
     set_endpoint_base_url: ({ baseUrl }) => {
       current = { ...current, endpoint_base_url: baseUrl as string };

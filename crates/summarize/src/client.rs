@@ -27,18 +27,21 @@ use rig_core::completion::{
     CompletionRequest, CompletionResponse, FinishReason, Message as RigMessage,
 };
 use rig_core::driver::Model;
+use rig_core::http_client::HttpClientExt;
+use rig_core::model::ModelList as RigModelList;
+use rig_core::providers::anthropic::Anthropic;
 use rig_core::providers::anthropic::wire::{AnthropicConfig, Messages};
-use rig_core::providers::gemini::GeminiConfig;
 use rig_core::providers::gemini::completion::GenerateContent;
-use rig_core::providers::ollama::{Chat as OllamaChat, OllamaConfig};
-use rig_core::providers::openai::OpenAIConfig;
+use rig_core::providers::gemini::{Gemini, GeminiConfig};
+use rig_core::providers::ollama::{Chat as OllamaChat, Ollama, OllamaConfig};
 use rig_core::providers::openai::wire::{Auth, Chat, Dialect, OPENAI, OPENROUTER};
+use rig_core::providers::openai::{OpenAI, OpenAIConfig};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tokio::time::timeout;
 
 use crate::provider::{Provider, Route};
-use crate::transport::{Transport, TransportError};
+use crate::transport::{Recording, Transport, TransportError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Endpoint {
@@ -119,6 +122,9 @@ pub enum RequestKind {
     Title,
     /// The request for the list of models in Settings.
     Models,
+    /// The one-token chat request that checks a server with no model list
+    /// in Settings (KTD9).
+    Check,
 }
 
 impl RequestKind {
@@ -130,6 +136,7 @@ impl RequestKind {
             Self::Single => "single",
             Self::Title => "title",
             Self::Models => "models",
+            Self::Check => "check",
         }
     }
 }
@@ -365,15 +372,21 @@ enum Engine {
     Ollama(Box<Model<OllamaChat>>),
 }
 
-impl Engine {
-    /// The model for `provider` at `address` (KTD2), sending through
-    /// `transport`.
+/// The Rig client of one provider at one address (KTD2). It sends each
+/// request through the transport that it is made with.
+enum RigClient {
+    OpenAi(Box<OpenAI>),
+    Anthropic(Box<Anthropic>),
+    Gemini(Box<Gemini>),
+    Ollama(Box<Ollama>),
+}
+
+impl RigClient {
     fn new(
         provider: Provider,
         address: &str,
-        model: &str,
         key: &str,
-        transport: Transport,
+        transport: impl HttpClientExt + 'static,
     ) -> Self {
         let address = address.trim_end_matches('/');
         match provider {
@@ -388,19 +401,17 @@ impl Engine {
                 let config = OpenAIConfig::with_key(dialect, key)
                     .with_base_url(address)
                     .with_auth(Auth::OptionalBearer);
-                Self::Chat(Box::new(config.connect(transport).chat(model)))
+                Self::OpenAi(Box::new(config.connect(transport)))
             }
             Provider::Anthropic => Self::Anthropic(Box::new(
                 AnthropicConfig::new(key)
                     .with_base_url(address)
-                    .connect(transport)
-                    .completion(model),
+                    .connect(transport),
             )),
             Provider::Gemini => Self::Gemini(Box::new(
                 GeminiConfig::new(key)
                     .with_base_url(address)
-                    .connect(transport)
-                    .completion(model),
+                    .connect(transport),
             )),
             Provider::Ollama => {
                 // Ollama's native API is at the root, beside `/v1`.
@@ -409,8 +420,37 @@ impl Engine {
                 if !key.is_empty() {
                     config = config.with_api_key(key);
                 }
-                Self::Ollama(Box::new(config.connect(transport).native_completion(model)))
+                Self::Ollama(Box::new(config.connect(transport)))
             }
+        }
+    }
+
+    /// The models that the provider lists, every page read (KTD5).
+    async fn list_models(&self) -> Result<RigModelList, ProviderError> {
+        match self {
+            Self::OpenAi(client) => client.list_models().await,
+            Self::Anthropic(client) => client.list_models().await,
+            Self::Gemini(client) => client.list_models().await,
+            Self::Ollama(client) => client.list_models().await,
+        }
+    }
+}
+
+impl Engine {
+    /// The model for `provider` at `address` (KTD2), sending through
+    /// `transport`.
+    fn new(
+        provider: Provider,
+        address: &str,
+        model: &str,
+        key: &str,
+        transport: Transport,
+    ) -> Self {
+        match RigClient::new(provider, address, key, transport) {
+            RigClient::OpenAi(client) => Self::Chat(Box::new(client.chat(model))),
+            RigClient::Anthropic(client) => Self::Anthropic(Box::new(client.completion(model))),
+            RigClient::Gemini(client) => Self::Gemini(Box::new(client.completion(model))),
+            RigClient::Ollama(client) => Self::Ollama(Box::new(client.native_completion(model))),
         }
     }
 
@@ -422,6 +462,13 @@ impl Engine {
             Self::Ollama(model) => model.call(request).await,
         }
     }
+}
+
+/// The result of a model list request through Rig.
+pub(crate) struct Listing {
+    pub(crate) models: Result<RigModelList, SummarizeError>,
+    /// The body of the last success reply, when one came.
+    pub(crate) body: Option<bytes::Bytes>,
 }
 
 pub struct Client {
@@ -524,12 +571,112 @@ impl Client {
     }
 
     pub async fn probe_json(&self, label: &Label, url: &str) -> Result<Value, SummarizeError> {
-        let request = self.authorize(self.probe_http.get(url));
-        let (status, body) = self.send(label, request, &self.probe).await?;
+        self.probe_request(label, self.probe_http.get(url)).await
+    }
+
+    /// [`Self::probe_json`] with a POST of the JSON `body`, for a probe
+    /// such as Ollama's `/api/show`.
+    pub async fn probe_post_json(
+        &self,
+        label: &Label,
+        url: &str,
+        body: &Value,
+    ) -> Result<Value, SummarizeError> {
+        self.probe_request(label, self.probe_http.post(url).json(body))
+            .await
+    }
+
+    async fn probe_request(
+        &self,
+        label: &Label,
+        request: reqwest::RequestBuilder,
+    ) -> Result<Value, SummarizeError> {
+        let (status, body) = self
+            .send(label, self.authorize(request), &self.probe)
+            .await?;
         if !status.is_success() {
             return Err(http_error(Route::OpenAiChat, status.as_u16(), &body));
         }
         serde_json::from_slice(&body).map_err(|e| SummarizeError::Malformed(e.to_string()))
+    }
+
+    /// The probe limits of this client.
+    pub(crate) fn probe_limits(&self) -> Limits {
+        self.probe
+    }
+
+    /// The address that requests go to. [`Client::with_limits`] refuses an
+    /// endpoint with no address.
+    pub(crate) fn address(&self) -> &str {
+        self.endpoint.address().unwrap_or_default()
+    }
+
+    /// True when the client sends a key.
+    pub(crate) fn sends_key(&self) -> bool {
+        self.endpoint
+            .credential
+            .as_deref()
+            .is_some_and(|key| !key.is_empty())
+    }
+
+    /// The models that the provider lists, through Rig over a
+    /// [`Transport`] with the probe limits (KTD5). Rig sends no request
+    /// again. The listing also gives the body of the last success reply.
+    pub(crate) async fn rig_models(&self, label: &Label) -> Listing {
+        let transport = match Transport::with_limits(self.probe) {
+            Ok(transport) => Recording::new(transport),
+            Err(_) => {
+                return Listing {
+                    models: Err(SummarizeError::Transport(
+                        "the HTTP client could not be made".into(),
+                    )),
+                    body: None,
+                };
+            }
+        };
+        let key = self.endpoint.credential.as_deref().unwrap_or_default();
+        let rig = RigClient::new(
+            self.endpoint.provider,
+            self.address(),
+            key,
+            transport.clone(),
+        );
+        let (host, model) = (self.host(), &self.endpoint.model);
+        log::info!("{}", start_line(label, &host, model));
+        let mut guard = EndGuard::new(label, &host, model);
+        let models = match timeout(self.probe.total, rig.list_models()).await {
+            Err(_) => Err(SummarizeError::Deadline("complete reply")),
+            Ok(Ok(list)) => Ok(list),
+            Ok(Err(error)) => Err(match failure(self.route, &error) {
+                Failure::Answered(e) => e,
+                Failure::NotReached(text) => SummarizeError::Transport(text),
+            }),
+        };
+        let result = match &models {
+            Ok(_) => "HTTP 2xx".to_string(),
+            Err(e) => error_text(e),
+        };
+        log::info!(
+            "{}",
+            end_line(label, &host, model, guard.elapsed(), &result)
+        );
+        guard.disarm();
+        Listing {
+            models,
+            body: transport.body(),
+        }
+    }
+
+    /// Send one chat request with a reply cap of one token, to check a
+    /// server that has no model list (KTD9). The request is sent once
+    /// unless the client has retry waits.
+    pub(crate) async fn check_chat(&self, label: &Label) -> Result<Completion, SummarizeError> {
+        let messages = [Message {
+            role: "user",
+            content: "Reply with OK.".into(),
+        }];
+        self.complete_with(label, &messages, "max_tokens", 1, None)
+            .await
     }
 
     /// Send `messages` and return the reply, with at most `max_tokens` in
