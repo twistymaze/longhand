@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
@@ -92,6 +92,11 @@ function heldSaves() {
 const box = () => screen.getByRole("textbox", { name: "Background" });
 const saves = (tauri: TauriMock) => tauri.calls.filter((c) => c.cmd === "set_background").map((c) => c.args.text);
 const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+/// Moves the fake clock, then lets a queued save run.
+const advance = (ms: number) =>
+  act(async () => {
+    jest.advanceTimersByTime(ms);
+  });
 
 describe("Background", () => {
   test("shows the saved text, the hint and the count, and does not take the focus", () => {
@@ -104,14 +109,22 @@ describe("Background", () => {
   });
 
   test("typing saves once, one second after the last change", async () => {
-    const { tauri, user } = setup();
-    await user.click(box());
-    await user.keyboard("Erv");
-    await pause(500);
-    expect(saves(tauri)).toEqual([]);
-    await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]), { timeout: 1500 });
-    await pause(1100);
-    expect(saves(tauri)).toEqual(["Erv"]);
+    jest.useFakeTimers();
+    try {
+      const { tauri } = setup();
+      // No delay between keys: the test moves the clock itself.
+      const user = userEvent.setup({ delay: null });
+      await user.click(box());
+      await user.keyboard("Erv");
+      await advance(950);
+      expect(saves(tauri)).toEqual([]);
+      await advance(50);
+      expect(saves(tauri)).toEqual(["Erv"]);
+      await advance(2000);
+      expect(saves(tauri)).toEqual(["Erv"]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("leaving the field saves at once", async () => {
