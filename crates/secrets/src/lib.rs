@@ -460,7 +460,6 @@ mod tests {
             accounts(&store),
             [entry("summarize:custom:litellm.ewal.io", "sk-old")]
         );
-        // A second read finds the moved key.
         assert_eq!(
             store.provider_credential(CUSTOM, LITELLM, true),
             Ok(Some("sk-old".into()))

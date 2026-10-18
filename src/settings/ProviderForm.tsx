@@ -14,7 +14,6 @@ import {
 import { ModelPicker } from "./ModelPicker";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, type Tone, fieldClass } from "./ui";
 
-// A function, not a constant, so that a test can set the platform.
 const isMac = () => navigator.userAgent.includes("Mac");
 const keyStore = () => (isMac() ? "Keychain" : "the credential store");
 
@@ -175,7 +174,6 @@ export function statusLine(
 ): [Tone, ReactNode] {
   if (outcome.status === "error") return ["negative", outcome.error];
   const { name, kind } = info(provider);
-  // Custom has a long name. Its texts say "the server" instead.
   const who = kind === "custom" ? "The server" : name;
   const o = outcome.data;
   switch (o.kind) {

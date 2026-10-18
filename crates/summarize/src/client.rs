@@ -398,8 +398,6 @@ impl RigClient {
                     Provider::OpenRouter => &OPENROUTER,
                     _ => &GATEWAY,
                 };
-                // Today's rule for each OpenAI-compatible provider: the key
-                // goes as a bearer only when there is one.
                 let config = OpenAIConfig::with_key(dialect, key)
                     .with_base_url(address)
                     .with_auth(Auth::OptionalBearer);
@@ -416,7 +414,6 @@ impl RigClient {
                     .connect(transport),
             )),
             Provider::Ollama => {
-                // Ollama's native API is at the root, beside `/v1`.
                 let root = address.strip_suffix("/v1").unwrap_or(address);
                 let mut config = OllamaConfig::new().with_base_url(root);
                 if !key.is_empty() {
@@ -514,11 +511,7 @@ impl Client {
             TransportError::Request(text) => SummarizeError::Transport(text),
             _ => SummarizeError::Transport("the HTTP client could not be made".into()),
         })?;
-        let key = endpoint
-            .credential
-            .as_deref()
-            .filter(|key| !key.is_empty())
-            .unwrap_or_default();
+        let key = endpoint.credential.as_deref().unwrap_or_default();
         let engine = Engine::new(endpoint.provider, &address, &endpoint.model, key, transport);
         Ok(Self {
             route: endpoint.provider.route(),
@@ -550,7 +543,7 @@ impl Client {
 
     /// Plain HTTP to another machine: allowed, and the surface says so (R30a).
     pub fn crosses_network_unencrypted(&self) -> bool {
-        self.base.scheme() == "http" && !is_loopback(&self.base)
+        crosses(&self.base)
     }
 
     /// `path` under the base, e.g. `chat/completions` under `…/v1`.
@@ -942,7 +935,11 @@ pub(crate) fn without_url(e: reqwest::Error) -> String {
 /// address or `localhost`) does not. An address that does not parse does
 /// not cross the network.
 pub fn crosses_network_unencrypted(address: &str) -> bool {
-    Url::parse(address.trim()).is_ok_and(|url| url.scheme() == "http" && !is_loopback(&url))
+    Url::parse(address.trim()).is_ok_and(|url| crosses(&url))
+}
+
+fn crosses(url: &Url) -> bool {
+    url.scheme() == "http" && !is_loopback(url)
 }
 
 fn is_loopback(url: &Url) -> bool {

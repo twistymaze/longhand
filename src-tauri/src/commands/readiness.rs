@@ -146,9 +146,7 @@ pub async fn readiness(
     let destination = tauri::async_runtime::spawn_blocking(move || destination::status(&folder))
         .await
         .map_err(|e| e.to_string())?;
-    // Read the key only when a provider with an address and a model is
-    // active. Without them no summary request goes out, whatever the key
-    // state is. A local provider takes no key (R8).
+    // A local provider takes no key (R8).
     let endpoint_configured = if settings.provider_configured() {
         let location = settings
             .active_provider

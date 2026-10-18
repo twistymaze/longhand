@@ -460,7 +460,7 @@ impl EndpointView {
         let address = s.provider_address(provider);
         Some(Self {
             provider,
-            host: secrets::endpoint_key(&address).unwrap_or_else(|_| address.clone()),
+            host: settings::host_of(&address),
             model: s.providers.get(provider).model.clone(),
             encrypted: !summarize::client::crosses_network_unencrypted(&address),
         })

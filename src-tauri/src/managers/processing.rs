@@ -392,8 +392,7 @@ fn endpoint_from_settings(
             "the AI provider has no address or no model; choose them in Settings".into(),
         ));
     }
-    // The key is kept for the provider and its host: a changed host has
-    // none until one is entered for it (R10). A local provider takes none.
+    // The key is kept for the provider and its host (R10).
     let location = s.key_location(provider);
     let read = location.as_ref().map_or(Ok(None), read_key);
     let key = settings::key_state(&read);

@@ -336,8 +336,14 @@ impl KeyLocation {
 
     /// The host part of the account, as the Settings pane shows it.
     pub fn host(&self) -> String {
-        secrets::endpoint_key(&self.address).unwrap_or_else(|_| self.address.clone())
+        host_of(&self.address)
     }
+}
+
+/// The host part of `address`, or `address` itself when it is not a valid
+/// URL.
+pub fn host_of(address: &str) -> String {
+    secrets::endpoint_key(address).unwrap_or_else(|_| address.to_string())
 }
 
 /// The settings that stay on this computer (R13), as the local store holds
@@ -3790,7 +3796,6 @@ mod tests {
         settings.choose_provider(Some(Provider::Anthropic));
         assert_eq!(settings.providers.anthropic.model, "claude-haiku-5-5");
         assert_eq!(settings.providers.ollama.model, "llama3");
-        // The key status reads the same Keychain account as before.
         assert_eq!(settings.key_location(Provider::Anthropic), key);
         assert_eq!(
             provider_gate(

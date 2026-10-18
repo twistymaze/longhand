@@ -817,7 +817,6 @@ mod tests {
         assert_eq!(*sent.borrow(), [(7, SettingsPane::Provider)]);
         assert_eq!(focuses.get(), 1);
 
-        // With no pane, the open window keeps the pane that it shows.
         let opened = open_settings_with(Some(7), None, |_| {}, send, |_| Err("no second window"));
         assert_eq!(opened, Ok((7, Opened::Focused)));
         assert_eq!(sent.borrow().len(), 1);

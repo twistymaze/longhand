@@ -133,9 +133,6 @@ pub fn set_provider_context_limit(
     provider: Provider,
     limit: Option<u32>,
 ) -> Result<Settings, String> {
-    if limit == Some(0) {
-        return Err("a context limit must be above zero".into());
-    }
     settings::update_settings(&app, |s| s.set_provider_context_limit(provider, limit))
 }
 
@@ -1293,7 +1290,6 @@ pub async fn check_provider(
     provider: Provider,
 ) -> Result<EndpointCheck, String> {
     let s = settings::get_settings(&app);
-    // A provider with no key or no address reads no key. The gate decides.
     let read = match s.key_location(provider) {
         Some(location) => manager.run(move |store| location.read(store)).await,
         None => Ok(None),
@@ -1303,7 +1299,6 @@ pub async fn check_provider(
         ListStep::Request(endpoint) => endpoint,
     };
     let started = endpoint.base_url.clone();
-    // An address that is not a valid http or https URL cannot be reached.
     let Ok(client) = summarize::Client::new(endpoint) else {
         return Ok(EndpointCheck::without_address(EndpointModels::Unreachable));
     };
@@ -1553,7 +1548,6 @@ mod tests {
 
     #[test]
     fn a_cloud_provider_with_no_key_is_not_requested() {
-        // A new install sends nothing to api.openai.com.
         for s in [Settings::default(), active(Provider::OpenAi, None)] {
             assert_eq!(
                 list_step(&s, Provider::OpenAi, Ok(None)),
@@ -1616,7 +1610,6 @@ mod tests {
 
     #[test]
     fn a_keychain_that_cannot_be_read_is_not_requested() {
-        // Locked and Unavailable map to locked, as processing maps them.
         let custom = active(Provider::Custom, Some(LOCAL));
         for error in [
             SecretError::Locked {
