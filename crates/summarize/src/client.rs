@@ -326,13 +326,8 @@ impl Client {
         if !matches!(base.scheme(), "http" | "https") || base.host_str().is_none() {
             return Err(SummarizeError::BadUrl(endpoint.base_url.clone()));
         }
-        let client = |connect| {
-            reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(connect)
-                .build()
-                .map_err(|e| SummarizeError::Transport(e.to_string()))
-        };
+        let client =
+            |connect| http_client(connect).map_err(|e| SummarizeError::Transport(e.to_string()));
         let http = client(completion.connect)?;
         let probe_http = client(probe.connect)?;
         Ok(Self {
@@ -514,15 +509,9 @@ impl Client {
                 })?;
             let status = response.status();
             if status.is_redirection() {
-                let location = response
-                    .headers()
-                    .get(reqwest::header::LOCATION)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or(NO_LOCATION)
-                    .to_string();
                 return Err(SummarizeError::Redirect {
                     status: status.as_u16(),
-                    location,
+                    location: redirect_location(response.headers()),
                 }
                 .into());
             }
@@ -548,6 +537,24 @@ impl Client {
     }
 }
 
+/// An HTTP client that follows no redirects and stops a connection attempt
+/// after `connect`.
+pub(crate) fn http_client(connect: Duration) -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(connect)
+        .build()
+}
+
+/// The target that a redirect names, or [`NO_LOCATION`].
+pub(crate) fn redirect_location(headers: &reqwest::header::HeaderMap) -> String {
+    headers
+        .get(reqwest::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(NO_LOCATION)
+        .to_string()
+}
+
 /// How one try of a request failed.
 enum Failure {
     /// The connection to the endpoint failed, so the endpoint did not receive
@@ -566,7 +573,7 @@ impl From<SummarizeError> for Failure {
 
 /// True when a TLS error (for example a certificate problem) is in the
 /// cause chain of `e`.
-fn is_tls_failure(e: &reqwest::Error) -> bool {
+pub(crate) fn is_tls_failure(e: &reqwest::Error) -> bool {
     let mut cause = std::error::Error::source(e);
     while let Some(c) = cause {
         if c.is::<native_tls::Error>() {
@@ -579,7 +586,7 @@ fn is_tls_failure(e: &reqwest::Error) -> bool {
 
 /// The error with each of its causes, with no URL. reqwest's own text is
 /// often only "error sending request", which does not tell why.
-fn without_url(e: reqwest::Error) -> String {
+pub(crate) fn without_url(e: reqwest::Error) -> String {
     let e = e.without_url();
     let mut text = e.to_string();
     let mut cause = std::error::Error::source(&e);

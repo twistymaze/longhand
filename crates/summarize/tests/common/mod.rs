@@ -25,6 +25,10 @@ pub enum Reply {
     /// Read the request, wait until the test opens the gate, then answer
     /// with the reply.
     Gated(Gate, Box<Reply>),
+    /// Send the headers with the status and a `Content-Length` of the
+    /// given value, then the start of the body, then keep the connection
+    /// open and send no more.
+    Stall(u16, usize, String),
 }
 
 /// A gate that holds the replies of [`Reply::Gated`] until the test opens
@@ -113,6 +117,14 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
                 let (status, headers, body) = match reply {
                     Reply::Gated(..) => unreachable!(),
                     Reply::Hang => {
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                        return;
+                    }
+                    Reply::Stall(status, length, start) => {
+                        let head = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n{start}"
+                        );
+                        let _ = socket.write_all(head.as_bytes()).await;
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                         return;
                     }
