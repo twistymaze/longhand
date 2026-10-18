@@ -118,7 +118,9 @@ fn a_file_over_the_limit_is_not_available_and_a_save_does_not_change_it() {
 #[test]
 fn a_very_large_file_is_not_available_and_is_not_read_whole() {
     let root = folder();
-    let huge = vec![b'a'; BACKGROUND_TEXT_LIMIT * 4 + 1];
+    // The bytes are not UTF-8. A read of the whole file gives "not text",
+    // so only the size check gives "too long".
+    let huge = vec![0xff; BACKGROUND_TEXT_LIMIT * 4 + 1];
     write_background(root.path(), &huge);
     assert_eq!(
         read_background(root.path()),

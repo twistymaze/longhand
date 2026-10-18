@@ -1339,8 +1339,17 @@ mod tests {
 
     #[test]
     fn made_ids_do_not_change() {
-        // Every computer and every version must make these same ids.
-        assert_eq!(file_name_id("Recap.md"), file_name_id("Recap.md"));
+        // Every computer and every version must make these same ids. A
+        // separate UUID v5 tool gave the fixed values.
+        assert_eq!(
+            file_name_id("Recap.md"),
+            "e604f9ec-3826-5d06-9ea2-8459b36061a3"
+        );
+        assert_eq!(
+            copy_id("a", "Recap.md"),
+            "5865d60b-8fc7-57ff-8390-cd1b27b6f721"
+        );
+        assert_eq!(joined_id("a"), "e00e4579-dceb-5ee2-9d81-a7de1839e6dd");
         assert_ne!(file_name_id("Recap.md"), file_name_id("Recap 2.md"));
         assert_ne!(copy_id("a", "Recap.md"), copy_id("b", "Recap.md"));
         assert_eq!(

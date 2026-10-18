@@ -29,7 +29,8 @@ use session_save::home_write::write_atomic;
 use session_save::naming::folder_name;
 use session_save::note_files::{new_session_md, write_record};
 use shared_settings::file::{
-    AudioRemoval, SharedValue, default_settings, save_settings, settings_path,
+    AudioRemoval, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue, default_settings,
+    read_settings, save_settings, settings_path,
 };
 use shared_settings::prompts::{
     prompts_folder, render_prompt_file, render_prompt_file_with_title, scan_prompts,
@@ -164,30 +165,11 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
     }
 }
 
-/// The key of each shared setting. The match has no `_` arm, so a new
-/// setting fails to compile here until the test writes it.
-fn setting_is_written(value: &SharedValue) -> bool {
-    match value {
-        SharedValue::ActiveSummaryPrompt(_)
-        | SharedValue::DefaultSpeakerCount(_)
-        | SharedValue::AsrModel(_)
-        | SharedValue::LiveTranscript(_)
-        | SharedValue::SpeakerSource(_)
-        | SharedValue::SpeakerProcessingMode(_)
-        | SharedValue::RecognitionLanguage(_)
-        | SharedValue::CheckUpdatesAutomatically(_)
-        | SharedValue::AudioRemoval(_)
-        | SharedValue::NoteTypes(_)
-        | SharedValue::DefaultNoteType(_)
-        | SharedValue::NoteTypePrompts(_)
-        | SharedValue::ShowRecordingWidget(_)
-        | SharedValue::NewNoteRecords(_) => true,
-    }
-}
-
 /// A value for every shared setting.
+/// `every_setting_writes_a_known_value_for_each_shared_setting` checks
+/// that the list is complete.
 fn every_setting() -> Vec<SharedValue> {
-    let values = vec![
+    vec![
         SharedValue::ActiveSummaryPrompt("topic-summary".to_string()),
         SharedValue::DefaultSpeakerCount(Some(SpeakerCount::Exact { count: 2 })),
         SharedValue::AsrModel(models::DEFAULT_ASR_MODEL.to_string()),
@@ -205,9 +187,66 @@ fn every_setting() -> Vec<SharedValue> {
         )])),
         SharedValue::ShowRecordingWidget(true),
         SharedValue::NewNoteRecords(true),
-    ];
-    assert!(values.iter().all(setting_is_written));
-    values
+    ]
+}
+
+/// Fail when `field` does not hold a value that this build knows.
+fn assert_known<T: std::fmt::Debug>(name: &str, field: &Field<T>) {
+    assert!(
+        matches!(field, Field::Known(_)),
+        "every_setting() writes no known value for {name}: {field:?}"
+    );
+}
+
+/// The real save writes `every_setting()` into an empty settings file, and
+/// the app's parser reads it back. The pattern has no `..`, so a new shared
+/// setting fails to compile here until the test names its field. Each field
+/// must hold a known value, so the test fails until `every_setting()`
+/// writes a value for the new setting.
+#[test]
+fn every_setting_writes_a_known_value_for_each_shared_setting() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let path = settings_path(root);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // The file starts empty, so each value comes from `every_setting()`.
+    fs::write(&path, b"{}").unwrap();
+    save_settings(root, &every_setting()).unwrap();
+    let FileRead::Parsed(file) = read_settings(root) else {
+        panic!("the app cannot read the settings file that the save wrote");
+    };
+    let SharedFields {
+        schema_version,
+        active_summary_prompt,
+        default_speaker_count,
+        asr_model,
+        live_transcript,
+        speaker_source,
+        speaker_processing_mode,
+        recognition_language,
+        check_updates_automatically,
+        audio_removal,
+        note_types,
+        default_note_type,
+        note_type_prompts,
+        show_recording_widget,
+        new_note_records,
+    } = file.fields;
+    assert_eq!(schema_version, Some(SCHEMA_VERSION));
+    assert_known("active_summary_prompt", &active_summary_prompt);
+    assert_known("default_speaker_count", &default_speaker_count);
+    assert_known("asr_model", &asr_model);
+    assert_known("live_transcript", &live_transcript);
+    assert_known("speaker_source", &speaker_source);
+    assert_known("speaker_processing_mode", &speaker_processing_mode);
+    assert_known("recognition_language", &recognition_language);
+    assert_known("check_updates_automatically", &check_updates_automatically);
+    assert_known("audio_removal", &audio_removal);
+    assert_known("note_types", &note_types);
+    assert_known("default_note_type", &default_note_type);
+    assert_known("note_type_prompts", &note_type_prompts);
+    assert_known("show_recording_widget", &show_recording_widget);
+    assert_known("new_note_records", &new_note_records);
 }
 
 /// A storage folder that the real writers made: a note with every record,
