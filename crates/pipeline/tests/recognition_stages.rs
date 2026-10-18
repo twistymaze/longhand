@@ -377,9 +377,9 @@ fn off_reuses_successful_live_text_without_asr() {
         )]
     );
 }
-#[tokio::test]
-async fn explicit_speaker_failure_stops_before_summary_and_save() {
-    let (temp, store, _, _) = setup(SpeakerSource::Pyannote);
+/// Run the note "route" with a speaker stage that fails, and check that
+/// the run fails at that stage.
+async fn run_with_a_failed_speaker_stage(temp: &tempfile::TempDir, store: &pipeline::SharedStore) {
     let runner = pipeline::Runner::new(pipeline::Environment {
         store: store.clone(),
         working_root: temp.path().into(),
@@ -400,6 +400,11 @@ async fn explicit_speaker_failure_stops_before_summary_and_save() {
             ..
         }
     ));
+}
+#[tokio::test]
+async fn explicit_speaker_failure_stops_before_summary_and_save() {
+    let (temp, store, _, _) = setup(SpeakerSource::Pyannote);
+    run_with_a_failed_speaker_stage(&temp, &store).await;
     assert!(!temp.path().join("route/summary.md").exists());
     assert!(
         store
@@ -413,26 +418,7 @@ async fn explicit_speaker_failure_stops_before_summary_and_save() {
 #[tokio::test]
 async fn a_failed_speaker_stage_shows_no_meter() {
     let (temp, store, _, _) = setup(SpeakerSource::Pyannote);
-    let runner = pipeline::Runner::new(pipeline::Environment {
-        store: store.clone(),
-        working_root: temp.path().into(),
-        engines: Box::new(Provider {
-            calls: Arc::new(AtomicUsize::new(0)),
-            loads: Arc::new(AtomicUsize::new(0)),
-            fail_speaker: true,
-            native_tokens: false,
-        }),
-        suspended: Box::new(|| false),
-        events: Box::new(|_| {}),
-    });
-    let (_, outcome) = runner.run_next().await.unwrap();
-    assert!(matches!(
-        outcome,
-        pipeline::Outcome::Failed {
-            stage: Stage::Diarize,
-            ..
-        }
-    ));
+    run_with_a_failed_speaker_stage(&temp, &store).await;
     let record = store.lock().unwrap().session("route").unwrap().unwrap();
     assert!(
         matches!(
