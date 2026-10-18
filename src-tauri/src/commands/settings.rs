@@ -21,9 +21,10 @@ use crate::managers::models::ModelsManager;
 use crate::managers::processing::{MoveStatus, ProcessingManager};
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
-    self, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
+    self, KeyLocation, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
 };
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager, StorageFolders};
+use summarize::Provider;
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -84,37 +85,55 @@ pub fn open_login_item_settings() -> Result<(), String> {
     crate::autostart::open_settings()
 }
 
-/// Save the Base URL of the summarization endpoint (R32). An empty value
-/// clears it and stays empty (R2). Any other value must be a URL with a
-/// host, because the credential is keyed by that host (R30a). The Model does
-/// not change (KTD5).
+/// Make `provider` the active AI provider, or choose none (R7). The entry
+/// of each provider stays, so a switch back restores it (R10).
 #[tauri::command]
 #[specta::specta]
-pub fn set_endpoint_base_url(app: AppHandle, base_url: String) -> Result<Settings, String> {
-    settings::update_settings(&app, |s| s.set_endpoint_base_url(&base_url))
-}
-
-/// Save the Model of the summarization endpoint. The Base URL does not
-/// change, so a new install keeps "never saved" (KTD5).
-#[tauri::command]
-#[specta::specta]
-pub fn set_endpoint_model(app: AppHandle, model: String) -> Result<Settings, String> {
+pub fn choose_provider(app: AppHandle, provider: Option<Provider>) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
-        s.set_endpoint_model(&model);
+        s.choose_provider(provider);
         Ok(())
     })
 }
 
+/// Save the address of a local provider or of Custom (R8, R9). An empty
+/// value gives a local provider its usual address again, and gives Custom
+/// no address. Any other value must be a URL with a host, because the key
+/// is kept for that host (R10).
 #[tauri::command]
 #[specta::specta]
-pub fn set_context_limit(app: AppHandle, limit: Option<u32>) -> Result<Settings, String> {
-    if limit == Some(0) {
-        return Err("a context limit must be above zero".into());
-    }
+pub fn set_provider_address(
+    app: AppHandle,
+    provider: Provider,
+    address: String,
+) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.set_provider_address(provider, &address))
+}
+
+/// Save the model of `provider`.
+#[tauri::command]
+#[specta::specta]
+pub fn set_provider_model(
+    app: AppHandle,
+    provider: Provider,
+    model: String,
+) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
-        s.context_limit_tokens = limit;
+        s.set_provider_model(provider, &model);
         Ok(())
     })
+}
+
+/// Save the context limit that the user entered for `provider`, or `None`
+/// to use the limit that the provider reports (R15).
+#[tauri::command]
+#[specta::specta]
+pub fn set_provider_context_limit(
+    app: AppHandle,
+    provider: Provider,
+    limit: Option<u32>,
+) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.set_provider_context_limit(provider, limit))
 }
 
 /// Change the chosen recognition configuration with `change`, then compare
@@ -1060,57 +1079,71 @@ pub async fn retry_move(processing: State<'_, Arc<ProcessingManager>>) -> Result
     blocking(move || processing.retry_move()).await
 }
 
-#[tauri::command]
-#[specta::specta]
-pub async fn credential_status(
-    manager: State<'_, SecretsManager>,
-    base_url: String,
-) -> Result<CredentialStatus, String> {
-    let host = match secrets::endpoint_key(&base_url) {
-        Ok(host) => host,
-        Err(e) => {
-            return Ok(CredentialStatus::Failed {
-                message: e.to_string(),
-            });
-        }
-    };
-    Ok(
-        match manager
-            .run(move |store| store.endpoint_credential(&base_url))
-            .await
-        {
-            Ok(Some(secret)) => CredentialStatus::Present {
-                host,
-                length: secret.chars().count() as u32,
-                fingerprint: fingerprint(&secret),
-            },
-            Ok(None) => CredentialStatus::Absent { host },
-            Err(e) => status_from_error(e),
-        },
-    )
+/// Where the Keychain holds the key of `provider` with the settings now,
+/// or why it has none: a local provider takes no key (R8), and Custom
+/// needs an address first.
+fn key_location(app: &AppHandle, provider: Provider) -> Result<KeyLocation, String> {
+    settings::get_settings(app)
+        .key_location(provider)
+        .ok_or_else(|| match provider.takes_key() {
+            true => "Enter an address before you save an API key.".to_string(),
+            false => "This provider takes no API key.".to_string(),
+        })
 }
 
+/// The state of the saved key of `provider` for its host (R18). The read
+/// runs off the settings lock, on the blocking pool.
 #[tauri::command]
 #[specta::specta]
-pub async fn set_credential(
+pub async fn provider_credential_status(
+    app: AppHandle,
     manager: State<'_, SecretsManager>,
-    base_url: String,
+    provider: Provider,
+) -> Result<CredentialStatus, String> {
+    let location = match key_location(&app, provider) {
+        Ok(location) => location,
+        Err(message) => return Ok(CredentialStatus::Failed { message }),
+    };
+    let host = location.host();
+    Ok(match manager.run(move |store| location.read(store)).await {
+        Ok(Some(secret)) => CredentialStatus::Present {
+            host,
+            length: secret.chars().count() as u32,
+            fingerprint: fingerprint(&secret),
+        },
+        Ok(None) => CredentialStatus::Absent { host },
+        Err(e) => status_from_error(e),
+    })
+}
+
+/// Save the key of `provider` for its host (R10).
+#[tauri::command]
+#[specta::specta]
+pub async fn set_provider_credential(
+    app: AppHandle,
+    manager: State<'_, SecretsManager>,
+    provider: Provider,
     value: String,
 ) -> Result<(), String> {
+    let location = key_location(&app, provider)?;
     manager
-        .run(move |store| store.set_endpoint_credential(&base_url, &value))
+        .run(move |store| location.save(store, &value))
         .await
         .map_err(|e| e.to_string())
 }
 
+/// Delete the key of `provider` for its host, and an old host-only entry
+/// that the migration left for it (KTD8).
 #[tauri::command]
 #[specta::specta]
-pub async fn delete_credential(
+pub async fn delete_provider_credential(
+    app: AppHandle,
     manager: State<'_, SecretsManager>,
-    base_url: String,
+    provider: Provider,
 ) -> Result<(), String> {
+    let location = key_location(&app, provider)?;
     manager
-        .run(move |store| store.delete_endpoint_credential(&base_url))
+        .run(move |store| location.delete(store))
         .await
         .map_err(|e| e.to_string())
 }
@@ -1135,17 +1168,40 @@ pub enum EndpointModels {
     KeyRejected,
     KeyCannotList,
     NotListed,
+    // The server has no model list, but its chat route answers. The Model
+    // row is then a text field (R17).
+    ChatOnly,
     Redirected { host: Option<String> },
     ServerError { status: Option<u16> },
     Unreachable,
     NotRequested { reason: ListNotRequested },
 }
 
-/// Why Longhand sent no model list request (R4, R16, R17).
+/// The result of the connection check (KTD9): the model list outcome, and
+/// the address that worked. For Custom, the address can have `/v1` added
+/// (R14). `None` when no address worked or no request was sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
+pub struct EndpointCheck {
+    pub models: EndpointModels,
+    pub address: Option<String>,
+}
+
+impl EndpointCheck {
+    fn without_address(models: EndpointModels) -> Self {
+        Self {
+            models,
+            address: None,
+        }
+    }
+}
+
+/// Why Longhand sent no model list request (R12, R17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Type)]
 #[serde(rename_all = "kebab-case")]
 pub enum ListNotRequested {
-    NoBaseUrl,
+    NoProvider,
+    NoAddress,
+    NotChosen,
     KeychainLocked,
     KeychainFailed,
     KeyNeeded,
@@ -1155,7 +1211,9 @@ impl From<settings::NotRequestedReason> for ListNotRequested {
     fn from(reason: settings::NotRequestedReason) -> Self {
         use settings::NotRequestedReason as R;
         match reason {
-            R::NoBaseUrl => Self::NoBaseUrl,
+            R::NoProvider => Self::NoProvider,
+            R::NoAddress => Self::NoAddress,
+            R::NotChosen => Self::NotChosen,
             R::KeychainLocked => Self::KeychainLocked,
             R::KeychainFailed => Self::KeychainFailed,
             R::KeyNeeded => Self::KeyNeeded,
@@ -1172,6 +1230,7 @@ impl From<summarize::ModelList> for EndpointModels {
             L::KeyRejected => Self::KeyRejected,
             L::KeyCannotList => Self::KeyCannotList,
             L::NotListed => Self::NotListed,
+            L::ChatOnly => Self::ChatOnly,
             L::Redirected { host } => Self::Redirected { host },
             L::ServerError { status } => Self::ServerError { status },
             L::Unreachable => Self::Unreachable,
@@ -1187,13 +1246,19 @@ enum ListStep {
     Done(EndpointModels),
 }
 
-/// Apply the request gate (KTD3) to the settings and to the result of the
-/// Keychain read.
-fn list_step(s: &Settings, read: Result<Option<String>, secrets::SecretError>) -> ListStep {
+/// Apply the request gate (R12) for `provider` to the settings and to the
+/// result of the Keychain read. A local provider or Custom with no key is
+/// requested only when it is the active provider, which the user chose.
+fn list_step(
+    s: &Settings,
+    provider: Provider,
+    read: Result<Option<String>, secrets::SecretError>,
+) -> ListStep {
     use settings::EndpointGate;
-    let base_url = s.effective_endpoint_base_url();
+    let address = s.provider_address(provider);
     let key = settings::key_state(&read);
-    let credential = match settings::endpoint_gate(base_url, s.endpoint_base_url_saved(), key) {
+    let chosen = s.active_provider == Some(provider);
+    let credential = match settings::provider_gate(Some(provider), chosen, &address, key) {
         EndpointGate::NotRequested(reason) => {
             return ListStep::Done(EndpointModels::NotRequested {
                 reason: reason.into(),
@@ -1203,40 +1268,57 @@ fn list_step(s: &Settings, read: Result<Option<String>, secrets::SecretError>) -
         EndpointGate::RequestWithoutKey => None,
     };
     ListStep::Request(summarize::Endpoint {
-        base_url: base_url.to_string(),
-        model: String::new(),
+        provider,
+        base_url: address,
+        model: s.providers.get(provider).model.clone(),
         credential,
     })
 }
 
-/// List the models of the effective endpoint (R5). The command reads the
-/// key itself, so the webview never holds it. It sends no request when the
-/// request gate refuses one (R4, R16, R17).
+/// Check the connection to `provider` and list its models (R17, KTD9).
+/// The command reads the key itself, so the webview never holds it. It
+/// sends no request when the request gate refuses one (R12). For Custom,
+/// it saves the address that worked when that address has `/v1` added
+/// (R14), but only while the saved address is still the one that the
+/// check used, so a slow reply never saves over a newer address. The
+/// network and Keychain work runs off the settings lock.
 #[tauri::command]
 #[specta::specta]
-pub async fn list_endpoint_models(
+pub async fn check_provider(
     app: AppHandle,
     manager: State<'_, SecretsManager>,
-) -> Result<EndpointModels, String> {
+    provider: Provider,
+) -> Result<EndpointCheck, String> {
     let s = settings::get_settings(&app);
-    let base_url = s.effective_endpoint_base_url().to_string();
-    // An empty Base URL has no host to read a key for. The gate refuses it.
-    let read = if base_url.is_empty() {
-        Ok(None)
-    } else {
-        manager
-            .run(move |store| store.endpoint_credential(&base_url))
-            .await
+    let read = match s.key_location(provider) {
+        Some(location) => manager.run(move |store| location.read(store)).await,
+        None => Ok(None),
     };
-    let endpoint = match list_step(&s, read) {
-        ListStep::Done(outcome) => return Ok(outcome),
+    let endpoint = match list_step(&s, provider, read) {
+        ListStep::Done(outcome) => return Ok(EndpointCheck::without_address(outcome)),
         ListStep::Request(endpoint) => endpoint,
     };
-    // A Base URL that is not a valid http or https URL cannot be reached.
+    let started = endpoint.base_url.clone();
     let Ok(client) = summarize::Client::new(endpoint) else {
-        return Ok(EndpointModels::Unreachable);
+        return Ok(EndpointCheck::without_address(EndpointModels::Unreachable));
     };
-    Ok(summarize::list_models(&client).await.into())
+    let checked = summarize::check(&client).await;
+    if let Some(resolved) = checked.address.clone()
+        && provider == Provider::Custom
+        && resolved != started
+    {
+        blocking(move || {
+            settings::update_settings(&app, |s| {
+                s.save_checked_address(provider, &started, &resolved);
+                Ok(())
+            })
+        })
+        .await?;
+    }
+    Ok(EndpointCheck {
+        models: checked.list.into(),
+        address: checked.address,
+    })
 }
 
 fn fingerprint(secret: &str) -> String {
@@ -1449,9 +1531,14 @@ mod tests {
         assert!(none.inputs.is_empty());
     }
 
-    fn saved(base_url: &str) -> Settings {
+    /// Settings with `provider` active and, when given, the address
+    /// `address`.
+    fn active(provider: Provider, address: Option<&str>) -> Settings {
         let mut s = Settings::default();
-        s.set_endpoint_base_url(base_url).unwrap();
+        s.choose_provider(Some(provider));
+        if let Some(address) = address {
+            s.set_provider_address(provider, address).unwrap();
+        }
         s
     }
 
@@ -1460,31 +1547,40 @@ mod tests {
     }
 
     #[test]
-    fn the_default_endpoint_with_no_key_is_not_requested() {
-        // Covers AE1: a new install sends nothing to api.openai.com.
-        assert_eq!(
-            list_step(&Settings::default(), Ok(None)),
-            not_requested(ListNotRequested::KeyNeeded)
-        );
+    fn a_cloud_provider_with_no_key_is_not_requested() {
+        for s in [Settings::default(), active(Provider::OpenAi, None)] {
+            assert_eq!(
+                list_step(&s, Provider::OpenAi, Ok(None)),
+                not_requested(ListNotRequested::KeyNeeded)
+            );
+        }
     }
 
     #[test]
-    fn the_default_endpoint_with_a_key_is_requested_with_the_key() {
+    fn a_cloud_provider_with_a_key_is_requested_at_its_address_with_the_key() {
+        let mut s = Settings::default();
+        s.set_provider_model(Provider::Gemini, "gemini-3-flash");
         assert_eq!(
-            list_step(&Settings::default(), Ok(Some("sk-test".into()))),
+            list_step(&s, Provider::Gemini, Ok(Some("sk-test".into()))),
             ListStep::Request(summarize::Endpoint {
-                base_url: "https://api.openai.com/v1".into(),
-                model: String::new(),
+                provider: Provider::Gemini,
+                base_url: "https://generativelanguage.googleapis.com".into(),
+                model: "gemini-3-flash".into(),
                 credential: Some("sk-test".into()),
             })
         );
     }
 
     #[test]
-    fn a_saved_local_endpoint_with_no_key_is_requested_with_no_key() {
+    fn a_chosen_local_provider_is_requested_with_no_key() {
         assert_eq!(
-            list_step(&saved(LOCAL), Ok(None)),
+            list_step(
+                &active(Provider::Ollama, Some(LOCAL)),
+                Provider::Ollama,
+                Ok(None)
+            ),
             ListStep::Request(summarize::Endpoint {
+                provider: Provider::Ollama,
                 base_url: LOCAL.into(),
                 model: String::new(),
                 credential: None,
@@ -1493,17 +1589,28 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_base_url_is_not_requested() {
+    fn a_local_provider_that_the_user_did_not_choose_is_not_requested() {
         assert_eq!(
-            list_step(&saved(""), Ok(Some("sk-test".into()))),
-            not_requested(ListNotRequested::NoBaseUrl)
+            list_step(&active(Provider::OpenAi, None), Provider::Ollama, Ok(None)),
+            not_requested(ListNotRequested::NotChosen)
+        );
+    }
+
+    #[test]
+    fn custom_with_no_address_is_not_requested() {
+        assert_eq!(
+            list_step(
+                &active(Provider::Custom, None),
+                Provider::Custom,
+                Ok(Some("sk-test".into()))
+            ),
+            not_requested(ListNotRequested::NoAddress)
         );
     }
 
     #[test]
     fn a_keychain_that_cannot_be_read_is_not_requested() {
-        // Covers AE8. Locked and Unavailable map to locked, as processing
-        // maps them.
+        let custom = active(Provider::Custom, Some(LOCAL));
         for error in [
             SecretError::Locked {
                 message: "locked".into(),
@@ -1513,19 +1620,36 @@ mod tests {
             },
         ] {
             assert_eq!(
-                list_step(&saved(LOCAL), Err(error)),
+                list_step(&custom, Provider::Custom, Err(error)),
                 not_requested(ListNotRequested::KeychainLocked)
             );
         }
         assert_eq!(
             list_step(
                 &Settings::default(),
+                Provider::OpenAi,
                 Err(SecretError::Platform {
                     message: "broken".into(),
                 })
             ),
             not_requested(ListNotRequested::KeychainFailed)
         );
+    }
+
+    #[test]
+    fn every_gate_reason_has_its_own_frontend_reason() {
+        use settings::NotRequestedReason as R;
+        let reasons = [
+            (R::NoProvider, ListNotRequested::NoProvider),
+            (R::NoAddress, ListNotRequested::NoAddress),
+            (R::NotChosen, ListNotRequested::NotChosen),
+            (R::KeychainLocked, ListNotRequested::KeychainLocked),
+            (R::KeychainFailed, ListNotRequested::KeychainFailed),
+            (R::KeyNeeded, ListNotRequested::KeyNeeded),
+        ];
+        for (reason, expected) in reasons {
+            assert_eq!(ListNotRequested::from(reason), expected);
+        }
     }
 
     #[test]
@@ -1543,6 +1667,7 @@ mod tests {
             (ModelList::KeyRejected, EndpointModels::KeyRejected),
             (ModelList::KeyCannotList, EndpointModels::KeyCannotList),
             (ModelList::NotListed, EndpointModels::NotListed),
+            (ModelList::ChatOnly, EndpointModels::ChatOnly),
             (
                 ModelList::Redirected {
                     host: Some("example.com".into()),
@@ -1589,19 +1714,31 @@ mod tests {
             }),
             serde_json::json!({ "kind": "not-requested", "reason": "keychain-locked" })
         );
+        assert_eq!(
+            serde_json::to_value(EndpointCheck {
+                models: EndpointModels::ChatOnly,
+                address: Some("http://127.0.0.1:4000/v1".into()),
+            })
+            .unwrap(),
+            serde_json::json!({
+                "models": { "kind": "chat-only" },
+                "address": "http://127.0.0.1:4000/v1"
+            })
+        );
 
         let bindings = include_str!("../../../src/bindings.ts");
         for declaration in [
             "export type EndpointModels = { kind: \"listed\"; ids: string[] } | \
              { kind: \"key-needed\" } | { kind: \"key-rejected\" } | \
              { kind: \"key-cannot-list\" } | { kind: \"not-listed\" } | \
-             { kind: \"redirected\"; host: string | null } | \
+             { kind: \"chat-only\" } | { kind: \"redirected\"; host: string | null } | \
              { kind: \"server-error\"; status: number | null } | \
              { kind: \"unreachable\" } | \
              { kind: \"not-requested\"; reason: ListNotRequested }",
-            "export type ListNotRequested = \"no-base-url\" | \"keychain-locked\" | \
-             \"keychain-failed\" | \"key-needed\"",
-            "async listEndpointModels() : Promise<Result<EndpointModels, string>>",
+            "export type ListNotRequested = \"no-provider\" | \"no-address\" | \
+             \"not-chosen\" | \"keychain-locked\" | \"keychain-failed\" | \"key-needed\"",
+            "export type EndpointCheck = { models: EndpointModels; address: string | null }",
+            "async checkProvider(provider: Provider) : Promise<Result<EndpointCheck, string>>",
         ] {
             assert!(
                 bindings.contains(declaration),

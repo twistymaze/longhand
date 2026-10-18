@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { commands, type Readiness, type Result, type Settings, type ShortcutStatus } from "../bindings";
+import { commands, type Readiness, type Result, type Settings, type SettingsPane, type ShortcutStatus } from "../bindings";
 import { sentence } from "../processing/describe";
 import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
@@ -21,7 +21,8 @@ function closeBehaviour(hideFromDock: boolean): string {
     : "Closing the window keeps Longhand in the Dock and the menu bar.";
 }
 
-export type PaneId = "status" | "recording" | "destination" | "types" | "summarization" | "recognition" | "about";
+/// A pane of the Settings window. `open_settings` takes the same values.
+export type PaneId = SettingsPane;
 
 function GoTo({ pane, onNavigate, children }: { pane: PaneId; onNavigate: (p: PaneId) => void; children: string }) {
   return <Button onClick={() => onNavigate(pane)}>{children}</Button>;
@@ -90,10 +91,10 @@ function SetupRow({
           </GoTo>
         </Row>
       );
-    case "endpoint":
+    case "provider":
       return (
-        <Row label="Summaries" detail="No endpoint yet — summaries wait until one is set up">
-          <GoTo pane="summarization" onNavigate={onNavigate}>
+        <Row label="AI provider" detail="Not set up yet. Notes are saved without a summary.">
+          <GoTo pane="provider" onNavigate={onNavigate}>
             Set Up…
           </GoTo>
         </Row>

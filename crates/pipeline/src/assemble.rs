@@ -1075,12 +1075,7 @@ pub(crate) fn recognition_input_stamp(
         }
         let provenance: Option<AudioProvenance> =
             checkpoint::get(store, id, Stage::Assemble, &provenance_key(segment.index))?;
-        let echo: Option<serde_json::Value> = checkpoint::get(
-            store,
-            id,
-            Stage::Assemble,
-            &checkpoint::echo_key(segment.index),
-        )?;
+        let echo = saved_echo(store, id, segment)?;
         values.push((segment, files, provenance, echo));
     }
     Ok(session_core::recognition::digest(&serde_json::to_vec(
@@ -1102,7 +1097,7 @@ fn audio_provenance_at(
     segment: &Segment,
     source: Option<&Path>,
 ) -> Result<AudioProvenance, StageError> {
-    use session_core::recognition::{digest, file_digest};
+    use session_core::recognition::file_digest;
     let archive = source
         .map(Path::to_path_buf)
         .map(Ok)
@@ -1116,8 +1111,34 @@ fn audio_provenance_at(
     Ok(AudioProvenance {
         archive: file_digest(&archive)?,
         processing: file_digest(&dir.join(proc_file(&segment.audio_file)))?,
-        echo: digest(&serde_json::to_vec(&echo)?),
+        echo: echo_digest(echo)?,
     })
+}
+/// The echo spans checkpoint of `segment` as JSON, with the keys of each
+/// object in sorted order (see [`echo_digest`]).
+fn saved_echo(
+    store: &SharedStore,
+    id: &str,
+    segment: &Segment,
+) -> Result<Option<serde_json::Value>, StageError> {
+    let echo: Option<serde_json::Value> = checkpoint::get(
+        store,
+        id,
+        Stage::Assemble,
+        &checkpoint::echo_key(segment.index),
+    )?;
+    Ok(echo.map(session_core::json::sorted))
+}
+/// The digest of a saved echo spans checkpoint. The keys of each object are
+/// put in sorted order first, so the digest does not change between builds:
+/// the saved provenance of a note that an earlier build assembled holds the
+/// digest of the sorted keys, also when a dependency enables the
+/// `preserve_order` feature of `serde_json`.
+fn echo_digest(echo: Option<serde_json::Value>) -> Result<String, StageError> {
+    let echo = echo.map(session_core::json::sorted);
+    Ok(session_core::recognition::digest(&serde_json::to_vec(
+        &echo,
+    )?))
 }
 /// A completed Assemble checkpoint alone does not bind an archive to its
 /// processing file. Missing provenance requires a decode before exact reuse.
@@ -1172,4 +1193,38 @@ pub fn recognition_audio_identity(
     Ok(session_core::recognition::digest(&serde_json::to_vec(
         &values,
     )?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_echo_digest_is_the_digest_of_the_sorted_keys_of_the_saved_checkpoint() {
+        // `checkpoint::put` writes the fields in declaration order. A build
+        // without the `preserve_order` feature of `serde_json` made the digest
+        // from the keys in sorted order.
+        let stored = serde_json::to_string(&EchoSpans {
+            segment: 2,
+            spans: vec![asr::Span {
+                start_ms: 10,
+                end_ms: 20,
+            }],
+            mic_gain: 1.0,
+            system_gain: 0.5,
+        })
+        .unwrap();
+        assert!(stored.starts_with(r#"{"segment":"#), "{stored}");
+        let saved: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            echo_digest(Some(saved)).unwrap(),
+            session_core::recognition::digest(
+                br#"{"mic_gain":1.0,"segment":2,"spans":[{"end_ms":20,"start_ms":10}],"system_gain":0.5}"#
+            )
+        );
+        assert_eq!(
+            echo_digest(None).unwrap(),
+            session_core::recognition::digest(b"null")
+        );
+    }
 }

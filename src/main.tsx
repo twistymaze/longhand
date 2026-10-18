@@ -24,7 +24,7 @@ if (!navigator.userAgent.includes("Mac")) {
   window.addEventListener("keydown", (event) => {
     if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && event.key === ",") {
       event.preventDefault();
-      void commands.openSettings();
+      void commands.openSettings(null);
     }
   });
 }

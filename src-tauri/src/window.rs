@@ -148,12 +148,86 @@ pub fn open_or_build<W, E>(
     }
 }
 
+/// A pane of the Settings window. The values agree with `PaneId` in
+/// src/settings/Status.tsx.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsPane {
+    Status,
+    Recording,
+    Destination,
+    Types,
+    Provider,
+    Summarization,
+    Recognition,
+    About,
+}
+
+impl SettingsPane {
+    /// The name of the pane in the page and in the window URL.
+    fn id(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Recording => "recording",
+            Self::Destination => "destination",
+            Self::Types => "types",
+            Self::Provider => "provider",
+            Self::Summarization => "summarization",
+            Self::Recognition => "recognition",
+            Self::About => "about",
+        }
+    }
+}
+
+/// An open Settings window must show this pane (KTD10). A new Settings
+/// window reads its pane from its URL instead.
+#[derive(serde::Serialize, Clone, specta::Type, tauri_specta::Event)]
+pub struct SettingsPaneRequested {
+    pub pane: SettingsPane,
+}
+
 /// Show the Settings window, and build it first when it is not open (KTD3).
 /// It loads the same page as the main window, with a query that tells the
 /// page which window it is in.
 pub fn open_settings(app: &AppHandle) {
+    open_settings_on(app, None);
+}
+
+/// Show the Settings window on `pane` (KTD10). With no pane, a new window
+/// shows its first pane and an open window keeps its pane.
+pub fn open_settings_on(app: &AppHandle, pane: Option<SettingsPane>) {
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || open_settings_window(&app));
+    tauri::async_runtime::spawn_blocking(move || open_settings_window(&app, pane));
+}
+
+/// The page URL of a new Settings window. The `pane` query names the pane
+/// that the window shows first.
+fn settings_url(pane: Option<SettingsPane>) -> String {
+    match pane {
+        Some(pane) => format!("index.html?window=settings&pane={}", pane.id()),
+        None => "index.html?window=settings".into(),
+    }
+}
+
+/// Send `pane` to the open Settings window and focus it, or else build a
+/// new window from the URL that names `pane`.
+fn open_settings_with<W, E>(
+    existing: Option<W>,
+    pane: Option<SettingsPane>,
+    focus: impl FnOnce(&W),
+    send_pane: impl FnOnce(&W, SettingsPane),
+    build: impl FnOnce(String) -> Result<W, E>,
+) -> Result<(W, Opened), E> {
+    open_or_build(
+        existing,
+        |window| {
+            if let Some(pane) = pane {
+                send_pane(window, pane);
+            }
+            focus(window);
+        },
+        || build(settings_url(pane)),
+    )
 }
 
 fn settings_initial_size(percent: u16, work_area: Option<tauri::LogicalSize<f64>>) -> (f64, f64) {
@@ -168,11 +242,18 @@ fn settings_initial_size(percent: u16, work_area: Option<tauri::LogicalSize<f64>
     )
 }
 
-fn open_settings_window(app: &AppHandle) {
-    let opened = open_or_build(
+fn open_settings_window(app: &AppHandle, pane: Option<SettingsPane>) {
+    let opened = open_settings_with(
         app.get_webview_window(SETTINGS_WINDOW),
+        pane,
         |window| front(app, window),
-        || {
+        |_, pane| {
+            let event = SettingsPaneRequested { pane };
+            if let Err(e) = tauri_specta::Event::emit_to(&event, app, SETTINGS_WINDOW) {
+                log::error!("failed to send the pane to the settings window: {e}");
+            }
+        },
+        |url| {
             // Before the build, so that the window's delegate has the method
             // when AppKit reads it.
             #[cfg(target_os = "macos")]
@@ -185,21 +266,17 @@ fn open_settings_window(app: &AppHandle) {
                     .or_else(|| app.primary_monitor().ok().flatten());
                 let work_area = monitor.map(|m| m.work_area().size.to_logical(m.scale_factor()));
                 let (width, height) = settings_initial_size(percent, work_area);
-                WebviewWindowBuilder::new(
-                    app,
-                    SETTINGS_WINDOW,
-                    WebviewUrl::App("index.html?window=settings".into()),
-                )
-                .visible(false)
-                .zoom_hotkeys_enabled(false)
-                .initialization_script(crate::interface_zoom::initialization(percent))
-                .title("Settings")
-                .inner_size(width, height)
-                .min_inner_size(640.0, 440.0)
-                .maximizable(false)
-                .minimizable(false)
-                .center()
-                .build()
+                WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::App(url.into()))
+                    .visible(false)
+                    .zoom_hotkeys_enabled(false)
+                    .initialization_script(crate::interface_zoom::initialization(percent))
+                    .title("Settings")
+                    .inner_size(width, height)
+                    .min_inner_size(640.0, 440.0)
+                    .maximizable(false)
+                    .minimizable(false)
+                    .center()
+                    .build()
             })
         },
     );
@@ -702,6 +779,47 @@ mod tests {
         assert!(opens.is_current(closing));
         opens.opened();
         assert!(!opens.is_current(closing));
+    }
+
+    #[test]
+    fn a_new_settings_window_reads_its_pane_from_the_url() {
+        assert_eq!(settings_url(None), "index.html?window=settings");
+        let mut urls = Vec::new();
+        let sent = Cell::new(0);
+        let opened = open_settings_with(
+            None,
+            Some(SettingsPane::Provider),
+            |_| {},
+            |_, _| sent.set(sent.get() + 1),
+            |url| {
+                urls.push(url);
+                Ok::<_, ()>(7)
+            },
+        );
+        assert_eq!(opened, Ok((7, Opened::Built)));
+        assert_eq!(urls, ["index.html?window=settings&pane=provider"]);
+        assert_eq!(sent.get(), 0);
+    }
+
+    #[test]
+    fn an_open_settings_window_receives_the_pane() {
+        let sent = RefCell::new(Vec::new());
+        let focuses = Cell::new(0);
+        let send = |window: &u32, pane| sent.borrow_mut().push((*window, pane));
+        let opened = open_settings_with(
+            Some(7),
+            Some(SettingsPane::Provider),
+            |_| focuses.set(focuses.get() + 1),
+            send,
+            |_| Err("no second window"),
+        );
+        assert_eq!(opened, Ok((7, Opened::Focused)));
+        assert_eq!(*sent.borrow(), [(7, SettingsPane::Provider)]);
+        assert_eq!(focuses.get(), 1);
+
+        let opened = open_settings_with(Some(7), None, |_| {}, send, |_| Err("no second window"));
+        assert_eq!(opened, Ok((7, Opened::Focused)));
+        assert_eq!(sent.borrow().len(), 1);
     }
 
     #[test]

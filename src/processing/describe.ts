@@ -20,6 +20,32 @@ export function stageLabel(stage: string): string {
   return stageLabels[stage as StageName] ?? stage;
 }
 
+/// The step of a summary in parts: "Summarizing part 5 of 16", then
+/// "Combining summaries 3 of 9" for the calls that combine the part
+/// summaries in groups, then "Writing the final summary". `done` counts the
+/// calls of the step that are done, so the call that runs is the next one.
+export function summaryStepLabel({
+  summary_step,
+  done,
+  total,
+}: {
+  summary_step: string | null;
+  done: number;
+  total: number;
+}): string {
+  const current = Math.min(done + 1, total);
+  switch (summary_step) {
+    case "parts":
+      return total > 1 ? `Summarizing part ${current} of ${total}` : stageLabel("summarize");
+    case "groups":
+      return total > 1 ? `Combining summaries ${current} of ${total}` : "Combining summaries";
+    case "final":
+      return "Writing the final summary";
+    default:
+      return stageLabel("summarize");
+  }
+}
+
 /// Sessions that Home shows as the recording row, not in its list.
 export function isOpen(state: string): boolean {
   return state === "capturing" || state === "interrupted";

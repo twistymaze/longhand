@@ -25,6 +25,10 @@ pub enum Reply {
     /// Read the request, wait until the test opens the gate, then answer
     /// with the reply.
     Gated(Gate, Box<Reply>),
+    /// Send the headers with the status and a `Content-Length` of the
+    /// given value, then the start of the body, then keep the connection
+    /// open and send no more.
+    Stall(u16, usize, String),
 }
 
 /// A gate that holds the replies of [`Reply::Gated`] until the test opens
@@ -54,12 +58,24 @@ pub struct Seen {
     pub method: String,
     pub path: String,
     pub authorization: Option<String>,
+    /// Every header, with its name in lowercase.
+    pub headers: Vec<(String, String)>,
     pub body: String,
 }
 
 pub struct Mock {
     pub base: String,
     pub seen: Arc<Mutex<Vec<Seen>>>,
+    /// The number of requests in `seen`.
+    recorded: Arc<tokio::sync::watch::Sender<usize>>,
+}
+
+impl Mock {
+    /// Wait until the server has read `count` requests.
+    pub async fn requests(&self, count: usize) {
+        let mut recorded = self.recorded.subscribe();
+        let _ = recorded.wait_for(|n| *n >= count).await;
+    }
 }
 
 /// A local port that nothing listens on. A connection to it is refused.
@@ -86,6 +102,8 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
+    let recorded = Arc::new(tokio::sync::watch::channel(0).0);
+    let count = Arc::clone(&recorded);
     let routes: HashMap<String, Reply> = routes
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -97,11 +115,17 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
             };
             let routes = routes.clone();
             let log = Arc::clone(&log);
+            let count = Arc::clone(&count);
             tokio::spawn(async move {
                 let Some(request) = read_request(&mut socket).await else {
                     return;
                 };
-                log.lock().unwrap().push(request.clone());
+                let total = {
+                    let mut log = log.lock().unwrap();
+                    log.push(request.clone());
+                    log.len()
+                };
+                count.send_replace(total);
                 let mut reply = routes
                     .get(&request.path)
                     .cloned()
@@ -113,6 +137,14 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
                 let (status, headers, body) = match reply {
                     Reply::Gated(..) => unreachable!(),
                     Reply::Hang => {
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                        return;
+                    }
+                    Reply::Stall(status, length, start) => {
+                        let head = format!(
+                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {length}\r\n\r\n{start}"
+                        );
+                        let _ = socket.write_all(head.as_bytes()).await;
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                         return;
                     }
@@ -140,6 +172,7 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
     Mock {
         base: format!("http://{addr}/v1"),
         seen,
+        recorded,
     }
 }
 
@@ -163,8 +196,10 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Seen> {
     let path = first.next()?.to_string();
     let mut length = 0;
     let mut authorization = None;
+    let mut headers = Vec::new();
     for line in lines {
         if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
             match k.trim().to_ascii_lowercase().as_str() {
                 "content-length" => length = v.trim().parse().unwrap_or(0),
                 "authorization" => authorization = Some(v.trim().to_string()),
@@ -183,8 +218,68 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<Seen> {
         method,
         path,
         authorization,
+        headers,
         body: String::from_utf8_lossy(&buf[header_end..]).to_string(),
     })
+}
+
+impl Seen {
+    /// The value of the header `name` (lowercase), if the request had it.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The body as JSON.
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_str(&self.body).unwrap()
+    }
+}
+
+/// An OpenAI Chat Completions reply with `text` and `finish_reason`.
+pub fn chat_reply(text: &str, finish_reason: &str) -> String {
+    serde_json::json!({
+        "choices": [{"message": {"role": "assistant", "content": text}, "finish_reason": finish_reason}]
+    })
+    .to_string()
+}
+
+/// An Anthropic Messages reply with `text` and `stop_reason`.
+pub fn anthropic_reply(text: &str, stop_reason: &str) -> String {
+    serde_json::json!({
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "m",
+        "content": [{"type": "text", "text": text}],
+        "stop_reason": stop_reason,
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    })
+    .to_string()
+}
+
+/// A Gemini `generateContent` reply with `text` and `finishReason`.
+pub fn gemini_reply(text: &str, finish_reason: &str) -> String {
+    serde_json::json!({
+        "candidates": [{
+            "content": {"parts": [{"text": text}], "role": "model"},
+            "finishReason": finish_reason
+        }]
+    })
+    .to_string()
+}
+
+/// An Ollama `/api/chat` reply with `text` and `done_reason`.
+pub fn ollama_reply(text: &str, done_reason: &str) -> String {
+    serde_json::json!({
+        "model": "m",
+        "message": {"role": "assistant", "content": text},
+        "done": true,
+        "done_reason": done_reason
+    })
+    .to_string()
 }
 
 pub fn completion(text: &str) -> String {

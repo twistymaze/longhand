@@ -9,7 +9,7 @@ publish.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 # 2.6 is the first to accept rusqlite 0.40 and needs rustc 1.95; the
-# toolchain stays on 1.94.0 with anarlog, so this pair is one step back.
+# pin stays until a separate update checks the migration changes.
 rusqlite_migration = "=2.5.0"
 log.workspace = true
 serde.workspace = true

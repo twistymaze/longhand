@@ -112,7 +112,7 @@ jobs:
         with:
           prefix-key: v4-rust
 
-      - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: runner.os == 'macOS'
         with:
           components: rustfmt, clippy
@@ -383,7 +383,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: v1-soak
@@ -465,7 +465,7 @@ jobs:
           mkdir -p "$RELEASE_FILES"
           bun scripts/release-version.ts "$RELEASE_FILES/notes.md" | tee -a "$GITHUB_OUTPUT"
 
-      - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
+      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: steps.version.outputs.due == 'true'
 
       # A release build has its own artifacts, so it has its own cache key.

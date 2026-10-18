@@ -1351,7 +1351,7 @@ pub fn regenerate_summary(
     resolve: &dyn Fn(Option<&str>) -> Prompt,
     control: &dyn Control,
     queued: std::time::Duration,
-    progress: &mut dyn FnMut(usize, usize),
+    progress: &mut dyn FnMut(summarize::SummaryStep, usize, usize),
 ) -> Result<PathBuf, StageError> {
     let regenerated = summarize_again(
         store,
@@ -1386,7 +1386,7 @@ fn summarize_again(
     resolve: &dyn Fn(Option<&str>) -> Prompt,
     control: &dyn Control,
     queued: std::time::Duration,
-    progress: &mut dyn FnMut(usize, usize),
+    progress: &mut dyn FnMut(summarize::SummaryStep, usize, usize),
 ) -> Result<PathBuf, StageError> {
     // The row follows its folder first (KTD3): the summary uses the notes
     // and the title that another computer wrote. The caller holds the

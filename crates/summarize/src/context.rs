@@ -5,11 +5,19 @@
 //! partial answer is a miss, not an error. The user's setting wins; with
 //! neither, [`DEFAULT_LIMIT`], which most current models accept. A model
 //! that accepts less rejects the prompt, and the user sets the limit.
+//!
+//! The probe for each provider (KTD5): the chain above for an
+//! OpenAI-compatible server (OpenRouter, LM Studio, Custom), the input
+//! token limit in Gemini's model list, and the context length in Ollama's
+//! `/api/show`. OpenAI and Anthropic report no limit, so no request is
+//! sent for them.
 
+use rig_core::model::ModelInfo;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::client::{Client, Label, SummarizeError};
+use crate::provider::Provider;
 
 pub const DEFAULT_LIMIT: u32 = 128_000;
 
@@ -25,6 +33,8 @@ pub enum BudgetSource {
     Vllm,
     LlamaCpp,
     Openrouter,
+    Gemini,
+    Ollama,
     Default,
 }
 
@@ -111,6 +121,74 @@ pub fn parse_llama_cpp(body: &Value) -> Option<u32> {
 /// kept for the run. A later probe asks a route that the server can lack,
 /// so any failure there is a miss.
 pub async fn probe(client: &Client, label: &Label) -> Result<Option<Budget>, SummarizeError> {
+    match client.endpoint().provider {
+        Provider::OpenAi | Provider::Anthropic => Ok(None),
+        Provider::Gemini => probe_gemini(client, label).await,
+        Provider::Ollama => probe_ollama(client, label).await,
+        Provider::OpenRouter | Provider::LmStudio | Provider::Custom => {
+            probe_compatible(client, label).await
+        }
+    }
+}
+
+/// Ollama `/api/show`: `model_info.{architecture}.context_length`, the
+/// longest context that the model accepts.
+pub fn parse_ollama_show(body: &Value) -> Option<u32> {
+    let info = body.get("model_info")?.as_object()?;
+    if let Some(arch) = info.get("general.architecture").and_then(Value::as_str)
+        && let Some(limit) = positive(info.get(&format!("{arch}.context_length")))
+    {
+        return Some(limit);
+    }
+    info.iter()
+        .filter(|(key, _)| key.ends_with(".context_length"))
+        .find_map(|(_, value)| positive(Some(value)))
+}
+
+/// The input token limit of `model` in Gemini's model list. The id in the
+/// list has no `models/` prefix.
+fn parse_gemini(models: &[ModelInfo], model: &str) -> Option<u32> {
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    models
+        .iter()
+        .filter(|info| info.id == model)
+        .find_map(|info| info.context_length.filter(|&n| n > 0))
+}
+
+/// The Gemini limit, from the model list that Rig reads (KTD5).
+async fn probe_gemini(client: &Client, label: &Label) -> Result<Option<Budget>, SummarizeError> {
+    let models = answer(client.rig_models(label).await.models, true)?;
+    Ok(models
+        .and_then(|list| parse_gemini(&list.data, &client.endpoint().model))
+        .map(|limit| Budget {
+            limit,
+            source: BudgetSource::Gemini,
+        }))
+}
+
+/// The Ollama limit, from `/api/show` at the server root.
+async fn probe_ollama(client: &Client, label: &Label) -> Result<Option<Budget>, SummarizeError> {
+    let request = json!({ "model": client.endpoint().model });
+    let body = answer(
+        client
+            .probe_post_json(label, &client.root_url("api/show"), &request)
+            .await,
+        true,
+    )?;
+    Ok(body
+        .as_ref()
+        .and_then(parse_ollama_show)
+        .map(|limit| Budget {
+            limit,
+            source: BudgetSource::Ollama,
+        }))
+}
+
+/// The probe chain for an OpenAI-compatible server.
+async fn probe_compatible(
+    client: &Client,
+    label: &Label,
+) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
     let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
 
@@ -156,10 +234,7 @@ pub async fn probe(client: &Client, label: &Label) -> Result<Option<Budget>, Sum
 
 /// The body of a probe's answer, `None` for a miss, or the error that stops
 /// the probe. `first` is true for the first probe of the chain.
-fn answer(
-    result: Result<Value, SummarizeError>,
-    first: bool,
-) -> Result<Option<Value>, SummarizeError> {
+fn answer<T>(result: Result<T, SummarizeError>, first: bool) -> Result<Option<T>, SummarizeError> {
     match result {
         Ok(body) => Ok(Some(body)),
         Err(e @ (SummarizeError::Transport(_) | SummarizeError::Deadline(_))) if first => Err(e),

@@ -25,9 +25,16 @@ const baseSettings: Settings = {
   pause_shortcut: null,
   widget_shortcut: null,
   storage_folder: "/notes",
-  endpoint_base_url: null,
-  endpoint_model: "",
-  context_limit_tokens: null,
+  active_provider: null,
+  providers: {
+    openai: { address: null, model: "", context_limit_tokens: null },
+    anthropic: { address: null, model: "", context_limit_tokens: null },
+    gemini: { address: null, model: "", context_limit_tokens: null },
+    openrouter: { address: null, model: "", context_limit_tokens: null },
+    ollama: { address: null, model: "", context_limit_tokens: null },
+    lm_studio: { address: null, model: "", context_limit_tokens: null },
+    custom: { address: null, model: "", context_limit_tokens: null },
+  },
   default_speaker_count: null,
   asr_model: "a",
   live_transcript: true,
@@ -130,17 +137,17 @@ describe("the setup group", () => {
     expect(group().textContent).not.toContain("processed once");
   });
 
-  test("Covers AE2. Models and endpoint missing: ready to record, with two items that open their panes", async () => {
+  test("Covers AE2. Models and provider missing: ready to record, with two items that open their panes", async () => {
     const { rows, group, opened } = renderSetup({ ...readiness, missing_models: ["a", "b"], endpoint_configured: false });
     expect(rows()).toHaveLength(3);
     expect(rows()[0]).toContain("Ready to record");
     expect(rows()[0]).toContain("The items below do not stop a recording");
     expect(rows()[1]).toContain("2 still to download");
-    expect(rows()[2]).toContain("No endpoint yet");
+    expect(rows()[2]).toContain("Not set up yet");
     const user = userEvent.setup();
     await user.click(within(group()).getByRole("button", { name: "Download…" }));
     await user.click(within(group()).getByRole("button", { name: "Set Up…" }));
-    expect(opened).toEqual(["recognition", "summarization"]);
+    expect(opened).toEqual(["recognition", "provider"]);
   });
 
   test("Covers AE3. Microphone not allowed on macOS: not ready, with Allow in place", () => {

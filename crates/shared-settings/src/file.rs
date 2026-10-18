@@ -557,9 +557,13 @@ pub(crate) fn write_new_settings(root: &Path, raw: &Map<String, Value>) -> io::R
     write_new(&folder, SETTINGS_FILE, &settings_bytes(raw))
 }
 
-/// The bytes of the settings file that holds `raw`.
+/// The bytes of the settings file that holds `raw`. The keys are in sorted
+/// order at each level, so the same settings always give the same bytes. A
+/// dependency can enable the `preserve_order` feature of `serde_json`, which
+/// keeps the order of insertion in a map.
 fn settings_bytes(raw: &Map<String, Value>) -> Vec<u8> {
-    let mut bytes = serde_json::to_vec_pretty(raw).expect("a JSON object serializes");
+    let sorted = session_core::json::sorted(Value::Object(raw.clone()));
+    let mut bytes = serde_json::to_vec_pretty(&sorted).expect("a JSON object serializes");
     bytes.push(b'\n');
     bytes
 }

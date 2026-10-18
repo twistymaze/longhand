@@ -185,11 +185,14 @@ pub enum RunnerEvent {
         session_id: String,
         wait: Option<Wait>,
     },
-    /// Per window of the transcribe stage.
+    /// Per window of the transcribe stage, and per call of the summarize
+    /// stage. `summary_step` is the step of a summary in parts, and `None`
+    /// for the transcribe stage.
     Progress {
         session_id: String,
         stage: Stage,
         segment: u32,
+        summary_step: Option<summarize::SummaryStep>,
         done: usize,
         total: usize,
     },
@@ -689,11 +692,12 @@ impl Runner {
                 &resolve,
                 &control,
                 queued,
-                &mut |done, total| {
+                &mut |step, done, total| {
                     (env.events)(RunnerEvent::Progress {
                         session_id: id.clone(),
                         stage: Stage::Summarize,
                         segment: 0,
+                        summary_step: Some(step),
                         done,
                         total,
                     })
@@ -1792,6 +1796,7 @@ fn execute(
                     session_id: id.into(),
                     stage,
                     segment: p.segment,
+                    summary_step: None,
                     done: p.windows_done,
                     total: p.windows_total,
                 });
@@ -1855,6 +1860,7 @@ fn execute(
                         session_id: id.to_string(),
                         stage,
                         segment: p.segment,
+                        summary_step: None,
                         done: p.windows_done,
                         total: p.windows_total,
                     })
@@ -1883,11 +1889,12 @@ fn execute(
                 prompt,
                 control,
                 queued,
-                &mut |done, total| {
+                &mut |step, done, total| {
                     (env.events)(RunnerEvent::Progress {
                         session_id: id.to_string(),
                         stage,
                         segment: 0,
+                        summary_step: Some(step),
                         done,
                         total,
                     })
@@ -2079,8 +2086,11 @@ fn send_title(
             Err(StageError::Cancelled) => {
                 // A quit leaves the request for the next launch. A delete, a
                 // Move or a regeneration deletes it.
-                if let TitleDue::Dropped = title_due(&lock(&env.store), claims, session_id) {
-                    drop_title_request(&lock(&env.store), session_id);
+                // One guard for the check and the drop: a second lock in
+                // the same thread waits for ever.
+                let store = lock(&env.store);
+                if let TitleDue::Dropped = title_due(&store, claims, session_id) {
+                    drop_title_request(&store, session_id);
                 }
                 return TitleJob::Skipped;
             }

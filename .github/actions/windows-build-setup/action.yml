@@ -68,7 +68,7 @@ runs:
         $combined = if ($env:CMAKE_PREFIX_PATH) { "$prefix;$env:CMAKE_PREFIX_PATH" } else { $prefix }
         Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$combined"
 
-    - uses: dtolnay/rust-toolchain@fef00d40025f7fd8f1ec759cbbb0f577ddfc3133 # 1.94.0
+    - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
       with:
         components: rustfmt, clippy
 

@@ -44,7 +44,7 @@ UI text uses short, direct plain language with consistent terms, no metaphors, a
 
 ## Working in this repo
 
-- Use Python only through `uv`, JavaScript packages only through `bun`, and Rust 1.94.0.
+- Use Python only through `uv`, JavaScript packages only through `bun`, and Rust 1.95.0.
 - Test microphone and Keychain behaviour only in a signed bundle, never `tauri dev`. At each manual test step, build without waiting for a request. First read [Manual tests](docs/development-workflow.md#manual-tests); provide exact local and remote launch steps, and notarize for remote tests.
 - Keep the anarlog, Handy, and Shorthand clones in `reference-source/` read-only and untracked. Shorthand (https://github.com/mshish/shorthand, MIT) is a Handy fork that adds system audio and live meeting notes. Record borrowed code in `PROVENANCE.md`; `scripts/check-provenance.sh` enforces this.
 - Local checks are required. Before validation or a push, read [Checks and CI](docs/development-workflow.md#checks-and-ci). Commit per unit, push in batches, and continue implementation while CI runs. Before you create a PR, do the steps in [Before a PR](docs/development-workflow.md#before-a-pr): rebase when `main` has new code changes. Once the PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open.

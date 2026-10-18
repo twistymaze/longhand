@@ -2,7 +2,7 @@
 title: A single-line setting typed with no Return was lost at a window close or a pane change
 date: 2026-10-16
 category: ui-bugs
-module: CommitField (src/settings/ui.tsx), AudioRemoval.tsx, EndpointForm.tsx, SummaryPrompts.tsx
+module: CommitField (src/settings/ui.tsx), AudioRemoval.tsx, ProviderForm.tsx, SummaryPrompts.tsx
 problem_type: ui_bug
 component: frontend_stimulus
 severity: medium

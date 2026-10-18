@@ -6,7 +6,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type SessionEntry, type SpeakerProgressView } from "../bindings";
 
-export type Live = { stage: string; segment: number; done: number; total: number };
+/// `summary_step` is the step of a summary in parts: "parts", "groups" or
+/// "final", and `null` for the transcribe stage.
+export type Live = { stage: string; segment: number; summary_step: string | null; done: number; total: number };
 
 export type Sessions = {
   entries: SessionEntry[];

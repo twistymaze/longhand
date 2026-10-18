@@ -5,7 +5,7 @@
 import type { Readiness, Settings } from "../bindings";
 import { readOnlyReason } from "./shared";
 
-export type SetupItemId = "microphone" | "shortcut" | "storage" | "system_audio" | "models" | "endpoint";
+export type SetupItemId = "microphone" | "shortcut" | "storage" | "system_audio" | "models" | "provider";
 
 export type SetupItem = {
   id: SetupItemId;
@@ -35,6 +35,6 @@ export function outstandingItems(
     items.push({ id: "system_audio", blocksRecording: false });
   }
   if (readiness.missing_models.length > 0) items.push({ id: "models", blocksRecording: false });
-  if (!readiness.endpoint_configured) items.push({ id: "endpoint", blocksRecording: false });
+  if (!readiness.endpoint_configured) items.push({ id: "provider", blocksRecording: false });
   return items;
 }

@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use common::{Reply, serve};
 use serde_json::json;
 use summarize::models::parse_ids;
-use summarize::{Client, Endpoint, Limits, ModelList, list_models};
+use summarize::{Checked, Client, Endpoint, Limits, ModelList, Provider, check, list_models};
 
 fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
     Endpoint {
+        provider: Provider::Custom,
         base_url: base.into(),
         model: String::new(),
         credential: credential.map(str::to_string),
@@ -267,5 +268,307 @@ fn the_outcome_serializes_with_a_kind_tag() {
     assert_eq!(
         serde_json::to_value(ModelList::Redirected { host: None }).unwrap(),
         json!({"kind": "redirected", "host": null})
+    );
+}
+
+/// The mock's address without `/v1`, as a user can type it.
+fn root(mock: &common::Mock) -> String {
+    mock.base.strip_suffix("/v1").unwrap().to_string()
+}
+
+fn paths(mock: &common::Mock) -> Vec<String> {
+    mock.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|seen| format!("{} {}", seen.method, seen.path))
+        .collect()
+}
+
+async fn check_at(address: &str, credential: Option<&str>) -> Checked {
+    check(&Client::new(endpoint(address, credential)).unwrap()).await
+}
+
+const LIST: &str = r#"{"data":[{"id":"a"}]}"#;
+
+#[tokio::test]
+async fn covers_ae3_an_address_that_answers_only_under_v1_resolves_to_the_v1_address() {
+    let mock = serve(HashMap::from([(
+        "/v1/models",
+        Reply::Json(200, LIST.into()),
+    )]))
+    .await;
+    let checked = check_at(&root(&mock), None).await;
+    assert_eq!(
+        checked,
+        Checked {
+            list: listed(&["a"]),
+            address: Some(format!("{}/v1", root(&mock))),
+        }
+    );
+    assert_eq!(paths(&mock), ["GET /models", "GET /v1/models"]);
+}
+
+#[tokio::test]
+async fn covers_ae4_an_address_that_ends_in_api_v1_and_answers_is_used_as_typed() {
+    let mock = serve(HashMap::from([(
+        "/api/v1/models",
+        Reply::Json(200, LIST.into()),
+    )]))
+    .await;
+    let typed = format!("{}/api/v1", root(&mock));
+    let checked = check_at(&typed, Some("sk")).await;
+    assert_eq!(
+        checked,
+        Checked {
+            list: listed(&["a"]),
+            address: Some(typed),
+        }
+    );
+    assert_eq!(paths(&mock), ["GET /api/v1/models"]);
+}
+
+#[tokio::test]
+async fn a_redirect_at_the_typed_address_does_not_start_the_v1_retry() {
+    // The `/v1` address has a list, so a retry would succeed.
+    let mock = serve(HashMap::from([
+        (
+            "/models",
+            Reply::Redirect(302, "https://other.example/models".into()),
+        ),
+        ("/v1/models", Reply::Json(200, LIST.into())),
+    ]))
+    .await;
+    let checked = check_at(&root(&mock), None).await;
+    assert_eq!(
+        checked,
+        Checked {
+            list: ModelList::Redirected {
+                host: Some("other.example".into())
+            },
+            address: None,
+        }
+    );
+    assert_eq!(paths(&mock), ["GET /models"]);
+}
+
+#[tokio::test]
+async fn a_key_refusal_at_the_typed_address_does_not_start_the_v1_retry() {
+    let mock = serve(HashMap::from([
+        ("/models", Reply::Json(401, "{}".into())),
+        ("/v1/models", Reply::Json(200, LIST.into())),
+    ]))
+    .await;
+    let checked = check_at(&root(&mock), Some("sk")).await;
+    assert_eq!(
+        checked,
+        Checked {
+            list: ModelList::KeyRejected,
+            address: None,
+        }
+    );
+    assert_eq!(paths(&mock), ["GET /models"]);
+}
+
+#[tokio::test]
+async fn a_server_with_no_list_and_a_chat_route_only_under_v1_resolves_to_the_v1_address() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(200, common::chat_reply("OK", "length")),
+    )]))
+    .await;
+    let checked = check_at(&root(&mock), None).await;
+    assert_eq!(
+        checked,
+        Checked {
+            list: ModelList::ChatOnly,
+            address: Some(format!("{}/v1", root(&mock))),
+        }
+    );
+    assert_eq!(
+        paths(&mock),
+        [
+            "GET /models",
+            "GET /v1/models",
+            "POST /chat/completions",
+            "POST /v1/chat/completions"
+        ]
+    );
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen[3].json()["max_tokens"], 1);
+}
+
+#[tokio::test]
+async fn a_server_with_no_list_and_a_chat_route_at_the_typed_address_keeps_the_typed_address() {
+    let mock = serve(HashMap::from([(
+        "/chat/completions",
+        Reply::Json(200, common::chat_reply("OK", "stop")),
+    )]))
+    .await;
+    let checked = check_at(&root(&mock), None).await;
+    assert_eq!(
+        checked,
+        Checked {
+            list: ModelList::ChatOnly,
+            address: Some(root(&mock)),
+        }
+    );
+    assert_eq!(
+        paths(&mock),
+        ["GET /models", "GET /v1/models", "POST /chat/completions"]
+    );
+}
+
+/// Checks the address of a server that has no model list and answers the
+/// chat route at the typed address with `reply`. The server also has a
+/// chat route under `/v1`, so a retry would succeed. The check must stop
+/// after the first chat request.
+async fn check_chat_reply(reply: Reply, credential: Option<&str>) -> Checked {
+    let mock = serve(HashMap::from([
+        ("/chat/completions", reply),
+        (
+            "/v1/chat/completions",
+            Reply::Json(200, common::chat_reply("OK", "stop")),
+        ),
+    ]))
+    .await;
+    let checked = check_at(&root(&mock), credential).await;
+    assert_eq!(
+        paths(&mock),
+        ["GET /models", "GET /v1/models", "POST /chat/completions"]
+    );
+    checked
+}
+
+#[tokio::test]
+async fn a_chat_route_that_refuses_with_no_key_needs_a_key_and_starts_no_v1_retry() {
+    assert_eq!(
+        check_chat_reply(Reply::Json(401, "{}".into()), None).await,
+        Checked {
+            list: ModelList::KeyNeeded,
+            address: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_chat_route_that_refuses_the_key_rejects_it_and_starts_no_v1_retry() {
+    assert_eq!(
+        check_chat_reply(Reply::Json(401, "{}".into()), Some("sk")).await,
+        Checked {
+            list: ModelList::KeyRejected,
+            address: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_chat_route_that_redirects_is_redirected_and_starts_no_v1_retry() {
+    assert_eq!(
+        check_chat_reply(
+            Reply::Redirect(302, "https://other.example/chat/completions".into()),
+            None
+        )
+        .await,
+        Checked {
+            list: ModelList::Redirected {
+                host: Some("other.example".into())
+            },
+            address: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn anthropic_lists_its_models_through_rig() {
+    let mock = serve(HashMap::from([(
+        "/v1/models",
+        Reply::Json(
+            200,
+            r#"{"data":[{"id":"claude-b","display_name":"B"},{"id":"claude-a","display_name":"A"}],"has_more":false}"#.into(),
+        ),
+    )]))
+    .await;
+    let client = Client::new(Endpoint {
+        provider: Provider::Anthropic,
+        base_url: root(&mock),
+        model: String::new(),
+        credential: Some("ak".into()),
+    })
+    .unwrap();
+    assert_eq!(
+        list_models(&client).await,
+        listed(&["claude-a", "claude-b"])
+    );
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen[0].header("x-api-key"), Some("ak"));
+}
+
+const GEMINI_MODELS: &str = "/v1beta/models?pageSize=1000&key=gk";
+
+fn gemini(base: &str) -> Client {
+    Client::new(Endpoint {
+        provider: Provider::Gemini,
+        base_url: base.into(),
+        model: "gemini-2.5-flash".into(),
+        credential: Some("gk".into()),
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn gemini_lists_its_models_through_rig_without_the_models_prefix() {
+    let mock = serve(HashMap::from([(
+        GEMINI_MODELS,
+        Reply::Json(
+            200,
+            r#"{"models":[{"name":"models/gemini-2.5-flash"},{"name":"models/gemini-2.5-pro"}]}"#
+                .into(),
+        ),
+    )]))
+    .await;
+    assert_eq!(
+        list_models(&gemini(&root(&mock))).await,
+        listed(&["gemini-2.5-flash", "gemini-2.5-pro"])
+    );
+}
+
+#[tokio::test]
+async fn a_gemini_key_that_is_not_valid_is_key_rejected() {
+    let mock = serve(HashMap::from([(
+        GEMINI_MODELS,
+        Reply::Json(
+            400,
+            r#"{"error":{"code":400,"message":"API key not valid. Please pass a valid API key."}}"#
+                .into(),
+        ),
+    )]))
+    .await;
+    assert_eq!(
+        list_models(&gemini(&root(&mock))).await,
+        ModelList::KeyRejected
+    );
+}
+
+#[tokio::test]
+async fn ollama_lists_its_models_through_rig() {
+    let mock = serve(HashMap::from([(
+        "/api/tags",
+        Reply::Json(
+            200,
+            r#"{"models":[{"name":"qwen3:8b","model":"qwen3:8b"},{"name":"llama3:8b","model":"llama3:8b"}]}"#.into(),
+        ),
+    )]))
+    .await;
+    let client = Client::new(Endpoint {
+        provider: Provider::Ollama,
+        base_url: root(&mock),
+        model: String::new(),
+        credential: None,
+    })
+    .unwrap();
+    assert_eq!(
+        list_models(&client).await,
+        listed(&["llama3:8b", "qwen3:8b"])
     );
 }

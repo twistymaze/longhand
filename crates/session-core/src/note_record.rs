@@ -115,7 +115,8 @@ impl NoteRecord {
     /// spaces of indent, LF line ends and a final LF.
     pub fn render(&self) -> String {
         let value = serde_json::to_value(self).expect("note record serializes");
-        let mut out = serde_json::to_string_pretty(&sorted(value)).expect("note record serializes");
+        let mut out = serde_json::to_string_pretty(&crate::json::sorted(value))
+            .expect("note record serializes");
         out.push('\n');
         out
     }
@@ -221,21 +222,5 @@ fn json_error(e: serde_json::Error) -> FolderError {
         line: e.line(),
         column: e.column(),
         message: e.to_string(),
-    }
-}
-
-/// `value` with the keys of each object in sorted order. The order does not
-/// depend on the `preserve_order` feature of `serde_json`.
-fn sorted(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut entries: Vec<_> = map.into_iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            serde_json::Value::Object(entries.into_iter().map(|(k, v)| (k, sorted(v))).collect())
-        }
-        serde_json::Value::Array(items) => {
-            serde_json::Value::Array(items.into_iter().map(sorted).collect())
-        }
-        other => other,
     }
 }

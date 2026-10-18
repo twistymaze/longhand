@@ -6,7 +6,7 @@
 //! schema-version integer, migrations keyed on the stored version, salvage of
 //! individually valid fields); see src-tauri/PROVENANCE.md. Portable mode is
 //! omitted. Credentials are not settings: they live in the OS secret store,
-//! keyed by endpoint host (see `managers::secrets`).
+//! keyed by provider and host (see `managers::secrets`, KTD8).
 //!
 //! The local store holds only the settings that stay on this computer
 //! (R13). The shared settings and the custom prompts come from the shared
@@ -20,6 +20,7 @@ use serde_json::{Map, Value};
 use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
+use summarize::Provider;
 use summarize::prompts::TOPIC_SUMMARY_ID;
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
@@ -32,14 +33,21 @@ use crate::managers::shared::{
 /// The key of the local settings in the local settings file.
 const SETTINGS_KEY: &str = "settings";
 
-pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SETTINGS_SCHEMA_VERSION: u32 = 7;
 
 /// The local store version that moved the shared settings to the storage
 /// folder (R12, KTD7). A store below it holds the old shared values.
 const SHARED_SETTINGS_VERSION: u64 = 6;
 
-/// The Base URL that Longhand uses when the user never saved one (R1, KD3).
-pub const DEFAULT_ENDPOINT_BASE_URL: &str = "https://api.openai.com/v1";
+/// The local store version that replaced the one endpoint with the active
+/// provider and an entry for each provider (KTD6). A store below it holds
+/// the old endpoint fields.
+const PROVIDER_SETTINGS_VERSION: u64 = 7;
+
+/// The keys of the old endpoint in a local store from before version 7.
+const LEGACY_ENDPOINT_BASE_URL: &str = "endpoint_base_url";
+const LEGACY_ENDPOINT_MODEL: &str = "endpoint_model";
+const LEGACY_CONTEXT_LIMIT: &str = "context_limit_tokens";
 
 /// The recognition model that versions 1 to 3 selected by default. A store
 /// of those versions with no `asr_model` read as this model, so the
@@ -232,6 +240,112 @@ pub struct SummaryPromptList {
     pub title_text_limit: u32,
 }
 
+/// The remembered settings of one AI provider on this computer (R10, KTD6).
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct ProviderEntry {
+    /// The address that the user entered. `None` uses the usual address
+    /// of the provider ([`Provider::default_address`]). Only a local
+    /// provider and Custom have one (R8, R9). Custom with `None` has no
+    /// address.
+    pub address: Option<String>,
+    /// The model that summaries use. Empty until the user picks one (R17).
+    pub model: String,
+    /// The context limit that the user entered. It overrides the limit
+    /// that the provider reports (R15).
+    pub context_limit_tokens: Option<u32>,
+}
+
+/// One [`ProviderEntry`] for each provider (R10, KTD6). Each field name is
+/// the [`Provider::name`] of its provider.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq, Default)]
+#[serde(default)]
+pub struct ProviderEntries {
+    pub openai: ProviderEntry,
+    pub anthropic: ProviderEntry,
+    pub gemini: ProviderEntry,
+    pub openrouter: ProviderEntry,
+    pub ollama: ProviderEntry,
+    pub lm_studio: ProviderEntry,
+    pub custom: ProviderEntry,
+}
+
+impl ProviderEntries {
+    pub fn get(&self, provider: Provider) -> &ProviderEntry {
+        match provider {
+            Provider::OpenAi => &self.openai,
+            Provider::Anthropic => &self.anthropic,
+            Provider::Gemini => &self.gemini,
+            Provider::OpenRouter => &self.openrouter,
+            Provider::Ollama => &self.ollama,
+            Provider::LmStudio => &self.lm_studio,
+            Provider::Custom => &self.custom,
+        }
+    }
+
+    pub fn get_mut(&mut self, provider: Provider) -> &mut ProviderEntry {
+        match provider {
+            Provider::OpenAi => &mut self.openai,
+            Provider::Anthropic => &mut self.anthropic,
+            Provider::Gemini => &mut self.gemini,
+            Provider::OpenRouter => &mut self.openrouter,
+            Provider::Ollama => &mut self.ollama,
+            Provider::LmStudio => &mut self.lm_studio,
+            Provider::Custom => &mut self.custom,
+        }
+    }
+}
+
+/// Where the Keychain holds the API key of one provider (KTD8).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyLocation {
+    pub provider: Provider,
+    /// The address of the provider. The account uses its host.
+    pub address: String,
+    /// The provider that the settings migration chose. Its key can still
+    /// be in the old host-only entry (R23).
+    pub legacy: bool,
+}
+
+impl KeyLocation {
+    /// Read the key. The read moves an old host-only entry when `legacy`
+    /// is set (KTD8).
+    pub fn read<B: secrets::Backend>(
+        &self,
+        store: &secrets::SecretStore<B>,
+    ) -> Result<Option<String>, secrets::SecretError> {
+        store.provider_credential(self.provider.name(), &self.address, self.legacy)
+    }
+
+    pub fn save<B: secrets::Backend>(
+        &self,
+        store: &secrets::SecretStore<B>,
+        value: &str,
+    ) -> Result<(), secrets::SecretError> {
+        store.set_provider_credential(self.provider.name(), &self.address, value)
+    }
+
+    /// Delete the key, and the old host-only entry when `legacy` is set,
+    /// so a removed key cannot come back (KTD8).
+    pub fn delete<B: secrets::Backend>(
+        &self,
+        store: &secrets::SecretStore<B>,
+    ) -> Result<(), secrets::SecretError> {
+        store.delete_provider_credential(self.provider.name(), &self.address, self.legacy)
+    }
+
+    /// The host part of the account, as the Settings pane shows it.
+    pub fn host(&self) -> String {
+        host_of(&self.address)
+    }
+}
+
+/// The host part of `address`, or `address` itself when it is not a valid
+/// URL.
+pub fn host_of(address: &str) -> String {
+    secrets::endpoint_key(address).unwrap_or_else(|_| address.to_string())
+}
+
 /// The settings that stay on this computer (R13), as the local store holds
 /// them.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -244,9 +358,13 @@ pub struct LocalSettings {
     pub pause_shortcut: Option<String>,
     pub widget_shortcut: Option<String>,
     pub storage_folder: String,
-    pub endpoint_base_url: Option<String>,
-    pub endpoint_model: String,
-    pub context_limit_tokens: Option<u32>,
+    /// The AI provider that summaries use (R7). `None` sends no summary
+    /// request (R11).
+    pub active_provider: Option<Provider>,
+    pub providers: ProviderEntries,
+    /// The provider whose key can still be in the old host-only Keychain
+    /// entry (KTD8, R23). The version 7 migration sets it.
+    pub legacy_key_provider: Option<Provider>,
     /// The recognition configuration in use on this computer (R18, KTD14).
     /// It is never written to the shared settings.
     pub asr_model: String,
@@ -474,14 +592,16 @@ pub struct Settings {
     /// the next note saves to it. Empty only until the launch sets the
     /// default folder (R2, KTD12).
     pub storage_folder: String,
-    /// OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
-    /// `None` means a new install that has no settings yet, and
-    /// [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
-    /// user cleared it, or that an existing install never set it (R2, KTD4).
-    pub endpoint_base_url: Option<String>,
-    pub endpoint_model: String,
-    /// Overrides the probed context budget when set (KTD16).
-    pub context_limit_tokens: Option<u32>,
+    /// The AI provider that summaries use (R7). `None` sends no summary
+    /// request, and a new install has none (R11).
+    pub active_provider: Option<Provider>,
+    /// The remembered address, model and context limit of each provider on
+    /// this computer (R10, R13, R15).
+    pub providers: ProviderEntries,
+    /// The provider whose key can still be in the old host-only Keychain
+    /// entry (KTD8, R23).
+    #[serde(skip)]
+    pub legacy_key_provider: Option<Provider>,
     /// This field and the five after it are the recognition configuration
     /// in use on this computer (R18, KTD14). Recording, processing and
     /// Transcribe Again read them. They change to `chosen_recognition` as
@@ -607,7 +727,7 @@ pub fn emit_settings_changed(app: &AppHandle) {
     }
 }
 
-/// The state of the saved key for the host of the effective Base URL.
+/// The state of the saved key of a provider for its host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyState {
     Saved,
@@ -618,19 +738,23 @@ pub enum KeyState {
     Failed,
 }
 
-/// Why Longhand sends no request to the endpoint.
+/// Why Longhand sends no request to a provider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotRequestedReason {
-    /// The user cleared the Base URL (R17).
-    NoBaseUrl,
+    /// No provider is active (R7, R11).
+    NoProvider,
+    /// Custom has no address (R9).
+    NoAddress,
+    /// A local provider or Custom with no key that the user did not choose
+    /// (R12).
+    NotChosen,
     KeychainLocked,
     KeychainFailed,
-    /// The Base URL is the built-in default and no key is saved for its
-    /// host (R4, KD7).
+    /// A cloud provider with no saved key (R8, R12).
     KeyNeeded,
 }
 
-/// Whether Longhand can send a request to the endpoint, and with which key.
+/// Whether Longhand can send a request to a provider, and with which key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EndpointGate {
     RequestWithKey,
@@ -652,37 +776,52 @@ pub fn key_state(read: &Result<Option<String>, secrets::SecretError>) -> KeyStat
     }
 }
 
-/// The request gate for the endpoint (KTD3). Longhand contacts only an
-/// endpoint that the user acted on: a key is saved for its host, or the user
-/// saved the Base URL. The list command and summary processing both call it.
-pub fn endpoint_gate(base_url: &str, saved_by_user: bool, key: KeyState) -> EndpointGate {
-    if base_url.trim().is_empty() {
-        return EndpointGate::NotRequested(NotRequestedReason::NoBaseUrl);
+/// The request gate for one provider (R12). Longhand contacts only a
+/// provider that the user acted on: a key is saved for it, or the user
+/// chose a local provider or Custom, which need no key. `chosen` is true
+/// when `provider` is the active provider. A provider that takes no key
+/// (R8) has `key` absent. The connection check and summary processing
+/// both call it.
+pub fn provider_gate(
+    provider: Option<Provider>,
+    chosen: bool,
+    address: &str,
+    key: KeyState,
+) -> EndpointGate {
+    let Some(provider) = provider else {
+        return EndpointGate::NotRequested(NotRequestedReason::NoProvider);
+    };
+    if address.trim().is_empty() {
+        return EndpointGate::NotRequested(NotRequestedReason::NoAddress);
     }
     match key {
         KeyState::Locked => EndpointGate::NotRequested(NotRequestedReason::KeychainLocked),
         KeyState::Failed => EndpointGate::NotRequested(NotRequestedReason::KeychainFailed),
         KeyState::Saved => EndpointGate::RequestWithKey,
-        KeyState::Absent if saved_by_user => EndpointGate::RequestWithoutKey,
-        KeyState::Absent => EndpointGate::NotRequested(NotRequestedReason::KeyNeeded),
+        KeyState::Absent if provider.is_cloud() => {
+            EndpointGate::NotRequested(NotRequestedReason::KeyNeeded)
+        }
+        KeyState::Absent if chosen => EndpointGate::RequestWithoutKey,
+        KeyState::Absent => EndpointGate::NotRequested(NotRequestedReason::NotChosen),
     }
 }
 
-/// Whether summary processing can use the endpoint in `s`, given the state
-/// of the key for its host. Readiness reports this value, so it applies the
-/// same gate as summary processing. A locked or failed Keychain read counts
-/// as configured: the Keychain problem has its own message.
-pub fn endpoint_ready(s: &Settings, key: KeyState) -> bool {
-    s.endpoint_configured()
-        && !matches!(
-            endpoint_gate(
-                s.effective_endpoint_base_url(),
-                s.endpoint_base_url_saved(),
-                key
-            ),
-            EndpointGate::NotRequested(
-                NotRequestedReason::KeyNeeded | NotRequestedReason::NoBaseUrl
-            )
+/// Whether summary processing can use the active provider in `s`, given
+/// the state of its key. Readiness reports this value, so it applies the
+/// same gate as summary processing. A locked or failed Keychain read
+/// counts as configured: the Keychain problem has its own message.
+pub fn provider_ready(s: &Settings, key: KeyState) -> bool {
+    let Some(provider) = s.active_provider else {
+        return false;
+    };
+    s.provider_configured()
+        && matches!(
+            provider_gate(Some(provider), true, &s.provider_address(provider), key),
+            EndpointGate::RequestWithKey
+                | EndpointGate::RequestWithoutKey
+                | EndpointGate::NotRequested(
+                    NotRequestedReason::KeychainLocked | NotRequestedReason::KeychainFailed
+                )
         )
 }
 
@@ -696,9 +835,9 @@ impl Default for Settings {
             pause_shortcut: None,
             widget_shortcut: None,
             storage_folder: String::new(),
-            endpoint_base_url: None,
-            endpoint_model: String::new(),
-            context_limit_tokens: None,
+            active_provider: None,
+            providers: ProviderEntries::default(),
+            legacy_key_provider: None,
             default_speaker_count: None,
             asr_model: models::DEFAULT_ASR_MODEL.to_string(),
             live_transcript: true,
@@ -747,9 +886,9 @@ impl Settings {
             pause_shortcut: local.pause_shortcut,
             widget_shortcut: local.widget_shortcut,
             storage_folder: local.storage_folder,
-            endpoint_base_url: local.endpoint_base_url,
-            endpoint_model: local.endpoint_model,
-            context_limit_tokens: local.context_limit_tokens,
+            active_provider: local.active_provider,
+            providers: local.providers,
+            legacy_key_provider: local.legacy_key_provider,
             default_speaker_count: local.default_speaker_count,
             asr_model: local.asr_model,
             live_transcript: local.live_transcript,
@@ -818,9 +957,9 @@ impl Settings {
             pause_shortcut: self.pause_shortcut.clone(),
             widget_shortcut: self.widget_shortcut.clone(),
             storage_folder: self.storage_folder.clone(),
-            endpoint_base_url: self.endpoint_base_url.clone(),
-            endpoint_model: self.endpoint_model.clone(),
-            context_limit_tokens: self.context_limit_tokens,
+            active_provider: self.active_provider,
+            providers: self.providers.clone(),
+            legacy_key_provider: self.legacy_key_provider,
             asr_model: self.asr_model.clone(),
             live_transcript: self.live_transcript,
             speaker_source: self.speaker_source,
@@ -880,42 +1019,108 @@ impl Settings {
         folder_path(&self.storage_folder)
     }
 
-    pub fn endpoint_configured(&self) -> bool {
-        !self.effective_endpoint_base_url().is_empty() && !self.endpoint_model.trim().is_empty()
-    }
-
-    /// The Base URL that requests use: the saved value, or the OpenAI
-    /// default when the user never saved one (KTD4). Empty when the user
-    /// cleared it.
-    pub fn effective_endpoint_base_url(&self) -> &str {
-        self.endpoint_base_url
+    /// The address that requests to `provider` use: the address that the
+    /// user entered, or the usual address of the provider. Empty for Custom
+    /// with no address.
+    pub fn provider_address(&self, provider: Provider) -> String {
+        self.providers
+            .get(provider)
+            .address
             .as_deref()
-            .unwrap_or(DEFAULT_ENDPOINT_BASE_URL)
-            .trim()
+            .map(str::trim)
+            .filter(|address| !address.is_empty())
+            .or_else(|| provider.default_address())
+            .unwrap_or_default()
+            .to_string()
     }
 
-    /// Whether the user saved the Base URL, as opposed to the built-in
-    /// default (R4).
-    pub fn endpoint_base_url_saved(&self) -> bool {
-        self.endpoint_base_url.is_some()
+    /// Whether a provider is active and has an address and a model. The
+    /// request gate ([`provider_gate`]) decides the rest.
+    pub fn provider_configured(&self) -> bool {
+        self.active_provider.is_some_and(|provider| {
+            !self.provider_address(provider).is_empty()
+                && !self.providers.get(provider).model.trim().is_empty()
+        })
     }
 
-    /// Save the Base URL (R32). An empty value clears it and stays empty
-    /// (R2). Any other value must be a URL with a host, because the
-    /// credential is keyed by that host (R30a). The Model does not change
-    /// (KTD5).
-    pub fn set_endpoint_base_url(&mut self, base_url: &str) -> Result<(), String> {
-        let base_url = base_url.trim();
-        if !base_url.is_empty() {
-            secrets::endpoint_key(base_url).map_err(|e| e.to_string())?;
+    /// Where the Keychain holds the key of `provider`. `None` for a
+    /// provider that takes no key (R8) or that has no address.
+    pub fn key_location(&self, provider: Provider) -> Option<KeyLocation> {
+        let address = self.provider_address(provider);
+        (provider.takes_key() && !address.is_empty()).then(|| KeyLocation {
+            provider,
+            address,
+            legacy: self.legacy_key_provider == Some(provider),
+        })
+    }
+
+    /// Make `provider` the active provider, or choose none (R7). The entry
+    /// of each provider does not change, so a switch back restores it
+    /// (R10).
+    pub fn choose_provider(&mut self, provider: Option<Provider>) {
+        self.active_provider = provider;
+    }
+
+    /// Save the address of `provider` (R8, R9). An empty value gives a
+    /// local provider its usual address again, and gives Custom no address.
+    /// Any other value must be a URL with a host, because the key is kept
+    /// for that host (R10). A cloud provider has a fixed address.
+    pub fn set_provider_address(
+        &mut self,
+        provider: Provider,
+        address: &str,
+    ) -> Result<(), String> {
+        if !provider.address_editable() {
+            return Err("The address of this provider cannot change.".into());
         }
-        self.endpoint_base_url = Some(base_url.to_string());
+        let address = address.trim();
+        if !address.is_empty() {
+            secrets::endpoint_key(address).map_err(|e| e.to_string())?;
+        }
+        self.providers.get_mut(provider).address =
+            (!address.is_empty()).then(|| address.to_string());
         Ok(())
     }
 
-    /// Save the Model. The Base URL does not change (KTD5).
-    pub fn set_endpoint_model(&mut self, model: &str) {
-        self.endpoint_model = model.trim().to_string();
+    /// Save the model of `provider`.
+    pub fn set_provider_model(&mut self, provider: Provider, model: &str) {
+        self.providers.get_mut(provider).model = model.trim().to_string();
+    }
+
+    /// Save the context limit that the user entered for `provider`, or
+    /// `None` to use the reported limit (R15).
+    pub fn set_provider_context_limit(
+        &mut self,
+        provider: Provider,
+        limit: Option<u32>,
+    ) -> Result<(), String> {
+        if limit == Some(0) {
+            return Err("a context limit must be above zero".into());
+        }
+        self.providers.get_mut(provider).context_limit_tokens = limit;
+        Ok(())
+    }
+
+    /// Save the address that the connection check of `provider` resolved
+    /// (KTD9, R14). Only Custom gets a changed address, and only while its
+    /// address is still `started`, the address that the check used. A
+    /// check that ends after the user entered a newer address saves
+    /// nothing. Returns whether the address changed.
+    pub fn save_checked_address(
+        &mut self,
+        provider: Provider,
+        started: &str,
+        resolved: &str,
+    ) -> bool {
+        let resolved = resolved.trim();
+        if provider != Provider::Custom
+            || resolved.is_empty()
+            || resolved == started.trim()
+            || self.provider_address(provider) != started.trim()
+        {
+            return false;
+        }
+        self.set_provider_address(provider, resolved).is_ok()
     }
 
     /// The prompt that a summary run uses now (KTD4). An unknown id gives
@@ -1212,6 +1417,15 @@ fn apply_settings_migrations(settings: &mut LocalSettings, stored: &Value) -> bo
         }
         updated = true;
     }
+    // Version 7 replaces the one endpoint with the active provider and an
+    // entry for each provider (KTD6, R23). A store that already has the
+    // entries, for example from a development build, keeps them.
+    if stored_version < PROVIDER_SETTINGS_VERSION {
+        if stored.get("providers").is_none() {
+            migrate_endpoint(settings, stored);
+        }
+        updated = true;
+    }
     let zoom = crate::interface_zoom::normalize(settings.interface_zoom_percent);
     if zoom != settings.interface_zoom_percent {
         settings.interface_zoom_percent = zoom;
@@ -1221,6 +1435,46 @@ fn apply_settings_migrations(settings: &mut LocalSettings, stored: &Value) -> bo
         settings.settings_schema_version = CURRENT_SETTINGS_SCHEMA_VERSION;
     }
     updated
+}
+
+/// The version 7 migration of the old endpoint (R23):
+///
+/// - A saved address becomes Custom with the same address, model and
+///   context limit.
+/// - No saved address and a model becomes OpenAI with that model and
+///   context limit. The old build sent such a model to the OpenAI address.
+/// - A cleared (empty) address, or no address and no model, becomes no
+///   provider.
+///
+/// The provider that this migration chooses gets the old host-only key in
+/// the Keychain on its first read (KTD8).
+fn migrate_endpoint(settings: &mut LocalSettings, stored: &Value) {
+    let model = stored
+        .get(LEGACY_ENDPOINT_MODEL)
+        .and_then(Value::as_str)
+        .map_or("", str::trim);
+    let limit = stored
+        .get(LEGACY_CONTEXT_LIMIT)
+        .and_then(Value::as_u64)
+        .and_then(|limit| u32::try_from(limit).ok())
+        .filter(|&limit| limit > 0);
+    let address = stored
+        .get(LEGACY_ENDPOINT_BASE_URL)
+        .and_then(Value::as_str)
+        .map(str::trim);
+    let (provider, address) = match address {
+        Some("") => return,
+        Some(address) => (Provider::Custom, Some(address.to_string())),
+        None if model.is_empty() => return,
+        None => (Provider::OpenAi, None),
+    };
+    settings.active_provider = Some(provider);
+    settings.legacy_key_provider = Some(provider);
+    *settings.providers.get_mut(provider) = ProviderEntry {
+        address,
+        model: model.to_string(),
+        context_limit_tokens: limit,
+    };
 }
 
 /// Rebuild settings from a stored value that failed to deserialize as a
@@ -1903,10 +2157,10 @@ mod tests {
             serde_json::json!("bad"),
         ] {
             let (settings, _) = settings_from_value(
-                &serde_json::json!({ "settings_schema_version": 4, "interface_zoom_percent": value, "endpoint_model": "kept" }),
+                &serde_json::json!({ "settings_schema_version": 4, "interface_zoom_percent": value, "shortcut": "kept" }),
             );
             assert_eq!(settings.interface_zoom_percent, 100);
-            assert_eq!(settings.endpoint_model, "kept");
+            assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         }
         let (settings, _) = settings_from_value(
             &serde_json::json!({ "settings_schema_version": 4, "interface_zoom_percent": 160 }),
@@ -1979,7 +2233,7 @@ mod tests {
         let stored = json!({
             "settings_schema_version": 2,
             "asr_model": "whisper-large-v3-turbo-q5km",
-            "endpoint_model": "kept",
+            "shortcut": "kept",
         });
         let (settings, updated) = migrated(&stored);
         assert!(updated);
@@ -1988,7 +2242,7 @@ mod tests {
             CURRENT_SETTINGS_SCHEMA_VERSION
         );
         assert_eq!(settings.asr_model, "whisper-large-v3-turbo-q5km");
-        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         assert!(settings.live_transcript);
         assert!(!settings.recognition.differs);
         let written = serde_json::to_value(settings.local()).unwrap();
@@ -2040,7 +2294,7 @@ mod tests {
         for version in 1..SHARED_SETTINGS_VERSION {
             let stored = json!({
                 "settings_schema_version": version,
-                "endpoint_model": "kept",
+                "shortcut": "kept",
                 "asr_model": "parakeet-tdt-0.6b-v3-q80",
                 "live_transcript": false,
                 "speaker_source": "sortformer",
@@ -2053,7 +2307,7 @@ mod tests {
             });
             let (local, updated) = settings_from_value(&stored);
             assert!(updated, "version {version}");
-            assert_eq!(local.endpoint_model, "kept");
+            assert_eq!(local.shortcut.as_deref(), Some("kept"));
             assert_eq!(
                 local.settings_schema_version,
                 CURRENT_SETTINGS_SCHEMA_VERSION
@@ -2148,11 +2402,11 @@ mod tests {
         // disk (R18).
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "kept",
+            "shortcut": "kept",
         });
         let (local, updated) = settings_from_value(&stored);
         assert!(!updated);
-        assert_eq!(local.endpoint_model, "kept");
+        assert_eq!(local.shortcut.as_deref(), Some("kept"));
         assert_eq!(local.in_use(), RecognitionChoice::default());
     }
 
@@ -2216,13 +2470,13 @@ mod tests {
     fn a_store_without_the_recording_keys_reads_as_system_default_and_no_system_audio() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "kept",
+            "shortcut": "kept",
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated, "the new keys need no migration (KTD17)");
         assert_eq!(settings.microphone, None);
         assert!(!settings.system_audio_default);
-        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         assert_eq!(Settings::default().microphone, None);
         assert!(!Settings::default().system_audio_default);
     }
@@ -2233,7 +2487,7 @@ mod tests {
     fn a_store_without_the_alert_sound_key_reads_as_on() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "kept",
+            "shortcut": "kept",
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated, "the new key needs no migration");
@@ -2330,21 +2584,21 @@ mod tests {
     fn a_store_without_hide_from_dock_reads_as_off_and_needs_no_migration() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "kept",
+            "shortcut": "kept",
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated, "the new key needs no migration");
         assert!(!settings.hide_from_dock);
-        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         assert!(!Settings::default().hide_from_dock);
     }
 
     #[test]
     fn an_old_store_without_the_update_setting_reads_as_on() {
-        let stored = json!({ "settings_schema_version": OLD, "endpoint_model": "kept" });
+        let stored = json!({ "settings_schema_version": OLD, "shortcut": "kept" });
         let (settings, _) = migrated(&stored);
         assert!(settings.check_updates_automatically);
-        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         assert!(Settings::default().check_updates_automatically);
     }
 
@@ -2374,12 +2628,12 @@ mod tests {
         for heard in [false, true] {
             let stored = json!({
                 "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-                "endpoint_model": "kept",
+                "shortcut": "kept",
                 "alert_tone_heard": heard,
             });
             let (settings, updated) = settings_from_value(&stored);
             assert!(!updated, "the removed key needs no migration (KTD16)");
-            assert_eq!(settings.endpoint_model, "kept");
+            assert_eq!(settings.shortcut.as_deref(), Some("kept"));
             let written = serde_json::to_value(&settings).unwrap();
             assert!(written.get("alert_tone_heard").is_none());
         }
@@ -2454,7 +2708,7 @@ mod tests {
             &json!({ "endpoint_model": "gpt-5", "destination_roots": ["/a"], "current_destination": "/a" }),
         );
         assert!(updated);
-        assert_eq!(settings.endpoint_model, "gpt-5");
+        assert_eq!(settings.providers.openai.model, "gpt-5");
         assert_eq!(settings.storage_folder, "/a");
     }
 
@@ -2465,14 +2719,14 @@ mod tests {
         for version in [OLD, u64::from(CURRENT_SETTINGS_SCHEMA_VERSION)] {
             let stored = json!({
                 "settings_schema_version": version,
-                "endpoint_model": "kept",
+                "shortcut": "kept",
                 "destination_roots": ["/vault/a", "/vault/b", "/vault/c", "/vault/d"],
                 "current_destination": "/vault/c",
             });
             let (settings, updated) = settings_from_value(&stored);
             assert!(updated, "version {version}");
             assert_eq!(settings.storage_folder, "/vault/c");
-            assert_eq!(settings.endpoint_model, "kept");
+            assert_eq!(settings.shortcut.as_deref(), Some("kept"));
             let written = serde_json::to_value(&settings).unwrap();
             assert!(written.get("destination_roots").is_none());
             assert!(written.get("current_destination").is_none());
@@ -2545,12 +2799,12 @@ mod tests {
     fn unknown_field_loads_and_is_dropped_on_the_next_write() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_model": "x",
+            "shortcut": "x",
             "from_the_future": true,
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated);
-        assert_eq!(settings.endpoint_model, "x");
+        assert_eq!(settings.shortcut.as_deref(), Some("x"));
         let written = serde_json::to_value(&settings).unwrap();
         assert!(written.get("from_the_future").is_none());
     }
@@ -2559,13 +2813,13 @@ mod tests {
     fn one_invalid_field_keeps_the_rest() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "context_limit_tokens": "lots",
-            "endpoint_model": "kept",
+            "interface_zoom_percent": "lots",
+            "shortcut": "kept",
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
-        assert_eq!(settings.endpoint_model, "kept");
-        assert_eq!(settings.context_limit_tokens, None);
+        assert_eq!(settings.shortcut.as_deref(), Some("kept"));
+        assert_eq!(settings.interface_zoom_percent, 100);
     }
 
     #[test]
@@ -2634,7 +2888,7 @@ mod tests {
         });
         let (settings, updated) = migrated(&stored);
         assert!(updated);
-        assert_eq!(settings.endpoint_model, "gpt-5");
+        assert_eq!(settings.providers.openai.model, "gpt-5");
         assert_eq!(settings.active_summary_prompt, TOPIC_SUMMARY_ID);
         assert_eq!(
             settings.settings_schema_version,
@@ -2656,7 +2910,7 @@ mod tests {
     fn one_malformed_prompt_entry_keeps_the_other_entries() {
         let stored = json!({
             "settings_schema_version": OLD,
-            "endpoint_model": "kept",
+            "shortcut": "kept",
             "summary_prompts": [
                 { "id": "a", "name": "Team sync", "text": "Recap." },
                 { "id": "b", "name": 7 },
@@ -2665,7 +2919,7 @@ mod tests {
         });
         let (settings, updated) = migrated(&stored);
         assert!(updated);
-        assert_eq!(settings.endpoint_model, "kept");
+        assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         let mut shown = names(&settings);
         shown.sort();
         assert_eq!(shown, ["One on one", "Team sync"]);
@@ -2928,7 +3182,7 @@ mod tests {
         );
         // The unknown value is not in a patch unless the user changes it.
         let mut after = settings.clone();
-        after.endpoint_model = "gpt-4o".into();
+        after.providers.openai.model = "gpt-4o".into();
         assert!(shared_patch(&settings, &after).is_empty());
     }
 
@@ -3128,7 +3382,7 @@ mod tests {
                 stores.update(updates, |s| {
                     s.new_note_records = false;
                     s.alert_sound = false;
-                    s.endpoint_model = "refused".into();
+                    s.providers.custom.model = "refused".into();
                     Ok(())
                 })
             })
@@ -3138,7 +3392,7 @@ mod tests {
         // refused change and a field that it did not change.
         stores
             .update(updates, |s| {
-                s.endpoint_model = "later".into();
+                s.providers.custom.model = "later".into();
                 s.live_transcript = false;
                 Ok(())
             })
@@ -3148,7 +3402,7 @@ mod tests {
         let local = stores.local.lock().unwrap().clone();
         // The refused change's own field goes back; the others stay.
         assert!(local.alert_sound);
-        assert_eq!(local.endpoint_model, "later");
+        assert_eq!(local.providers.custom.model, "later");
         assert!(!local.live_transcript);
     }
 
@@ -3365,111 +3619,266 @@ mod tests {
         );
     }
 
+    /// A store of the last version before the provider entries.
+    fn version_6(fields: Value) -> Value {
+        let mut stored = json!({ "settings_schema_version": PROVIDER_SETTINGS_VERSION - 1 });
+        for (key, value) in fields.as_object().unwrap() {
+            stored[key] = value.clone();
+        }
+        stored
+    }
+
+    /// The written form of `settings` reads back the same, with no update.
+    fn converges(settings: &Settings) {
+        let written = serde_json::to_value(settings.local()).unwrap();
+        assert_eq!(settings_from_value(&written), (settings.local(), false));
+    }
+
     #[test]
-    fn a_new_store_has_no_saved_base_url_and_uses_the_openai_default() {
+    fn a_new_store_has_no_provider() {
+        // Covers R11.
         let (settings, _) = migrated(&json!({}));
-        assert_eq!(settings.endpoint_base_url, None);
-        assert!(!settings.endpoint_base_url_saved());
+        assert_eq!(settings.active_provider, None);
+        assert_eq!(settings.providers, ProviderEntries::default());
+        assert_eq!(settings.legacy_key_provider, None);
+        assert!(!settings.provider_configured());
+    }
+
+    #[test]
+    fn a_version_6_store_with_an_address_becomes_custom_with_the_same_address_and_model() {
+        // Covers AE7.
+        let stored = version_6(json!({
+            "endpoint_base_url": "https://litellm.ewal.io/v1",
+            "endpoint_model": "qwen3-30b",
+            "context_limit_tokens": 64000,
+        }));
+        let (settings, updated) = migrated(&stored);
+        assert!(updated);
+        assert_eq!(settings.active_provider, Some(Provider::Custom));
         assert_eq!(
-            settings.effective_endpoint_base_url(),
+            settings.providers.custom,
+            ProviderEntry {
+                address: Some("https://litellm.ewal.io/v1".into()),
+                model: "qwen3-30b".into(),
+                context_limit_tokens: Some(64000),
+            }
+        );
+        assert_eq!(
+            settings.provider_address(Provider::Custom),
+            "https://litellm.ewal.io/v1"
+        );
+        // The key moves from the old host-only entry on the first read.
+        assert_eq!(
+            settings.key_location(Provider::Custom),
+            Some(KeyLocation {
+                provider: Provider::Custom,
+                address: "https://litellm.ewal.io/v1".into(),
+                legacy: true,
+            })
+        );
+        assert!(settings.provider_configured());
+        converges(&settings);
+    }
+
+    #[test]
+    fn a_version_6_store_with_no_address_and_a_model_becomes_openai_with_that_model() {
+        let stored =
+            version_6(json!({ "endpoint_model": "gpt-4o", "context_limit_tokens": 32000 }));
+        let (settings, updated) = migrated(&stored);
+        assert!(updated);
+        assert_eq!(settings.active_provider, Some(Provider::OpenAi));
+        assert_eq!(
+            settings.providers.openai,
+            ProviderEntry {
+                address: None,
+                model: "gpt-4o".into(),
+                context_limit_tokens: Some(32000),
+            }
+        );
+        assert_eq!(settings.legacy_key_provider, Some(Provider::OpenAi));
+        assert_eq!(
+            settings.provider_address(Provider::OpenAi),
             "https://api.openai.com/v1"
         );
-        assert_eq!(settings.endpoint_model, "");
+        converges(&settings);
     }
 
     #[test]
-    fn the_migration_keeps_a_saved_base_url() {
-        // Covers AE2.
-        let stored = json!({
-            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION - 1,
-            "endpoint_base_url": "http://localhost:11434/v1",
-            "endpoint_model": "llama3",
-        });
+    fn a_version_6_store_with_no_address_and_no_model_has_no_provider() {
+        for stored in [
+            version_6(json!({})),
+            version_6(json!({ "endpoint_model": "  " })),
+        ] {
+            let (settings, updated) = migrated(&stored);
+            assert!(updated);
+            assert_eq!(settings.active_provider, None);
+            assert_eq!(settings.providers, ProviderEntries::default());
+            assert_eq!(settings.legacy_key_provider, None);
+            converges(&settings);
+        }
+    }
+
+    #[test]
+    fn a_cleared_address_migrates_to_no_provider() {
+        let stored = version_6(json!({ "endpoint_base_url": "", "endpoint_model": "gpt-4o" }));
         let (settings, updated) = migrated(&stored);
         assert!(updated);
-        assert_eq!(
-            settings.endpoint_base_url.as_deref(),
-            Some("http://localhost:11434/v1")
-        );
-        assert!(settings.endpoint_base_url_saved());
-        assert_eq!(
-            settings.effective_endpoint_base_url(),
-            "http://localhost:11434/v1"
-        );
-        let written = serde_json::to_value(settings.local()).unwrap();
-        assert_eq!(settings_from_value(&written), (settings.local(), false));
+        assert_eq!(settings.active_provider, None);
+        assert_eq!(settings.providers, ProviderEntries::default());
+        assert_eq!(settings.legacy_key_provider, None);
+        converges(&settings);
     }
 
     #[test]
-    fn an_existing_store_keeps_an_empty_base_url() {
-        // The OpenAI default applies only to a new install (R2).
-        let stored = json!({
-            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION - 1,
-            "endpoint_base_url": "",
-            "endpoint_model": "gpt-4o",
-        });
+    fn the_old_endpoint_fields_are_dropped_on_the_next_write() {
+        let stored = version_6(json!({
+            "endpoint_base_url": "https://litellm.ewal.io/v1",
+            "endpoint_model": "qwen3-30b",
+        }));
+        let (settings, _) = migrated(&stored);
+        let written = serde_json::to_value(settings.local()).unwrap();
+        for key in [
+            LEGACY_ENDPOINT_BASE_URL,
+            LEGACY_ENDPOINT_MODEL,
+            LEGACY_CONTEXT_LIMIT,
+        ] {
+            assert!(written.get(key).is_none(), "{key}");
+        }
+        assert_eq!(written["active_provider"], json!("custom"));
+        assert_eq!(
+            written["providers"]["custom"],
+            json!({ "address": "https://litellm.ewal.io/v1", "model": "qwen3-30b", "context_limit_tokens": null })
+        );
+    }
+
+    #[test]
+    fn a_version_6_store_that_has_provider_entries_keeps_them() {
+        // A development build can write the entries before version 7.
+        let stored = version_6(json!({
+            "endpoint_base_url": "https://litellm.ewal.io/v1",
+            "endpoint_model": "qwen3-30b",
+            "active_provider": "anthropic",
+            "providers": { "anthropic": { "model": "claude-haiku-5-5" } },
+        }));
         let (settings, updated) = migrated(&stored);
         assert!(updated);
-        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
-        assert_eq!(settings.effective_endpoint_base_url(), "");
-        assert_eq!(settings.endpoint_model, "gpt-4o");
-        let written = serde_json::to_value(settings.local()).unwrap();
-        assert_eq!(settings_from_value(&written), (settings.local(), false));
+        assert_eq!(settings.active_provider, Some(Provider::Anthropic));
+        assert_eq!(settings.providers.anthropic.model, "claude-haiku-5-5");
+        assert_eq!(settings.providers.custom, ProviderEntry::default());
+        assert_eq!(settings.legacy_key_provider, None);
     }
 
     #[test]
-    fn a_current_store_keeps_a_cleared_base_url() {
+    fn a_current_store_keeps_its_provider_and_is_not_updated() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "endpoint_base_url": "",
+            "active_provider": "ollama",
+            "providers": { "ollama": { "model": "llama3" } },
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated);
-        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
+        assert_eq!(settings.active_provider, Some(Provider::Ollama));
+        assert_eq!(settings.providers.ollama.model, "llama3");
     }
 
     #[test]
-    fn an_empty_base_url_from_the_setter_is_saved_and_clears_the_endpoint() {
+    fn a_switch_to_another_provider_and_back_restores_its_model_and_key() {
+        // Covers AE1.
         let mut settings = Settings::default();
-        settings.set_endpoint_model("gpt-4o");
-        settings.set_endpoint_base_url("   ").unwrap();
-        assert_eq!(settings.endpoint_base_url.as_deref(), Some(""));
-        assert!(settings.endpoint_base_url_saved());
-        assert_eq!(settings.effective_endpoint_base_url(), "");
-        assert!(!settings.endpoint_configured());
+        settings.choose_provider(Some(Provider::Anthropic));
+        settings.set_provider_model(Provider::Anthropic, "claude-haiku-5-5");
+        let key = settings.key_location(Provider::Anthropic);
+
+        settings.choose_provider(Some(Provider::Ollama));
+        settings.set_provider_model(Provider::Ollama, "llama3");
+        assert_eq!(settings.active_provider, Some(Provider::Ollama));
+
+        settings.choose_provider(Some(Provider::Anthropic));
+        assert_eq!(settings.providers.anthropic.model, "claude-haiku-5-5");
+        assert_eq!(settings.providers.ollama.model, "llama3");
+        assert_eq!(settings.key_location(Provider::Anthropic), key);
+        assert_eq!(
+            provider_gate(
+                settings.active_provider,
+                true,
+                &settings.provider_address(Provider::Anthropic),
+                KeyState::Saved
+            ),
+            EndpointGate::RequestWithKey
+        );
     }
 
     #[test]
-    fn the_base_url_setter_trims_and_changes_only_the_base_url() {
-        let mut settings = Settings {
-            endpoint_model: "gpt-4o".into(),
-            ..Settings::default()
-        };
+    fn each_provider_keeps_its_own_entered_context_limit() {
+        let mut settings = Settings::default();
         settings
-            .set_endpoint_base_url("  http://localhost:11434/v1 ")
+            .set_provider_context_limit(Provider::Ollama, Some(32_768))
+            .unwrap();
+        settings
+            .set_provider_context_limit(Provider::Custom, Some(200_000))
+            .unwrap();
+        assert_eq!(settings.providers.ollama.context_limit_tokens, Some(32_768));
+        assert_eq!(
+            settings.providers.custom.context_limit_tokens,
+            Some(200_000)
+        );
+        assert_eq!(settings.providers.openai.context_limit_tokens, None);
+        settings
+            .set_provider_context_limit(Provider::Ollama, None)
+            .unwrap();
+        assert_eq!(settings.providers.ollama.context_limit_tokens, None);
+        assert_eq!(
+            settings.providers.custom.context_limit_tokens,
+            Some(200_000)
+        );
+        assert!(
+            settings
+                .set_provider_context_limit(Provider::Custom, Some(0))
+                .is_err()
+        );
+        assert_eq!(
+            settings.providers.custom.context_limit_tokens,
+            Some(200_000)
+        );
+    }
+
+    #[test]
+    fn the_address_setter_trims_and_an_empty_value_gives_the_usual_address() {
+        let mut settings = Settings::default();
+        settings
+            .set_provider_address(Provider::Ollama, "  http://studio.local:11434 ")
             .unwrap();
         assert_eq!(
-            settings.endpoint_base_url.as_deref(),
-            Some("http://localhost:11434/v1")
+            settings.provider_address(Provider::Ollama),
+            "http://studio.local:11434"
         );
-        assert_eq!(settings.endpoint_model, "gpt-4o");
+        settings
+            .set_provider_address(Provider::Ollama, "  ")
+            .unwrap();
+        assert_eq!(settings.providers.ollama.address, None);
+        assert_eq!(
+            settings.provider_address(Provider::Ollama),
+            "http://localhost:11434"
+        );
+        settings
+            .set_provider_address(Provider::Custom, "https://litellm.ewal.io")
+            .unwrap();
+        settings.set_provider_address(Provider::Custom, "").unwrap();
+        assert_eq!(settings.provider_address(Provider::Custom), "");
     }
 
     #[test]
-    fn the_model_setter_does_not_save_a_base_url() {
-        let mut settings = Settings::default();
-        settings.set_endpoint_model("  gpt-4o ");
-        assert_eq!(settings.endpoint_model, "gpt-4o");
-        assert_eq!(settings.endpoint_base_url, None);
-        assert!(!settings.endpoint_base_url_saved());
-        assert!(settings.endpoint_configured());
-    }
-
-    #[test]
-    fn the_base_url_setter_refuses_a_url_with_no_host_and_changes_nothing() {
+    fn the_address_setter_refuses_a_cloud_provider_and_a_url_with_no_host() {
         let mut settings = Settings::default();
         let before = settings.clone();
-        let error = settings.set_endpoint_base_url("not a url").unwrap_err();
+        assert!(
+            settings
+                .set_provider_address(Provider::OpenAi, "https://example.com/v1")
+                .is_err()
+        );
+        let error = settings
+            .set_provider_address(Provider::Custom, "not a url")
+            .unwrap_err();
         assert_eq!(
             error,
             secrets::endpoint_key("not a url").unwrap_err().to_string()
@@ -3478,47 +3887,108 @@ mod tests {
     }
 
     #[test]
-    fn the_salvage_path_keeps_a_valid_base_url() {
-        let stored = json!({
-            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
-            "context_limit_tokens": "lots",
-            "endpoint_base_url": "http://localhost:11434/v1",
-        });
-        let (settings, updated) = settings_from_value(&stored);
-        assert!(updated);
+    fn the_check_saves_the_resolved_v1_address_for_custom() {
+        // Covers KTD9, AE3.
+        let mut settings = Settings::default();
+        settings
+            .set_provider_address(Provider::Custom, "https://litellm.example.com")
+            .unwrap();
+        assert!(settings.save_checked_address(
+            Provider::Custom,
+            "https://litellm.example.com",
+            "https://litellm.example.com/v1",
+        ));
         assert_eq!(
-            settings.endpoint_base_url.as_deref(),
-            Some("http://localhost:11434/v1")
+            settings.provider_address(Provider::Custom),
+            "https://litellm.example.com/v1"
         );
     }
 
     #[test]
-    fn the_gate_sends_a_request_only_for_an_endpoint_the_user_acted_on() {
+    fn the_check_does_not_save_when_the_address_changed_while_it_ran() {
+        let mut settings = Settings::default();
+        settings
+            .set_provider_address(Provider::Custom, "https://other.example.com")
+            .unwrap();
+        assert!(!settings.save_checked_address(
+            Provider::Custom,
+            "https://litellm.example.com",
+            "https://litellm.example.com/v1",
+        ));
+        assert_eq!(
+            settings.provider_address(Provider::Custom),
+            "https://other.example.com"
+        );
+    }
+
+    #[test]
+    fn the_check_saves_no_address_for_a_provider_other_than_custom() {
+        let mut settings = Settings::default();
+        let before = settings.clone();
+        assert!(!settings.save_checked_address(
+            Provider::Ollama,
+            "http://localhost:11434",
+            "http://localhost:11434/v1",
+        ));
+        assert_eq!(settings, before);
+    }
+
+    #[test]
+    fn with_no_provider_the_gate_sends_nothing() {
+        // Covers AE2.
+        for key in [KeyState::Saved, KeyState::Absent, KeyState::Locked] {
+            assert_eq!(
+                provider_gate(None, true, "https://api.openai.com/v1", key),
+                EndpointGate::NotRequested(NotRequestedReason::NoProvider)
+            );
+        }
+        assert!(!provider_ready(&Settings::default(), KeyState::Saved));
+    }
+
+    #[test]
+    fn a_cloud_provider_with_no_key_is_not_set_up_and_a_chosen_local_provider_is_allowed() {
         use EndpointGate::*;
         use KeyState::*;
         use NotRequestedReason::*;
-        let default = DEFAULT_ENDPOINT_BASE_URL;
-        let local = "http://localhost:11434/v1";
-        assert_eq!(endpoint_gate(default, false, Saved), RequestWithKey);
+        let openai = "https://api.openai.com/v1";
+        let ollama = "http://localhost:11434";
+        for cloud in [
+            Provider::OpenAi,
+            Provider::Anthropic,
+            Provider::Gemini,
+            Provider::OpenRouter,
+        ] {
+            assert_eq!(
+                provider_gate(Some(cloud), true, openai, Absent),
+                NotRequested(KeyNeeded)
+            );
+            assert_eq!(
+                provider_gate(Some(cloud), false, openai, Saved),
+                RequestWithKey
+            );
+        }
+        for keyless in [Provider::Ollama, Provider::LmStudio, Provider::Custom] {
+            assert_eq!(
+                provider_gate(Some(keyless), true, ollama, Absent),
+                RequestWithoutKey
+            );
+            assert_eq!(
+                provider_gate(Some(keyless), false, ollama, Absent),
+                NotRequested(NotChosen)
+            );
+        }
         assert_eq!(
-            endpoint_gate(default, false, Absent),
-            NotRequested(KeyNeeded)
+            provider_gate(Some(Provider::Custom), true, "  ", Saved),
+            NotRequested(NoAddress)
         );
-        // The user can save the default URL, and then it counts as entered.
-        assert_eq!(endpoint_gate(default, true, Absent), RequestWithoutKey);
-        assert_eq!(endpoint_gate(local, true, Absent), RequestWithoutKey);
-        assert_eq!(endpoint_gate(local, true, Saved), RequestWithKey);
         assert_eq!(
-            endpoint_gate(local, true, Locked),
+            provider_gate(Some(Provider::Custom), true, ollama, Locked),
             NotRequested(KeychainLocked)
         );
         assert_eq!(
-            endpoint_gate(default, false, Failed),
+            provider_gate(Some(Provider::OpenAi), true, openai, Failed),
             NotRequested(KeychainFailed)
         );
-        for key in [Saved, Absent, Locked, Failed] {
-            assert_eq!(endpoint_gate("  ", true, key), NotRequested(NoBaseUrl));
-        }
     }
 
     #[test]
@@ -3527,45 +3997,65 @@ mod tests {
         assert_eq!(key_state(&Ok(Some("   ".into()))), KeyState::Absent);
         assert_eq!(key_state(&Ok(Some(String::new()))), KeyState::Absent);
         assert_eq!(key_state(&Ok(None)), KeyState::Absent);
-        // A blank key does not open the gate for the default Base URL.
+        // A blank key does not open the gate for a cloud provider.
         let key = key_state(&Ok(Some(" \t".into())));
         assert_eq!(
-            endpoint_gate(DEFAULT_ENDPOINT_BASE_URL, false, key),
+            provider_gate(
+                Some(Provider::OpenAi),
+                true,
+                "https://api.openai.com/v1",
+                key
+            ),
             EndpointGate::NotRequested(NotRequestedReason::KeyNeeded)
         );
     }
 
     #[test]
-    fn readiness_applies_the_same_gate_as_summary_processing() {
-        use KeyState::*;
-        let default_url = Settings {
-            endpoint_model: "gpt-4o".into(),
+    fn only_a_provider_that_takes_a_key_and_has_an_address_has_a_key_location() {
+        let mut settings = Settings {
+            legacy_key_provider: Some(Provider::Custom),
             ..Settings::default()
         };
-        // A model with no key for the default Base URL: processing refuses.
-        assert!(!endpoint_ready(&default_url, Absent));
-        assert!(endpoint_ready(&default_url, Saved));
+        assert_eq!(settings.key_location(Provider::Ollama), None);
+        assert_eq!(settings.key_location(Provider::LmStudio), None);
+        assert_eq!(settings.key_location(Provider::Custom), None);
+        settings
+            .set_provider_address(Provider::Custom, "https://openrouter.ai/api/v1")
+            .unwrap();
+        let custom = settings.key_location(Provider::Custom).unwrap();
+        assert!(custom.legacy);
+        assert_eq!(custom.host(), "openrouter.ai");
+        let openrouter = settings.key_location(Provider::OpenRouter).unwrap();
+        assert!(!openrouter.legacy);
+        assert_eq!(openrouter.host(), "openrouter.ai");
+    }
+
+    #[test]
+    fn readiness_applies_the_same_gate_as_summary_processing() {
+        use KeyState::*;
+        let mut openai = Settings::default();
+        openai.choose_provider(Some(Provider::OpenAi));
+        openai.set_provider_model(Provider::OpenAi, "gpt-4o");
+        assert!(!provider_ready(&openai, Absent));
+        assert!(provider_ready(&openai, Saved));
         // A Keychain problem has its own message. It is not "unconfigured".
-        assert!(endpoint_ready(&default_url, Locked));
-        assert!(endpoint_ready(&default_url, Failed));
+        assert!(provider_ready(&openai, Locked));
+        assert!(provider_ready(&openai, Failed));
 
-        let local = Settings {
-            endpoint_base_url: Some("http://localhost:11434/v1".into()),
-            ..default_url.clone()
-        };
-        assert!(endpoint_ready(&local, Absent));
+        let mut ollama = openai.clone();
+        ollama.choose_provider(Some(Provider::Ollama));
+        ollama.set_provider_model(Provider::Ollama, "llama3");
+        assert!(provider_ready(&ollama, Absent));
 
-        let cleared = Settings {
-            endpoint_base_url: Some(String::new()),
-            ..default_url.clone()
-        };
-        let no_model = Settings {
-            endpoint_model: String::new(),
-            ..local.clone()
-        };
+        let mut custom = openai.clone();
+        custom.choose_provider(Some(Provider::Custom));
+        custom.set_provider_model(Provider::Custom, "qwen3");
+        let mut no_model = ollama.clone();
+        no_model.set_provider_model(Provider::Ollama, "");
         for key in [Saved, Absent, Locked, Failed] {
-            assert!(!endpoint_ready(&cleared, key));
-            assert!(!endpoint_ready(&no_model, key));
+            // Custom with no address, and a provider with no model.
+            assert!(!provider_ready(&custom, key));
+            assert!(!provider_ready(&no_model, key));
         }
     }
 }
@@ -3761,8 +4251,16 @@ mod stale_recognition_tests {
         };
         let mut expected = Settings {
             interface_zoom_percent: 120,
-            endpoint_base_url: Some("http://localhost:11434/v1".into()),
-            endpoint_model: "llama3".into(),
+            active_provider: Some(Provider::Custom),
+            providers: ProviderEntries {
+                custom: ProviderEntry {
+                    address: Some("http://localhost:11434/v1".into()),
+                    model: "llama3".into(),
+                    context_limit_tokens: None,
+                },
+                ..ProviderEntries::default()
+            },
+            legacy_key_provider: Some(Provider::Custom),
             system_audio_default: true,
             storage_folder: "/vault/a".into(),
             chosen_recognition: recognition.clone(),

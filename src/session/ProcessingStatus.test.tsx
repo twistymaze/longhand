@@ -101,3 +101,82 @@ describe("Choose Folder on a note that waits for a folder", () => {
     expect(await screen.findByText("This folder is already the storage folder.")).toBeTruthy();
   });
 });
+
+describe("the summarize stage", () => {
+  const processing = (over: Partial<SessionDetail>): SessionDetail => ({
+    ...waiting,
+    entry: { ...waiting.entry, state: "processing", stage: "summarize" },
+    done: ["transcribe"],
+    current: "summarize",
+    message: null,
+    ...over,
+  });
+  const show = (detail: SessionDetail) => {
+    const tauri = mockTauri({ open_settings: () => null });
+    render(<ProcessingStatus detail={detail} live={undefined} onChanged={() => {}} />);
+    return tauri;
+  };
+
+  test("Covers AE2. With no provider, it says the note is saved without a summary and links to the AI Provider pane", async () => {
+    const tauri = show(
+      processing({ summary_problem: "no AI provider is set, so the note is saved without a summary", endpoint: null }),
+    );
+    expect(screen.getByText(/No AI provider is set, so the note is saved without a summary\./)).toBeTruthy();
+    await userEvent.setup().click(screen.getByRole("button", { name: "Set Up AI Provider…" }));
+    expect(tauri.calls.filter((c) => c.cmd === "open_settings").map((c) => c.args)).toEqual([{ pane: "provider" }]);
+  });
+
+  test("a summary in parts names the part, then the combining, then the final summary", () => {
+    const step = (summary_step: string, done: number, total: number) => ({
+      stage: "summarize",
+      segment: 0,
+      summary_step,
+      done,
+      total,
+    });
+    const view = (live: ReturnType<typeof step>) => (
+      <ProcessingStatus detail={processing({})} live={live} onChanged={() => {}} />
+    );
+    const { rerender } = render(view(step("parts", 4, 16)));
+    expect(screen.getByText("Summarizing part 5 of 16")).toBeTruthy();
+    expect(screen.getByText("25%")).toBeTruthy();
+
+    rerender(view(step("groups", 0, 9)));
+    expect(screen.getByText("Combining summaries 1 of 9")).toBeTruthy();
+    expect(screen.getByText("0%")).toBeTruthy();
+
+    // The final summary is one call: no count and no bar.
+    rerender(view(step("final", 0, 1)));
+    expect(screen.getByText("Writing the final summary")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+  });
+
+  test("before the stage runs with no provider, it says so and links to the AI Provider pane", () => {
+    show(processing({ endpoint: null }));
+    expect(screen.getByText("No AI provider is set, so the note is saved without a summary.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Set Up AI Provider…" })).toBeTruthy();
+  });
+
+  test("for Anthropic, it names Anthropic and the model, with no host", () => {
+    show(
+      processing({
+        endpoint: { provider: "anthropic", host: "api.anthropic.com", model: "claude-sonnet", encrypted: true },
+      }),
+    );
+    const line = screen.getByText(/Sends the transcript and notes to/);
+    expect(line.textContent).toBe("Sends the transcript and notes to Anthropic (claude-sonnet).");
+    expect(screen.queryByRole("button", { name: "Set Up AI Provider…" })).toBeNull();
+  });
+
+  test("for Custom, it names the host, and plain HTTP to another computer is unencrypted", () => {
+    show(processing({ endpoint: { provider: "custom", host: "llm.example.com", model: "m", encrypted: false } }));
+    const line = screen.getByText(/Sends the transcript and notes to/);
+    expect(line.textContent).toBe("Sends the transcript and notes to llm.example.com (m), unencrypted.");
+  });
+
+  test("for a local provider, it names the provider and the host", () => {
+    show(processing({ endpoint: { provider: "ollama", host: "localhost:11434", model: "llama3", encrypted: true } }));
+    const line = screen.getByText(/Sends the transcript and notes to/);
+    expect(line.textContent).toBe("Sends the transcript and notes to Ollama at localhost:11434 (llama3).");
+  });
+});

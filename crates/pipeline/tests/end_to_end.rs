@@ -66,6 +66,7 @@ impl EngineProvider for RealModel {
             var("LONGHAND_SUMMARY_MODEL"),
         ) {
             (Some(base_url), Some(model)) => Ok(pipeline::SummaryEndpoint {
+                provider: summarize::Provider::Custom,
                 base_url,
                 model,
                 credential: var("LONGHAND_SUMMARY_KEY"),

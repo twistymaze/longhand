@@ -111,3 +111,8 @@ tauri-plugin-single-instance = "2.3.2"
 
 [dev-dependencies]
 tempfile = "3"
+# The log filter test (tests/log_filter.rs): fern is the logger that
+# tauri-plugin-log builds, and the mock server of crates/summarize uses the
+# tokio network types. Cargo.lock holds both crates already.
+fern = "0.7"
+tokio = { version = "1", features = ["macros", "net", "io-util", "rt-multi-thread"] }

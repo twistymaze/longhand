@@ -16,6 +16,7 @@ export function ModelPicker({
   onCommit,
   label = "Model",
   width = "w-64",
+  showUnlisted = true,
 }: {
   /// The saved model, or "" when no model is saved.
   value: string;
@@ -24,6 +25,9 @@ export function ModelPicker({
   onCommit: (model: string) => void;
   label?: string;
   width?: string;
+  /// Show a note under the field when the list lacks the saved model. The
+  /// AI Provider pane says it on its status row instead.
+  showUnlisted?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   // The typed text, or null when the user did not type since the popup
@@ -104,7 +108,7 @@ export function ModelPicker({
   }, [visible]);
 
   const optionId = (index: number) => `${listId}-${index}`;
-  const unlisted = value !== "" && models.length > 0 && !models.includes(value);
+  const unlisted = showUnlisted && value !== "" && models.length > 0 && !models.includes(value);
 
   return (
     <div className="flex flex-col items-end gap-1">
