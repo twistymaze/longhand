@@ -562,28 +562,10 @@ pub(crate) fn write_new_settings(root: &Path, raw: &Map<String, Value>) -> io::R
 /// dependency can enable the `preserve_order` feature of `serde_json`, which
 /// keeps the order of insertion in a map.
 fn settings_bytes(raw: &Map<String, Value>) -> Vec<u8> {
-    let mut bytes = serde_json::to_vec_pretty(&sorted(&Value::Object(raw.clone())))
-        .expect("a JSON object serializes");
+    let sorted = session_core::json::sorted(Value::Object(raw.clone()));
+    let mut bytes = serde_json::to_vec_pretty(&sorted).expect("a JSON object serializes");
     bytes.push(b'\n');
     bytes
-}
-
-/// `value` with the keys of each object in sorted order.
-fn sorted(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            Value::Object(
-                entries
-                    .into_iter()
-                    .map(|(k, v)| (k.clone(), sorted(v)))
-                    .collect(),
-            )
-        }
-        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
-        other => other.clone(),
-    }
 }
 
 /// Write `contents` as `dir/name` only when nothing is at that name. The

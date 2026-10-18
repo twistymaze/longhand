@@ -487,24 +487,36 @@ async fn a_native_route_sends_a_failed_request_once_and_an_unreachable_one_after
 
 #[tokio::test]
 async fn a_request_past_the_total_deadline_fails_with_the_deadline_error() {
+    // The server never answers. The other deadlines are longer than the
+    // total deadline, and so is the wait of `Reply::Hang`.
     let mock = serve(HashMap::from([("/v1/messages", Reply::Hang)])).await;
+    let long = Duration::from_secs(2 * 60 * 60);
     let limits = Limits {
-        connect: Duration::from_secs(1),
-        response: Duration::from_secs(30),
-        idle: Duration::from_secs(30),
-        total: Duration::from_millis(300),
+        connect: long,
+        response: long,
+        idle: long,
+        total: Duration::from_secs(30 * 60),
         max_bytes: 1 << 20,
     };
-    let err = Client::with_limits(
+    let client = Client::with_limits(
         endpoint(Provider::Anthropic, &mock.base, Some("k")),
         limits,
         limits,
     )
     .unwrap()
-    .with_retry_waits(vec![Duration::from_millis(10); 3])
-    .complete(&label(), &sys_and_user(), 100, None)
-    .await
-    .unwrap_err();
+    .with_retry_waits(vec![Duration::from_millis(10); 3]);
+    let (label, messages) = (label(), sys_and_user());
+    let complete = client.complete(&label, &messages, 100, None);
+    tokio::pin!(complete);
+    // The clock runs until the server has read the request. Then it stops,
+    // and the runtime moves it to the next timer when no task can run, so
+    // the total deadline ends the request.
+    tokio::select! {
+        () = mock.requests(1) => {}
+        result = &mut complete => panic!("the request ended before the server read it: {result:?}"),
+    }
+    tokio::time::pause();
+    let err = complete.await.unwrap_err();
     assert!(
         matches!(err, SummarizeError::Deadline("complete reply")),
         "{err:?}"

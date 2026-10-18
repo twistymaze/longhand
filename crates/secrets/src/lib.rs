@@ -9,6 +9,8 @@
 
 mod error;
 
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+
 pub use error::SecretError;
 
 const SECURE_STORE_SUFFIX: &str = "secure-store";
@@ -46,6 +48,14 @@ impl Backend for KeyringBackend {
 pub struct SecretStore<B: Backend = KeyringBackend> {
     service: String,
     backend: B,
+    /// Held across each read, save and delete of a summary credential, so
+    /// that these operations do not overlap. Without it, a read can copy the
+    /// old entry after a concurrent Remove deleted both entries, and the
+    /// removed key comes back (KTD8). The process has one store.
+    summarize: Mutex<()>,
+    /// Gets a message when an operation waits for `summarize`.
+    #[cfg(test)]
+    on_wait: Mutex<Option<std::sync::mpsc::Sender<&'static str>>>,
 }
 
 impl SecretStore<KeyringBackend> {
@@ -59,7 +69,27 @@ impl<B: Backend> SecretStore<B> {
         Self {
             service: service_name(bundle_identifier),
             backend,
+            summarize: Mutex::new(()),
+            #[cfg(test)]
+            on_wait: Mutex::new(None),
         }
+    }
+
+    /// Lock `summarize`. A panic in an earlier holder does not stop the
+    /// store: the lock protects no data.
+    fn lock_summarize(&self) -> MutexGuard<'_, ()> {
+        match self.summarize.try_lock() {
+            Ok(guard) => return guard,
+            Err(TryLockError::Poisoned(e)) => return e.into_inner(),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        #[cfg(test)]
+        if let Some(on_wait) = &*self.on_wait.lock().unwrap() {
+            let _ = on_wait.send("waiting");
+        }
+        self.summarize
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     pub fn service(&self) -> &str {
@@ -105,6 +135,10 @@ impl<B: Backend> SecretStore<B> {
     /// the provider's entry does not change. A failed read or write returns
     /// the error and keeps the old entry. A failed delete of the old entry
     /// returns the value: the next read tries the delete again.
+    ///
+    /// When the old entry is also absent, the provider's entry is read
+    /// again: an operation outside this store (another process) can move
+    /// the old entry between the two reads.
     pub fn provider_credential(
         &self,
         provider: &str,
@@ -113,6 +147,7 @@ impl<B: Backend> SecretStore<B> {
     ) -> Result<Option<String>, SecretError> {
         let host = endpoint_key(base_url)?;
         let key = provider_key(provider, &host)?;
+        let _summarize = self.lock_summarize();
         let current = self.get(SUMMARIZE_SCOPE, &key)?;
         if !legacy {
             return Ok(current);
@@ -121,7 +156,7 @@ impl<B: Backend> SecretStore<B> {
             Some(value) => value,
             None => {
                 let Some(old) = self.get(SUMMARIZE_SCOPE, &host)? else {
-                    return Ok(None);
+                    return self.get(SUMMARIZE_SCOPE, &key);
                 };
                 self.set(SUMMARIZE_SCOPE, &key, &old)?;
                 old
@@ -141,6 +176,7 @@ impl<B: Backend> SecretStore<B> {
         value: &str,
     ) -> Result<(), SecretError> {
         let key = provider_key(provider, &endpoint_key(base_url)?)?;
+        let _summarize = self.lock_summarize();
         self.set(SUMMARIZE_SCOPE, &key, value)
     }
 
@@ -155,7 +191,9 @@ impl<B: Backend> SecretStore<B> {
         legacy: bool,
     ) -> Result<(), SecretError> {
         let host = endpoint_key(base_url)?;
-        self.delete(SUMMARIZE_SCOPE, &provider_key(provider, &host)?)?;
+        let key = provider_key(provider, &host)?;
+        let _summarize = self.lock_summarize();
+        self.delete(SUMMARIZE_SCOPE, &key)?;
         if legacy {
             self.delete(SUMMARIZE_SCOPE, &host)?;
         }
@@ -248,13 +286,16 @@ pub fn repair_keychain_access() -> Result<(), SecretError> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, mpsc};
+    use std::thread;
 
     use super::*;
 
     const CUSTOM: &str = "custom";
     const LITELLM: &str = "https://litellm.ewal.io/v1";
+
+    type Hook = Box<dyn FnOnce() + Send>;
 
     #[derive(Default)]
     struct MemoryBackend {
@@ -265,6 +306,9 @@ mod tests {
         writes_locked: bool,
         /// Only deletes fail, as a locked Keychain.
         deletes_locked: AtomicBool,
+        /// Runs one time, after a read of the account, before the read
+        /// returns.
+        after_get: Mutex<Option<(String, Hook)>>,
     }
 
     fn no_access() -> keyring::Error {
@@ -291,12 +335,20 @@ mod tests {
             if self.fail_with_no_access {
                 return Err(no_access());
             }
-            self.items
+            let result = self
+                .items
                 .lock()
                 .unwrap()
                 .get(&(service.to_string(), account.to_string()))
                 .cloned()
-                .ok_or(keyring::Error::NoEntry)
+                .ok_or(keyring::Error::NoEntry);
+            let mut after_get = self.after_get.lock().unwrap();
+            if after_get.as_ref().is_some_and(|(at, _)| at == account) {
+                let (_, hook) = after_get.take().unwrap();
+                drop(after_get);
+                hook();
+            }
+            result
         }
 
         fn set(&self, service: &str, account: &str, value: &str) -> keyring::Result<()> {
@@ -573,6 +625,102 @@ mod tests {
             .unwrap();
         assert_eq!(accounts(&store), []);
         assert_eq!(store.provider_credential(CUSTOM, LITELLM, true), Ok(None));
+    }
+
+    const OLD: &str = "summarize:litellm.ewal.io";
+    const NEW: &str = "summarize:custom:litellm.ewal.io";
+
+    type Shared = Arc<SecretStore<MemoryBackend>>;
+
+    /// After the next read of `account` in `store`, start `other` on a new
+    /// thread. The read continues when `other` has finished or when `other`
+    /// waits for the credential lock. The returned slot gets the handle of
+    /// the thread.
+    fn interleave<T: Send + 'static>(
+        store: &Shared,
+        account: &str,
+        other: impl FnOnce(&SecretStore<MemoryBackend>) -> T + Send + 'static,
+    ) -> Arc<Mutex<Option<thread::JoinHandle<T>>>> {
+        let (events, event) = mpsc::channel();
+        *store.on_wait.lock().unwrap() = Some(events.clone());
+        let slot = Arc::new(Mutex::new(None));
+        let (shared, handle_slot) = (Arc::clone(store), Arc::clone(&slot));
+        let hook = move || {
+            let handle = thread::spawn(move || {
+                let result = other(&shared);
+                let _ = events.send("done");
+                result
+            });
+            event.recv().unwrap();
+            *handle_slot.lock().unwrap() = Some(handle);
+        };
+        *store.backend.after_get.lock().unwrap() = Some((account.into(), Box::new(hook)));
+        slot
+    }
+
+    fn join<T>(slot: Arc<Mutex<Option<thread::JoinHandle<T>>>>) -> T {
+        slot.lock().unwrap().take().unwrap().join().unwrap()
+    }
+
+    #[test]
+    fn a_remove_during_the_lazy_move_is_not_undone() {
+        let store: Shared = Arc::new(with(MemoryBackend::holding(&[(OLD, "sk-old")])));
+        // The Remove starts after the read got the old entry and before it
+        // writes the provider's entry.
+        let remove = interleave(&store, OLD, |s| {
+            s.delete_provider_credential(CUSTOM, LITELLM, true)
+        });
+        assert_eq!(
+            store.provider_credential(CUSTOM, LITELLM, true),
+            Ok(Some("sk-old".into()))
+        );
+        assert_eq!(join(remove), Ok(()));
+        assert_eq!(accounts(&store), []);
+    }
+
+    #[test]
+    fn a_save_during_the_lazy_move_keeps_the_saved_key() {
+        let store: Shared = Arc::new(with(MemoryBackend::holding(&[(OLD, "sk-old")])));
+        let save = interleave(&store, OLD, |s| {
+            s.set_provider_credential(CUSTOM, LITELLM, "sk-new")
+        });
+        store.provider_credential(CUSTOM, LITELLM, true).unwrap();
+        assert_eq!(join(save), Ok(()));
+        assert_eq!(accounts(&store), [entry(NEW, "sk-new")]);
+    }
+
+    #[test]
+    fn two_overlapping_reads_both_return_the_moved_key() {
+        let store: Shared = Arc::new(with(MemoryBackend::holding(&[(OLD, "sk-old")])));
+        // The second read starts after the first read found no provider
+        // entry and before it reads the old entry.
+        let second = interleave(&store, NEW, |s| {
+            s.provider_credential(CUSTOM, LITELLM, true)
+        });
+        assert_eq!(
+            store.provider_credential(CUSTOM, LITELLM, true),
+            Ok(Some("sk-old".into()))
+        );
+        assert_eq!(join(second), Ok(Some("sk-old".into())));
+        assert_eq!(accounts(&store), [entry(NEW, "sk-old")]);
+    }
+
+    #[test]
+    fn a_key_that_another_process_moves_between_the_two_reads_is_returned() {
+        let store: Shared = Arc::new(with(MemoryBackend::holding(&[(OLD, "sk-old")])));
+        let shared = Arc::clone(&store);
+        let other_process = move || {
+            let mut items = shared.backend.items.lock().unwrap();
+            let service = shared.service().to_string();
+            let old = items.remove(&(service.clone(), OLD.into())).unwrap();
+            items.insert((service, NEW.into()), old);
+        };
+        *store.backend.after_get.lock().unwrap() = Some((NEW.into(), Box::new(other_process)));
+        assert_eq!(
+            store.provider_credential(CUSTOM, LITELLM, true),
+            Ok(Some("sk-old".into()))
+        );
+        assert_eq!(accounts(&store), [entry(NEW, "sk-old")]);
     }
 
     #[test]

@@ -6,6 +6,7 @@ pub mod backup;
 pub mod folder;
 pub mod inspect;
 pub mod jobs;
+pub mod json;
 pub mod lock;
 pub mod note_folder;
 pub mod note_record;

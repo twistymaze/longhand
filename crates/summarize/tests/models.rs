@@ -419,6 +419,66 @@ async fn a_server_with_no_list_and_a_chat_route_at_the_typed_address_keeps_the_t
     );
 }
 
+/// Checks the address of a server that has no model list and answers the
+/// chat route at the typed address with `reply`. The server also has a
+/// chat route under `/v1`, so a retry would succeed. The check must stop
+/// after the first chat request.
+async fn check_chat_reply(reply: Reply, credential: Option<&str>) -> Checked {
+    let mock = serve(HashMap::from([
+        ("/chat/completions", reply),
+        (
+            "/v1/chat/completions",
+            Reply::Json(200, common::chat_reply("OK", "stop")),
+        ),
+    ]))
+    .await;
+    let checked = check_at(&root(&mock), credential).await;
+    assert_eq!(
+        paths(&mock),
+        ["GET /models", "GET /v1/models", "POST /chat/completions"]
+    );
+    checked
+}
+
+#[tokio::test]
+async fn a_chat_route_that_refuses_with_no_key_needs_a_key_and_starts_no_v1_retry() {
+    assert_eq!(
+        check_chat_reply(Reply::Json(401, "{}".into()), None).await,
+        Checked {
+            list: ModelList::KeyNeeded,
+            address: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_chat_route_that_refuses_the_key_rejects_it_and_starts_no_v1_retry() {
+    assert_eq!(
+        check_chat_reply(Reply::Json(401, "{}".into()), Some("sk")).await,
+        Checked {
+            list: ModelList::KeyRejected,
+            address: None,
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_chat_route_that_redirects_is_redirected_and_starts_no_v1_retry() {
+    assert_eq!(
+        check_chat_reply(
+            Reply::Redirect(302, "https://other.example/chat/completions".into()),
+            None
+        )
+        .await,
+        Checked {
+            list: ModelList::Redirected {
+                host: Some("other.example".into())
+            },
+            address: None,
+        }
+    );
+}
+
 #[tokio::test]
 async fn anthropic_lists_its_models_through_rig() {
     let mock = serve(HashMap::from([(

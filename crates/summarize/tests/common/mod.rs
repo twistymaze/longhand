@@ -66,6 +66,16 @@ pub struct Seen {
 pub struct Mock {
     pub base: String,
     pub seen: Arc<Mutex<Vec<Seen>>>,
+    /// The number of requests in `seen`.
+    recorded: Arc<tokio::sync::watch::Sender<usize>>,
+}
+
+impl Mock {
+    /// Wait until the server has read `count` requests.
+    pub async fn requests(&self, count: usize) {
+        let mut recorded = self.recorded.subscribe();
+        let _ = recorded.wait_for(|n| *n >= count).await;
+    }
 }
 
 /// A local port that nothing listens on. A connection to it is refused.
@@ -92,6 +102,8 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
     let addr = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&seen);
+    let recorded = Arc::new(tokio::sync::watch::channel(0).0);
+    let count = Arc::clone(&recorded);
     let routes: HashMap<String, Reply> = routes
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
@@ -103,11 +115,17 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
             };
             let routes = routes.clone();
             let log = Arc::clone(&log);
+            let count = Arc::clone(&count);
             tokio::spawn(async move {
                 let Some(request) = read_request(&mut socket).await else {
                     return;
                 };
-                log.lock().unwrap().push(request.clone());
+                let total = {
+                    let mut log = log.lock().unwrap();
+                    log.push(request.clone());
+                    log.len()
+                };
+                count.send_replace(total);
                 let mut reply = routes
                     .get(&request.path)
                     .cloned()
@@ -154,6 +172,7 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
     Mock {
         base: format!("http://{addr}/v1"),
         seen,
+        recorded,
     }
 }
 

@@ -5526,6 +5526,7 @@ dependencies = [
  "models",
  "serde",
  "serde_json",
+ "session-core",
  "session-save",
  "summarize",
  "tempfile",
