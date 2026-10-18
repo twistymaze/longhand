@@ -89,7 +89,6 @@ test("move takes the screenshots folder of the idea with it", () => {
   expect({ exitCode: r.exitCode, stderr: r.stderr }).toEqual({ exitCode: 0, stderr: "" });
   expect(readFileSync(join(root, "docs/ideas/done/x-screenshots/a.png"), "utf8")).toBe("png");
   expect(existsSync(join(root, "docs/ideas/next/x-screenshots"))).toBe(false);
-  // The relative link from the idea still names the file beside it.
   expect(readFileSync(join(root, "docs/ideas/done/x.md"), "utf8")).toContain("](x-screenshots/a.png)");
   expect(readFileSync(join(root, "docs/notes.md"), "utf8")).toBe("See `docs/ideas/done/x-screenshots/a.png`.\n");
 });

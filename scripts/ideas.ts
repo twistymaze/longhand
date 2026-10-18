@@ -90,16 +90,17 @@ function move(slug: string, folder: string) {
   const shotsFrom = join(dirname(idea.path), `${slug}-screenshots`);
   const shotsTo = join(dirname(to), `${slug}-screenshots`);
   if (existsSync(shotsTo)) fail(`${relative(root, shotsTo)} is already there. Move or remove it first.`);
+  const shots = existsSync(shotsFrom);
+  const shotsPath = rootPathOf(shotsFrom);
   const git = Bun.spawnSync(["git", "mv", idea.path, to], { cwd: root, stderr: "pipe" });
   if (git.exitCode !== 0) fail(`git mv failed: ${git.stderr.toString()}`);
-  const shots = existsSync(shotsFrom);
   if (shots) renameSync(shotsFrom, shotsTo);
   let changed = 0;
   for (const file of linkingFiles()) {
     const before = file === to ? idea.path : file;
     const text = readFileSync(file, "utf8");
     let next = rewriteLinks(text, file, before, idea.path, to);
-    if (shots) next = next.replace(rootPathOf(shotsFrom), relative(root, shotsTo));
+    if (shots) next = next.replace(shotsPath, relative(root, shotsTo));
     if (next !== text) {
       writeFileSync(file, next);
       changed++;
@@ -149,8 +150,8 @@ function mergedBranches(): { branches: Set<string>; unread?: string } {
 // It returns the problems and, in CI, prints the shipped ideas as warnings.
 function shippedButOpen(ideas: Idea[]): string[] {
   const open = ideas.filter((i) => i.folder !== "done" && i.meta.plan);
-  // CI reads the merged PRs also with no open plan, so that a missing token
-  // or `gh` shows at once and not first when a plan starts.
+  // CI reads the merged PRs also when no plan is open, so that a missing
+  // token or `gh` shows at once and not when the next plan starts.
   if (open.length === 0 && !inCi) return [];
   const { branches, unread } = mergedBranches();
   const errors: string[] = [];
