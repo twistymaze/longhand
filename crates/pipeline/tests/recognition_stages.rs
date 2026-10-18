@@ -355,10 +355,31 @@ fn off_reuses_successful_live_text_without_asr() {
         0,
         "completed live text must not reload the model"
     );
+    // The stage keeps the live text in its result, at the times of the
+    // live part.
+    let result = pipeline::recognition::saved_result(&store, "route")
+        .unwrap()
+        .unwrap();
+    let rows: Vec<_> = result
+        .rows
+        .iter()
+        .map(|row| (row.text.trim(), row.range))
+        .collect();
+    let start = segments[0].offset_ms * 16;
+    assert_eq!(
+        rows,
+        vec![(
+            "Already transcribed",
+            SampleRange {
+                start,
+                end: start + end * 16,
+            }
+        )]
+    );
 }
-#[tokio::test]
-async fn explicit_speaker_failure_stops_before_summary_and_save() {
-    let (temp, store, _, _) = setup(SpeakerSource::Pyannote);
+/// Run the note "route" with a speaker stage that fails, and check that
+/// the run fails at that stage.
+async fn run_with_a_failed_speaker_stage(temp: &tempfile::TempDir, store: &pipeline::SharedStore) {
     let runner = pipeline::Runner::new(pipeline::Environment {
         store: store.clone(),
         working_root: temp.path().into(),
@@ -379,6 +400,11 @@ async fn explicit_speaker_failure_stops_before_summary_and_save() {
             ..
         }
     ));
+}
+#[tokio::test]
+async fn explicit_speaker_failure_stops_before_summary_and_save() {
+    let (temp, store, _, _) = setup(SpeakerSource::Pyannote);
+    run_with_a_failed_speaker_stage(&temp, &store).await;
     assert!(!temp.path().join("route/summary.md").exists());
     assert!(
         store
@@ -387,6 +413,33 @@ async fn explicit_speaker_failure_stops_before_summary_and_save() {
             .checkpoints("route", Stage::Save)
             .unwrap()
             .is_empty()
+    );
+}
+#[tokio::test]
+async fn a_failed_speaker_stage_shows_no_meter() {
+    let (temp, store, _, _) = setup(SpeakerSource::Pyannote);
+    run_with_a_failed_speaker_stage(&temp, &store).await;
+    let record = store.lock().unwrap().session("route").unwrap().unwrap();
+    assert!(
+        matches!(
+            record.state,
+            session_core::SessionState::ProcessingFailed { .. }
+        ),
+        "{:?}",
+        record.state
+    );
+    // The stage saved its progress before it failed. A view opened later
+    // must not show that progress as an active meter.
+    assert!(
+        pipeline::progress::speakers(&store, "route")
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        pipeline::progress::snapshot(&store, "route")
+            .unwrap()
+            .speakers,
+        None
     );
 }
 #[test]

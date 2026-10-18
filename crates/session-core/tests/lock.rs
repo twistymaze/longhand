@@ -11,8 +11,20 @@ fn a_second_instance_is_refused_while_the_first_lives() {
     assert_eq!(first.displaced, None);
 
     match acquire(dir.path(), "run-b") {
+        // Outside Windows, the refusal names the holder.
+        #[cfg(not(windows))]
         Acquired::HeldBy(holder) => {
-            // Windows bars reading a locked file; elsewhere the holder is named.
+            assert_eq!(
+                holder,
+                Some(Holder {
+                    pid: std::process::id(),
+                    instance: "run-a".into()
+                })
+            );
+        }
+        // Windows bars reading a locked file, so the holder can be unknown.
+        #[cfg(windows)]
+        Acquired::HeldBy(holder) => {
             if let Some(holder) = holder {
                 assert_eq!(
                     holder,

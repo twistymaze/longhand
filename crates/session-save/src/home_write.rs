@@ -25,6 +25,12 @@ fn unpredictable() -> u64 {
     h.finish()
 }
 
+/// A new, unpredictable name for the temporary file of a write that replaces
+/// `name`: `.<name>.<16 hex digits>.tmp`.
+pub fn temp_name(name: &str) -> String {
+    format!(".{name}.{:016x}.tmp", unpredictable())
+}
+
 /// The name of the file that `file` replaces, when `file` is the temporary
 /// file of a write in this module: `.<name>.<16 hex digits>.tmp`. A write
 /// that stopped leaves one.
@@ -37,14 +43,14 @@ pub fn temp_target(file: &str) -> Option<&str> {
 
 /// Replace `dir/name` with `contents` atomically.
 pub fn write_atomic(dir: &Path, name: &str, contents: &[u8]) -> io::Result<()> {
-    let temp = format!(".{name}.{:016x}.tmp", unpredictable());
+    let temp = temp_name(name);
     write_atomic_via(dir, name, &temp, contents)
 }
 
 /// Place a copy of `source` at `dir/name` atomically, streaming it rather
 /// than holding it in memory (R7): audio added to a folder by a resume (R6d).
 pub fn copy_atomic(dir: &Path, name: &str, source: &Path) -> io::Result<()> {
-    let temp = format!(".{name}.{:016x}.tmp", unpredictable());
+    let temp = temp_name(name);
     let mut from = std::fs::File::open(source)?;
     fill_atomic(dir, name, &temp, |file| {
         io::copy(&mut from, file).map(|_| ())
@@ -65,7 +71,7 @@ pub fn replace_with(
     name: &str,
     fill: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
 ) -> io::Result<()> {
-    let temp = format!(".{name}.{:016x}.tmp", unpredictable());
+    let temp = temp_name(name);
     replace_via(dir, name, &temp, fill)
 }
 
@@ -119,7 +125,7 @@ mod tests {
 
     #[test]
     fn a_temporary_name_gives_its_target_and_other_names_give_none() {
-        let temp = format!(".settings.json.{:016x}.tmp", unpredictable());
+        let temp = temp_name("settings.json");
         assert_eq!(temp_target(&temp), Some("settings.json"));
         assert_eq!(
             temp_target(".1.0.10.tar.gz.0123456789abcdef.tmp"),

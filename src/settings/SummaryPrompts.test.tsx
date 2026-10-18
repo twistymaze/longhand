@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
@@ -133,15 +133,20 @@ const titleArea = () => screen.getByRole("textbox", { name: "Title instructions"
 const selectAll = /Mac/.test(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}";
 /// Replaces the whole text of an editor: a click, select all, then a paste
 /// of `text`, or a delete when `text` is empty. A paste gives one change, as
-/// one value change of the old text area did.
-async function setText(box: HTMLElement, text: string) {
-  const user = userEvent.setup();
+/// one value change of the old text area did. A test with fake timers gives
+/// its own `user`, which has no delay between keys.
+async function setText(box: HTMLElement, text: string, user = userEvent.setup()) {
   await user.click(box);
   await user.keyboard(selectAll);
   if (text === "") await user.keyboard("{Backspace}");
   else await user.paste(text);
 }
 const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
+/// Moves the fake clock, then lets a queued save run.
+const advance = (ms: number) =>
+  act(async () => {
+    jest.advanceTimersByTime(ms);
+  });
 const titleCalls = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "set_summary_prompt_title_text").map((c) => c.args);
 
@@ -203,18 +208,29 @@ describe("SummaryPrompts", () => {
   });
 
   test("typing saves the text one second after the last change, in one call", async () => {
-    const tauri = backend();
-    renderPrompts();
-    const user = userEvent.setup();
-    await selectCustom(user);
-    await setText(textArea(), "Short");
-    await setText(textArea(), "Short re");
-    await setText(textArea(), "Short note");
-    await act(() => new Promise((r) => setTimeout(r, 500)));
-    expect(textCalls(tauri)).toEqual([]);
-    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1), { timeout: 3000 });
-    expect(textCalls(tauri)[0]).toEqual({ id: "c1", text: "Short note" });
-    expect(textArea().textContent).toBe("Short note");
+    jest.useFakeTimers();
+    try {
+      const tauri = backend();
+      renderPrompts();
+      // No delay between keys: the test moves the clock itself.
+      const user = userEvent.setup({ delay: null });
+      await selectCustom(user);
+      // Each change before the delay ends starts the delay again.
+      await setText(textArea(), "Short", user);
+      await advance(800);
+      await setText(textArea(), "Short re", user);
+      await advance(800);
+      await setText(textArea(), "Short note", user);
+      await advance(950);
+      expect(textCalls(tauri)).toEqual([]);
+      await advance(50);
+      expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]);
+      await advance(2000);
+      expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]);
+      expect(textArea().textContent).toBe("Short note");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("blur saves the text at once", async () => {

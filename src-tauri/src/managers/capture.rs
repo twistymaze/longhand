@@ -1382,6 +1382,16 @@ fn available(mut choice: CaptureChoice) -> CaptureChoice {
     choice
 }
 
+/// The capture choice of a note, from the store (KTD2). A note with no
+/// stored choice, or a store that cannot be read, records from the system
+/// default with system audio off.
+fn stored_capture(store: &Store, id: &str) -> CaptureChoice {
+    available(store.capture_choice(id).unwrap_or_else(|e| {
+        log::warn!("could not read the capture choice of {id}: {e}");
+        CaptureChoice::default()
+    }))
+}
+
 /// The capture choice that a note records when it starts (KTD2): the
 /// microphone held from the recording page, else the one from Settings,
 /// and the system audio default.
@@ -2826,14 +2836,9 @@ impl CaptureManager {
         })
     }
 
-    /// The capture choice of a note, from the store (KTD2). A note with no
-    /// stored choice, or a store that cannot be read, records from the
-    /// system default with system audio off.
+    /// The capture choice of a note, from the store: see [`stored_capture`].
     fn note_capture(&self, id: &str) -> CaptureChoice {
-        available(self.store().capture_choice(id).unwrap_or_else(|e| {
-            log::warn!("could not read the capture choice of {id}: {e}");
-            CaptureChoice::default()
-        }))
+        stored_capture(&self.store(), id)
     }
 
     /// Whether the note's stereo mark is set (KTD2). A store that cannot be
@@ -5265,7 +5270,7 @@ mod tests {
     }
 
     #[test]
-    fn a_resume_reads_the_stored_choice_not_settings() {
+    fn a_resume_takes_the_choice_that_the_store_holds() {
         // A user resume and a crash resume both read the store (KTD2).
         let mut store = Store::open_in_memory().unwrap();
         let stored = CaptureChoice {
@@ -5276,9 +5281,10 @@ mod tests {
         store
             .start_session("s1", at(0), None, &model, &stored)
             .unwrap();
-        let _settings = with_microphone(Some(headset()), false);
-        let choice = store.capture_choice("s1").unwrap();
-        assert_eq!(mic_of(&choice), Some(cpal_choice(&usb())));
+        assert_eq!(stored_capture(&store, "s1"), stored);
+        // A note with no stored choice records from the system default.
+        store.create_session("s2", at(0), None).unwrap();
+        assert_eq!(stored_capture(&store, "s2"), CaptureChoice::default());
     }
 
     #[test]

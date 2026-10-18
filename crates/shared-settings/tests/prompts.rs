@@ -150,7 +150,9 @@ fn a_file_with_no_front_matter_is_a_prompt_named_for_its_file() {
     assert_eq!(first.prompts.len(), 1);
     assert_eq!(first.prompts[0].name, "Weekly review");
     assert_eq!(first.prompts[0].text, "Summarize the week.");
-    // The id comes from the file name, so each scan gives the same id.
+    // The id comes from the file name, so each scan and each version
+    // gives the same id. A separate UUID v5 tool gave the fixed value.
+    assert_eq!(first.prompts[0].id, "9261537a-bf91-559c-b0b9-3e6b10bd39a8");
     assert_eq!(scan(root.path()).prompts[0].id, first.prompts[0].id);
     // The scan wrote nothing.
     assert_eq!(
