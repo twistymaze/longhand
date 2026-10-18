@@ -123,8 +123,13 @@ fn a_marker_older_than_30_minutes_does_not_block() {
 fn a_marker_with_a_time_in_the_future_within_the_margin_is_fresh() {
     // The clock of the other computer is ahead.
     let (_dir, home) = home();
-    let check = time("2026-09-30T09:00:00-05:00");
-    write_marker(&home, RUN_B, check + CLOCK_MARGIN).unwrap();
+    let check = now();
+    // The documented margin is five minutes. A literal keeps the test from
+    // moving with the constant.
+    write_marker(&home, RUN_B, check + TimeDelta::minutes(5)).unwrap();
+    // An old file time makes the fallback say "not fresh". So only the
+    // time in the marker can make it fresh.
+    age_file(&home.join(marker_name(RUN_B)), Duration::from_secs(31 * 60));
     assert!(in_use(&home, check).unwrap());
 }
 

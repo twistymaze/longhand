@@ -1471,7 +1471,7 @@ async fn a_new_attempt_replaces_speaker_progress_and_counts_saved_segments_first
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_failed_speaker_stage_shows_no_meter_and_no_completion() {
+async fn a_resume_during_the_speaker_stage_shows_no_meter() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1481,7 +1481,8 @@ async fn a_failed_speaker_stage_shows_no_meter_and_no_completion() {
         Some("m"),
         &[(16_000, speech())],
     );
-    // The speaker stage stops, and the view reads the store after it.
+    // A resume stops the speaker stage, and the view reads the store after
+    // it.
     let store = Arc::clone(&r.store);
     *r.script.on_analysis.lock().unwrap() = Some(Box::new(move |_| {
         store
@@ -2274,10 +2275,41 @@ async fn a_reply_cut_off_gets_more_room() {
             (200, http::completion("Notes."))
         }
     }));
-    let _mock = summaries_from(&r, reply, Some(4_096)).await;
+    let mock = summaries_from(&r, reply, Some(4_096)).await;
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
+    // A failed summary also finishes the note, with a stub. So check that
+    // the summary is complete and holds the reply.
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert!(
+        matches!(
+            summary.meta,
+            session_core::folder::SummaryMeta::Complete { .. }
+        ),
+        "{:?}",
+        summary.meta
+    );
+    assert!(summary.body.contains("Notes."), "{}", summary.body);
+    let max_tokens = |b: &String| {
+        serde_json::from_str::<serde_json::Value>(b).unwrap()["max_tokens"]
+            .as_u64()
+            .unwrap_or(0)
+    };
+    let bodies = completions(&mock);
+    // The first summary request has too little room, so the model cuts
+    // off its reply.
+    let first = bodies
+        .iter()
+        .find(|b| !is_title_call(b))
+        .expect("a summary request");
+    assert!(max_tokens(first) < 1_500, "{}", max_tokens(first));
+    // A later request gives the reply enough room.
+    assert!(
+        bodies.iter().any(|b| max_tokens(b) >= 1_500),
+        "{:?}",
+        bodies.iter().map(max_tokens).collect::<Vec<_>>()
+    );
 }
 
 // ------------------------------------------------------ summary prompts (U2)
