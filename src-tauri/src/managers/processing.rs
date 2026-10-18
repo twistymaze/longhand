@@ -413,6 +413,9 @@ fn endpoint_from_settings(
         // A blank key is no key (see `key_state`): send no Bearer header.
         .filter(|key| !key.trim().is_empty());
     Ok(SummaryEndpoint {
+        // The settings choose the provider from U6. Until then, the address
+        // in Settings is an OpenAI-compatible server.
+        provider: summarize::Provider::Custom,
         base_url,
         model: s.endpoint_model,
         credential,

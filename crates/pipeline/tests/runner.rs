@@ -468,6 +468,7 @@ impl EngineProvider for Provider {
 
 fn endpoint(base: &str) -> SummaryEndpoint {
     SummaryEndpoint {
+        provider: summarize::Provider::Custom,
         base_url: base.into(),
         model: "summarizer".into(),
         credential: Some("sk-secret-test".into()),
@@ -2046,7 +2047,7 @@ async fn a_rejection_for_length_stops_the_summary_and_asks_for_the_context_limit
     assert_eq!(chat_calls(&mock).len(), 1);
     let stub = summary_at(&saved_folder(&r, "s").join("summary.md"));
     assert!(
-        stub.body.contains("Settings > Summaries > Context limit"),
+        stub.body.contains("Settings > AI Provider > Context limit"),
         "{}",
         stub.body
     );
@@ -2491,12 +2492,12 @@ async fn a_run_resumed_after_the_active_prompt_changes_keeps_its_first_snapshot(
     let Rig { _root, .. } = first;
     let second = rig_with(Arc::clone(&store), _root, Arc::default());
     use_prompt(&second, &custom_prompt("Business meeting", "SECOND-MARKER"));
-    let mock = summaries_from(
-        &second,
-        http::Reply::Json(200, http::completion("Notes on a part.")),
-        Some(2_048),
-    )
-    .await;
+    // The same endpoint after the restart: the saved parts are for it
+    // (KTD11).
+    *second.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        ..endpoint(&first_mock.base)
+    }));
     assert_eq!(
         second
             .runner
@@ -2505,7 +2506,7 @@ async fn a_run_resumed_after_the_active_prompt_changes_keeps_its_first_snapshot(
         vec!["s".to_string()]
     );
     assert_eq!(second.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let calls = chat_messages(&mock);
+    let calls = chat_messages(&first_mock)[2..].to_vec();
     assert!(calls.iter().all(|(s, _)| !s.contains("SECOND-MARKER")));
     assert!(calls.iter().any(|(s, _)| s.contains("FIRST-MARKER")));
     // The two part notes made before the stop are not made again.
@@ -3134,12 +3135,12 @@ async fn a_run_resumed_after_the_background_changes_keeps_the_saved_background()
     let Rig { _root, .. } = first;
     let second = rig_with(Arc::clone(&store), _root, Arc::default());
     use_background(&second, "SECOND-BACKGROUND");
-    let mock = summaries_from(
-        &second,
-        http::Reply::Json(200, http::completion("Notes on a part.")),
-        Some(BACKGROUND_CONTEXT),
-    )
-    .await;
+    // The same endpoint after the restart: the saved parts are for it
+    // (KTD11).
+    *second.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(BACKGROUND_CONTEXT),
+        ..endpoint(&first_mock.base)
+    }));
     assert_eq!(
         second
             .runner
@@ -3148,7 +3149,7 @@ async fn a_run_resumed_after_the_background_changes_keeps_the_saved_background()
         vec!["s".to_string()]
     );
     assert_eq!(second.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let calls = chat_messages(&mock);
+    let calls = chat_messages(&first_mock)[2..].to_vec();
     assert!(!calls.is_empty());
     for (system, _) in &calls {
         assert!(system.contains("FIRST-BACKGROUND"), "{system}");
@@ -11052,4 +11053,458 @@ async fn a_title_job_runs_during_a_recording() {
     );
     assert_eq!(title_calls(&mock).len(), 1);
     assert!(r.script.capturing.load(Ordering::SeqCst));
+}
+
+// ------------------------------------- provider snapshot and Ollama size (U4)
+
+use summarize::Provider as AiProvider;
+
+/// The path that `provider` sends a summary request to.
+fn route_path(provider: AiProvider) -> &'static str {
+    match provider {
+        AiProvider::Anthropic => "/v1/messages",
+        AiProvider::Ollama => "/api/chat",
+        _ => "/v1/chat/completions",
+    }
+}
+
+/// A reply with `text` in the format of `provider`.
+fn reply_from(provider: AiProvider, text: &str) -> String {
+    match provider {
+        AiProvider::Anthropic => http::anthropic_reply(text, "end_turn"),
+        AiProvider::Ollama => http::ollama_reply(text, "stop"),
+        _ => http::completion(text),
+    }
+}
+
+/// A server that answers the summary requests of `provider` with `reply`.
+async fn serve_provider(provider: AiProvider, reply: http::Reply) -> http::Mock {
+    http::serve(std::collections::HashMap::from([(
+        route_path(provider),
+        reply,
+    )]))
+    .await
+}
+
+/// Send the summaries of the script to `mock` of `provider`, with the
+/// context setting `context_limit`.
+fn use_provider(r: &Rig, provider: AiProvider, mock: &http::Mock, context_limit: Option<u32>) {
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        provider,
+        context_limit,
+        ..endpoint(&mock.base)
+    }));
+}
+
+/// Every text in `value`, joined with new lines.
+fn texts(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Array(items) => items.iter().map(texts).collect::<Vec<_>>().join("\n"),
+        serde_json::Value::Object(map) => map.values().map(texts).collect::<Vec<_>>().join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Whether the request `body` is a title turn: its last message asks for a
+/// title.
+fn is_title_body(body: &serde_json::Value) -> bool {
+    body["messages"]
+        .as_array()
+        .and_then(|m| m.last())
+        .is_some_and(|last| texts(last).contains("Propose a title"))
+}
+
+/// The bodies of the requests that `mock` got on `path`.
+fn bodies_on(mock: &http::Mock, path: &str) -> Vec<serde_json::Value> {
+    mock.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.path == path)
+        .map(|s| s.json())
+        .collect()
+}
+
+/// The summary requests that `mock` got on `path`, without title turns.
+fn summary_bodies(mock: &http::Mock, path: &str) -> Vec<serde_json::Value> {
+    bodies_on(mock, path)
+        .into_iter()
+        .filter(|b| !is_title_body(b))
+        .collect()
+}
+
+/// The transcript part that a summary request sends, if any.
+fn part_of(body: &serde_json::Value) -> Option<usize> {
+    let text = texts(&body["messages"]);
+    let at = text.find("<transcript part=\"")? + "<transcript part=\"".len();
+    text[at..].split('"').next()?.parse().ok()
+}
+
+/// What an Ollama request needs (KTD7): its prompt estimate, with the
+/// margin, and its reply cap.
+fn ollama_need(body: &serde_json::Value) -> usize {
+    let messages = body["messages"].as_array().unwrap();
+    let prompt = summarize::tokens::estimate_messages(
+        messages
+            .iter()
+            .map(|m| m["content"].as_str().unwrap_or_default()),
+    );
+    summarize::tokens::with_margin(prompt) + num_predict(body) as usize
+}
+
+fn num_ctx(body: &serde_json::Value) -> Option<u64> {
+    body["options"]["num_ctx"].as_u64()
+}
+
+fn num_predict(body: &serde_json::Value) -> u64 {
+    body["options"]["num_predict"].as_u64().unwrap()
+}
+
+/// A reply that fails the call with the ordinal `fails` (0-based) and
+/// answers the other calls with a part summary.
+fn failing_on(fails: usize) -> http::Reply {
+    let n = Arc::new(AtomicUsize::new(0));
+    http::Reply::With(Arc::new(move |_| {
+        if n.fetch_add(1, Ordering::SeqCst) == fails {
+            (500, r#"{"error":"overloaded"}"#.into())
+        } else {
+            (200, http::completion("Notes on a part."))
+        }
+    }))
+}
+
+/// [`long_session`] with a run that fails at part 3 on `mock`, which the
+/// script uses. Two parts are saved.
+async fn failed_after_two_parts(r: &Rig, mock: &http::Mock) {
+    long_session(r);
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::SummaryUnavailable { message, .. } if message.contains("part 3 of")
+    )));
+    assert_eq!(chat_calls(mock).len(), 3);
+}
+
+/// Covers AE9, R26.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regenerate_with_another_provider_discards_the_saved_parts_and_sends_all_parts_there() {
+    let r = rig().await;
+    let custom = summaries_from(&r, failing_on(2), Some(2_048)).await;
+    failed_after_two_parts(&r, &custom).await;
+
+    let anthropic = serve_provider(
+        AiProvider::Anthropic,
+        http::Reply::Json(200, reply_from(AiProvider::Anthropic, "Notes on a part.")),
+    )
+    .await;
+    use_provider(&r, AiProvider::Anthropic, &anthropic, Some(2_048));
+    let path = r.runner.regenerate_summary("s").await.unwrap();
+
+    assert_eq!(chat_calls(&custom).len(), 3, "no request goes to Custom");
+    let parts: Vec<usize> = summary_bodies(&anthropic, "/v1/messages")
+        .iter()
+        .filter_map(part_of)
+        .collect();
+    assert_eq!(parts.first(), Some(&1), "{parts:?}");
+    assert!(parts.contains(&2), "{parts:?}");
+    assert!(summary_is_complete(path.parent().unwrap()));
+}
+
+/// Covers R26, KTD11: another path on the same host is another address.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_regenerate_after_the_custom_path_changes_on_the_same_host_discards_the_saved_parts() {
+    let r = rig().await;
+    let reply = without_titles(failing_on(2));
+    let mock = http::serve(std::collections::HashMap::from([
+        ("/v1/chat/completions", reply.clone()),
+        ("/proxy/v1/chat/completions", reply),
+    ]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        ..endpoint(&mock.base)
+    }));
+    failed_after_two_parts(&r, &mock).await;
+
+    let moved = mock.base.replace("/v1", "/proxy/v1");
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        ..endpoint(&moved)
+    }));
+    r.runner.regenerate_summary("s").await.unwrap();
+
+    let parts: Vec<usize> = summary_bodies(&mock, "/proxy/v1/chat/completions")
+        .iter()
+        .filter_map(part_of)
+        .collect();
+    assert_eq!(parts.first(), Some(&1), "{parts:?}");
+    assert!(parts.contains(&2), "{parts:?}");
+}
+
+/// Covers R26: a plan that an older version saved names no provider, so
+/// it is not used again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_plan_with_no_provider_is_discarded_on_regenerate() {
+    let r = rig().await;
+    let mock = summaries_from(&r, failing_on(2), Some(2_048)).await;
+    failed_after_two_parts(&r, &mock).await;
+    // The plan as an older version saved it: no provider, address or model.
+    let key = pipeline::summarize::PLAN;
+    let mut plan: serde_json::Value = checkpoint::get(&r.store, "s", Stage::Summarize, key)
+        .unwrap()
+        .unwrap();
+    assert!(plan.as_object_mut().unwrap().remove("source").is_some());
+    checkpoint::put(&r.store, "s", Stage::Summarize, key, &plan).unwrap();
+
+    r.runner.regenerate_summary("s").await.unwrap();
+    let calls = chat_calls(&mock);
+    assert!(
+        calls[3].contains("<transcript part=\"1\">"),
+        "{}",
+        &calls[3][..80]
+    );
+}
+
+/// Covers AE10, R25: a summary keeps the provider that it started with.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_summary_finishes_with_the_provider_it_started_with_and_the_next_uses_the_new_one() {
+    let r = rig().await;
+    let gate = http::Gate::default();
+    let ollama = serve_provider(
+        AiProvider::Ollama,
+        http::Reply::Gated(
+            gate.clone(),
+            Box::new(http::Reply::Json(
+                200,
+                reply_from(AiProvider::Ollama, "From Ollama."),
+            )),
+        ),
+    )
+    .await;
+    use_provider(&r, AiProvider::Ollama, &ollama, Some(32_000));
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    let runner = Arc::clone(&r.runner);
+    let first = tokio::spawn(async move { runner.run_next().await });
+    // The Ollama mock holds the reply until the settings change.
+    until("the summary request reaches Ollama", || {
+        !bodies_on(&ollama, "/api/chat").is_empty()
+    })
+    .await;
+    let anthropic = serve_provider(
+        AiProvider::Anthropic,
+        http::Reply::Json(200, reply_from(AiProvider::Anthropic, "From Anthropic.")),
+    )
+    .await;
+    use_provider(&r, AiProvider::Anthropic, &anthropic, Some(32_000));
+    gate.open();
+    assert_eq!(first.await.unwrap().unwrap().1, Outcome::Finished);
+
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert_eq!(summary.body, "From Ollama.");
+    assert!(bodies_on(&anthropic, "/v1/messages").is_empty());
+    assert_eq!(bodies_on(&ollama, "/api/chat").len(), 1);
+
+    queue_session(
+        &r.store,
+        &r.root,
+        "t",
+        200,
+        Some("m"),
+        &[(16_000, conversation())],
+    );
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let summary = summary_at(&saved_folder(&r, "t").join("summary.md"));
+    assert_eq!(summary.body, "From Anthropic.");
+    assert_eq!(bodies_on(&ollama, "/api/chat").len(), 1);
+}
+
+/// The Ollama summary requests of a run of "s" under `context_limit`, with
+/// each reply from `reply`.
+async fn ollama_run(r: &Rig, reply: http::Reply, context_limit: u32) -> Vec<serde_json::Value> {
+    let mock = serve_provider(AiProvider::Ollama, reply).await;
+    use_provider(r, AiProvider::Ollama, &mock, Some(context_limit));
+    let outcome = r.runner.run_next().await.unwrap().1;
+    assert_eq!(outcome, Outcome::Finished);
+    let summary = summary_at(&saved_folder(r, "s").join("summary.md"));
+    assert!(
+        matches!(
+            summary.meta,
+            session_core::folder::SummaryMeta::Complete { .. }
+        ),
+        "{}",
+        summary.body
+    );
+    summary_bodies(&mock, "/api/chat")
+}
+
+fn ollama_summary() -> http::Reply {
+    http::Reply::Json(200, reply_from(AiProvider::Ollama, "A summary."))
+}
+
+/// Covers AE6, R6: a note that fits one call and needs about 20,000
+/// tokens with its reply reserve.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ollama_note_in_one_call_sends_the_context_size_that_the_call_needs() {
+    let r = rig().await;
+    r.script.sentences.store(75, Ordering::SeqCst);
+    let segments: Vec<(u32, Vec<f32>)> = (0..2).map(|_| (16_000, conversation())).collect();
+    queue_session(&r.store, &r.root, "s", 100, Some("m"), &segments);
+    let bodies = ollama_run(&r, ollama_summary(), 32_000).await;
+    assert_eq!(bodies.len(), 1, "the note fits one call");
+    let need = ollama_need(&bodies[0]);
+    assert!((18_433..=20_480).contains(&need), "{need}");
+    assert_eq!(num_ctx(&bodies[0]), Some(20_480));
+}
+
+/// Covers AE6, R6: a short note gets a small context size.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_short_ollama_note_sends_the_smallest_context_size() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let bodies = ollama_run(&r, ollama_summary(), 12_000).await;
+    assert_eq!(bodies.len(), 1);
+    assert!(
+        ollama_need(&bodies[0]) <= 4_096,
+        "{}",
+        ollama_need(&bodies[0])
+    );
+    assert_eq!(num_ctx(&bodies[0]), Some(4_096));
+}
+
+/// Covers R6, KTD7: every chunk and merge request of a run in parts gives
+/// the room limit, so Ollama keeps the model loaded.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ollama_run_in_parts_sends_the_room_limit_on_every_request() {
+    let r = rig().await;
+    long_session(&r);
+    let bodies = ollama_run(&r, ollama_summary(), 6_144).await;
+    let parts = bodies.iter().filter(|b| part_of(b).is_some()).count();
+    let merges = bodies
+        .iter()
+        .filter(|b| texts(&b["messages"]).contains("<summary part="))
+        .count();
+    assert!(parts > 1, "{parts} parts");
+    assert!(merges >= 1, "{merges} merges");
+    for body in &bodies {
+        assert_eq!(num_ctx(body), Some(6_144));
+    }
+}
+
+/// Covers R6, KTD7: a cut-off reply gets a larger reserve and a larger
+/// context size, never above the context limit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cut_off_ollama_reply_is_sent_again_with_a_larger_context_size() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let n = Arc::new(AtomicUsize::new(0));
+    let reply = http::Reply::With(Arc::new(move |_| {
+        let done = if n.fetch_add(1, Ordering::SeqCst) == 0 {
+            "length"
+        } else {
+            "stop"
+        };
+        (200, http::ollama_reply("A summary.", done))
+    }));
+    let bodies = ollama_run(&r, reply, 32_000).await;
+    assert_eq!(bodies.len(), 2);
+    assert!(num_predict(&bodies[1]) > num_predict(&bodies[0]));
+    let sizes: Vec<u64> = bodies.iter().map(|b| num_ctx(b).unwrap()).collect();
+    assert!(sizes[1] > sizes[0], "{sizes:?}");
+    for body in &bodies {
+        let size = num_ctx(body).unwrap();
+        assert!(size >= ollama_need(body) as u64, "{size}");
+        assert!(size <= 32_000, "{size}");
+    }
+}
+
+/// Covers R6, KTD7: the context limit is the largest size, also under the
+/// smallest size.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ollama_model_with_a_small_context_limit_gets_that_limit() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let bodies = ollama_run(&r, ollama_summary(), 2_048).await;
+    assert!(!bodies.is_empty());
+    for body in &bodies {
+        assert_eq!(num_ctx(body), Some(2_048));
+    }
+}
+
+/// Covers R25: the title job keeps the provider that was in effect when it
+/// started.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_title_job_sends_to_the_provider_in_effect_when_it_started() {
+    let r = rig().await;
+    saved_session(&r, None).await;
+    assert!(pending(&r).is_some());
+
+    let gate = http::Gate::default();
+    let ollama = serve_provider(
+        AiProvider::Ollama,
+        http::Reply::Gated(
+            gate.clone(),
+            Box::new(http::Reply::Json(
+                200,
+                reply_from(AiProvider::Ollama, "Weekly sync"),
+            )),
+        ),
+    )
+    .await;
+    use_provider(&r, AiProvider::Ollama, &ollama, None);
+    let runner = Arc::clone(&r.runner);
+    let titles = tokio::spawn(async move { runner.run_titles().await });
+    until("the title request reaches Ollama", || {
+        !bodies_on(&ollama, "/api/chat").is_empty()
+    })
+    .await;
+    let anthropic = serve_provider(
+        AiProvider::Anthropic,
+        http::Reply::Json(200, reply_from(AiProvider::Anthropic, "Wrong provider")),
+    )
+    .await;
+    use_provider(&r, AiProvider::Anthropic, &anthropic, None);
+    gate.open();
+    let jobs = titles.await.unwrap();
+
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert!(bodies_on(&anthropic, "/v1/messages").is_empty());
+    let sent = bodies_on(&ollama, "/api/chat");
+    assert_eq!(sent.len(), 1);
+    assert!(is_title_body(&sent[0]));
+    // The title turn gives the context size that it needs (KTD7).
+    let size = num_ctx(&sent[0]).expect("a context size");
+    assert!(size >= ollama_need(&sent[0]) as u64, "{size}");
+    assert_eq!(size % 2_048, 0, "{size}");
 }
