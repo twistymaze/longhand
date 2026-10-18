@@ -208,10 +208,12 @@ function PopUpMenu({
           // WKWebView does not focus a clicked button. Escape in the menu
           // gives the focus back here.
           e.currentTarget.focus();
-          if (wasOpen.current) {
-            wasOpen.current = false;
-            return;
-          }
+          // A click from the keyboard has no pointer press (detail 0). A
+          // press that was released off the button leaves wasOpen set, so
+          // only a pointer click reads it.
+          const pressedOpen = wasOpen.current && e.detail > 0;
+          wasOpen.current = false;
+          if (pressedOpen) return;
           setOpen((o) => !o);
         }}
         className={`flex min-w-0 items-center gap-1 rounded-[6px] px-2.5 py-[3px] text-label hover:bg-fill-pressed active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent ${

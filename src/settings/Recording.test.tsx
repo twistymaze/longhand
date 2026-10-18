@@ -254,6 +254,25 @@ describe("Recording pane", () => {
     await waitFor(() => expect(calls(mock, "readiness").length).toBeGreaterThan(before));
   });
 
+  test("with New Note recording off and no recording shortcut, the shortcut row says only Off", async () => {
+    await open({
+      extra: { new_note_records: false, shortcut: null },
+      ready: { shortcut: { chord: null, registered: false, error: null } },
+    });
+    const row = screen.getByText("Recording shortcut").closest(".settings-row") as HTMLElement;
+    expect(within(row).getByText("Off")).toBeTruthy();
+    expect(row.textContent).not.toContain("New Note still starts a recording");
+  });
+
+  test("with New Note recording on and no recording shortcut, the shortcut row says New Note still records", async () => {
+    await open({
+      extra: { new_note_records: true, shortcut: null },
+      ready: { shortcut: { chord: null, registered: false, error: null } },
+    });
+    const row = screen.getByText("Recording shortcut").closest(".settings-row") as HTMLElement;
+    expect(within(row).getByText("Off — New Note still starts a recording")).toBeTruthy();
+  });
+
   // Covers R16: a new install has no Pause chord.
   test("the Pause shortcut is under the recording shortcut and shows Off when it has no chord", async () => {
     await open();

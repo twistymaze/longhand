@@ -202,7 +202,11 @@ function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
         onSettings={onSettings}
         disabled={readOnlyReason(settings) !== null}
       />
-      <RecordingShortcut readiness={readiness} onRefresh={onRefresh} />
+      <RecordingShortcut
+        readiness={readiness}
+        newNoteRecords={settings.new_note_records}
+        onRefresh={onRefresh}
+      />
       <OptionalShortcut
         kind="pause"
         label="Pause shortcut"
@@ -215,8 +219,17 @@ function NewNote({ settings, onSettings, readiness, onRefresh }: PaneProps) {
 
 /// The recording shortcut (R8). Readiness holds its status, and ready to
 /// record depends on it (R13 of the shortcut work), so a change refreshes
-/// readiness.
-function RecordingShortcut({ readiness, onRefresh }: { readiness: Readiness; onRefresh: () => Promise<void> }) {
+/// readiness. With no chord, the row says that New Note still records only
+/// when `newNoteRecords` is true.
+function RecordingShortcut({
+  readiness,
+  newNoteRecords,
+  onRefresh,
+}: {
+  readiness: Readiness;
+  newNoteRecords: boolean;
+  onRefresh: () => Promise<void>;
+}) {
   const recording = readiness.shortcut;
   return (
     <ShortcutField
@@ -226,7 +239,9 @@ function RecordingShortcut({ readiness, onRefresh }: { readiness: Readiness; onR
       resetTo={DEFAULT_SHORTCUT}
       detail={
         !recording.chord ? (
-          <StatusText tone="neutral">Off — New Note still starts a recording</StatusText>
+          <StatusText tone="neutral">
+            {newNoteRecords ? "Off — New Note still starts a recording" : "Off"}
+          </StatusText>
         ) : recording.registered ? (
           "Starts and stops a recording from any app"
         ) : (

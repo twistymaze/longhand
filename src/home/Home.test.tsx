@@ -1724,6 +1724,20 @@ describe("Home: filter by type and tags", () => {
     expect(screen.getByRole("button", { name: "Note Type: General" })).toBeTruthy();
   });
 
+  test("after a press on the type menu button that ends off the button, a key opens the menu", async () => {
+    setup({ types: typeList("A", "B", "C", "D", "E", "F", "G") });
+    const user = userEvent.setup();
+    const button = await screen.findByRole("button", { name: "Note Type: All Types" });
+    await user.click(button);
+    expect(screen.getAllByRole("menuitemradio").length).toBeGreaterThan(0);
+    // The press closes the menu. It ends off the button, so no click follows.
+    fireEvent.pointerDown(button);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    // Space or Return on the button gives a click with no pointer press.
+    fireEvent.click(button, { detail: 0 });
+    expect(screen.getAllByRole("menuitemradio").length).toBeGreaterThan(0);
+  });
+
   // R22, KTD3.
   test("a row shows the type and the tags", () => {
     setup({
