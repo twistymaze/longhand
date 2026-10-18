@@ -1,3 +1,11 @@
+[install]
+# Take a JavaScript package version only after it is 7 days old (in seconds).
+# Most malicious package versions are found and removed within a few days.
+# A package that needs a newer version goes in the exclusion list, with a
+# comment that gives the reason (docs/development-workflow.md).
+minimumReleaseAge = 604800
+minimumReleaseAgeExcludes = []
+
 [test]
 # Register a DOM (happy-dom) before each test file, so that component tests
 # can render React.

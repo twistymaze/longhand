@@ -48,6 +48,11 @@ Run local checks, including:
 - `scripts/check-windows.sh`: lints for Windows from macOS in seconds, except crates that build C or C++.
 - `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies. Run it after each change that adds or removes a dependency, and commit the files that it writes. In a new worktree, run `bun install --frozen-lockfile` first: a copied `node_modules` can be older than `bun.lock` and writes wrong versions into `js-packages.json`.
 
+Dependency rules that apply to each change:
+
+- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- `deny.toml` checks known vulnerabilities for the shipped targets only. Only the maintainer adds an entry to `[advisories] ignore`, and each entry has a `reason`. Run the check with `cargo deny check advisories`.
+
 CI runs only on:
 
 - Pull requests into `main`.

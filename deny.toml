@@ -9,6 +9,22 @@
 
 [graph]
 all-features = false
+# Check only the platforms that Longhand ships. The same two targets are in
+# scripts/licences/generate.ts. Crates that only other platforms use, such as
+# tauri's Linux GTK stack, are not shipped, so their advisories and licences
+# do not apply.
+targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+
+# Known vulnerabilities, unmaintained and unsound crates, and yanked versions
+# (RustSec). The scheduled advisory workflow and each PR that changes
+# dependencies run this check. Only the maintainer adds an ignore, and each
+# ignore has a reason (docs/upkeep/README.md).
+[advisories]
+yanked = "deny"
+# Report an unmaintained crate only when a Longhand crate uses it directly.
+# An unmaintained crate deeper in the graph has no fix that Longhand can make.
+unmaintained = "workspace"
+ignore = []
 
 [licenses]
 allow = [
