@@ -228,9 +228,18 @@ export function SessionPage({
   const [staleDocument, setStaleDocument] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
-  // A view change gives a new page, so the notice of a press goes with it.
+  // The notice of a failed shortcut press goes when App takes it away: at a
+  // view change, also to a new view of this note. Another notice that came
+  // after it stays.
+  const pressNotice = useRef<Notice | null>(null);
   useEffect(() => {
-    if (shortcutNotice) setNotice({ tone: "negative", text: sentence(shortcutNotice.text) });
+    if (shortcutNotice) {
+      const shown: Notice = { tone: "negative", text: sentence(shortcutNotice.text) };
+      pressNotice.current = shown;
+      setNotice(shown);
+    } else {
+      setNotice((n) => (n !== null && n === pressNotice.current ? null : n));
+    }
   }, [shortcutNotice]);
   const [regenerating, setRegenerating] = useState(false);
   const [speakers, setSpeakers] = useState(false);

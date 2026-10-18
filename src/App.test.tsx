@@ -503,4 +503,20 @@ describe("a failed shortcut press", () => {
     await screen.findByRole("heading", { name: "Notes" });
     expect(screen.queryByText(reason)).toBeNull();
   });
+
+  // A later press that records into the same note gives a new view of that
+  // note, and the page stays.
+  test("its reason goes from the note page when a later press records into that note", async () => {
+    const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
+    render(<App />);
+    await screen.findByRole("option", { name: /Alpha/ });
+    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await screen.findByRole("button", { name: "Back" });
+    await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
+    expect(await screen.findByText(reason)).toBeTruthy();
+
+    await act(() => tauri.emit("recording-changed", { session_id: "a", opened: true }));
+    await waitFor(() => expect(screen.queryByText(reason)).toBeNull());
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+  });
 });
