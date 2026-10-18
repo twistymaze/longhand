@@ -703,7 +703,65 @@ fn emit_library_changed(app: &AppHandle, changes: LibraryChanged) {
     }
 }
 
-fn notify_saved(app: &AppHandle, path: &std::path::Path) {
+/// The title and the body of the save notification of the note folder
+/// `folder`. The body says that the note has a summary only when
+/// `has_summary` is true.
+fn saved_notice(folder: &str, has_summary: bool) -> (&'static str, String) {
+    let body = if has_summary {
+        format!("{folder} has its transcript and summary.")
+    } else {
+        format!("{folder} has its transcript. The summary could not be made.")
+    };
+    ("Note ready", body)
+}
+
+/// Whether the Summarize stage made the summary of `session_id`: the stage
+/// is complete for each segment and no summary failure is recorded. In
+/// the other cases the save writes the stub summary. A read error gives
+/// false.
+fn summary_made(store: &pipeline::SharedStore, session_id: &str) -> bool {
+    use session_core::Stage;
+    let read = || -> Result<bool, pipeline::StageError> {
+        let segments = store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .segments(session_id)?
+            .len();
+        Ok(
+            pipeline::checkpoint::is_complete(store, session_id, Stage::Summarize, segments)?
+                && pipeline::checkpoint::get::<String>(
+                    store,
+                    session_id,
+                    Stage::Summarize,
+                    pipeline::save::SUMMARY_FAILED,
+                )?
+                .is_none(),
+        )
+    };
+    read().unwrap_or_else(|e| {
+        log::warn!("could not read if the note {session_id} has a summary: {e}");
+        false
+    })
+}
+
+/// Whether `event` ends the work on a note: its in-use marker goes at
+/// Saved, and a failed Transcribe Again run is Saved again.
+fn ends_work(event: &RunnerEvent) -> bool {
+    matches!(
+        event,
+        RunnerEvent::Saved { .. }
+            | RunnerEvent::StageFailed { .. }
+            | RunnerEvent::Cancelled { .. }
+            | RunnerEvent::TranscribeAgainFailed { .. }
+    )
+}
+
+fn notify_saved(
+    app: &AppHandle,
+    store: &pipeline::SharedStore,
+    session_id: &str,
+    path: &std::path::Path,
+) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
     let visible = app
@@ -717,13 +775,8 @@ fn notify_saved(app: &AppHandle, path: &std::path::Path) {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if let Err(e) = app
-        .notification()
-        .builder()
-        .title("Session ready")
-        .body(format!("{folder} has its transcript and summary."))
-        .show()
-    {
+    let (title, body) = saved_notice(&folder, summary_made(store, session_id));
+    if let Err(e) = app.notification().builder().title(title).body(body).show() {
         log::warn!("could not post the save notification: {e}");
     }
 }
@@ -801,6 +854,7 @@ impl ProcessingManager {
         // saved its last part and released the engine (KTD9).
         let draining = Arc::clone(live);
         let events = app.clone();
+        let saved = capture.shared_store();
         let runner = Runner::new(Environment {
             store: capture.shared_store(),
             working_root: capture.working_root().to_path_buf(),
@@ -811,17 +865,14 @@ impl ProcessingManager {
             }),
             suspended: Box::new(move || suspended.is_capturing() || draining.busy()),
             events: Box::new(move |event| {
-                if let RunnerEvent::Saved { path, .. } = &event {
-                    notify_saved(&events, path);
+                if let RunnerEvent::Saved {
+                    session_id, path, ..
+                } = &event
+                {
+                    notify_saved(&events, &saved, session_id, path);
                 }
-                // The work on a note can end: its in-use marker goes at
-                // Saved, and a failed Transcribe Again run is Saved again.
-                if matches!(
-                    event,
-                    RunnerEvent::Saved { .. }
-                        | RunnerEvent::StageFailed { .. }
-                        | RunnerEvent::Cancelled { .. }
-                ) && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
+                if ends_work(&event)
+                    && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
                 {
                     processing.in_use_changed();
                     // A type move that waited for the work can run now
@@ -1031,12 +1082,20 @@ impl ProcessingManager {
         &self.library_status
     }
 
-    /// The rest of the launch steps, in order, on one background thread,
-    /// so the window opens at once with the stored rows (KTD9): the library
-    /// scan and reconcile, the folder reconcile, the live workers, the
-    /// retry of notes that wait for a folder, the runner and the library
-    /// watcher.
+    /// Attach the live workers, then do the rest of the launch steps, in
+    /// order, on one background thread, so the window opens at once with
+    /// the stored rows (KTD9): the library scan and reconcile, the folder
+    /// reconcile, the retry of notes that wait for a folder, the runner and
+    /// the library watcher. A note that starts while these steps run gets
+    /// its live transcript.
     pub fn start(self: &Arc<Self>) {
+        let woken = Arc::downgrade(&self.runner);
+        self.live
+            .attach(self.runner.live_workers().with_idle(move || {
+                if let Some(runner) = woken.upgrade() {
+                    runner.wake();
+                }
+            }));
         // The first refresh marks the saved notes that an earlier run left
         // open (a Resume, the queue, a failure).
         if let Err(e) = self.in_use.start() {
@@ -1113,13 +1172,6 @@ impl ProcessingManager {
             self.liveness,
             session_core::jobs::Liveness::OnlyInstance
         ));
-        let woken = Arc::downgrade(&self.runner);
-        self.live
-            .attach(self.runner.live_workers().with_idle(move || {
-                if let Some(runner) = woken.upgrade() {
-                    runner.wake();
-                }
-            }));
         // The early writes that a quit or a crash stopped continue (R4).
         // Only with the instance lock held, so no other run writes the
         // same folders.
@@ -2513,6 +2565,109 @@ mod tests {
                 .run_at(&store, &target, &|_| false, start)
                 .unwrap();
             assert_eq!(refuse_with_problem(&status, "a1"), Ok(()), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_save_notice_names_a_note_and_says_a_summary_only_when_the_note_has_one() {
+        let (title, body) = saved_notice("2026-09-25 0900 Planning", true);
+        assert_eq!(title, "Note ready");
+        assert_eq!(
+            body,
+            "2026-09-25 0900 Planning has its transcript and summary."
+        );
+        let (title, body) = saved_notice("2026-09-25 0900 Planning", false);
+        assert_eq!(title, "Note ready");
+        assert_eq!(
+            body,
+            "2026-09-25 0900 Planning has its transcript. The summary could not be made."
+        );
+        for has_summary in [true, false] {
+            let (title, body) = saved_notice("x", has_summary);
+            assert!(!title.to_lowercase().contains("session"), "{title}");
+            assert!(!body.to_lowercase().contains("session"), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_note_has_a_summary_only_when_the_summarize_stage_completed_without_a_failure() {
+        use session_core::Stage;
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(
+            session_core::Store::open_in_memory().unwrap(),
+        ));
+        let start = chrono::DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let segment = |index: u32| session_core::Segment {
+            index,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: start,
+            wall_end: start + chrono::TimeDelta::minutes(1),
+            audio_file: format!("audio/segment-0{}.opus", index + 1),
+            channels: 1,
+            ends_in_pause: false,
+        };
+        {
+            let mut s = store.lock().unwrap();
+            for id in ["n", "bad"] {
+                s.create_session(id, start, None).unwrap();
+                s.put_segment(id, &segment(0)).unwrap();
+                s.put_segment(id, &segment(1)).unwrap();
+            }
+            // A stage record that does not parse gives a read error.
+            s.put_checkpoint("bad", Stage::Summarize, pipeline::checkpoint::DONE, "{")
+                .unwrap();
+        }
+        // The Summarize stage did not run.
+        assert!(!summary_made(&store, "n"));
+        // The stage is complete for one of the two segments only.
+        pipeline::checkpoint::mark_complete(&store, "n", Stage::Summarize, 1).unwrap();
+        assert!(!summary_made(&store, "n"));
+        pipeline::checkpoint::mark_complete(&store, "n", Stage::Summarize, 2).unwrap();
+        assert!(summary_made(&store, "n"));
+        pipeline::save::record_summary_failure(&store, "n", "no summary service").unwrap();
+        assert!(!summary_made(&store, "n"));
+        assert!(!summary_made(&store, "bad"));
+    }
+
+    #[test]
+    fn a_failed_transcribe_again_run_ends_the_work_on_the_note() {
+        use session_core::Stage;
+        let id = || "s".to_string();
+        for event in [
+            RunnerEvent::Saved {
+                session_id: id(),
+                path: "/notes/a".into(),
+                copied: false,
+            },
+            RunnerEvent::StageFailed {
+                session_id: id(),
+                stage: Stage::Transcribe,
+                message: "failed".into(),
+            },
+            RunnerEvent::Cancelled { session_id: id() },
+            RunnerEvent::TranscribeAgainFailed {
+                session_id: id(),
+                stage: Stage::Transcribe,
+                message: "failed".into(),
+            },
+        ] {
+            assert!(ends_work(&event), "{event:?}");
+        }
+        for event in [
+            RunnerEvent::Progress {
+                session_id: id(),
+                stage: Stage::Transcribe,
+                segment: 0,
+                done: 1,
+                total: 2,
+            },
+            RunnerEvent::Finished { session_id: id() },
+            RunnerEvent::SummaryUnavailable {
+                session_id: id(),
+                message: "no summary service".into(),
+            },
+        ] {
+            assert!(!ends_work(&event), "{event:?}");
         }
     }
 }
