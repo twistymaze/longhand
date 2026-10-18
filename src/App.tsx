@@ -35,8 +35,9 @@ function MainWindow() {
   // A recording that starts or resumes, from the shortcut or anywhere, opens
   // its session's page (KTD2), from any view. So does the tray's "Open
   // Longhand" while a session records (R3). A pause, a device switch or a
-  // restart opens no segment and does not move the view. The page opens when the capture status or the
-  // list knows the session, so it never shows a session it cannot find.
+  // restart opens no segment and does not move the view. The page opens
+  // when the capture status or the list knows the session, so it never
+  // shows a session it cannot find.
   const [requested, setRequested] = useState<string | null>(null);
   // The requested note that the user just started: New Note on Home, or
   // the shortcut. The shortcut and the tray send `showSession`. The tray

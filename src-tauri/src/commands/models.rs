@@ -65,8 +65,8 @@ pub async fn delete_model(
     blocking(move || delete_held(app, manager, capture, model_id)).await
 }
 
-/// The delete of [`delete_model`]. It waits for the capture state and the
-/// store.
+/// The body of [`delete_model`]. It runs on a blocking thread, because it
+/// waits for the capture state and the store.
 fn delete_held(
     app: AppHandle,
     manager: Arc<ModelsManager>,

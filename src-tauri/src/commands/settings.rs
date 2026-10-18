@@ -463,9 +463,22 @@ pub fn summary_prompts(app: AppHandle) -> SummaryPromptList {
     settings::get_settings(&app).summary_prompt_list()
 }
 
-// The prompt commands change the files of the storage folder through the
-// shared settings manager (R14). They run on a blocking thread, because a
-// read of a synced folder can wait for the sync service.
+/// Run one change of the shared settings and give the settings after it.
+/// The prompt commands change the files of the storage folder through the
+/// shared settings manager (R14), so the change runs on a blocking thread:
+/// a read of a synced folder can wait for the sync service.
+async fn shared_change<T>(
+    app: AppHandle,
+    shared: &Arc<SharedSettingsManager>,
+    change: impl FnOnce(&SharedSettingsManager) -> Result<T, String> + Send + 'static,
+) -> Result<Settings, String> {
+    let shared = Arc::clone(shared);
+    blocking(move || {
+        change(&shared)?;
+        Ok(settings::get_settings(&app))
+    })
+    .await
+}
 
 /// Add a summary prompt named "New prompt" with the Topic summary text (R3).
 #[tauri::command]
@@ -474,12 +487,7 @@ pub async fn create_summary_prompt(
     app: AppHandle,
     shared: State<'_, Arc<SharedSettingsManager>>,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.create_prompt()?;
-        Ok(settings::get_settings(&app))
-    })
-    .await
+    shared_change(app, &shared, move |shared| shared.create_prompt()).await
 }
 
 /// The prompt that `restore_summary_prompt` added, and the settings after it.
@@ -520,12 +528,7 @@ pub async fn duplicate_summary_prompt(
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.duplicate_prompt(&id)?;
-        Ok(settings::get_settings(&app))
-    })
-    .await
+    shared_change(app, &shared, move |shared| shared.duplicate_prompt(&id)).await
 }
 
 #[tauri::command]
@@ -536,12 +539,7 @@ pub async fn rename_summary_prompt(
     id: String,
     name: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.rename_prompt(&id, &name)?;
-        Ok(settings::get_settings(&app))
-    })
-    .await
+    shared_change(app, &shared, move |shared| shared.rename_prompt(&id, &name)).await
 }
 
 #[tauri::command]
@@ -552,10 +550,8 @@ pub async fn set_summary_prompt_text(
     id: String,
     text: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.set_prompt_text(&id, &text)?;
-        Ok(settings::get_settings(&app))
+    shared_change(app, &shared, move |shared| {
+        shared.set_prompt_text(&id, &text)
     })
     .await
 }
@@ -569,10 +565,8 @@ pub async fn set_summary_prompt_title_text(
     id: String,
     text: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.set_prompt_title_text(&id, &text)?;
-        Ok(settings::get_settings(&app))
+    shared_change(app, &shared, move |shared| {
+        shared.set_prompt_title_text(&id, &text)
     })
     .await
 }
@@ -586,12 +580,7 @@ pub async fn delete_summary_prompt(
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.delete_prompt(&id)?;
-        Ok(settings::get_settings(&app))
-    })
-    .await
+    shared_change(app, &shared, move |shared| shared.delete_prompt(&id)).await
 }
 
 /// Make a summary prompt the one that the next summary uses (R1).
@@ -602,12 +591,7 @@ pub async fn activate_summary_prompt(
     shared: State<'_, Arc<SharedSettingsManager>>,
     id: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.activate_prompt(&id)?;
-        Ok(settings::get_settings(&app))
-    })
-    .await
+    shared_change(app, &shared, move |shared| shared.activate_prompt(&id)).await
 }
 
 /// Save the Background text that each summary uses (R4, R5). An empty
@@ -619,12 +603,7 @@ pub async fn set_background(
     shared: State<'_, Arc<SharedSettingsManager>>,
     text: String,
 ) -> Result<Settings, String> {
-    let shared = Arc::clone(&shared);
-    blocking(move || {
-        shared.set_background(&text)?;
-        Ok(settings::get_settings(&app))
-    })
-    .await
+    shared_change(app, &shared, move |shared| shared.set_background(&text)).await
 }
 
 /// The state of the agent instructions in `AGENTS.md` and `CLAUDE.md` of

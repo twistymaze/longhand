@@ -618,7 +618,7 @@ pub async fn list_sessions(
     blocking(move || session_entries(&capture, &processing)).await
 }
 
-/// The list of [`list_sessions`].
+/// The body of [`list_sessions`]. It runs on a blocking thread.
 fn session_entries(
     capture: &CaptureManager,
     processing: &ProcessingManager,
@@ -826,7 +826,7 @@ pub async fn session_detail(
     blocking(move || detail_of(app, capture, processing, session_id)).await
 }
 
-/// The detail of [`session_detail`].
+/// The body of [`session_detail`]. It runs on a blocking thread.
 fn detail_of(
     app: AppHandle,
     capture: Arc<CaptureManager>,
