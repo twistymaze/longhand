@@ -725,10 +725,19 @@ mod tests {
         new: Option<&str>,
         others: &[&str],
     ) -> Result<(), String> {
+        let before = old.map(registered).unwrap_or_default();
+        change_from(plugin, before, new, others)
+    }
+
+    /// Change the Recording shortcut from the status `before` to `new`.
+    fn change_from(
+        plugin: &mut Plugin,
+        before: ShortcutStatus,
+        new: Option<&str>,
+        others: &[&str],
+    ) -> Result<(), String> {
         let registration = ShortcutRegistration::default();
-        if let Some(old) = old {
-            registration.set_status(ShortcutKind::Recording, registered(old));
-        }
+        registration.set_status(ShortcutKind::Recording, before);
         let refused = plugin.refused.clone();
         let save_error = plugin.save_error;
         let calls = std::cell::RefCell::new(Vec::new());
@@ -1002,6 +1011,49 @@ mod tests {
         assert_eq!(result, Ok(()));
         assert_eq!(plugin.calls, ["save"]);
         assert_eq!(plugin.status, registered("Command+KeyA"));
+    }
+
+    /// The status of a chord that is set and not registered: a capture
+    /// suspended it.
+    fn suspended(chord: &str) -> ShortcutStatus {
+        ShortcutStatus {
+            registered: false,
+            ..registered(chord)
+        }
+    }
+
+    #[test]
+    fn the_same_keys_again_on_a_suspended_chord_register_and_save() {
+        let mut plugin = Plugin::default();
+        let result = change_from(
+            &mut plugin,
+            suspended("Super+KeyA"),
+            Some("Command+KeyA"),
+            &[],
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(plugin.calls, ["register Command+KeyA", "save"]);
+        assert_eq!(plugin.status, registered("Command+KeyA"));
+    }
+
+    #[test]
+    fn a_failed_save_on_a_suspended_chord_unregisters_only_the_new_chord() {
+        let mut plugin = Plugin {
+            save_error: Some("disk full"),
+            ..Default::default()
+        };
+        let result = change_from(
+            &mut plugin,
+            suspended("Super+KeyA"),
+            Some("Super+KeyB"),
+            &[],
+        );
+        assert_eq!(result, Err("disk full".to_string()));
+        assert_eq!(
+            plugin.calls,
+            ["register Super+KeyB", "save", "unregister Super+KeyB"]
+        );
+        assert_eq!(plugin.status, suspended("Super+KeyA"));
     }
 
     #[test]
