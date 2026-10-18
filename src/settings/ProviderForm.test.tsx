@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import type { CredentialStatus, EndpointCheck, EndpointModels, Provider, ProviderEntry, Settings } from "../bindings";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { ProviderForm } from "./ProviderForm";
@@ -653,6 +653,37 @@ describe("the checks", () => {
     await waitFor(() => expect(b.mock.calls.some((c) => c.cmd === "get_settings")).toBe(true));
     await waitFor(() => expect(status().textContent).toBe("Connected · 1 model"));
     expect(field("Address").value).toBe("https://other.example.com");
+  });
+
+  test("a Custom check that adds /v1 keeps a typed key and reads the key status again", async () => {
+    const b = backend({ active: "custom", entries: { custom: { address: "https://litellm.example.com" } }, check: () => "defer" });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await waitFor(() => expect(b.checkCalls()).toBe(1));
+    await screen.findByText("No key saved for litellm.example.com");
+    await user.type(field("API key"), "sk-typed");
+    const reads = b.argsOf("provider_credential_status").length;
+    await act(async () => b.pending[0].resolve({ models: listed("a"), address: "https://litellm.example.com/v1" }));
+    await waitFor(() => expect(field("Address").value).toBe("https://litellm.example.com/v1"));
+    await waitFor(() => expect(b.argsOf("provider_credential_status").length).toBe(reads + 1));
+    expect(field("API key").value).toBe("sk-typed");
+    expect(b.argsOf("set_provider_credential")).toEqual([]);
+  });
+
+  test("in React.StrictMode, an address commit checks again", async () => {
+    const b = backend({ active: "ollama", check: () => listed("llama3") });
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <Harness initial={b.initial} />
+      </StrictMode>,
+    );
+    await waitFor(() => expect(status().textContent).toContain("Connected · 1 model"));
+    const before = b.checkCalls();
+    await user.clear(field("Address"));
+    await user.type(field("Address"), "http://studio.local:11434{Enter}");
+    await waitFor(() => expect(b.checkCalls()).toBe(before + 1));
+    expect(b.argsOf("set_provider_address")).toEqual([{ provider: "ollama", address: "http://studio.local:11434" }]);
   });
 
   test("Covers AE1. Anthropic's model and key come back after a switch to Ollama and back", async () => {

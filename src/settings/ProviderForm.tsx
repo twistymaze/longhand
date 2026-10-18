@@ -70,10 +70,14 @@ function hostOf(address: string): string {
 /// Access, and the state of the saved key under the row title.
 function Credential({
   provider,
+  address,
   onStatus,
   onChanged,
 }: {
   provider: Provider;
+  /// The address of the provider. The key is stored for its host, so the
+  /// row reads the status again when the address changes. The typed key stays.
+  address: string;
   /// Receives each status that the row reads.
   onStatus: (status: CredentialStatus) => void;
   /// Runs after each save, removal and Repair, when the status is read again.
@@ -91,8 +95,12 @@ function Credential({
       setStatus(result.data);
       onStatusRef.current(result.data);
     } else setError(result.error);
-  }, [provider]);
+    // `address` is not read here, but a new address can have a different host.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, address]);
   useEffect(() => {
+    // An error from the key of the previous address does not apply to the new one.
+    setError(null);
     void refresh();
   }, [refresh]);
 
@@ -289,14 +297,16 @@ function ProviderRows({
   const addressRef = useRef(address);
   addressRef.current = address;
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // React.StrictMode runs the cleanup and the effect again at mount, so the
+    // effect sets `alive` to true again.
+    alive.current = true;
+    return () => {
       // A reply that arrives after a provider change applies to no rows.
       alive.current = false;
       latest.current += 1;
-    },
-    [],
-  );
+    };
+  }, []);
 
   /// Start a check. `keep` keeps the current list while the check runs
   /// (Refresh and mount). `before` runs after the counter changes and before
@@ -404,8 +414,8 @@ function ProviderRows({
       )}
       {showKey && (
         <Credential
-          key={address}
           provider={provider}
+          address={address}
           onStatus={setCredential}
           onChanged={() => void check(false)}
         />
