@@ -126,7 +126,7 @@ flowchart TB
 - More than one active provider, and a model for each task.
 - The presets Mistral, Groq and xAI, and any other provider.
 - Sharing the provider settings between computers.
-- Considered and not built: a check that the user's computer has enough memory for an Ollama context size. The per-run size of KTD7 keeps memory in proportion to the note; a load failure shows as an Ollama error that the user can act on.
+- Considered and not built: a check that the user's computer has enough memory for an Ollama context size. The size of KTD7 follows the request, which keeps memory in proportion to the note; a load failure shows as an Ollama error that the user can act on.
 - Considered and not built: Rig's own retries or fallbacks. Longhand keeps its current retry rule (R3), so a Rig retry would break it.
 
 #### Deferred to Follow-Up Work
@@ -183,23 +183,23 @@ All resolved in the Planning Contract (KTD1–KTD12). The wording of the pane na
 ### Key Technical Decisions
 
 - KTD1. **`rig-core = "=0.44.0"` with `default-features = false`, and a Longhand transport over the existing reqwest 0.12 native-tls client.** Rig's bundled transport uses reqwest 0.13 and rustls and has no size cap. A Longhand type that implements Rig's `HttpClientExt` keeps one TLS stack and holds R3: `redirect::Policy::none()`, the connect and idle deadlines, the 8 MiB body cap on success and error replies, and transport errors with the URL removed. The total deadline wraps each Rig call in a `tokio` timeout. Governs R1, R3, R5.
-- KTD2. **One route per preset.** OpenAI, OpenRouter, LM Studio and Custom use Rig's OpenAI-compatible Chat Completions route (`.chat()`) with the preset's base URL; Anthropic and Gemini use their native Rig clients; Ollama uses the native `/api/chat` route. The OpenAI preset does not use Rig's default Responses route, so the request content and the `/v1/chat/completions` path stay as today (R2). Custom and LM Studio send no key header when no key is saved. Governs R1, R2, R8, R9.
-- KTD3. **Longhand keeps its own request building and its parity rules.** The prompts, the chunking and the merge stay in `crates/summarize`; Longhand sends a system preamble and one user message through Rig's `CompletionRequest` builder. Longhand keeps the `max_tokens` → `max_completion_tokens` fallback through Rig's additional parameters, and sends an explicit `max_tokens` on Anthropic. Governs R2.
+- KTD2. **One route per preset.** OpenAI, OpenRouter, LM Studio and Custom use Rig's OpenAI-compatible Chat Completions route (`.chat()`) with the preset's base URL; Anthropic and Gemini use their native Rig clients; Ollama uses the native `/api/chat` route. The OpenAI preset does not use Rig's default Responses route, so the request content and the `/v1/chat/completions` path stay as today (R2). Dialects: OpenAI uses Rig's `OPENAI` dialect with `.chat()`; OpenRouter uses `OPENROUTER`; Custom and LM Studio use a Longhand `Dialect::gateway(...)` with OpenAI quirks, the legacy `max_tokens` field and `Auth::OptionalBearer`, so they send no key header when no key is saved and Rig never renames the token field for a model id that looks like a reasoning model. Longhand never serializes that gateway config. Governs R1, R2, R8, R9.
+- KTD3. **Longhand keeps its own request building and its parity rules.** The prompts, the chunking and the merge stay in `crates/summarize`; Longhand sends a system preamble and one user message through Rig's `CompletionRequest` builder. Rig's Chat encoder sends the system message as an array of text parts and omits `stream`; on the OpenAI-compatible route, Longhand therefore sends today's `messages` (string content) and `"stream": false` in Rig's additional parameters, which Rig merges over its encoded body, so the body stays byte-for-byte as today. Longhand keeps the `max_tokens` → `max_completion_tokens` fallback through the same parameters, and sends an explicit `max_tokens` on Anthropic. Governs R2.
 - KTD4. **Errors are mapped from Rig's raw status, body and finish reason, one table per route.** Longhand logs only its own error kinds; Rig's targets (`rig`, `rig_core`) are turned off in the log builder. The table:
 
   | Signal | OpenAI-compatible | Anthropic | Gemini | Ollama |
   |---|---|---|---|---|
   | Key refused (`Unauthorized`) | 401, 403 | 401, 403 | 400 or 403 whose body names an invalid key | not applicable |
-  | Context exceeded | 400/413/422 with a context phrase (today's list) | 400 with a context phrase; `model_context_window_exceeded` stop reason | 400 with "exceeds the maximum number of tokens" | error reply when `truncate: false` refuses a long prompt |
+  | Context exceeded | 400/413/422 with a context phrase (today's list), or a 2xx reply whose raw body has `truncated: true` (llama.cpp) | 400 with a context phrase; `model_context_window_exceeded` stop reason | 400 with "exceeds the maximum number of tokens" | error reply when `truncate: false` refuses a long prompt |
   | Reply cut off | `finish_reason: length` | `stop_reason: max_tokens` | `finishReason: MAX_TOKENS` | `done_reason: length` |
   | Unreachable (retry per R3) | connect error | connect error | connect error | connect error |
 
-  Governs R3, R4.
+  Every `SummarizeError` built from a Rig result carries only text that Longhand writes: the status, the error kind and today's capped excerpt of the provider's error body. It never carries the display text of a Rig or reqwest error, which can contain the URL, a key in the query string or a whole reply body. Governs R3, R4.
 - KTD5. **Model lists come from Rig; the context limit comes from Longhand's probes.** Rig's model listing serves every provider through the KTD1 transport. Longhand keeps its context probes for OpenAI-compatible servers (LiteLLM, LM Studio, vLLM, OpenRouter, llama.cpp), reads Gemini's limit from its model list, and reads an Ollama model's limit from Ollama's `/api/show`. OpenAI and Anthropic report none, so the entered value or 128,000 applies. Governs R15.
 - KTD6. **Settings shape: an active provider plus one entry for each provider in `LocalSettings`, at schema version 7.** Each entry holds the model, the address where the user can change it, and the entered context limit. A pure migration maps the old endpoint fields per R23. Settings commands take the provider. Governs R7, R10, R13, R15, R23.
-- KTD7. **Ollama context size per run.** At the start of a run, Longhand sets `num_ctx` to the largest request of the run (prompt estimate plus reply cap), rounded up to a multiple of 2,048 tokens, at least 4,096, and never more than the context limit. It sends `truncate: false`, so Ollama refuses a prompt that is too long instead of cutting it. One value for each run avoids a model reload for each request. Governs R6.
+- KTD7. **Ollama context size from the current room, given with each request.** For a note that fits one call, `num_ctx` is that call's prompt estimate plus its current reply reserve. For a run in parts, it is the room limit of the run, which bounds every chunk and merge request. The value is rounded up to a multiple of 2,048 tokens, at least 4,096 or the context limit when that is smaller, and never more than the context limit. Longhand computes it again when the cut-off path raises the reply reserve, and passes it with each `complete` call, not on the endpoint. A run in parts keeps one value, so Ollama does not reload the model for each request. Longhand sends `truncate: false`, so Ollama refuses a prompt that is too long instead of cutting it. Governs R6.
 - KTD8. **Keychain account `summarize:{provider}:{host}`, with a lazy move of the old entry.** When a provider's entry is missing and an old `summarize:{host}` entry exists for the migrated provider, Longhand copies it into the new account and deletes the old one only after the write succeeds. A locked Keychain leaves both entries in place and shows the locked state. Governs R10, R23.
-- KTD9. **Custom `/v1` resolution runs in the connection check.** The check lists models at the typed address. When that fails with 404 or returns a reply that is not an OpenAI model list, and the address does not end in `/v1`, it tries `{address}/v1`; on success it saves that address. A 3xx, a TLS failure or a key refusal does not start the retry. The check keeps the existing request counter, so a slow reply never saves over a newer address. Governs R14.
+- KTD9. **Custom `/v1` resolution runs in the connection check.** The check lists models at the typed address. When that fails with 404 or returns a reply that is not an OpenAI model list, and the address does not end in `/v1`, it tries `{address}/v1`; on success it saves that address. A 3xx, a TLS failure or a key refusal does not start the retry. When neither address gives a model list, the check sends one Chat Completions request with a 1-token cap to the typed address, and to `{address}/v1` when the typed address gives 404; it saves the address whose chat route does not give 404, and the Model row becomes a text field. The check runs when the Address field commits, never while the user types, and keeps the existing request counter, so a slow reply never saves over a newer address. Governs R14.
 - KTD10. **Settings can open on a given pane.** `open_settings` takes an optional pane; a new Settings window reads it from its URL, and an open one receives an event. The processing page, the recording bar, the Status pane and the Summaries line use it. Governs R11, R20.
 - KTD11. **A job snapshots its endpoint at start, and the saved partial progress carries the provider, the host and the model.** `SummaryEndpoint` gains the provider. The saved plan's agreement check compares the provider, the host and the model as well as the limit; a difference discards the saved progress. Governs R25, R26.
 - KTD12. **The toolchain moves to Rust 1.95 first, in its own commit.** New clippy warnings are fixed in that commit, so the Rig change starts from a clean build. Governs R24. (session-settled: user-approved — chosen over pinning Rig 0.42 on Rust 1.94: an older API, and a later upgrade needs the toolchain change anyway)
@@ -243,7 +243,13 @@ flowchart TB
 
 ### Assumptions
 
-- Rig's `HttpClientExt` trait and the provider constructors stay as recorded in `framework-docs` research for 0.44.0; the exact version pin (R5) holds them.
+- Rig 0.44.0 facts that the KTDs depend on, from the tag v0.44.0 source (`crates/rig-core`, `crates/rig-http`); the exact pin (R5) holds them:
+  - Providers take a caller transport that implements `HttpClientExt` (`send`, `send_multipart`, `send_streaming`).
+  - Additional parameters merge at the top level of a Chat Completions body, and into `options` on the native Ollama route.
+  - Anthropic's `model_context_window_exceeded` stop reason becomes `FinishReason::Length`; Longhand reads the raw reply to tell it apart.
+  - Gemini sends the key as `?key=` in the URL.
+  - The display text of `ProviderError` contains the reply body.
+  - The Chat encoder sends the system message as text parts and omits `stream` (KTD3).
 - An Ollama server older than the `truncate` option ignores it; such a server can still cut a long prompt. Supported Ollama versions are not pinned.
 
 ### Risks
@@ -325,7 +331,7 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 2. Build the Rig client for the route of KTD2 over the U2 transport, and send the system preamble plus one user message (KTD3).
 3. Map the reply and the errors with the KTD4 table to the existing `Completion` and `SummarizeError` kinds; keep `is_context_pressure` and `ReplyCutOff` semantics.
 4. Keep the retry rule: only an unreachable endpoint is sent again, with `retry_waits`.
-5. For Ollama, take `num_ctx` from the endpoint (set per run by U4) and always send `truncate: false`.
+5. For Ollama, take `num_ctx` as an argument of each `complete` call (computed by U4) and always send `truncate: false`.
 6. Remove the reqwest request code that Rig replaces; keep the probe GETs that U5 still needs.
 
 **Execution note:** Port the existing `tests/client.rs` cases to the Rig path first and keep them failing until the route works; they define parity.
@@ -333,7 +339,10 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 **Patterns to follow:** `crates/summarize/tests/client.rs` (every existing case is kept); the `Reply` builders in `crates/summarize/tests/common/mod.rs`, extended with Anthropic, Gemini and Ollama reply shapes.
 
 **Test scenarios:**
-- Covers AE7. A Custom endpoint sends `POST /v1/chat/completions` with the same JSON body (model, messages, token cap) as the current golden request, with the bearer key.
+- Covers AE7. A Custom endpoint sends `POST /v1/chat/completions` with the same JSON body (model, messages, token cap, `"stream": false`) as the current golden request, with the bearer key; the system message content is a string, not an array.
+- A Custom model id that looks like a reasoning model (for example `gpt-5-mini`) still sends `max_tokens`.
+- A Custom reply with `truncated: true` and `finish_reason: stop` maps to context pressure.
+- A malformed reply and an error reply on the Gemini route each give a `SummarizeError` whose display text contains no `key=`, no URL path and no Rig error prefix.
 - The OpenAI preset sends Chat Completions, not `/responses`.
 - Anthropic sends `/v1/messages` with `x-api-key`, an explicit `max_tokens` and the system text as the system field.
 - Gemini puts the key where Rig sends it, and a Gemini 400 "API key not valid" maps to Unauthorized.
@@ -355,12 +364,12 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 
 **Dependencies:** U3.
 
-**Files:** `crates/pipeline/src/summarize.rs`, `crates/pipeline/src/runner.rs`, `crates/pipeline/src/save.rs`, `crates/pipeline/src/lib.rs`, `crates/session-core/src` (the saved-plan type that holds `agrees_with`), `crates/pipeline/tests/runner.rs`, `crates/pipeline/tests/common/mod.rs`, `src-tauri/src/managers/processing.rs`.
+**Files:** `crates/pipeline/src/summarize.rs`, `crates/pipeline/src/runner.rs`, `crates/pipeline/src/save.rs`, `crates/pipeline/src/lib.rs`, `crates/pipeline/tests/runner.rs`, `crates/pipeline/tests/common/mod.rs`, `src-tauri/src/managers/processing.rs`.
 
 **Approach:**
 1. Add the provider to `SummaryEndpoint`; update its constructions (one helper in the tests replaces the literal copies where it can).
-2. Record the provider, host and model in the saved plan; make the agreement check compare them, and treat a saved plan without them as not agreeing.
-3. Compute the Ollama `num_ctx` from the run's largest request before the first request (KTD7).
+2. Record the provider, host and model in the private `Plan` in `crates/pipeline/src/summarize.rs`; make `Plan::agrees_with` compare them, and treat a saved plan without them as not agreeing.
+3. Compute the Ollama `num_ctx` per KTD7 from the current room, again after the cut-off path raises the reply reserve, and pass it with each request.
 4. Change the context-limit message that names "Settings > Summaries" to the AI Provider pane, and its test.
 
 **Patterns to follow:** `Plan::agrees_with` and its repair path described in `docs/solutions/logic-errors/summary-in-a-wake-with-no-network-kept-the-default-budget.md`; the runner test helpers in `crates/pipeline/tests/runner.rs`.
@@ -370,7 +379,10 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 - A regenerate with the same provider, host and model keeps the saved parts (today's behaviour).
 - A saved plan from before this change (no provider fields) is discarded, not reused.
 - Covers AE10. A summary that started with the Ollama mock finishes there after the settings change to Anthropic; the next job goes to the Anthropic mock.
-- Covers AE6. An Ollama run whose largest chunk needs about 20,000 tokens sends `num_ctx` 20,480 on every request of that run, and a short note sends 4,096.
+- Covers AE6. An Ollama note that fits one call and needs about 20,000 tokens with its reply reserve sends `num_ctx` 20,480, and a short note sends 4,096.
+- An Ollama run in parts sends the room limit as `num_ctx` on every chunk and merge request of the run.
+- A cut-off reply on a short Ollama note is sent again with a larger `num_ctx`, never above the context limit.
+- An Ollama model with a context limit of 2,048 gets `num_ctx` 2,048, not 4,096.
 - The title job sends to the provider that was in effect when the title job started.
 
 **Verification:** `cargo test -p pipeline` passes, and the runner tests still see `/v1/chat/completions` for Custom.
@@ -395,6 +407,8 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 - Covers AE4. An address that ends in `/api/v1` and answers is used as typed, with no second request.
 - A 302 at the typed address does not start the `/v1` retry.
 - A key refusal at the typed address does not start the retry.
+- A Custom mock with no model list and a chat route only under `/v1` resolves to the `/v1` address, with the Model row as a text field.
+- A Custom mock with no model list and a chat route at the typed address keeps the typed address.
 - An Ollama model with `context_length` 32,768 in `/api/show` gives a limit of 32,768.
 - A Gemini model list entry with an input token limit gives that limit.
 - Anthropic and OpenAI give no probed limit, so the entered value or 128,000 applies.
@@ -450,7 +464,7 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 **Approach:**
 1. Invoke `apple-design` before the UI work (project rule).
 2. Add the `provider` pane between Transcription and Summaries, with its icon and tone.
-3. Build the group: Provider select (the seven providers and None), Address, API key (the existing `Credential` behaviour), Model (`ModelPicker` or a text field), status row with the R17 states and Refresh; Advanced group with the context limit.
+3. Build the group: Provider select (the seven providers and None), Address, API key (the existing `Credential` behaviour), Model (`ModelPicker` or a text field), status row with the R17 states and Refresh; Advanced group with the context limit. In the not-set-up and key-refused states, the Model row stays visible as a text field with the remembered model, and the status row names the action ("Enter an API key"). The Custom address check runs when the Address field commits, and its result never replaces a value that the user is still editing.
 4. Save each field to the provider that was active when the edit started, through `CommitField` close and unmount saves.
 5. Show the R21 warning under Address for remote plain HTTP.
 6. Summaries pane: the line with provider and model, or "No provider set", linking to the pane, then Background and Summary prompts.
@@ -513,6 +527,7 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 
 **Test scenarios:**
 - A summary request with log capture at the app's configured filter writes no line from a `rig` target, and no line contains the prompt, the reply, the key or a URL path.
+- A failed summary request (an error reply from a mock) writes a failure line with the error kind and status only, with no reply body, key or URL path.
 
 **Verification:** the log test passes; `scripts/check-licences.sh` and `cargo deny check` pass.
 
