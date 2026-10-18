@@ -68,14 +68,27 @@ runs:
     # target/. This step removes each folder that is not a Ninja build, so
     # that CMake configures it again with Ninja. The libraries that the
     # build scripts installed stay, so cargo rebuilds only when it must.
-    # The MSVC setup puts Windows' own find.exe first on PATH, so the step
-    # names Git Bash's find.
+    #
+    # cargo does not run a CMake build script again when _CL_ changes, so
+    # the libraries of the earlier value stay. The step keeps _CL_ in
+    # target/cl-flags.txt. When the value changes, the step removes the
+    # build folder and the fingerprint of each CMake build script, and
+    # cargo runs them again. The MSVC setup puts Windows' own find.exe
+    # first on PATH, so the step names Git Bash's find.
     - name: Remove CMake build folders of another generator
       if: runner.os == 'Windows'
       shell: bash
       working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
       run: |
         [ -d target ] || exit 0
+        if [ "$(cat target/cl-flags.txt 2>/dev/null)" != "$_CL_" ]; then
+          /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
+            dir="${cache%%/out/build/*}"
+            echo "Removing $dir"
+            rm -rf "$dir" "${dir%/build/*}/.fingerprint/${dir##*/}"
+          done
+          printf '%s' "$_CL_" > target/cl-flags.txt
+        fi
         /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
           if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
             echo "Removing $(dirname "$cache")"
