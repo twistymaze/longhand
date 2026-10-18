@@ -28,10 +28,15 @@ export function useCapture(): Capture {
     const result = await commands.recordingStatus();
     if (result.status === "ok") {
       setStatus(result.data);
-      // While paused no tick arrives, and the status holds the whole
-      // recorded time. While a segment records, the status does not hold
-      // that segment, so the ticks give the time.
-      if (result.data.paused) setRecordedMs(result.data.recorded_ms);
+      // While paused, interrupted or not recording, no tick arrives, and
+      // the status holds the whole recorded time. While a segment records,
+      // the status does not hold that segment, so the ticks give the time.
+      // Before the first tick of a recording, the status holds the best
+      // known time, not the time of the note before.
+      const d = result.data;
+      if (d.paused || d.interruption || !d.recording || lastTickAt.current === null) {
+        setRecordedMs(d.recorded_ms);
+      }
     }
   }, []);
 

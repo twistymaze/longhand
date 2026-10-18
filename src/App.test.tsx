@@ -117,12 +117,33 @@ describe("App", () => {
 
     status.current = { ...idle, session_id: "rec", state: "capturing", recording: true };
     entries.current = [recordingEntry];
-    await act(() => tauri.emit("recording-changed", { session_id: "rec" }));
+    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: true }));
     const back = await screen.findByRole("button", { name: "Back" });
 
     await userEvent.setup().click(back);
     expect(screen.getByRole("option", { name: /Recording/ })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
+  });
+
+  test("a change of the recording note that opens no segment keeps the note that the user opened", async () => {
+    const b: SessionEntry = { ...recordingEntry, id: "b", title: "Beta", state: "saved" };
+    const status = { current: { ...idle, session_id: "rec", state: "capturing", recording: true } };
+    const tauri = mockApp(status, { current: [{ ...recordingEntry, title: "Alpha" }, b] });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
+    await act(() => tauri.emit("show-session", { session_id: "b" }));
+    const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
+    expect(title.value).toBe("Beta");
+
+    // A pause, a device switch or a Computer audio change sends the id with `opened: false`.
+    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: false }));
+    expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Beta");
+
+    // A resume opens a segment and shows the recording note.
+    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: true }));
+    await waitFor(() =>
+      expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Alpha"),
+    );
   });
 
   // Covers R9, R11, and a window opened while paused.

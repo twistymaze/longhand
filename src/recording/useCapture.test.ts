@@ -55,6 +55,38 @@ test("a status poll while the note records keeps the time from the ticks", async
   hook.unmount();
 });
 
+// An interrupted note gets no ticks, so the time comes from the status.
+test("an interrupted note shows its recorded time from the status", async () => {
+  mockTauri({
+    recording_status: () => ({
+      ...idle,
+      session_id: "rec",
+      state: "interrupted",
+      interruption: { headline: "Microphone lost", disk: false },
+      recorded_ms: 600_000,
+    }),
+  });
+  const hook = renderHook(() => useCapture());
+  await act(async () => {});
+  expect(hook.result.current.recordedMs).toBe(600_000);
+  hook.unmount();
+});
+
+test("a new recording note shows its own time before its first tick, not the time of the note before", async () => {
+  const status = { current: { ...idle, recording: true, session_id: "a", state: "capturing", recorded_ms: 0 } as RecordingStatus };
+  const tauri = mockTauri({ recording_status: () => status.current });
+  const hook = renderHook(() => useCapture());
+  await act(async () => {});
+  await act(async () => { await tauri.emit("capture-tick", { session_id: "a", recorded_ms: 600_000, peak: 0.5 }); });
+  expect(hook.result.current.recordedMs).toBe(600_000);
+
+  status.current = { ...idle, recording: true, session_id: "b", state: "capturing", recorded_ms: 120_000 };
+  await act(async () => { await tauri.emit("recording-changed", { session_id: "b", opened: true }); });
+  await act(async () => { await hook.result.current.refresh(); });
+  expect(hook.result.current.recordedMs).toBe(120_000);
+  hook.unmount();
+});
+
 test("recording starts and status polls do not check sound output; capture errors remain", async () => {
   const status = { ...idle, recording: true, session_id: "rec", state: "capturing" };
   const tauri = mockTauri({ recording_status: () => status });

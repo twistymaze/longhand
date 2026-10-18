@@ -509,11 +509,20 @@ export function SessionPage({
     })();
   };
 
+  // The window can show another note before a delete ends. The page has
+  // the note's key, so a mounted page is the note that the window shows.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const deletion = useDeleteSession({
     titleOf: (e) => rowTitle(e),
     onDeleted: () => {
       void sessions.refresh();
-      onBack();
+      if (mounted.current) onBack();
     },
     onFailed: (text) => {
       setNotice({ tone: "negative", text });

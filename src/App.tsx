@@ -33,8 +33,9 @@ function MainWindow() {
   const { settings, readiness } = useAppSettings();
 
   // A recording that starts or resumes, from the shortcut or anywhere, opens
-  // its session's page (KTD2). So does the tray's "Open Longhand" while a
-  // session records (R3). The page opens when the capture status or the
+  // its session's page (KTD2), from any view. So does the tray's "Open
+  // Longhand" while a session records (R3). A pause, a device switch or a
+  // restart opens no segment and does not move the view. The page opens when the capture status or the
   // list knows the session, so it never shows a session it cannot find.
   const [requested, setRequested] = useState<string | null>(null);
   // The requested note that the user just started: New Note on Home, or
@@ -48,7 +49,7 @@ function MainWindow() {
   useEffect(() => {
     const unlisteners = [
       events.recordingChanged.listen(({ payload }) => {
-        if (payload.session_id) setRequested(payload.session_id);
+        if (payload.session_id && payload.opened) setRequested(payload.session_id);
       }),
       events.showSession.listen(({ payload }) => requestStarted(payload.session_id)),
     ];

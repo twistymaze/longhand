@@ -1080,6 +1080,26 @@ describe("SessionPage", () => {
     expect(sessions.refresh).toHaveBeenCalled();
   });
 
+  test("a delete that ends after the page closed does not go back", async () => {
+    const e = entry("s", { title: "Budget review" });
+    let finish!: () => void;
+    mockPage(e, {}, { delete_session: () => new Promise<null>((r) => { finish = () => r(null); }) });
+    const onBack = mock(() => {});
+    const sessions = sessionsOf([e]);
+    const view = renderPage({ id: "s", sessions, onBack });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    const confirm = screen.getByRole("alertdialog", { name: "Delete note?" });
+    await user.click(within(confirm).getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(finish).toBeDefined());
+    // The window shows another note before the delete ends.
+    view.unmount();
+    await act(async () => { finish(); });
+    await waitFor(() => expect(sessions.refresh).toHaveBeenCalled());
+    expect(onBack).not.toHaveBeenCalled();
+  });
+
   test("Rename in the menu puts the cursor in the title field", async () => {
     const e = entry("s", { title: "Budget review" });
     mockPage(e);

@@ -2120,7 +2120,13 @@ export type RecordingChanged = {
 /**
  * The session now recording; `None` once nothing is.
  */
-session_id: string | null }
+session_id: string | null; 
+/**
+ * A segment opened for the session: a start, or a resume after a
+ * stop, a pause or an interruption. The main window then shows the
+ * note. A pause, a device switch or a restart gives `false`.
+ */
+opened: boolean }
 export type RecordingStatus = { 
 /**
  * The open session: recording, or interrupted and resumable.
