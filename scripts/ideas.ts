@@ -59,10 +59,12 @@ function linkingFiles(): string[] {
 const linkPattern = /(\]\()([^)\s#]+?\.md)(#[^)]*)?\)/g;
 const rootPathPattern = /(?<![\w/.])docs\/ideas\/[\w/-]+\.md/g;
 
-// A pattern for the path of `abs` from the root, as text in a document.
+// A pattern for the path of the folder `abs` from the root, as text in a
+// document. A dot after the path that starts a file extension is part of
+// another name, for example `<slug>-screenshots.png`.
 function rootPathOf(abs: string): RegExp {
   const path = relative(root, abs).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![\\w/.])${path}(?![\\w-])`, "g");
+  return new RegExp(`(?<![\\w/.])${path}(?![\\w-]|\\.\\w)`, "g");
 }
 
 // Change the links in one file after `from` moved to `to`. When the file itself
@@ -119,6 +121,10 @@ const inCi = Boolean(process.env.CI);
 // The branch names of the PRs that merged into main. A merge commit subject
 // is "Merge pull request #N from <owner>/<branch>". A squash merge names no
 // branch, so GitHub gives the rest. `unread` says why GitHub gave nothing.
+// `gh pr list` gives at most this number of PRs. When it gives that many, an
+// older PR can be missing, so the check says that it did not read them all.
+const prLimit = 1000;
+
 function mergedBranches(): { branches: Set<string>; unread?: string } {
   const ref = Bun.spawnSync(["git", "rev-parse", "--verify", "--quiet", "origin/main"], { cwd: root }).exitCode === 0 ? "origin/main" : "HEAD";
   const git = Bun.spawnSync(["git", "log", ref, "--merges", "--format=%s"], { cwd: root, stderr: "pipe" });
@@ -129,7 +135,7 @@ function mergedBranches(): { branches: Set<string>; unread?: string } {
   }
   let gh: ReturnType<typeof Bun.spawnSync>;
   try {
-    gh = Bun.spawnSync(["gh", "pr", "list", "--state", "merged", "--base", "main", "--limit", "1000", "--json", "headRefName"], {
+    gh = Bun.spawnSync(["gh", "pr", "list", "--state", "merged", "--base", "main", "--limit", String(prLimit), "--json", "headRefName"], {
       cwd: root,
       stderr: "pipe",
     });
@@ -137,11 +143,14 @@ function mergedBranches(): { branches: Set<string>; unread?: string } {
     return { branches, unread: "gh is not installed" };
   }
   if (gh.exitCode !== 0) return { branches, unread: gh.stderr.toString().trim().split("\n")[0] || `gh exited ${gh.exitCode}` };
+  let prs: { headRefName: string }[];
   try {
-    for (const pr of JSON.parse(gh.stdout.toString()) as { headRefName: string }[]) branches.add(pr.headRefName);
+    prs = JSON.parse(gh.stdout.toString());
   } catch {
     return { branches, unread: "gh gave output that is not JSON" };
   }
+  for (const pr of prs) branches.add(pr.headRefName);
+  if (prs.length >= prLimit) return { branches, unread: `more than ${prLimit} merged PRs` };
   return { branches };
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -14,7 +14,12 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-type Gh = { mode: "list"; branches: { headRefName: string; base: string }[] } | { mode: "fail" } | { mode: "missing" };
+type Gh =
+  | { mode: "list"; branches: { headRefName: string; base: string }[] }
+  | { mode: "fail" }
+  | { mode: "exit127" }
+  | { mode: "notJson" }
+  | { mode: "absent" };
 
 function git(root: string, ...args: string[]) {
   const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root, stderr: "pipe" });
@@ -45,16 +50,25 @@ function repo(files: Record<string, string>): string {
 }
 
 // A fake `gh`: it records its arguments, then lists the branches whose base is
-// the `--base` it was given, fails, or is not there.
-function fakeGh(root: string, gh: Gh) {
+// the `--base` it was given, fails, exits 127, or prints text that is not JSON.
+// In "absent" mode, PATH has only `git`, so that no `gh` is found at all.
+function fakeGh(root: string, gh: Gh): string {
+  if (gh.mode === "absent") {
+    const bin = join(root, ".nogh");
+    mkdirSync(bin, { recursive: true });
+    if (!existsSync(join(bin, "git"))) symlinkSync(Bun.which("git")!, join(bin, "git"));
+    return bin;
+  }
   const bin = join(root, ".bin");
   mkdirSync(bin, { recursive: true });
   const script =
-    gh.mode === "missing"
+    gh.mode === "exit127"
       ? `echo "gh: command not found" >&2; exit 127`
       : gh.mode === "fail"
         ? `echo "HTTP 401: Bad credentials" >&2; exit 1`
-        : `printf '%s\\n' "$*" >> "${join(root, ".gh-args")}"
+        : gh.mode === "notJson"
+          ? `echo "not json"`
+          : `printf '%s\\n' "$*" >> "${join(root, ".gh-args")}"
 base=""; prev=""
 for a in "$@"; do [ "$prev" = "--base" ] && base="$a"; prev="$a"; done
 cat <<'JSON' | ${process.execPath} -e 'const b=process.argv[1]; const all=JSON.parse(require("fs").readFileSync(0,"utf8")); console.log(JSON.stringify(all.filter(p=>!b||p.base===b).map(p=>({headRefName:p.headRefName}))))' "$base"
@@ -67,7 +81,8 @@ JSON`;
 
 function run(root: string, args: string[], gh: Gh, ci = false) {
   const bin = fakeGh(root, gh);
-  const env: Record<string, string> = { ...process.env, PATH: `${bin}:${process.env.PATH}` } as Record<string, string>;
+  const path = gh.mode === "absent" ? bin : `${bin}:${process.env.PATH}`;
+  const env: Record<string, string> = { ...process.env, PATH: path } as Record<string, string>;
   delete env.CI;
   delete env.GITHUB_ACTIONS;
   if (ci) env.CI = "true";
@@ -82,7 +97,7 @@ const noPrs: Gh = { mode: "list", branches: [] };
 test("move takes the screenshots folder of the idea with it", () => {
   const root = repo({
     "docs/ideas/next/x.md": idea("x", "", "\n![Shot](x-screenshots/a.png)\n"),
-    "docs/notes.md": "See `docs/ideas/next/x-screenshots/a.png`.\n",
+    "docs/notes.md": "See `docs/ideas/next/x-screenshots/a.png` and `docs/ideas/next/x-screenshots.png`.\n",
   });
   write(root, "docs/ideas/next/x-screenshots/a.png", "png");
   const r = run(root, ["move", "x", "done"], noPrs);
@@ -90,7 +105,9 @@ test("move takes the screenshots folder of the idea with it", () => {
   expect(readFileSync(join(root, "docs/ideas/done/x-screenshots/a.png"), "utf8")).toBe("png");
   expect(existsSync(join(root, "docs/ideas/next/x-screenshots"))).toBe(false);
   expect(readFileSync(join(root, "docs/ideas/done/x.md"), "utf8")).toContain("](x-screenshots/a.png)");
-  expect(readFileSync(join(root, "docs/notes.md"), "utf8")).toBe("See `docs/ideas/done/x-screenshots/a.png`.\n");
+  expect(readFileSync(join(root, "docs/notes.md"), "utf8")).toBe(
+    "See `docs/ideas/done/x-screenshots/a.png` and `docs/ideas/next/x-screenshots.png`.\n",
+  );
 });
 
 for (const withSource of [true, false])
@@ -122,7 +139,21 @@ test("check reports an open idea whose plan branch merged into main by squash", 
   const r = run(root, ["check"], squashMerged);
   expect(r.exitCode).toBe(1);
   expect(r.stderr).toContain("docs/ideas/next/x.md: branch worktree-talk-to-notes of its plan merged");
-  expect(readFileSync(join(root, ".gh-args"), "utf8")).toContain("--base main");
+  expect(readFileSync(join(root, ".gh-args"), "utf8")).toBe("pr list --state merged --base main --limit 1000 --json headRefName\n");
+});
+
+test("check reports an open idea whose codex plan branch merged", () => {
+  const root = shippedRepo();
+  const r = run(root, ["check"], { mode: "list", branches: [{ headRefName: "codex/talk-to-notes", base: "main" }] });
+  expect(r.exitCode).toBe(1);
+  expect(r.stderr).toContain("branch codex/talk-to-notes of its plan merged");
+});
+
+test("check says that it did not read all merged PRs when gh gives the full limit", () => {
+  const root = shippedRepo();
+  const branches = Array.from({ length: 1000 }, (_, n) => ({ headRefName: `b${n}`, base: "main" }));
+  const r = run(root, ["check"], { mode: "list", branches });
+  expect(r.stderr).toContain("Shipped-plan check: merged PRs not read (more than 1000 merged PRs)");
 });
 
 test("check does not count a PR that merged into another branch", () => {
@@ -138,12 +169,17 @@ test("in CI, a shipped idea is a warning and does not fail the check", () => {
   expect(r.stdout + r.stderr).toContain("::warning file=docs/ideas/next/x.md::");
 });
 
-for (const gh of [{ mode: "fail" }, { mode: "missing" }] as Gh[])
-  test(`check says that it did not read merged PRs and passes when gh ${gh.mode === "fail" ? "fails" : "is missing"}`, () => {
+for (const [mode, reason] of [
+  ["fail", "HTTP 401: Bad credentials"],
+  ["exit127", "gh: command not found"],
+  ["notJson", "gh gave output that is not JSON"],
+  ["absent", "gh is not installed"],
+] as const)
+  test(`check says that it did not read merged PRs and passes when gh gives "${reason}"`, () => {
     const root = shippedRepo();
-    const r = run(root, ["check"], gh);
+    const r = run(root, ["check"], { mode });
     expect(r.exitCode).toBe(0);
-    expect(r.stderr).toContain("Shipped-plan check: merged PRs not read");
+    expect(r.stderr).toContain(`Shipped-plan check: merged PRs not read (${reason}); merge commits only.`);
   });
 
 test("in CI, check fails when it cannot read merged PRs", () => {
@@ -155,10 +191,10 @@ test("in CI, check fails when it cannot read merged PRs", () => {
 
 test("in CI, check fails when it cannot read merged PRs also with no open plan", () => {
   const root = repo({ "docs/ideas/someday/y.md": idea("y") });
-  const r = run(root, ["check"], { mode: "missing" }, true);
+  const r = run(root, ["check"], { mode: "absent" }, true);
   expect(r.exitCode).toBe(1);
   expect(r.stderr).toContain("Shipped-plan check: merged PRs not read");
-  expect(run(root, ["check"], { mode: "missing" }).exitCode).toBe(0);
+  expect(run(root, ["check"], { mode: "absent" }).exitCode).toBe(0);
 });
 
 test("check still reports from a merge commit when gh is missing", () => {
@@ -169,7 +205,7 @@ test("check still reports from a merge commit when gh is missing", () => {
   git(root, "commit", "-q", "-m", "work");
   git(root, "checkout", "-q", "main");
   git(root, "merge", "-q", "--no-ff", "-m", "Merge pull request #7 from owner/worktree-talk-to-notes", "worktree-talk-to-notes");
-  const r = run(root, ["check"], { mode: "missing" });
+  const r = run(root, ["check"], { mode: "absent" });
   expect(r.exitCode).toBe(1);
   expect(r.stderr).toContain("branch worktree-talk-to-notes of its plan merged");
 });
