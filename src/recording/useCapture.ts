@@ -22,6 +22,9 @@ export function useCapture(): Capture {
   const [lostReason, setLostReason] = useState<string | null>(null);
   const [now, setNow] = useState(() => performance.now());
   const lastTickAt = useRef<number | null>(null);
+  /// The note of the last tick. A recording change inside the open segment
+  /// keeps it, so the ticked time stays.
+  const tickedSession = useRef<string | null>(null);
   const startedAt = useRef<number | null>(null);
 
   const refresh = useCallback(async () => {
@@ -31,10 +34,10 @@ export function useCapture(): Capture {
       // While paused, interrupted or not recording, no tick arrives, and
       // the status holds the whole recorded time. While a segment records,
       // the status does not hold that segment, so the ticks give the time.
-      // Before the first tick of a recording, the status holds the best
-      // known time, not the time of the note before.
+      // Before the first tick of a note, the status holds the best known
+      // time, not the time of the note before.
       const d = result.data;
-      if (d.paused || d.interruption || !d.recording || lastTickAt.current === null) {
+      if (d.paused || d.interruption || !d.recording || tickedSession.current !== d.session_id) {
         setRecordedMs(d.recorded_ms);
       }
     }
@@ -47,6 +50,7 @@ export function useCapture(): Capture {
     const unlisteners = [
       events.captureTick.listen(({ payload }) => {
         lastTickAt.current = performance.now();
+        tickedSession.current = payload.session_id;
         setRecordedMs(payload.recorded_ms);
         setLevels((l) => {
           const next = l.length >= HISTORY ? l.slice(l.length - HISTORY + 1) : l.slice();

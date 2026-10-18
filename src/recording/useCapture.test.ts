@@ -87,6 +87,22 @@ test("a new recording note shows its own time before its first tick, not the tim
   hook.unmount();
 });
 
+// Computer audio on or off, or a speaker stream that is lost or opens
+// again, changes the recording but keeps the segment open. The status
+// then holds only the kept segments, so it must not move the time back.
+test("a recording change inside the open segment keeps the ticked time", async () => {
+  const tauri = mockTauri({
+    recording_status: () => ({ ...idle, recording: true, session_id: "rec", state: "capturing", recorded_ms: 0 }),
+  });
+  const hook = renderHook(() => useCapture());
+  await act(async () => {});
+  await act(async () => { await tauri.emit("capture-tick", { session_id: "rec", recorded_ms: 600_000, peak: 0.5 }); });
+  await act(async () => { await tauri.emit("recording-changed", { session_id: "rec", opened: false }); });
+  await act(async () => { await hook.result.current.refresh(); });
+  expect(hook.result.current.recordedMs).toBe(600_000);
+  hook.unmount();
+});
+
 test("recording starts and status polls do not check sound output; capture errors remain", async () => {
   const status = { ...idle, recording: true, session_id: "rec", state: "capturing" };
   const tauri = mockTauri({ recording_status: () => status });
