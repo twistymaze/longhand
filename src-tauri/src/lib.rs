@@ -19,6 +19,24 @@ use tauri_specta::{Builder, collect_commands, collect_events};
 /// Where the generated TypeScript bindings are written, relative to this crate.
 pub const BINDINGS_PATH: &str = "../src/bindings.ts";
 
+/// The level of the app's log for a target that [`LOG_TARGET_LEVELS`] does
+/// not name.
+pub const LOG_LEVEL: log::LevelFilter = log::LevelFilter::Info;
+
+/// The level of the app's log for each named target. An entry also applies
+/// to the submodules of its target (`rig` applies to `rig::completions`).
+pub const LOG_TARGET_LEVELS: [(&str, log::LevelFilter); 3] = [
+    // onnxruntime logs every graph pass at INFO; left in, it rotates the
+    // capture warnings out of the default 40 KB file in minutes.
+    ("ort", log::LevelFilter::Warn),
+    // Rig writes `tracing` events, and `ort` turns on tracing's `log`
+    // feature, so the events reach this log. Rig's completion span has
+    // fields for the system prompt, the messages and the reply (R3, KTD4).
+    // Rig names its targets `rig::...` or by module path, `rig_core::...`.
+    ("rig", log::LevelFilter::Off),
+    ("rig_core", log::LevelFilter::Off),
+];
+
 /// The command and event set exposed to the frontend. Kept in one function so
 /// the running app and the `export_bindings` test generate identical bindings.
 pub fn specta_builder() -> Builder<tauri::Wry> {
@@ -382,11 +400,12 @@ pub fn run() {
             }
         }))
         .plugin(
-            // onnxruntime logs every graph pass at INFO; left in, it rotates
-            // the capture warnings out of the default 40 KB file in minutes.
-            tauri_plugin_log::Builder::new()
-                .level(log::LevelFilter::Info)
-                .level_for("ort", log::LevelFilter::Warn)
+            LOG_TARGET_LEVELS
+                .iter()
+                .fold(
+                    tauri_plugin_log::Builder::new().level(LOG_LEVEL),
+                    |builder, &(target, level)| builder.level_for(target, level),
+                )
                 .max_file_size(5_000_000)
                 .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(4))
                 .build(),

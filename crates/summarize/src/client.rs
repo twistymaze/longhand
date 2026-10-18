@@ -276,9 +276,11 @@ fn completion_text(result: &Result<Completion, SummarizeError>) -> String {
 }
 
 /// The kind of an error, for the end line.
-fn error_text(error: &SummarizeError) -> String {
+pub(crate) fn error_text(error: &SummarizeError) -> String {
     match error {
         SummarizeError::Redirect { status, .. } => format!("redirect, HTTP {status}"),
+        SummarizeError::Unauthorized(status) => format!("unauthorized, HTTP {status}"),
+        SummarizeError::Http { status, .. } => format!("HTTP {status}"),
         SummarizeError::Deadline(what) => format!("no {what} within the deadline"),
         SummarizeError::TooLarge(_) => "reply too large".into(),
         SummarizeError::Transport(_) => "connection error".into(),
@@ -1218,6 +1220,14 @@ mod tests {
                 "redirect, HTTP 307",
             ),
             (SummarizeError::TooLarge(8), "reply too large"),
+            (SummarizeError::Unauthorized(401), "unauthorized, HTTP 401"),
+            (
+                SummarizeError::Http {
+                    status: 500,
+                    excerpt: "secret reply text".into(),
+                },
+                "HTTP 500",
+            ),
         ];
         for (error, expected) in cases {
             assert_eq!(result_text(&Err(error)), expected);

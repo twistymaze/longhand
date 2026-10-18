@@ -18,7 +18,9 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::client::{Client, Endpoint, Label, NO_LOCATION, RequestKind, SummarizeError};
+use crate::client::{
+    Client, Endpoint, Label, NO_LOCATION, RequestKind, SummarizeError, error_text,
+};
 use crate::provider::{Provider, Route};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -112,7 +114,7 @@ pub async fn list_models(client: &Client) -> ModelList {
             ids: tidy(list.into_iter().map(|model| model.id).collect()),
         },
         Err(e) => {
-            log::info!("the model list request failed: {e}");
+            log::info!("the model list request failed: {}", error_text(&e));
             outcome(e, provider, client.sends_key(), &client.api_url("models"))
         }
     }
@@ -207,7 +209,7 @@ async fn chat(client: &Client, address: &str) -> Chat {
             | SummarizeError::TooLarge(_)
             | SummarizeError::BadUrl(_)),
         ) => {
-            log::info!("the check request failed: {e}");
+            log::info!("the check request failed: {}", error_text(&e));
             Chat::Failed(outcome(
                 e,
                 Provider::Custom,
