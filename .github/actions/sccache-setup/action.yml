@@ -63,10 +63,13 @@ runs:
     # CMake refuses a build folder that another generator made, and a
     # self-hosted runner keeps the CMake build folders of earlier jobs in
     # target/. This step removes each folder that is not a Ninja build, so
-    # that CMake configures it again with Ninja. The libraries that the
-    # build scripts installed stay, so cargo rebuilds only when it must.
-    # The MSVC setup puts Windows' own find.exe first on PATH, so the step
-    # names Git Bash's find.
+    # that CMake configures it again with Ninja. Some build scripts
+    # (knf-rs-sys) do not configure a folder again when it has a
+    # CMakeCache.txt, so the step also removes each folder whose compiler
+    # flags do not have /FS. The libraries that the build scripts installed
+    # stay, so cargo rebuilds only when it must. The MSVC setup puts
+    # Windows' own find.exe first on PATH, so the step names Git Bash's
+    # find.
     - name: Remove CMake build folders of another generator
       if: runner.os == 'Windows'
       shell: bash
@@ -74,7 +77,8 @@ runs:
       run: |
         [ -d target ] || exit 0
         /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
-          if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
+          if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache" \
+            || ! grep -qE '^CMAKE_(C|CXX)_FLAGS:STRING=.*/FS' "$cache"; then
             echo "Removing $(dirname "$cache")"
             rm -rf "$(dirname "$cache")"
           fi
