@@ -49,7 +49,15 @@ runs:
           echo "RUSTC_WRAPPER=sccache"
           echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
-          if [ "$RUNNER_OS" = Windows ]; then echo "CMAKE_GENERATOR=Ninja"; fi
+          # Ninja runs several cl.exe processes at a time, and a CMake debug
+          # build (/Zi) writes one PDB file for each target. Without /FS,
+          # two of them can open that file together and fail with C1041.
+          # cc-rs, and so cmake-rs, add CFLAGS and CXXFLAGS to the compiles.
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "CMAKE_GENERATOR=Ninja"
+            echo "CFLAGS=/FS"
+            echo "CXXFLAGS=/FS"
+          fi
         } >> "$GITHUB_ENV"
 
     # CMake refuses a build folder that another generator made, and a
