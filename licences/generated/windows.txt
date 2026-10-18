@@ -2815,6 +2815,8 @@ windows_x86_64_msvc 0.53.1
 winnow 1.0.4
 winreg 0.10.1
     Copyright (c) 2015 Igor Shaula
+winreg 0.55.0
+    Copyright (c) 2015 Igor Shaula
 wry 0.55.1
     Copyright (c) 2020-2023 Ngo Iok Ui & Tauri Programme within The Commons Conservancy
 zerocopy 0.8.57
