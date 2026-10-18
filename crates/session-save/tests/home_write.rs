@@ -1,6 +1,6 @@
 //! Writes into a home folder: whole files only, and never through a link.
 
-use session_save::home_write::write_atomic;
+use session_save::home_write::{temp_name, temp_target, write_atomic};
 
 #[test]
 fn a_write_replaces_the_file_whole_and_leaves_no_temporary() {
@@ -46,4 +46,11 @@ fn temporary_names_differ_between_writes() {
         std::fs::read_to_string(dir.path().join("summary.md")).unwrap(),
         "v49"
     );
+}
+
+#[test]
+fn each_temporary_name_is_new_and_names_its_target() {
+    let names: std::collections::HashSet<_> = (0..50).map(|_| temp_name("summary.md")).collect();
+    assert_eq!(names.len(), 50, "each call gives a different name");
+    assert_eq!(temp_target(&temp_name("summary.md")), Some("summary.md"));
 }
