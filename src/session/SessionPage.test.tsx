@@ -1199,7 +1199,7 @@ describe("SessionPage", () => {
   });
 
   describe("Regenerate Summary", () => {
-    const endpoint = { host: "api.example.com", model: "m", encrypted: true };
+    const endpoint = { provider: "custom" as const, host: "api.example.com", model: "m", encrypted: true };
     const newDoc = { ...doc, summary: { ...doc.summary!, body: "The launch moves to May 12." } };
 
     /// A regenerate_summary that completes only when the test says.

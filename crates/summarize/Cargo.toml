@@ -13,6 +13,7 @@ reqwest = { version = "0.12", default-features = false, features = ["native-tls"
 rig-core = { version = "=0.44.0", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
+specta = { workspace = true, features = ["derive"] }
 thiserror.workspace = true
 tokio = { version = "1", features = ["time"] }
 url = "2"

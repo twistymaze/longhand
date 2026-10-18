@@ -124,8 +124,9 @@ pub struct Readiness {
     /// not on disk yet. They do not block a recording: processing waits
     /// for them (KTD16).
     pub missing_models: Vec<String>,
-    /// A Base URL and a model are set, and the request gate lets summary
-    /// processing use them (KTD3). A locked Keychain does not clear it.
+    /// A provider with an address and a model is active, and the request
+    /// gate lets summary processing use it (R12). A locked Keychain does
+    /// not clear it.
     pub endpoint_configured: bool,
 }
 
@@ -145,14 +146,18 @@ pub async fn readiness(
     let destination = tauri::async_runtime::spawn_blocking(move || destination::status(&folder))
         .await
         .map_err(|e| e.to_string())?;
-    // Read the key only when a Base URL and a model are set. Without them
-    // the endpoint is not configured, whatever the key state is.
-    let endpoint_configured = if settings.endpoint_configured() {
-        let base_url = settings.effective_endpoint_base_url().to_string();
-        let read = secrets
-            .run(move |store| store.endpoint_credential(&base_url))
-            .await;
-        settings::endpoint_ready(&settings, settings::key_state(&read))
+    // Read the key only when a provider with an address and a model is
+    // active. Without them no summary request goes out, whatever the key
+    // state is. A local provider takes no key (R8).
+    let endpoint_configured = if settings.provider_configured() {
+        let location = settings
+            .active_provider
+            .and_then(|provider| settings.key_location(provider));
+        let read = match location {
+            Some(location) => secrets.run(move |store| location.read(store)).await,
+            None => Ok(None),
+        };
+        settings::provider_ready(&settings, settings::key_state(&read))
     } else {
         false
     };

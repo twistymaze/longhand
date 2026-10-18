@@ -75,34 +75,49 @@ async changeInterfaceZoom(action: ZoomAction) : Promise<Result<number, string>> 
 }
 },
 /**
- * Save the Base URL of the summarization endpoint (R32). An empty value
- * clears it and stays empty (R2). Any other value must be a URL with a
- * host, because the credential is keyed by that host (R30a). The Model does
- * not change (KTD5).
+ * Make `provider` the active AI provider, or choose none (R7). The entry
+ * of each provider stays, so a switch back restores it (R10).
  */
-async setEndpointBaseUrl(baseUrl: string) : Promise<Result<Settings, string>> {
+async chooseProvider(provider: Provider | null) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_endpoint_base_url", { baseUrl }) };
+    return { status: "ok", data: await TAURI_INVOKE("choose_provider", { provider }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * Save the Model of the summarization endpoint. The Base URL does not
- * change, so a new install keeps "never saved" (KTD5).
+ * Save the address of a local provider or of Custom (R8, R9). An empty
+ * value gives a local provider its usual address again, and gives Custom
+ * no address. Any other value must be a URL with a host, because the key
+ * is kept for that host (R10).
  */
-async setEndpointModel(model: string) : Promise<Result<Settings, string>> {
+async setProviderAddress(provider: Provider, address: string) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_endpoint_model", { model }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_provider_address", { provider, address }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async setContextLimit(limit: number | null) : Promise<Result<Settings, string>> {
+/**
+ * Save the model of `provider`.
+ */
+async setProviderModel(provider: Provider, model: string) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_context_limit", { limit }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_provider_model", { provider, model }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save the context limit that the user entered for `provider`, or `None`
+ * to use the limit that the provider reports (R15).
+ */
+async setProviderContextLimit(provider: Provider, limit: number | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_provider_context_limit", { provider, limit }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -566,25 +581,36 @@ async addAgentInstructions() : Promise<Result<AgentBlockStatus, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async credentialStatus(baseUrl: string) : Promise<Result<CredentialStatus, string>> {
+/**
+ * The state of the saved key of `provider` for its host (R18). The read
+ * runs off the settings lock, on the blocking pool.
+ */
+async providerCredentialStatus(provider: Provider) : Promise<Result<CredentialStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("credential_status", { baseUrl }) };
+    return { status: "ok", data: await TAURI_INVOKE("provider_credential_status", { provider }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async setCredential(baseUrl: string, value: string) : Promise<Result<null, string>> {
+/**
+ * Save the key of `provider` for its host (R10).
+ */
+async setProviderCredential(provider: Provider, value: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_credential", { baseUrl, value }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_provider_credential", { provider, value }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
-async deleteCredential(baseUrl: string) : Promise<Result<null, string>> {
+/**
+ * Delete the key of `provider` for its host, and an old host-only entry
+ * that the migration left for it (KTD8).
+ */
+async deleteProviderCredential(provider: Provider) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_credential", { baseUrl }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_provider_credential", { provider }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -599,14 +625,17 @@ async repairKeychainAccess() : Promise<Result<null, string>> {
 }
 },
 /**
- * Check the connection to the effective endpoint and list its models (R5,
- * KTD9). The command reads the key itself, so the webview never holds it.
- * It sends no request when the request gate refuses one (R4, R16, R17).
- * It returns the address that worked, so the caller can save it (R14).
+ * Check the connection to `provider` and list its models (R17, KTD9).
+ * The command reads the key itself, so the webview never holds it. It
+ * sends no request when the request gate refuses one (R12). For Custom,
+ * it saves the address that worked when that address has `/v1` added
+ * (R14), but only while the saved address is still the one that the
+ * check used, so a slow reply never saves over a newer address. The
+ * network and Keychain work runs off the settings lock.
  */
-async listEndpointModels() : Promise<Result<EndpointCheck, string>> {
+async checkProvider(provider: Provider) : Promise<Result<EndpointCheck, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_endpoint_models") };
+    return { status: "ok", data: await TAURI_INVOKE("check_provider", { provider }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1493,9 +1522,15 @@ export type EndpointCheck = { models: EndpointModels; address: string | null }
  * sends no request (KTD3).
  */
 export type EndpointModels = { kind: "listed"; ids: string[] } | { kind: "key-needed" } | { kind: "key-rejected" } | { kind: "key-cannot-list" } | { kind: "not-listed" } | { kind: "chat-only" } | { kind: "redirected"; host: string | null } | { kind: "server-error"; status: number | null } | { kind: "unreachable" } | { kind: "not-requested"; reason: ListNotRequested }
-export type EndpointView = { host: string; model: string; 
+export type EndpointView = { 
 /**
- * False when the transcript would cross the network unencrypted.
+ * The active provider (R22).
+ */
+provider: Provider; host: string; model: string; 
+/**
+ * False when the transcript would cross the network unencrypted:
+ * plain HTTP to another computer. Plain HTTP to this computer is
+ * local (R21).
  */
 encrypted: boolean }
 export type ExecutionSpec = { schema_version: number; catalog_revision: string; config: RecognitionConfig; artifacts: ArtifactSpec[]; runtimes: RuntimeSpec[]; capabilities: Capabilities; enabled_live_transcription: boolean; enabled_live_speaker_analysis: boolean; preprocessing_revision: string }
@@ -1570,9 +1605,9 @@ conversion: ConversionNotice | null;
 problems: ProblemNote[] }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 /**
- * Why Longhand sent no model list request (R4, R16, R17).
+ * Why Longhand sent no model list request (R12, R17).
  */
-export type ListNotRequested = "no-base-url" | "keychain-locked" | "keychain-failed" | "key-needed"
+export type ListNotRequested = "no-provider" | "no-address" | "not-chosen" | "keychain-locked" | "keychain-failed" | "key-needed"
 /**
  * The text of the part that is open now.
  */
@@ -1982,6 +2017,42 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } | { kind: 
  */
 export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
 /**
+ * One AI provider. Each provider has a default address, except Custom,
+ * whose address the user enters. The serialized name of each provider is
+ * [`Provider::name`]: the settings, the Keychain account and the saved
+ * summary progress use it.
+ */
+export type Provider = "openai" | "anthropic" | "gemini" | "openrouter" | "ollama" | "lm_studio" | 
+/**
+ * An OpenAI-compatible server at an address that the user enters.
+ */
+"custom"
+/**
+ * One [`ProviderEntry`] for each provider (R10, KTD6). Each field name is
+ * the [`Provider::name`] of its provider.
+ */
+export type ProviderEntries = { openai: ProviderEntry; anthropic: ProviderEntry; gemini: ProviderEntry; openrouter: ProviderEntry; ollama: ProviderEntry; lm_studio: ProviderEntry; custom: ProviderEntry }
+/**
+ * The remembered settings of one AI provider on this computer (R10, KTD6).
+ */
+export type ProviderEntry = { 
+/**
+ * The address that the user entered. `None` uses the usual address
+ * of the provider ([`Provider::default_address`]). Only a local
+ * provider and Custom have one (R8, R9). Custom with `None` has no
+ * address.
+ */
+address: string | null; 
+/**
+ * The model that summaries use. Empty until the user picks one (R17).
+ */
+model: string; 
+/**
+ * The context limit that the user entered. It overrides the limit
+ * that the provider reports (R15).
+ */
+context_limit_tokens: number | null }
+/**
  * Why the shared settings are read-only.
  */
 export type ReadOnlyCause = 
@@ -2045,8 +2116,9 @@ note_start_refusal: string | null; shortcut: ShortcutStatus;
  */
 missing_models: string[]; 
 /**
- * A Base URL and a model are set, and the request gate lets summary
- * processing use them (KTD3). A locked Keychain does not clear it.
+ * A provider with an address and a model is active, and the request
+ * gate lets summary processing use it (R12). A locked Keychain does
+ * not clear it.
  */
 endpoint_configured: boolean }
 /**
@@ -2475,16 +2547,15 @@ widget_shortcut: string | null;
  */
 storage_folder: string; 
 /**
- * OpenAI-compatible base URL, e.g. `https://api.openai.com/v1` (R32).
- * `None` means a new install that has no settings yet, and
- * [`DEFAULT_ENDPOINT_BASE_URL`] applies. An empty value means that the
- * user cleared it, or that an existing install never set it (R2, KTD4).
+ * The AI provider that summaries use (R7). `None` sends no summary
+ * request, and a new install has none (R11).
  */
-endpoint_base_url: string | null; endpoint_model: string; 
+active_provider: Provider | null; 
 /**
- * Overrides the probed context budget when set (KTD16).
+ * The remembered address, model and context limit of each provider on
+ * this computer (R10, R13, R15).
  */
-context_limit_tokens: number | null; 
+providers: ProviderEntries; 
 /**
  * This field and the five after it are the recognition configuration
  * in use on this computer (R18, KTD14). Recording, processing and

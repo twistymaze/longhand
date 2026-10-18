@@ -1,17 +1,28 @@
 //! The AI providers that Longhand can send a summary request to (R7), and
 //! the request route that Rig uses for each provider (KTD2).
 
+use serde::{Deserialize, Serialize};
+
 /// One AI provider. Each provider has a default address, except Custom,
-/// whose address the user enters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// whose address the user enters. The serialized name of each provider is
+/// [`Provider::name`]: the settings, the Keychain account and the saved
+/// summary progress use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
 pub enum Provider {
+    #[serde(rename = "openai")]
     OpenAi,
+    #[serde(rename = "anthropic")]
     Anthropic,
+    #[serde(rename = "gemini")]
     Gemini,
+    #[serde(rename = "openrouter")]
     OpenRouter,
+    #[serde(rename = "ollama")]
     Ollama,
+    #[serde(rename = "lm_studio")]
     LmStudio,
     /// An OpenAI-compatible server at an address that the user enters.
+    #[serde(rename = "custom")]
     Custom,
 }
 
@@ -40,6 +51,46 @@ impl Provider {
         }
     }
 
+    /// The name of the provider in the settings, in the Keychain account
+    /// and in the saved summary progress. It is the serialized name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::OpenAi => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Gemini => "gemini",
+            Self::OpenRouter => "openrouter",
+            Self::Ollama => "ollama",
+            Self::LmStudio => "lm_studio",
+            Self::Custom => "custom",
+        }
+    }
+
+    /// A cloud provider needs an API key, and the user does not enter its
+    /// address (R8).
+    pub fn is_cloud(self) -> bool {
+        matches!(
+            self,
+            Self::OpenAi | Self::Anthropic | Self::Gemini | Self::OpenRouter
+        )
+    }
+
+    /// A local provider runs on this computer and needs no API key (R8).
+    pub fn is_local(self) -> bool {
+        matches!(self, Self::Ollama | Self::LmStudio)
+    }
+
+    /// Whether the user can save an API key for this provider: the cloud
+    /// providers, and Custom, whose key is optional (R8, R9).
+    pub fn takes_key(self) -> bool {
+        !self.is_local()
+    }
+
+    /// Whether the user can change the address of this provider: the local
+    /// providers and Custom (R8, R9).
+    pub fn address_editable(self) -> bool {
+        !self.is_cloud()
+    }
+
     /// The kind of request that Rig sends to this provider.
     pub(crate) fn route(self) -> Route {
         match self {
@@ -63,4 +114,29 @@ pub(crate) enum Route {
     Gemini,
     /// Ollama's native `POST /api/chat`.
     Ollama,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_serialized_name_of_each_provider_is_its_name() {
+        for provider in Provider::ALL {
+            let json = serde_json::to_value(provider).unwrap();
+            assert_eq!(json, serde_json::json!(provider.name()));
+            assert_eq!(serde_json::from_value::<Provider>(json).unwrap(), provider);
+        }
+    }
+
+    #[test]
+    fn each_provider_is_cloud_local_or_custom() {
+        for provider in Provider::ALL {
+            let custom = provider == Provider::Custom;
+            let kinds = [provider.is_cloud(), provider.is_local(), custom];
+            assert_eq!(kinds.iter().filter(|&&b| b).count(), 1, "{provider:?}");
+            assert_eq!(provider.takes_key(), !provider.is_local());
+            assert_eq!(provider.address_editable(), !provider.is_cloud());
+        }
+    }
 }

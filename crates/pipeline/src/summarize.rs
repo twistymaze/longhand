@@ -122,7 +122,7 @@ impl Source {
     fn of(client: &Client) -> Self {
         let endpoint = client.endpoint();
         Self {
-            provider: provider_name(endpoint.provider).to_string(),
+            provider: endpoint.provider.name().to_string(),
             address: endpoint
                 .address()
                 .unwrap_or_default()
@@ -130,19 +130,6 @@ impl Source {
                 .to_string(),
             model: endpoint.model.clone(),
         }
-    }
-}
-
-/// The name of `provider` in a saved plan.
-fn provider_name(provider: Provider) -> &'static str {
-    match provider {
-        Provider::OpenAi => "openai",
-        Provider::Anthropic => "anthropic",
-        Provider::Gemini => "gemini",
-        Provider::OpenRouter => "openrouter",
-        Provider::Ollama => "ollama",
-        Provider::LmStudio => "lm_studio",
-        Provider::Custom => "custom",
     }
 }
 

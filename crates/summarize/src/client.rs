@@ -935,6 +935,14 @@ pub(crate) fn without_url(e: reqwest::Error) -> String {
     text
 }
 
+/// Whether a request to `address` crosses the network unencrypted: plain
+/// HTTP to another computer (R21). Plain HTTP to this computer (a loopback
+/// address or `localhost`) does not. An address that does not parse does
+/// not cross the network.
+pub fn crosses_network_unencrypted(address: &str) -> bool {
+    Url::parse(address.trim()).is_ok_and(|url| url.scheme() == "http" && !is_loopback(&url))
+}
+
 fn is_loopback(url: &Url) -> bool {
     match url.host() {
         Some(url::Host::Domain(d)) => d.eq_ignore_ascii_case("localhost"),
@@ -1152,6 +1160,17 @@ fn transport_failure(error: &TransportError) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_http_to_another_computer_crosses_the_network_unencrypted() {
+        assert!(crosses_network_unencrypted("http://192.168.1.20:11434"));
+        assert!(crosses_network_unencrypted("http://llm.example.net/v1"));
+        assert!(!crosses_network_unencrypted("http://localhost:11434"));
+        assert!(!crosses_network_unencrypted("http://127.0.0.1:1234/v1"));
+        assert!(!crosses_network_unencrypted("http://[::1]:1234/v1"));
+        assert!(!crosses_network_unencrypted("https://api.openai.com/v1"));
+        assert!(!crosses_network_unencrypted("not a url"));
+    }
 
     #[test]
     fn the_request_log_names_the_request_and_not_its_content() {

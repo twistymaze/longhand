@@ -369,32 +369,47 @@ impl From<RunnerEvent> for Sent {
     }
 }
 
-/// The summary endpoint from `s`, with the key that `read_key` reads for the
-/// effective Base URL. The request gate (KTD3) applies: the built-in default
-/// Base URL with no saved key gives `Unconfigured`, and no request goes out.
+/// The message when no provider is active (R11, AE2).
+const NO_PROVIDER: &str = "no AI provider is set, so the note is saved without a summary";
+
+/// The summary endpoint of the active provider in `s`, with the key that
+/// `read_key` reads from the provider's Keychain location (KTD8). The
+/// request gate (R12) applies: no provider, or a cloud provider with no
+/// saved key, gives `Unconfigured`, and no request goes out. A job takes
+/// this snapshot when it starts (R25).
 fn endpoint_from_settings(
     s: settings::Settings,
-    read_key: impl FnOnce(&str) -> Result<Option<String>, SecretError>,
+    read_key: impl FnOnce(&settings::KeyLocation) -> Result<Option<String>, SecretError>,
 ) -> Result<SummaryEndpoint, EndpointProblem> {
     use settings::{EndpointGate, NotRequestedReason};
-    const NO_ENDPOINT: &str = "no summarization endpoint is set; choose one in Settings";
-    if !s.endpoint_configured() {
-        return Err(EndpointProblem::Unconfigured(NO_ENDPOINT.into()));
+    let Some(provider) = s.active_provider else {
+        return Err(EndpointProblem::Unconfigured(NO_PROVIDER.into()));
+    };
+    let address = s.provider_address(provider);
+    let entry = s.providers.get(provider).clone();
+    if address.is_empty() || entry.model.trim().is_empty() {
+        return Err(EndpointProblem::Unconfigured(
+            "the AI provider has no address or no model; choose them in Settings".into(),
+        ));
     }
-    let base_url = s.effective_endpoint_base_url().to_string();
-    // The credential is keyed by the configured host: a changed base URL
-    // has none until one is entered for it (R30a).
-    let read = read_key(&base_url);
+    // The key is kept for the provider and its host: a changed host has
+    // none until one is entered for it (R10). A local provider takes none.
+    let location = s.key_location(provider);
+    let read = location.as_ref().map_or(Ok(None), read_key);
     let key = settings::key_state(&read);
-    match settings::endpoint_gate(&base_url, s.endpoint_base_url_saved(), key) {
+    match settings::provider_gate(Some(provider), true, &address, key) {
         EndpointGate::NotRequested(NotRequestedReason::KeyNeeded) => {
-            let host = secrets::endpoint_key(&base_url).unwrap_or_else(|_| base_url.clone());
+            let host = location.map_or_else(|| address.clone(), |l| l.host());
             return Err(EndpointProblem::Unconfigured(format!(
-                "Add an API key for {host}, or enter a Base URL"
+                "Add an API key for {host} in Settings"
             )));
         }
-        EndpointGate::NotRequested(NotRequestedReason::NoBaseUrl) => {
-            return Err(EndpointProblem::Unconfigured(NO_ENDPOINT.into()));
+        EndpointGate::NotRequested(
+            NotRequestedReason::NoProvider
+            | NotRequestedReason::NoAddress
+            | NotRequestedReason::NotChosen,
+        ) => {
+            return Err(EndpointProblem::Unconfigured(NO_PROVIDER.into()));
         }
         // The Keychain error below gives the message.
         EndpointGate::NotRequested(
@@ -413,13 +428,11 @@ fn endpoint_from_settings(
         // A blank key is no key (see `key_state`): send no Bearer header.
         .filter(|key| !key.trim().is_empty());
     Ok(SummaryEndpoint {
-        // The settings choose the provider from U6. Until then, the address
-        // in Settings is an OpenAI-compatible server.
-        provider: summarize::Provider::Custom,
-        base_url,
-        model: s.endpoint_model,
+        provider,
+        base_url: address,
+        model: entry.model,
         credential,
-        context_limit: s.context_limit_tokens,
+        context_limit: entry.context_limit_tokens,
         retry_waits: summarize::client::RETRY_WAITS.to_vec(),
     })
 }
@@ -541,8 +554,8 @@ impl EngineProvider for Models {
     }
 
     fn summary_endpoint(&self) -> Result<SummaryEndpoint, EndpointProblem> {
-        endpoint_from_settings(settings::get_settings(&self.app), |base_url| {
-            self.secrets.endpoint_credential(base_url)
+        endpoint_from_settings(settings::get_settings(&self.app), |location| {
+            location.read(self.secrets.as_ref())
         })
     }
 
@@ -2196,13 +2209,18 @@ pub(crate) fn refuse_with_problem(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use summarize::Provider;
 
-    fn with_model(base_url: Option<&str>) -> settings::Settings {
-        settings::Settings {
-            endpoint_base_url: base_url.map(str::to_string),
-            endpoint_model: "gpt-4o".into(),
-            ..Default::default()
+    /// Settings with `provider` active, the model `gpt-4o` and, when given,
+    /// the address `address`.
+    fn active(provider: Provider, address: Option<&str>) -> settings::Settings {
+        let mut s = settings::Settings::default();
+        s.choose_provider(Some(provider));
+        s.set_provider_model(provider, "gpt-4o");
+        if let Some(address) = address {
+            s.set_provider_address(provider, address).unwrap();
         }
+        s
     }
 
     /// The processing update that the app sends for `event`.
@@ -2352,58 +2370,105 @@ mod tests {
     }
 
     #[test]
-    fn the_default_endpoint_with_no_key_is_not_configured() {
-        let result = endpoint_from_settings(with_model(None), |_| Ok(None));
+    fn with_no_provider_nothing_is_sent_and_the_note_has_no_summary() {
+        // Covers AE2. The message is the summary problem that the
+        // processing page shows.
+        let mut read = false;
+        let result = endpoint_from_settings(settings::Settings::default(), |_| {
+            read = true;
+            Ok(Some("sk-test".into()))
+        });
+        assert_eq!(
+            result,
+            Err(EndpointProblem::Unconfigured(NO_PROVIDER.into()))
+        );
+        assert!(NO_PROVIDER.contains("no AI provider is set"));
+        assert!(!read, "no Keychain read with no provider");
+    }
+
+    #[test]
+    fn a_cloud_provider_with_no_key_is_not_set_up() {
+        let result = endpoint_from_settings(active(Provider::OpenAi, None), |_| Ok(None));
         assert_eq!(
             result,
             Err(EndpointProblem::Unconfigured(
-                "Add an API key for api.openai.com, or enter a Base URL".into()
+                "Add an API key for api.openai.com in Settings".into()
             ))
         );
     }
 
     #[test]
-    fn the_default_endpoint_with_a_key_uses_that_key() {
+    fn a_cloud_provider_with_a_key_uses_its_provider_address_and_key() {
         let mut read = None;
-        let endpoint = endpoint_from_settings(with_model(None), |url| {
-            read = Some(url.to_string());
+        let mut s = active(Provider::Anthropic, None);
+        s.set_provider_context_limit(Provider::Anthropic, Some(90_000))
+            .unwrap();
+        let endpoint = endpoint_from_settings(s, |location| {
+            read = Some(location.clone());
             Ok(Some("sk-test".into()))
         })
         .unwrap();
-        assert_eq!(read.as_deref(), Some("https://api.openai.com/v1"));
-        assert_eq!(endpoint.base_url, "https://api.openai.com/v1");
+        assert_eq!(
+            read,
+            Some(settings::KeyLocation {
+                provider: Provider::Anthropic,
+                address: "https://api.anthropic.com".into(),
+                legacy: false,
+            })
+        );
+        assert_eq!(endpoint.provider, Provider::Anthropic);
+        assert_eq!(endpoint.base_url, "https://api.anthropic.com");
         assert_eq!(endpoint.model, "gpt-4o");
         assert_eq!(endpoint.credential.as_deref(), Some("sk-test"));
+        assert_eq!(endpoint.context_limit, Some(90_000));
     }
 
     #[test]
-    fn a_saved_base_url_with_no_key_sends_no_key() {
-        let endpoint =
-            endpoint_from_settings(with_model(Some("http://localhost:11434/v1")), |_| Ok(None))
-                .unwrap();
-        assert_eq!(endpoint.base_url, "http://localhost:11434/v1");
+    fn a_chosen_local_provider_sends_no_key_and_reads_none() {
+        let mut read = false;
+        let endpoint = endpoint_from_settings(active(Provider::Ollama, None), |_| {
+            read = true;
+            Ok(Some("k".into()))
+        })
+        .unwrap();
+        assert!(!read);
+        assert_eq!(endpoint.provider, Provider::Ollama);
+        assert_eq!(endpoint.base_url, "http://localhost:11434");
         assert_eq!(endpoint.credential, None);
     }
 
     #[test]
-    fn a_cleared_base_url_or_no_model_is_not_configured() {
-        let cleared = endpoint_from_settings(with_model(Some("")), |_| Ok(Some("k".into())));
-        assert!(matches!(cleared, Err(EndpointProblem::Unconfigured(_))));
-        let mut no_model = with_model(None);
-        no_model.endpoint_model.clear();
+    fn custom_with_an_address_and_no_key_sends_no_key() {
+        let endpoint = endpoint_from_settings(
+            active(Provider::Custom, Some("http://studio.local:4000/v1")),
+            |_| Ok(None),
+        )
+        .unwrap();
+        assert_eq!(endpoint.provider, Provider::Custom);
+        assert_eq!(endpoint.base_url, "http://studio.local:4000/v1");
+        assert_eq!(endpoint.credential, None);
+    }
+
+    #[test]
+    fn custom_with_no_address_or_no_model_is_not_configured() {
+        let no_address =
+            endpoint_from_settings(active(Provider::Custom, None), |_| Ok(Some("k".into())));
+        assert!(matches!(no_address, Err(EndpointProblem::Unconfigured(_))));
+        let mut no_model = active(Provider::OpenAi, None);
+        no_model.set_provider_model(Provider::OpenAi, "");
         let result = endpoint_from_settings(no_model, |_| Ok(Some("k".into())));
         assert!(matches!(result, Err(EndpointProblem::Unconfigured(_))));
     }
 
     #[test]
     fn a_locked_keychain_blocks_and_another_failure_is_not_configured() {
-        let locked = endpoint_from_settings(with_model(None), |_| {
+        let locked = endpoint_from_settings(active(Provider::OpenAi, None), |_| {
             Err(SecretError::Locked {
                 message: "locked".into(),
             })
         });
         assert_eq!(locked, Err(EndpointProblem::Locked("locked".into())));
-        let failed = endpoint_from_settings(with_model(None), |_| {
+        let failed = endpoint_from_settings(active(Provider::OpenAi, None), |_| {
             Err(SecretError::Platform {
                 message: "broken".into(),
             })

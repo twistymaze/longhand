@@ -440,12 +440,31 @@ fn file_names(paths: &[PathBuf]) -> Vec<String> {
         .collect()
 }
 
-#[derive(Serialize, Type)]
+#[derive(Serialize, Type, Debug, PartialEq)]
 pub struct EndpointView {
+    /// The active provider (R22).
+    pub provider: summarize::Provider,
     pub host: String,
     pub model: String,
-    /// False when the transcript would cross the network unencrypted.
+    /// False when the transcript would cross the network unencrypted:
+    /// plain HTTP to another computer. Plain HTTP to this computer is
+    /// local (R21).
     pub encrypted: bool,
+}
+
+impl EndpointView {
+    /// The view of the active provider in `s`. `None` when no provider with
+    /// an address and a model is active (R11).
+    fn of(s: &settings::Settings) -> Option<Self> {
+        let provider = s.active_provider.filter(|_| s.provider_configured())?;
+        let address = s.provider_address(provider);
+        Some(Self {
+            provider,
+            host: secrets::endpoint_key(&address).unwrap_or_else(|_| address.clone()),
+            model: s.providers.get(provider).model.clone(),
+            encrypted: !summarize::client::crosses_network_unencrypted(&address),
+        })
+    }
 }
 
 #[derive(Serialize, Type)]
@@ -893,14 +912,7 @@ fn detail_of(
     .map_err(e)?;
 
     let s = settings::get_settings(&app);
-    let endpoint = s.endpoint_configured().then(|| {
-        let base_url = s.effective_endpoint_base_url();
-        EndpointView {
-            host: secrets::endpoint_key(base_url).unwrap_or_else(|_| base_url.to_string()),
-            model: s.endpoint_model.clone(),
-            encrypted: base_url.starts_with("https://"),
-        }
-    });
+    let endpoint = EndpointView::of(&s);
 
     let working = capture.working_root().join(&session_id);
     let (audio_kept, transcript_kept) = match &record.home_path {
@@ -2201,6 +2213,46 @@ mod delete_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use summarize::Provider;
+
+    fn view(provider: Provider, address: Option<&str>) -> Option<EndpointView> {
+        let mut s = settings::Settings::default();
+        s.choose_provider(Some(provider));
+        s.set_provider_model(provider, "m");
+        if let Some(address) = address {
+            s.set_provider_address(provider, address).unwrap();
+        }
+        EndpointView::of(&s)
+    }
+
+    #[test]
+    fn the_endpoint_view_names_the_provider_and_treats_loopback_http_as_local() {
+        assert_eq!(
+            view(Provider::Ollama, None),
+            Some(EndpointView {
+                provider: Provider::Ollama,
+                host: "localhost:11434".into(),
+                model: "m".into(),
+                encrypted: true,
+            })
+        );
+        let lm_studio = view(Provider::LmStudio, Some("http://127.0.0.1:1234/v1")).unwrap();
+        assert!(lm_studio.encrypted);
+        let other = view(Provider::Custom, Some("http://192.168.1.20:4000/v1")).unwrap();
+        assert_eq!(other.provider, Provider::Custom);
+        assert_eq!(other.host, "192.168.1.20:4000");
+        assert!(!other.encrypted);
+        let anthropic = view(Provider::Anthropic, None).unwrap();
+        assert_eq!(anthropic.host, "api.anthropic.com");
+        assert!(anthropic.encrypted);
+    }
+
+    #[test]
+    fn with_no_provider_or_no_model_there_is_no_endpoint_view() {
+        // Covers AE2: the processing page then says that no provider is set.
+        assert_eq!(EndpointView::of(&settings::Settings::default()), None);
+        assert_eq!(view(Provider::Custom, None), None);
+    }
 
     #[test]
     fn a_clone_of_the_shown_note_sees_each_new_report() {
