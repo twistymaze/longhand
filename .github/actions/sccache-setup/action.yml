@@ -49,14 +49,17 @@ runs:
           echo "RUSTC_WRAPPER=sccache"
           echo "CMAKE_C_COMPILER_LAUNCHER=sccache"
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
-          # A CMake debug build compiles with /Zi, which writes one PDB file
-          # for each target. sccache does not support /Zi, and parallel
-          # compiles through sccache fail with C1041, also with /FS. cl adds
-          # the options in _CL_ after its command line, so /Z7 replaces /Zi
-          # and each object file keeps its own debug information.
+          # A CMake Debug build compiles with /MDd and /Zi. With the Visual
+          # Studio generator, cmake-rs replaces these flags with /MD, but
+          # with Ninja it does not. Rust links the release C runtime, so
+          # /MDd objects (knf-rs-sys) do not link. /Zi writes one PDB file
+          # for each target, and parallel compiles through sccache fail
+          # with C1041, also with /FS. cl adds the options in _CL_ after
+          # its command line, so /MD replaces /MDd, and /Z7 replaces /Zi
+          # and keeps the debug information in each object file.
           if [ "$RUNNER_OS" = Windows ]; then
             echo "CMAKE_GENERATOR=Ninja"
-            echo "_CL_=/Z7"
+            echo "_CL_=/MD /Z7"
           fi
         } >> "$GITHUB_ENV"
 
