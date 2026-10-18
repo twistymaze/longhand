@@ -338,7 +338,9 @@ pub(crate) fn check_record(
 /// The checks of Resume for the note `id` at `now` (R12, R21, R23): no
 /// other computer records into the note, processes it or did not finish
 /// its recording. An interrupted or recording note is the work of this
-/// computer, so its folder is not read. `own_runs` are this computer's
+/// computer, so its folder is not read. A stopped note is not open here:
+/// after this computer's work on it ends, another computer can use its
+/// folder, so its folder is read. `own_runs` are this computer's
 /// runs. Returns the reason of a refusal. Reads the folder with no store
 /// lock.
 pub(crate) fn check_resume(
@@ -355,7 +357,10 @@ pub(crate) fn check_resume(
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("no note {id}"))?
     };
-    if record.state != SessionState::Saved {
+    if matches!(
+        record.state,
+        SessionState::Capturing | SessionState::Interrupted { .. }
+    ) {
         return Ok(());
     }
     refuse_other_computer(&record, status, own_runs, now)
@@ -3072,6 +3077,59 @@ mod record_tests {
 
         std::fs::remove_dir_all(&home).unwrap();
         std::fs::write(&home, b"").unwrap();
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+    }
+
+    /// The note "n" in its home folder, recorded on this computer and
+    /// stopped, with failed processing.
+    fn failed_note() -> (tempfile::TempDir, PathBuf, pipeline::SharedStore) {
+        let (root, home, store) = placed_note();
+        {
+            let mut store = store.lock().unwrap();
+            store.put_segment("n", &segment()).unwrap();
+            for event in [
+                Event::UserRecord {
+                    has_segments: false,
+                },
+                Event::UserStop {
+                    at: opened(),
+                    retained_audio: true,
+                },
+                Event::Dequeued,
+                Event::StageFailed(session_core::Stage::Transcribe),
+            ] {
+                store.apply("n", &event).unwrap();
+            }
+        }
+        (root, home, store)
+    }
+
+    // Covers R12, R21: a stopped note that permits Resume is not open on
+    // this computer. After this computer's work on it ends, another
+    // computer can use its folder, so Resume waits for that work.
+    #[test]
+    fn resume_of_a_note_with_failed_processing_waits_while_another_computer_uses_it() {
+        let (_root, home, store) = failed_note();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&home, RUN, now).unwrap());
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+
+        assert!(pipeline::in_use::write_marker(&home, "other-computer", now).unwrap());
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(IN_USE_ELSEWHERE.to_string())
+        );
+    }
+
+    // A stopped note whose folder is not there yet is not in use on
+    // another computer.
+    #[test]
+    fn a_stopped_note_with_no_folder_can_be_resumed() {
+        let (_root, home, store) = failed_note();
+        std::fs::remove_dir(&home).unwrap();
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
         assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
     }
 }
