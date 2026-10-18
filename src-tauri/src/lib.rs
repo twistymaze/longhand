@@ -158,6 +158,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             widget::WidgetPointer,
             widget::WidgetShown,
             window::MainWindowHidden,
+            window::SettingsPaneRequested,
             managers::updates::UpdateStateChanged,
         ])
         .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)

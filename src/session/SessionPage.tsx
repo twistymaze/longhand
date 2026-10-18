@@ -930,7 +930,7 @@ export function SessionPage({
                 {notice.text}
               </p>
               {notice.settings && (
-                <Button onClick={() => void commands.openSettings()}>Open Settings…</Button>
+                <Button onClick={() => void commands.openSettings(null)}>Open Settings…</Button>
               )}
             </div>
           )}

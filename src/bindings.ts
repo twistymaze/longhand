@@ -1177,11 +1177,12 @@ async removeAudio(sessionId: string) : Promise<Result<null, RemoveAudioFailure>>
 }
 },
 /**
- * Show the Settings window, and build it first when it is not open. Async
- * because a synchronous command that builds a window deadlocks on Windows.
+ * Show the Settings window, and build it first when it is not open. With a
+ * pane, the window shows that pane (KTD10). Async because a synchronous
+ * command that builds a window deadlocks on Windows.
  */
-async openSettings() : Promise<void> {
-    await TAURI_INVOKE("open_settings");
+async openSettings(pane: SettingsPane | null) : Promise<void> {
+    await TAURI_INVOKE("open_settings", { pane });
 },
 /**
  * Destroy the Settings window that calls this. The page calls this when its
@@ -1288,6 +1289,7 @@ moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
+settingsPaneRequested: SettingsPaneRequested,
 shortcutFailed: ShortcutFailed,
 showSession: ShowSession,
 updateStateChanged: UpdateStateChanged,
@@ -1308,6 +1310,7 @@ moveProgress: "move-progress",
 processingUpdate: "processing-update",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
+settingsPaneRequested: "settings-pane-requested",
 shortcutFailed: "shortcut-failed",
 showSession: "show-session",
 updateStateChanged: "update-state-changed",
@@ -2661,6 +2664,16 @@ background_read_only: string | null }
  * when a picked model becomes the selected model after its download.
  */
 export type SettingsChanged = { settings: Settings }
+/**
+ * A pane of the Settings window. The values agree with `PaneId` in
+ * src/settings/Status.tsx.
+ */
+export type SettingsPane = "status" | "recording" | "destination" | "types" | "provider" | "summarization" | "recognition" | "about"
+/**
+ * An open Settings window must show this pane (KTD10). A new Settings
+ * window reads its pane from its URL instead.
+ */
+export type SettingsPaneRequested = { pane: SettingsPane }
 /**
  * Whether this computer can change the shared settings now (R16).
  */

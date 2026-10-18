@@ -80,8 +80,15 @@ const badgeClass: Record<Tone, string> = {
   neutral: "bg-label-tertiary",
 };
 
+/// The pane that a new Settings window shows first: the `pane` query of its
+/// URL (KTD10), or General.
+export function initialPane(search: string): PaneId {
+  const asked = new URLSearchParams(search).get("pane");
+  return paneOrder.find((id) => id === asked) ?? "status";
+}
+
 export function SettingsWindow() {
-  const [pane, setPane] = useState<PaneId>("status");
+  const [pane, setPane] = useState<PaneId>(() => initialPane(window.location.search));
   const { settings, readiness, models, error, refresh } = useAppSettings();
   const defaults = useRecognitionDefaultsSave(refresh);
   const [live, setLive] = useState<Record<string, DownloadUpdate>>({});
@@ -106,10 +113,18 @@ export function SettingsWindow() {
   );
 
   // A new pane starts at its top.
-  const show = (id: PaneId) => {
+  const show = useCallback((id: PaneId) => {
     setPane(id);
     main.current?.scrollTo({ top: 0 });
-  };
+  }, []);
+
+  // A link in another window asks this open window for a pane (KTD10).
+  useEffect(() => {
+    const unlisten = events.settingsPaneRequested.listen(({ payload }) => show(payload.pane));
+    return () => {
+      void unlisten.then((f) => f());
+    };
+  }, [show]);
 
   const actions: Actions = {
     cancel: () => void commands.cancelModelDownloads(),

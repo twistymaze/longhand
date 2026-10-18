@@ -327,7 +327,7 @@ export function Home({
                 {noteStartRefusal(readiness)}
               </span>
               {/* The fix of an unavailable storage folder is in Settings. */}
-              <Button onClick={() => void commands.openSettings()}>
+              <Button onClick={() => void commands.openSettings(null)}>
                 Open Settings…
               </Button>
             </CautionBanner>
@@ -340,7 +340,7 @@ export function Home({
                   ? `To record, ${missing} in Settings.`
                   : "Not ready to record."}
               </span>
-              <Button onClick={() => void commands.openSettings()}>
+              <Button onClick={() => void commands.openSettings(null)}>
                 Open Settings…
               </Button>
             </CautionBanner>

@@ -38,6 +38,9 @@ const info = (id: Provider) => providers.find((p) => p.id === id)!;
 /// The name of a provider in the UI.
 export const providerName = (id: Provider) => info(id).name;
 
+/// The kind of a provider: a cloud service, a local app, or Custom.
+export const providerKind = (id: Provider): Kind => info(id).kind;
+
 /// The address that the Address row shows: the saved address, or the usual
 /// address of a local provider. Custom with no saved address has none.
 function shownAddress(id: Provider, settings: Settings): string {

@@ -10,7 +10,7 @@
 // input. The warnings appear at once, with no fade: motion would pull the
 // eye.
 
-import { type MouseEvent, useState } from "react";
+import { type MouseEvent, type ReactNode, useState } from "react";
 import { commands, type Readiness, type RecordingStatus, type SpeakerCountSetting } from "../bindings";
 import { features } from "../lib/features";
 import { formatPosition, levelFraction } from "../lib/timeline";
@@ -19,6 +19,7 @@ import { type Capture, HISTORY } from "../recording/useCapture";
 import { describeDestination } from "../settings/DestinationPicker";
 import { CheckIcon } from "../settings/icons";
 import { Button, fieldClass, formatBytes } from "../settings/ui";
+import { SetUpProviderButton } from "./ProcessingStatus";
 
 const statusText: Record<InputStatus, string> = {
   idle: "Recording stopped",
@@ -110,7 +111,8 @@ function LevelMeter({ levels }: { levels: number[] }) {
   );
 }
 
-type Warning = { tone: "caution" | "negative"; text: string };
+/// `action` is the one control that fixes the condition.
+type Warning = { tone: "caution" | "negative"; text: string; action?: ReactNode };
 
 /// The exception tier: each warning names a condition that exists now.
 function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
@@ -141,7 +143,11 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
     items.push({ tone: "caution", text: "Processing will wait for model downloads." });
   }
   if (readiness && !readiness.endpoint_configured) {
-    items.push({ tone: "caution", text: "No summarization endpoint is set, so the summary will wait." });
+    items.push({
+      tone: "caution",
+      text: "The AI provider is not set up, so this note is saved without a summary.",
+      action: <SetUpProviderButton />,
+    });
   }
   if (status) items.push(...inputWarnings(status));
   if (capture.lostReason) items.push({ tone: "negative", text: capture.lostReason });
@@ -317,11 +323,20 @@ export function RecordingBar({
               {interruption.disk && <p className="text-label-secondary">Free some space on this disk, then resume.</p>}
             </>
           )}
-          {items.map((item) => (
-            <p key={item.text} className={item.tone === "negative" ? "text-negative" : "text-caution"}>
-              {item.text}
-            </p>
-          ))}
+          {items.map((item) => {
+            const text = (
+              <p key={item.text} className={item.tone === "negative" ? "text-negative" : "text-caution"}>
+                {item.text}
+              </p>
+            );
+            if (!item.action) return text;
+            return (
+              <div key={item.text} className="flex items-center gap-2.5">
+                {text}
+                {item.action}
+              </div>
+            );
+          })}
           {error && <p className="text-negative">{error}</p>}
         </div>
       )}

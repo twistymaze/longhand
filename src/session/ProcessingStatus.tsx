@@ -7,7 +7,7 @@
 // shows the summarize stage in the same form.
 
 import { useEffect, useState } from "react";
-import { commands, type SessionDetail, type SpeakerProgressView, type WaitView } from "../bindings";
+import { commands, type EndpointView, type SessionDetail, type SpeakerProgressView, type WaitView } from "../bindings";
 import {
   type SpeakerMeter,
   type StageRow,
@@ -20,6 +20,7 @@ import {
 } from "../processing/describe";
 import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { useFolderChange } from "../settings/OldNotesDialog";
+import { providerKind, providerName } from "../settings/ProviderForm";
 import { Button, ErrorText, Group, ProgressBar, Row, Status } from "../settings/ui";
 import { REMOVED_REASON } from "./RemoveAudio";
 import type { Live } from "./useSessions";
@@ -91,18 +92,36 @@ function SpeakerProgress({ meter }: { meter: SpeakerMeter }) {
   );
 }
 
+/// Where the summary goes (R22): a cloud provider by its name, a local
+/// provider by its name and host, and Custom by its host.
+function destination(endpoint: EndpointView): string {
+  switch (providerKind(endpoint.provider)) {
+    case "cloud":
+      return providerName(endpoint.provider);
+    case "local":
+      return `${providerName(endpoint.provider)} at ${endpoint.host}`;
+    case "custom":
+      return endpoint.host;
+  }
+}
+
 function SummarizeDetail({ detail, sent }: { detail: SessionDetail; sent: boolean }) {
   if (detail.summary_problem) {
     return <Status tone="caution">Skipped. {sentence(detail.summary_problem)}</Status>;
   }
   const endpoint = detail.endpoint;
-  if (!endpoint) return <>No endpoint is set, so the note is saved without a summary.</>;
+  if (!endpoint) return <>No AI provider is set, so the note is saved without a summary.</>;
   return (
     <>
-      {sent ? "Sent" : "Sends"} the transcript and notes to {endpoint.host} ({endpoint.model})
+      {sent ? "Sent" : "Sends"} the transcript and notes to {destination(endpoint)} ({endpoint.model})
       {!endpoint.encrypted && <span className="text-caution">, unencrypted</span>}.
     </>
   );
+}
+
+/// Opens Settings on the AI Provider pane (R11, KTD10).
+export function SetUpProviderButton() {
+  return <Button onClick={() => void commands.openSettings("provider")}>Set Up AI Provider…</Button>;
 }
 
 type Outcome = { status: "ok" } | { status: "error"; error: string };
@@ -276,6 +295,8 @@ function StageLine({
         ) : undefined
       }
     >
+      {/* With no provider, the note is saved without a summary (R11). */}
+      {row.stage === "summarize" && !detail.endpoint && <SetUpProviderButton />}
       {meter && <SpeakerProgress meter={meter} />}
       {fraction !== null && (
         <>

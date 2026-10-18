@@ -98,6 +98,46 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
   });
 
+  describe("the Settings window on a given pane (KTD10)", () => {
+    const empty = { address: null, model: "", context_limit_tokens: null };
+    const mockSettings = () =>
+      mockTauri({
+        get_settings: () =>
+          ({
+            shortcut: "Alt+Shift+L",
+            shared: available,
+            active_provider: null,
+            providers: { openai: empty, anthropic: empty, gemini: empty, openrouter: empty, ollama: empty, lm_studio: empty, custom: empty },
+          }) as Partial<Settings>,
+        readiness: () => readiness,
+        shortcut_status: () => shortcutStatuses,
+        login_item_status: () => "disabled",
+        model_statuses: () => [],
+        speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
+      });
+    const selected = (name: string) => screen.getByRole("tab", { name: new RegExp(name) }).getAttribute("aria-selected");
+
+    test("a new window shows the pane that its URL names", async () => {
+      setURL("http://localhost/?window=settings&pane=provider");
+      mockSettings();
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "AI Provider" })).toBeTruthy();
+      expect(selected("AI Provider")).toBe("true");
+      expect(selected("General")).toBe("false");
+    });
+
+    test("an open window that receives the event shows the AI Provider pane", async () => {
+      setURL("http://localhost/?window=settings");
+      const tauri = mockSettings();
+      render(<App />);
+      await screen.findByRole("tab", { name: "General" });
+      expect(selected("General")).toBe("true");
+      await act(() => tauri.emit("settings-pane-requested", { pane: "provider" }));
+      expect(await screen.findByRole("heading", { name: "AI Provider" })).toBeTruthy();
+      expect(selected("AI Provider")).toBe("true");
+    });
+  });
+
   test("the licences query shows the full licence list and not the main window", async () => {
     setURL("http://localhost/?window=licences");
     mockTauri({ licence_text: () => "Rust crates\n\nexample 1.0.0\nMIT text" });
