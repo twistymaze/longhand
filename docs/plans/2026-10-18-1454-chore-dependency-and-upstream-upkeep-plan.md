@@ -13,9 +13,11 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** When nobody works on Longhand for weeks, users still get the security fixes that need no held update, safe dependency updates and small upstream bug fixes, and the maintainer gets a notice only when a decision or a hand test is necessary.
-- **Means:** A scheduled vulnerability check in CI (R1–R3) and a weekly Claude routine in the cloud (R4–R25) that updates dependencies, reviews the upstream projects, and keeps one tracking issue current.
-- **Product authority:** This plan. The transcribe-cpp 0.4 update, the Handy recorder crates idea and gitleaks are not active scope (see Scope Boundaries).
+- **Means:** A scheduled vulnerability check in CI (R1–R3) and a weekly Claude routine in the cloud (R4–R25) that updates dependencies, reviews the upstream projects, and keeps one tracking issue current. Repository scripts do the mechanical and safety work, and the routine does the judgment work (KTD1). A merge script, not the routine, decides each merge (KTD2).
+- **Product authority:** This plan. The Product Contract wins on behaviour; a KTD wins on mechanism within its cited requirements. The transcribe-cpp 0.4 update, the Handy recorder crates idea and gitleaks are not active scope (see Scope Boundaries).
 - **Open blockers:** None.
+- **Stop conditions:** Stop and ask the maintainer when the cloud session cannot merge a PR through the REST API (KTD3), when a requirement in R1–R25 cannot be met as written, or before the routine's schedule is created (U9).
+- **Execution profile:** One PR titled `ci: add weekly dependency and upstream upkeep`, units U1–U8 committed in order in one worktree. The PR changes no app code, so it makes no release. U9 (go-live) runs after the merge, with the maintainer. The implementer finishes with the PR and `ce-babysit-pr` until the PR is ready to merge.
 
 ---
 
@@ -56,8 +58,8 @@ Only the maintainer's local machine has the reference clones, so a review that r
 - R4. A Claude routine runs each week in the cloud, without the maintainer's machine.
 - R5. The routine updates only the dependencies that are not held (R6) to their newest patch and minor versions within the current version ranges. It takes only versions that the registry published at least 7 days before the run, and it skips yanked versions. An update that fixes a known advisory (R25) is the only exception to the 7-day rule, and the issue records each exception.
 - R6. The routine does not update these, and writes them in the tracking issue:
-  - major versions and the exact (`=`) pins;
-  - the native and audio crates (`cpal`, `ort`, `transcribe-cpp`, the tauri core and the macOS permission crates), `tauri-plugin-updater`, and the crates that only these crates use (for example the CoreAudio bindings, `wry` and `tao`);
+  - major versions, the exact (`=`) pins in `Cargo.toml` files, and the exact versions (no `^` or `~`) in `package.json`;
+  - the native and audio crates (`cpal`, `ort`, `transcribe-cpp`, the tauri core and the macOS permission crates), the platform API crates (`cidre`, `wasapi`, `windows`, `windows-sys`, `objc2-*`), the Keychain crates (`keyring`, `security-framework`), `tauri-nspanel`, `tauri-plugin-updater`, and the crates that only these crates use (for example the CoreAudio bindings, `wry` and `tao`);
   - `rig-core` and the other Rig crates: Rig's API still changes often, and the summary engine depends on it;
   - the JavaScript packages paired with a held crate (`@tauri-apps/api`, `@tauri-apps/cli`, and the JavaScript packages of held plugins);
   - an update whose changelog shows a change in behaviour that the routine cannot verify. When there are no release notes, the routine reads the source diff, and holds the update if it cannot assess the change.
@@ -111,23 +113,8 @@ Only the maintainer's local machine has the reference clones, so a review that r
 
 ### Dependencies / Assumptions
 
-- The cloud routine can clone public GitHub repos, open and merge PRs in `twistymaze/longhand`, and edit an issue. The planner verifies that the repository settings allow it to merge.
-- CI time per week is one dependency PR, plus zero or more port PRs, plus a daily vulnerability check.
-
-### Outstanding Questions
-
-**Deferred to Planning**
-
-- Whether the routine finds updates with the native tools (`cargo update --dry-run`, `bun outdated`) or with `renovate --platform=local`. The recommendation is the native tools first.
-- Whether the daily check writes its findings to the tracking issue or to a separate advisory issue that the routine reads.
-- How the review log update (R16) reaches `main`: in a PR, or as a direct docs-only commit. A direct commit works only with a bypass of the rules on `main`, which require 4 status checks that a docs-only push does not start. The planner verifies whether the routine's credential has that bypass.
-- How the routine finds advisories for vendored C and C++ code (R13), which no lockfile lists.
-- Which JavaScript audit tool works with `bun.lock`.
-- Whether `scripts/check-licences.sh` can produce the macOS and Windows licence lists on the Linux cloud runner. If it cannot, every weekly PR fails the licence gate (R9).
-- Which GitHub identity the routine uses (R24), and whether the rules on `main` let it merge a PR without a bypass.
-- Whether the daily check can reuse Dependabot alerts, which are already on, for its notices (R2).
-- Each port PR makes its own release, so one week can have more than one release. Planning decides whether ports go into the weekly PR.
-- The routine's day and time, and how the maintainer starts it by hand.
+- The cloud routine can clone public GitHub repos, open and merge PRs in `twistymaze/longhand`, and edit an issue. The rules on `main` (4 required checks, no review rule) let a PR merge without a bypass when its checks pass.
+- CI time per week is one dependency PR, zero or more port PRs, one review log PR, and a daily vulnerability check.
 
 ### Sources / Research
 
@@ -137,4 +124,405 @@ Only the maintainer's local machine has the reference clones, so a review that r
 - `native/nemo-helper/runtime.json` and `crates/models/src/recognition.rs`: the NeMo-Speech.cpp and transcribe revision pins.
 - Exact pins: `Cargo.toml` (specta, tauri-specta), `crates/onnx/Cargo.toml` (ort), `crates/embedding/Cargo.toml` (knf-rs), `crates/session-core/Cargo.toml` (rusqlite_migration), `src-tauri/Cargo.toml` (tauri-plugin-notification, tauri-plugin-autostart, tauri-plugin-global-shortcut).
 - `docs/development-workflow.md`: the licence list rule for dependency changes.
-- GitHub repository settings, checked 2026-10-18: Dependabot alerts on with none open, Dependabot security updates off.
+- GitHub repository settings, checked 2026-10-18: Dependabot alerts on with none open, Dependabot security updates off. Ruleset "default branch protections": required checks `Checks (macos-latest)`, `Checks (windows-latest)`, `cargo deny` and `PR title`; only the Admin role can bypass; auto-merge and squash merge are allowed.
+- Claude Code on the web: each routine firing is a fresh session on Ubuntu (about 4 vCPU, 16 GB RAM, 30 GB disk). Git and REST calls go through a GitHub proxy as the connected user. The proxy blocks GraphQL, so `gh pr` and `gh issue` fail and `gh api` (REST) works. The proxy serves only the repositories attached to the routine.
+- cargo-deny 0.20: `check advisories --format json` writes one JSON object per line on stderr; `[advisories] ignore` takes `{ id, reason }`. Cargo's own minimum publish age becomes stable in Cargo 1.100 (due 2026-11-12); the repo uses 1.94.0.
+- bun: `bun audit --json`, and `[install] minimumReleaseAge` (seconds) with `minimumReleaseAgeExcludes` in `bunfig.toml`.
+- GitHub Actions: a PR opened with `GITHUB_TOKEN` starts no CI, but a PR opened with a user identity does. A scheduled workflow in a public repository is disabled after 60 days without repository activity. GitHub does not notify a user about the user's own comments.
+
+---
+
+## Planning Contract
+
+**Product Contract preservation:** restructured, no scope change. R6 names more crates and packages within its existing categories (platform API, Keychain, exact JavaScript versions). The Outstanding Questions that were deferred to planning are answered by KTD1–KTD15 and removed.
+
+### Key Technical Decisions
+
+- KTD1. **Scripts in `scripts/upkeep/` do every mechanical and safety step; the routine does only the judgment steps.** The scripts choose versions, hold crates, apply the 7-day wait, filter comments by trust and merge. The routine reads changelogs and upstream changes, ports fixes and writes the issue. A script gives the same result each week and has tests, and a prompt does not. This also answers the Renovate question: the native tools (`cargo`, `bun`, crates.io API) are enough, so `renovate --platform=local` is not used.
+- KTD2. **A merge script is the only way the routine merges.** The routine acts as the maintainer's account, which has the Admin role and can bypass the rules on `main`. So the script, not the ruleset, enforces the gate (R7, R14): the four required checks of the ruleset are present on the PR head and successful, no other check run is failed or still running (a skipped job, such as the release jobs on a PR, is accepted), the branch starts with `upkeep/`, the title type fits the PR kind, and the change itself is allowed for that kind (U6). It merges with squash and the expected head SHA. The routine never pushes to `main` and never merges in any other way.
+- KTD3. **The routine uses REST through `gh api`, never GraphQL.** The cloud proxy blocks GraphQL. So the routine cannot use `gh pr merge --auto`; it waits for CI and then calls the merge script. A REST merge through the proxy is not documented; U9 proves it before the schedule starts.
+- KTD4. **Dependency code never runs in the routine's session (R24).** The routine changes only lockfiles: `cargo update --precise` resolves without building, and bun updates use lockfile-only mode with no install scripts. A read-only workflow (`upkeep-licences.yml`) runs the frontend build and cargo-about, and the routine downloads the licence lists from it (R9). CI runs all builds and tests. The GitHub credential stays in the proxy, and no build runs next to it.
+- KTD5. **The routine applies the 7-day wait for crates itself; bun applies it for JavaScript packages (R5).** The update script reads `created_at` and `yanked` from the crates.io API and pins each crate with `cargo update -p <crate> --precise <version>`. `bunfig.toml` gets `minimumReleaseAge = 604800`, which also covers manual installs. For an advisory exception (R25), the routine gives bun a one-time exclusion for that package on the command line and never edits `bunfig.toml`; the maintainer edits `minimumReleaseAgeExcludes` for any lasting exception. When the repository moves to Cargo 1.100 or later, Cargo's own setting can replace the crate code. (session-settled: user-approved — chosen over our own publish-date code for JavaScript packages: one setting, and it also protects manual installs.)
+- KTD6. **The advisory check is its own workflow, `advisories.yml`, and not a required check (R1).** The required `cargo deny` job runs on each PR, so an advisory on `main` would block all PRs. A required check with a `paths` filter also stays pending when the filter skips it. The new workflow runs daily, on PRs that change dependency files, and on demand.
+- KTD7. **`deny.toml` checks only the shipped targets, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.** This removes tauri's Linux-only GTK crates and their advisories, which Longhand does not ship (R3). It also limits the existing licence and bans checks to these targets, which matches what `scripts/licences/generate.ts` already lists. The maintainer adds any remaining ignore in U1 (R3).
+- KTD8. **A per-PR advisory failure means "new on this PR" (R1).** The check runs cargo-deny and `bun audit` on the base and on the head, and fails only for an affected package version (advisory ID, package and version) that is on the head and not on the base. So a second vulnerable copy of a package fails even when its advisory ID is already on `main`.
+- KTD9. **"Needs a decision" means "the next weekly PR cannot fix it" (R2, R25).** The daily job runs the U2 selection, with its advisory exception, on a scratch copy of the lockfiles, and checks again. An advisory that stays, or that only a held update fixes, needs a decision. The daily job reads the tracking issue for the advisories that it already reported, so it gives each notice once.
+- KTD10. **Notices come from the GitHub Actions bot, not the routine (R20, R2).** GitHub does not notify a user about the user's own comments, and the routine acts as the maintainer. The routine adds the label `upkeep: needs you`, and `upkeep-notify.yml` posts one comment that mentions the maintainer, then removes the label. The daily job uses the same comment path. The maintainer's login is a repository variable, `UPKEEP_MAINTAINER`.
+- KTD11. **The routine never comments; it only edits the issue body (R18, R19, R22).** So every comment on the issue comes from a person or from the notice workflow. The issue script returns each comment with one of three trust levels: `maintainer` (the login in `UPKEEP_MAINTAINER`), `collaborator` (OWNER, MEMBER or COLLABORATOR) and `data` (all others, and every bot). Only a `maintainer` comment can defer or reject an advisory or an upstream security finding (R19).
+- KTD12. **Each kind of change has its own PR.** The weekly dependency PR is `build(deps): ...`. Each port is a `fix(upstream): ...` PR, so each port is its own patch release; several releases in one week are acceptable (Key Decisions). The review log update is a `docs(upkeep): ...` PR that makes no release (R16). The routine cannot commit to `main` directly, because it must not use the Admin bypass (KTD2).
+- KTD13. **The two schedules watch each other.** GitHub disables a scheduled workflow in a quiet public repository after 60 days. The routine enables `advisories.yml` again at the start of each run, through the REST API. `advisories.yml` reads the last run date in the issue and gives a notice when it is more than 8 days old (R2, R21).
+- KTD14. **The routine runs in a dedicated cloud environment with no connectors.** Its network allows only GitHub, the GitHub Actions results storage hosts (job logs and artifacts download from there, R8, R9), crates.io, the npm registry and the Rust toolchain hosts. The routine has attached as sources the upstream repositories that it reviews (R11) and the vendored projects whose advisories it reads (llama.cpp, whisper.cpp, onnxruntime, the Vulkan loader; R13), because the proxy serves only attached repositories. Running on the studio-1 bridge environment was not chosen: that machine holds the signing keys and the CI runners, and the routine reads text from strangers.
+- KTD15. **The routine's instructions are a file in the repository, `docs/upkeep/weekly-routine.md`, read from `main` at each run.** The routine's stored prompt only says to read and follow it. A change to the instructions is a normal reviewed PR, and the merge script refuses any routine PR that changes `docs/upkeep/`, `scripts/upkeep/`, `.github/`, `bunfig.toml` or `licences/` other than `licences/generated/`. It accepts a `deny.toml` change only when the change removes advisory ignores and adds nothing (R3) (KTD2).
+- KTD16. **Routine PRs run their CI on GitHub's runners.** A routine PR carries new third-party code that no person has read. The `Checks` jobs use GitHub-hosted runners when the head branch starts with `upkeep/`, so that code does not run on the self-hosted runners at studio-1. Hosted runners are free for a public repository; a Windows check takes about 20 minutes there.
+- KTD17. **After a timing failure, the routine closes the PR.** The project rule says that a timing failure is a test defect to fix, not a reason to run CI again (R8). No routine PR kind may change tests outside a port, so the routine closes the PR, writes the test and the failure in the issue as a test defect for the maintainer, and builds a new PR from `main` on the next run.
+
+### High-Level Technical Design
+
+The weekly run, from the routine's start to the issue update:
+
+```mermaid
+flowchart TD
+  start([Weekly firing: fresh cloud session]) --> enable[Enable advisories.yml again]
+  enable --> readissue[Read issue + trusted comments<br/>scripts/upkeep issue]
+  readissue --> select[Select updates<br/>held list, 7-day wait, yanked]
+  select --> review{Changelog or diff shows<br/>unverifiable change?}
+  review -- yes --> hold[Hold, list in issue]
+  review -- no --> branch[upkeep/deps branch:<br/>lockfile-only updates]
+  branch --> lic[Dispatch upkeep-licences.yml,<br/>download lists, commit]
+  lic --> pr[Open build deps PR via REST]
+  pr --> ci{CI result}
+  ci -- update failure, first time --> drop[Remove that update, run CI once more]
+  drop --> ci2{CI result}
+  ci -- infrastructure fault, first time --> rerun[Run CI once more, no change]
+  rerun --> ci2
+  ci -- timing failure --> close[Close PR, report test defect]
+  ci2 -- green --> merge
+  ci2 -- any failure --> report[Report in issue, no merge]
+  close --> write
+  ci -- green --> merge[Merge script: checks, branch,<br/>title, allowed files]
+  start --> upstream[Review upstream since baseline]
+  upstream --> small{Small fix?<br/>R14}
+  small -- no --> hold
+  small -- yes --> port[upkeep/port branch:<br/>test-only commit must fail in CI,<br/>then fix commit must pass]
+  port --> merge
+  merge --> write[Rewrite issue body,<br/>last run date]
+  hold --> write
+  report --> write
+  write --> label{New item needs you?}
+  label -- yes --> notify[Add label; upkeep-notify.yml<br/>posts the mention]
+  write --> log[docs upkeep PR:<br/>move baselines forward]
+  log --> merge2[Merge script]
+```
+
+The parts and who runs them:
+
+| Part | Runs where | Identity | Can merge |
+|---|---|---|---|
+| `advisories.yml` | GitHub Actions, daily and on dependency PRs | GitHub Actions bot | No |
+| `upkeep-licences.yml` | GitHub Actions, on dispatch for an `upkeep/` branch | GitHub Actions bot, read-only | No |
+| `upkeep-notify.yml` | GitHub Actions, on the label | GitHub Actions bot, `issues: write` | No |
+| Weekly routine | Claude Code cloud session | Maintainer, through the proxy | Only through the merge script |
+
+### Assumptions
+
+- A REST merge through the cloud GitHub proxy works. U9 proves it; if it does not, the routine stops before any merge and reports, and the maintainer decides the next step.
+- A cloud session can stay alive long enough to wait for CI (about 20 minutes per PR on the self-hosted runners). U9 measures one full run.
+- The self-hosted macOS and Windows runners are online most of the time. When a run waits more than 2 hours, the routine stops waiting, merges nothing for that PR, and reports.
+
+### Sequencing
+
+U1 and U2 come first, because the workflows and the routine use their configuration and scripts. U3–U5 add the workflows. U6 is the merge and issue script. U7 and U8 are documents. U9 is the go-live after the PR merges.
+
+---
+
+## Implementation Units
+
+### U1. Advisory and cooldown configuration
+
+**Goal:** `cargo deny check advisories` and `bun audit` pass on `main` with recorded reasons, and new JavaScript versions wait 7 days.
+
+**Requirements:** R1, R3, R5; KTD5, KTD7.
+
+**Dependencies:** None.
+
+**Files:**
+- `deny.toml`
+- `bunfig.toml`
+- `docs/development-workflow.md`
+
+**Approach:**
+1. Add `[graph] targets` for the two shipped triples (KTD7) and an `[advisories]` section with the current schema.
+2. Run the advisory check and `bun audit` on `main`. Show the maintainer each remaining advisory. Add an ignore with a reason only for an advisory that the maintainer accepts (R3).
+3. Add `minimumReleaseAge` and an empty `minimumReleaseAgeExcludes` to `bunfig.toml` (KTD5).
+4. Say in `docs/development-workflow.md` how to add an exclusion and an ignore.
+
+**Test scenarios:**
+- Test expectation: none -- configuration only. The proof is that the existing `cargo deny` job still passes with the narrower targets, and that the new advisory check passes on `main`.
+
+**Verification:** `cargo deny check` (all checks) passes locally. `bun install --frozen-lockfile` still passes with the new `bunfig.toml`, also when `bun.lock` holds a version younger than `minimumReleaseAge` (the case of an advisory exception, KTD5). If it does not pass, stop and ask the maintainer (Goal Capsule stop conditions).
+
+### U2. Update selection and held list
+
+**Goal:** One script gives the exact updates that the weekly PR may contain, and the held updates with their reasons.
+
+**Requirements:** R5, R6, R25; KTD1, KTD4, KTD5.
+
+**Dependencies:** U1.
+
+**Files:**
+- `scripts/upkeep/held.json`
+- `scripts/upkeep/select-updates.ts`
+- `scripts/upkeep/select-updates.test.ts`
+
+**Approach:**
+1. `held.json` lists the held crates and packages by name or prefix, each with a reason (R6). The script adds the exact pins it reads from `Cargo.toml` files and `package.json`, and the crates that only held crates use, which it finds in `cargo metadata`.
+2. For each crate that is not held, the script reads the versions from the crates.io API (with an identifying User-Agent, at most one request per second) and picks the newest version within the current range that is at least 7 days old and not yanked. For a package with an advisory in the current advisory output, the script picks the newest fixing version that is 7 days old; when no fixing version is that old, it picks the oldest version in the advisory's patched range and lists it in `exceptions` with the advisory ID (R5, R25).
+3. For JavaScript packages, the script asks bun for the newest allowed versions; `bunfig.toml` applies the wait. For an advisory exception, it selects the exact fixing version by the same rule and gives bun a one-time exclusion for that package on the command line (KTD5). It then checks that the resulting `bun.lock` has that exact version and that the advisory is gone.
+4. After the updates, the script compares the resolved lockfiles with the base. When a requested update moved a held crate or package, it removes that update and lists it as held with the reason "moves a held dependency".
+5. The output is JSON: `apply` (each with the command to run), `held` (each with a reason) and `exceptions`.
+
+**Patterns to follow:** `scripts/release-version.ts` and its test (header usage comment, `import.meta.main`, temporary git repository in tests, no network in tests).
+
+**Test scenarios:**
+- A crate with a patch release 3 days old and one 10 days old: the script picks the 10-day version.
+- A crate whose only newer version is yanked: no update.
+- `cpal` and a crate that only `cpal` uses: both held, with the `cpal` reason.
+- A crate that both `cpal` and a crate that is not held use: not held.
+- An `=` pin in a `Cargo.toml` and an exact version in `package.json`: both held as exact pins.
+- A `rig-core` entry: held with the Rig reason.
+- An advisory-fixing crate version 2 days old and no older fixing version: in `apply` and in `exceptions`.
+- Fixing versions 10 days old and 1 day old: the script picks the 10-day version, with no exception.
+- An advisory-fixing npm version 2 days old: in `apply` and `exceptions`, applied with a one-time exclusion, and `bunfig.toml` is unchanged.
+- An update to a crate that is not held makes the resolver move `cpal`: that update is removed and held with the reason "moves a held dependency".
+- The crates.io API returns an error for one crate: that crate is held with the reason "publish date unknown", and the other crates continue.
+
+**Verification:** `bun test scripts/upkeep/select-updates.test.ts` passes. A run against the repository lists `apply` and `held` without a change to any file.
+
+### U3. Advisory workflow
+
+**Goal:** Advisories reach the maintainer daily without blocking PRs, and a PR fails only for an advisory that it adds.
+
+**Requirements:** R1, R2, R3, R21, R25; KTD6, KTD8, KTD9, KTD13.
+
+**Dependencies:** U1, U2.
+
+**Files:**
+- `.github/workflows/advisories.yml`
+- `scripts/upkeep/advisories.ts`
+- `scripts/upkeep/advisories.test.ts`
+
+**Approach:**
+1. Triggers: `schedule` (daily), `workflow_dispatch`, and `pull_request` with `paths` on `Cargo.lock`, `**/Cargo.toml`, `bun.lock`, `package.json`, `deny.toml` and `bunfig.toml`. Own concurrency group. `permissions: contents: read`; a separate notice job has `issues: write`. Actions pinned by full SHA.
+2. `advisories.ts compare` reads the cargo-deny JSON lines and the `bun audit` JSON for base and head, and fails with the list of new advisory IDs (KTD8).
+3. On a PR from an `upkeep/` branch, a step fails when the diff adds an advisory ignore, a bun audit ignore, or a licence to the allow-list (R3).
+4. `advisories.ts classify` (daily) applies KTD9 and compares with the IDs already listed in the tracking issue. For a new advisory that needs a decision, the notice job posts one comment that mentions the maintainer (KTD10).
+5. The daily job reads the last run date marker in the issue body and gives a notice when it is more than 8 days old (KTD13).
+6. Untrusted text, such as advisory titles, reaches shell steps only through environment variables.
+
+**Test scenarios:**
+- Base has advisory A, head has A and B: compare fails and names only B.
+- Base and head have A: compare passes.
+- Base has A for `foo 1.0`, head has A for `foo 1.0` and `foo 2.0`: compare fails and names `foo 2.0`.
+- Head removes A: compare passes.
+- cargo-deny writes no advisories and bun audit returns an empty result: compare passes.
+- `bun audit` exits 1 for a registry failure: compare fails with "audit could not run", not "new advisory".
+- Classify: advisory A is gone after the scratch update to allowed versions: no notice.
+- Classify: advisory B stays after the scratch update: notice, once; the next day with B already in the issue: no notice.
+- Classify: advisory C needs an update to a held crate: notice.
+- Last run marker 9 days old: overdue notice; 3 days old: none; marker missing: overdue notice.
+
+**Verification:** `bun test scripts/upkeep/advisories.test.ts` passes, and `actionlint` reports nothing for the workflow. A `workflow_dispatch` run on the branch completes.
+
+### U4. Licence list workflow
+
+**Goal:** The routine gets correct licence lists for its dependency branch without running dependency code itself.
+
+**Requirements:** R9, R24; KTD4.
+
+**Dependencies:** None.
+
+**Files:**
+- `.github/workflows/upkeep-licences.yml`
+
+**Approach:**
+1. `workflow_dispatch` with an input for the branch; the job refuses a branch that does not start with `upkeep/`.
+2. `permissions: contents: read`, no secrets. It runs `bun install --frozen-lockfile`, `cargo fetch --locked`, and the generation part of `scripts/check-licences.sh` on ubuntu-latest, and uploads `licences/generated/` as an artifact.
+3. When generation fails (for example a new tailwindcss version that `licences/manifest.json` does not list, or a changed licence file in a crate that `about.toml` checks), the job fails and its log names the crate or package. The routine then holds that update (R6, R9).
+
+**Patterns to follow:** the Licences steps in `.github/workflows/ci.yml` (cargo-about 0.9.2 install, `cargo fetch --locked`).
+
+**Test scenarios:**
+- Test expectation: none -- workflow only. Proven in U9 with a real dispatch on an `upkeep/` branch, and by a dispatch on a branch with another name, which must fail.
+
+**Verification:** `actionlint` reports nothing.
+
+### U5. Notice workflow and labels
+
+**Goal:** The maintainer gets a real GitHub notice when the routine needs a decision.
+
+**Requirements:** R2, R20; KTD10.
+
+**Dependencies:** None.
+
+**Files:**
+- `.github/workflows/upkeep-notify.yml`
+
+**Approach:**
+1. Trigger: `issues` with type `labeled`, only for the label `upkeep: needs you` on an issue that also has the label `upkeep`.
+2. One job with `issues: write` posts a comment that mentions `vars.UPKEEP_MAINTAINER` and links to the issue, then removes the label.
+3. Create the labels `upkeep` and `upkeep: needs you` (documented in U8; created in U9).
+
+**Test scenarios:**
+- Test expectation: none -- workflow only. Proven in U9: adding the label to the tracking issue gives the maintainer a notice and removes the label.
+
+**Verification:** `actionlint` reports nothing.
+
+### U6. GitHub helper, merge gate and issue reader
+
+**Goal:** The routine merges only what the plan allows, and reads the issue with comments marked as trusted or data.
+
+**Requirements:** R3, R5, R6, R7, R14, R15, R16, R18, R19, R22, R23; KTD2, KTD3, KTD11, KTD12, KTD15, KTD16.
+
+**Dependencies:** U2.
+
+**Files:**
+- `scripts/upkeep/github.ts`
+- `scripts/upkeep/merge.ts`
+- `scripts/upkeep/merge.test.ts`
+- `scripts/upkeep/issue.ts`
+- `scripts/upkeep/issue.test.ts`
+- `scripts/upkeep/sensitive-paths.json`
+- `.github/workflows/ci.yml` (add the new tests to the script test step; use GitHub-hosted runners for `Checks` when the head branch starts with `upkeep/`, KTD16)
+
+**Approach:**
+1. `github.ts` calls the REST API through `gh api` only (KTD3).
+2. `merge.ts <pr> --kind deps|port|docs` merges only when all of these hold:
+   - the head branch starts with `upkeep/`, and the title type fits the kind (`build(deps)`, `fix(upstream)`, `docs(upkeep)`), with no `+` or `!`;
+   - the four required checks (`Checks (macos-latest)`, `Checks (windows-latest)`, `cargo deny`, `PR title`) are present on the head SHA and successful, and for a deps PR the advisory check of U3 too;
+   - no other check run on the head SHA is failed, cancelled, timed out or still running; skipped and neutral are accepted;
+   - no changed file is under the refused paths of KTD15;
+   - the change is allowed for the kind:
+     - deps: only `Cargo.lock`, `bun.lock`, `licences/generated/*`, version ranges of existing registry entries in `package.json`, and removed ignores in `deny.toml`. The script compares the lockfiles with the base and refuses when a changed package is held (U2's held list), is not from the registry, is yanked, or is less than 7 days old without an advisory exception that the current advisory output confirms;
+     - port: only files that a PROVENANCE record on the base commit lists as borrowed from the named project, the PROVENANCE records of those files (the `Revision:` line only), and test files by fixed patterns (`*_test.rs`, `tests/*.rs`, `*.test.ts`, `*.test.tsx`; inline Rust test modules count as the source file). A `build.rs` change is refused. A path in `scripts/upkeep/sensitive-paths.json` (the capture, audio, permission, Keychain and native helper code, for example `crates/audio*`, `crates/recorder`, `crates/aec`, `crates/secrets`, `native/` and the permission and capture modules of `src-tauri`) is refused (R14);
+     - docs: only `docs/reference/reference-source-reviews.md`.
+3. It merges with squash and the head SHA it checked. Each refusal prints the failed condition, and the routine writes it in the issue.
+4. `issue.ts read` returns the tracking issue body and its comments, each with its trust level: `maintainer`, `collaborator` or `data` (KTD11).
+5. `github.ts open-prs` lists the open PRs on `upkeep/` branches with their kind and check state, so a new run continues from them. `issue.ts write` replaces the body from a file and keeps the last run date marker format that U3 reads.
+
+**Patterns to follow:** `scripts/ideas.test.ts` (a fake `gh` first on PATH, no network).
+
+**Test scenarios:**
+- Deps PR with green checks and only lockfile changes: merges with the checked head SHA.
+- One check still in progress: refuses with "checks not complete".
+- The release jobs and the soak job skipped, all others green: merges.
+- One check failed: refuses.
+- A required check missing from the head (for example right after the PR opens): refuses.
+- Deps PR that adds an ignore to `deny.toml`: refuses with the path; one that only removes an ignore: allowed.
+- Deps PR whose `Cargo.lock` changes `cpal`: refuses with "held".
+- Deps PR whose `bun.lock` has a version 2 days old with no confirmed advisory: refuses.
+- Deps PR that changes a `package.json` entry to a `github:` or `file:` source: refuses.
+- Port PR that changes a file in `crates/audio-cpal` that PROVENANCE lists as borrowed from Handy: refuses (AE2).
+- Port PR that also adds a new path to a PROVENANCE record: refuses (the allowed set comes from the base commit).
+- Port PR that changes a `build.rs`: refuses.
+- Deps PR that changes a dependency name in `package.json`, not only a version: refuses.
+- Port PR that changes a file that no PROVENANCE record lists for that project: refuses.
+- Port PR that changes `.github/workflows/ci.yml`: refuses.
+- Branch `fix/x` instead of `upkeep/...`: refuses.
+- Title `build(deps)+: ...`: refuses.
+- Head SHA changes between the check and the merge: the merge call fails, and the script reports it without retry.
+- Issue read: a comment by the `UPKEEP_MAINTAINER` login is `maintainer`; by another COLLABORATOR, `collaborator`; by a NONE account, `data`; by `github-actions[bot]`, `data`.
+- Open PRs: two open `upkeep/` PRs, one green and one failed, are listed with their kinds and check states.
+- Issue write keeps the last run marker that `advisories.ts` parses (shared fixture with U3).
+
+**Verification:** `bun test scripts/upkeep` passes locally, and the CI step runs the new tests.
+
+### U7. Review log for the routine
+
+**Goal:** The review log is the routine's start point for every upstream project and documents the weekly procedure.
+
+**Requirements:** R11, R12, R16, R17.
+
+**Dependencies:** None.
+
+**Files:**
+- `docs/reference/reference-source-reviews.md`
+
+**Approach:**
+1. Add rows for NeMo-Speech.cpp (last reviewed commit, first the revision in `native/nemo-helper/runtime.json`), transcribe-cpp, `handy-recorder` and `handy-cpal` (last reviewed crate release, first the version in `Cargo.lock` or the version that the borrowing notes name).
+2. Replace the two-week manual procedure with the weekly routine: the routine clones at the baseline, sorts changes into the four groups (R12), writes "Idea" findings to the issue instead of `docs/ideas/`, and moves baselines forward only by a `docs(upkeep)` PR after the issue is saved (R16).
+3. Keep a short manual procedure for a review that the maintainer starts by hand.
+
+**Test scenarios:**
+- Test expectation: none -- documentation. The merge gate test in U6 uses this file as the only allowed docs path.
+
+**Verification:** Each upstream project in R11 has one row with a URL and a baseline.
+
+### U8. Routine instructions and setup documentation
+
+**Goal:** A fresh cloud session can do the whole weekly run from one file, and the maintainer can set up, start and stop the routine.
+
+**Requirements:** R4, R8, R10, R13, R14, R15, R18–R23; KTD3, KTD4, KTD12–KTD15.
+
+**Dependencies:** U2–U7.
+
+**Files:**
+- `docs/upkeep/weekly-routine.md`
+- `docs/upkeep/README.md`
+- `docs/development-workflow.md`
+
+**Approach:**
+1. `weekly-routine.md` gives the run in order, as in the High-Level Technical Design: enable `advisories.yml`; read the issue (only a `maintainer` comment can defer or reject an advisory or a security finding, R19); list the open `upkeep/` PRs, merge each green one through `merge.ts`, close a stale deps PR, and do not open a second port PR for a commit that an open port PR covers; select and review updates; build the deps branch with lockfile-only commands; get the licence lists from U4; open the PR; wait for CI up to 2 hours; handle failures by R8 and KTD17; merge with `merge.ts`; review upstream from the baselines; look for C/C++ and binary advisories by the upstream release notes and the GitHub advisory database of each vendored project (R13); port small fixes with the test-first CI proof (R15); write the issue; add the label when a new item needs the maintainer; open the review log PR.
+2. It states the rules that bind the routine: data-only content (R22, R23), no comments on the issue (KTD11), no `+` or `!` in titles, no rerun of CI for a timing failure, no push to `main`, no merge except through `merge.ts`.
+3. `README.md` documents the environment (KTD14), the attached repositories, the labels, the `UPKEEP_MAINTAINER` variable, the stored prompt text, how to start a run by hand, and how to pause the routine.
+4. `docs/development-workflow.md` gets a short "Dependency and upstream upkeep" section that links to `docs/upkeep/README.md`.
+
+**Test scenarios:**
+- Test expectation: none -- instructions. U9 runs them once by hand.
+
+**Verification:** Each requirement R4–R25 that the routine owns is named in `weekly-routine.md`.
+
+### U9. Go-live (after the PR merges)
+
+**Goal:** The routine runs on a schedule, and one hand-started run proves each path.
+
+**Requirements:** R4, R20, R21; KTD3, KTD10, KTD13, KTD14.
+
+**Dependencies:** U1–U8 merged to `main`.
+
+**Files:** None in the repository.
+
+**Approach:**
+1. With the maintainer's OK: create the labels, set `UPKEEP_MAINTAINER`, create the tracking issue with the label `upkeep`, and create the cloud environment (KTD14).
+2. Start one run by hand. Check:
+   - a real PR merges through `merge.ts` and the REST API (KTD3). When the run has no update or port, it opens a `docs(upkeep)` PR that records the go-live review in the review log, and that PR must merge before step 3;
+   - the routine downloads one CI job log and the U4 licence artifact (KTD14);
+   - the routine reads release notes from one attached vendored project (R13);
+   - the notice workflow gives the maintainer a notice;
+   - the session lasts through a CI wait.
+3. Ask the maintainer for the day, time and time zone, then create the weekly trigger.
+4. When a check in step 2 fails, stop and report to the maintainer (Goal Capsule stop conditions).
+
+**Test scenarios:**
+- Test expectation: none -- operational. Step 2 is the end-to-end proof.
+
+**Verification:** One hand-started run ends with the issue rewritten, the last run date set, and at least one PR merged through `merge.ts`.
+
+---
+
+## Verification Contract
+
+| Gate | Command or check | Applies to |
+|---|---|---|
+| Script tests | `bun test scripts/upkeep` | U2, U3, U6 |
+| Existing script tests | the CI script test step, with the new files named in it | U6 |
+| Workflow lint | `actionlint` on each new or changed workflow | U3, U4, U5, U6 |
+| Action pins | each `uses:` has a full commit SHA | U3, U4, U5 |
+| Dependency gates | `cargo deny check`; `bun install --frozen-lockfile` | U1 |
+| Format and types | `cargo fmt --all --check`; `bun run typecheck` | all |
+| Provenance and licences | `scripts/check-provenance.sh`; `scripts/check-licences.sh` | all (no change expected) |
+| End-to-end | one hand-started routine run | U9 |
+
+## Definition of Done
+
+- U1–U8 are on one branch with one commit per unit, and the PR `ci: add weekly dependency and upstream upkeep` is green and ready to merge.
+- Each gate in the Verification Contract passes.
+- After the merge, U9 is complete: one hand-started run passed, and the weekly trigger exists with the maintainer's chosen day and time.
+- No experimental or abandoned code is left in the diff.
+
+---
+
+## Risks & Dependencies
+
+| Risk | Mitigation |
+|---|---|
+| The release build runs the build scripts of all crates while the signing secrets are present. A malicious update could read them. | The 7-day wait (R5) and the held list (R6) reduce the chance. Moving signing to a job without dependency code is follow-up work. |
+| The REST merge through the cloud proxy is not documented. | U9 proves it before the schedule starts; the routine stops and reports when it fails (KTD3). |
+| A self-hosted runner is offline, so the weekly PR does not merge. | The routine waits 2 hours, then reports in the issue; the next week tries again. |
+| A cloud session ends during a long CI wait. | The next run reads the open `upkeep/` PRs and continues from them. U9 measures one full run. |
+| A licence change in an update blocks the weekly PR. | U4 fails with the name of the update, and the routine holds that update (R6). |
+| The proxy cannot reach a repository that is not attached. | KTD14 attaches each upstream repository to the routine. |
+
+### Deferred to Follow-Up Work
+
+- Move code signing and notarization into a job that runs no dependency build scripts.
+- Replace the crate publish-date code with Cargo's `global-min-publish-age` after the toolchain moves to Cargo 1.100 or later.
