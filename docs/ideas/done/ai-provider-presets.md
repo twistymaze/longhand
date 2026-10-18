@@ -18,3 +18,7 @@ Today the user must know an OpenAI-compatible address and whether it ends in `/v
 
 ## Notes / Current state
 The plan holds the requirements. It is the first step before [agentic-summary](../someday/agentic-summary.md).
+
+## Outcome
+
+Shipped in PR #39: summaries go through Rig, and the AI Provider pane has the presets OpenAI, Anthropic, Gemini, OpenRouter, Ollama, LM Studio and Custom. The same PR names the steps of a summary in parts.
