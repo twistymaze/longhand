@@ -55,7 +55,7 @@ The next planned work (a summary agent with tools, then questions about a note w
 
 - R1. Rig sends every summary request and every title request, for every provider, Custom included.
 - R2. For the same transcript, notes, prompt and model, the summary request has the same content as today: the chunking, the context budget, the hierarchical merge, the summary prompts and the Background do not change.
-- R3. The current safety rules stay: no redirect is followed (a 3xx is a failure that names its target), the connect, response, idle and total deadlines apply, the reply size cap applies, a request is sent again only when the provider could not be reached, and logs never contain the URL path, the API key, the prompt or the reply. Longhand maps each Rig error to its own error kind before it logs anything, never logs the error text of Rig or of the request library (which can contain the URL, a key in the query string or the reply body), and keeps Rig's own log output out of Longhand's log.
+- R3. The current safety rules stay: no redirect is followed (a 3xx is a failure that names its target), the connect, response, idle and total deadlines apply, the reply size cap applies, a request is sent again only when the provider could not be reached (the one exception: a reply that refuses `max_tokens` by name gets one resend with `max_completion_tokens`), and logs never contain the URL path, the API key, the prompt or the reply. Longhand maps each Rig error to its own error kind before it logs anything, never logs the error text of Rig or of the request library (which can contain the URL, a key in the query string or the reply body), and keeps Rig's own log output out of Longhand's log.
 - R4. Each failure gives the user the same message as today, for example "check the credential stored for this host" for a refused key, and the current context-exceeded and reply-cut-off handling. For each kind of provider request (OpenAI-compatible, Anthropic, Gemini, Ollama), Longhand maps that provider's own cut-off and context-exceeded signals to these messages, and a test covers each kind.
 - R5. Longhand pins Rig to one exact version.
 - R6. With the Ollama provider, Longhand sends a context size large enough for the request (the prompt estimate plus the reply cap), and never more than the context limit (R15).
@@ -77,7 +77,7 @@ The next planned work (a summary agent with tools, then questions about a note w
 **Settings**
 
 - R16. Settings has a new pane, AI Provider, after Transcription and before Summaries.
-- R17. The AI Provider pane has one group with these rows, in this order: Provider; Address (local providers and Custom only); API key (cloud providers and Custom only); Model; a status row with the connection state, the model count and Refresh. A row shows only when the chosen provider needs it. The status row has these states: not set up (no key saved, so no request is sent), checking, connected with the model count, key refused, cannot reach the address, and connected with no model list (the Model row is then a text field). The first time the user chooses a provider, the Model row has no model until the user picks one. A remembered model that the provider no longer lists stays selected, and the status row says that the provider does not list it.
+- R17. The AI Provider pane has one group with these rows, in this order: Provider; Address (local providers and Custom only); API key (cloud providers and Custom only); Model; a status row with the connection state, the model count and Refresh. A row shows only when the chosen provider needs it. The status row has these states: not set up (no key saved, so no request is sent), checking, connected with the model count, key refused, cannot reach the address, Keychain locked, and connected with no model list (the Model row is then a text field). The first time the user chooses a provider, the Model row has no model until the user picks one. A remembered model that the provider no longer lists stays selected, and the status row says that the provider does not list it.
 - R18. The API key row keeps today's behaviour: Save, Remove, Repair Keychain Access, and the status "Saved in Keychain for {host} · fingerprint …".
 - R19. An Advanced group in the AI Provider pane holds the context limit.
 - R20. The Summaries pane keeps Background and Summary prompts, and shows one line that names the provider and model that summaries use, or "No provider set", with a link to the AI Provider pane.
@@ -174,7 +174,7 @@ All resolved in the Planning Contract (KTD1–KTD12). The wording of the pane na
 - Related lessons: `docs/solutions/logic-errors/summary-in-a-wake-with-no-network-kept-the-default-budget.md`, `docs/solutions/ui-bugs/single-line-setting-lost-at-close-or-pane-change.md`.
 - Rig: https://github.com/0xPlaygrounds/rig (tag v0.44.0, commit 2d1071e) and https://crates.io/crates/rig-core.
 
-**Product Contract preservation:** changed: R7, R15, R23, R25, R26 — the planning synthesis that the user confirmed on 2026-10-18 added None to the provider list, a context limit per provider, the provider snapshot per job, the discard of saved partial progress after a provider change, and the migration of a never-saved address and a cleared address.
+**Product Contract preservation:** changed: R3, R7, R15, R17, R23, R25, R26 — R3 names the existing `max_completion_tokens` resend as its one exception, and R17 lists the Keychain locked state; the planning synthesis that the user confirmed on 2026-10-18 added None to the provider list, a context limit per provider, the provider snapshot per job, the discard of saved partial progress after a provider change, and the migration of a never-saved address and a cleared address.
 
 ---
 
@@ -198,10 +198,10 @@ All resolved in the Planning Contract (KTD1–KTD12). The wording of the pane na
 - KTD5. **Model lists come from Rig; the context limit comes from Longhand's probes.** Rig's model listing serves every provider through the KTD1 transport. Longhand keeps its context probes for OpenAI-compatible servers (LiteLLM, LM Studio, vLLM, OpenRouter, llama.cpp), reads Gemini's limit from its model list, and reads an Ollama model's limit from Ollama's `/api/show`. OpenAI and Anthropic report none, so the entered value or 128,000 applies. Governs R15.
 - KTD6. **Settings shape: an active provider plus one entry for each provider in `LocalSettings`, at schema version 7.** Each entry holds the model, the address where the user can change it, and the entered context limit. A pure migration maps the old endpoint fields per R23. Settings commands take the provider. Governs R7, R10, R13, R15, R23.
 - KTD7. **Ollama context size from the current room, given with each request.** For a note that fits one call, `num_ctx` is that call's prompt estimate plus its current reply reserve. For a run in parts, it is the room limit of the run, which bounds every chunk and merge request. The value is rounded up to a multiple of 2,048 tokens, at least 4,096 or the context limit when that is smaller, and never more than the context limit. Longhand computes it again when the cut-off path raises the reply reserve, and passes it with each `complete` call, not on the endpoint. A run in parts keeps one value, so Ollama does not reload the model for each request. Longhand sends `truncate: false`, so Ollama refuses a prompt that is too long instead of cutting it. Governs R6.
-- KTD8. **Keychain account `summarize:{provider}:{host}`, with a lazy move of the old entry.** When a provider's entry is missing and an old `summarize:{host}` entry exists for the migrated provider, Longhand copies it into the new account and deletes the old one only after the write succeeds. A locked Keychain leaves both entries in place and shows the locked state. Governs R10, R23.
+- KTD8. **Keychain account `summarize:{provider}:{host}`, with a lazy move of the old entry.** When a provider's entry is missing and an old `summarize:{host}` entry exists for the migrated provider, Longhand copies it into the new account and deletes the old one only after the write succeeds. The cleanup is safe to repeat: whenever both entries exist, Longhand deletes the old one and never overwrites the new one. Until that cleanup has succeeded, Remove deletes both entries, so a removed key cannot come back from the old entry. A locked Keychain leaves both entries in place and shows the locked state. Governs R10, R23.
 - KTD9. **Custom `/v1` resolution runs in the connection check.** The check lists models at the typed address. When that fails with 404 or returns a reply that is not an OpenAI model list, and the address does not end in `/v1`, it tries `{address}/v1`; on success it saves that address. A 3xx, a TLS failure or a key refusal does not start the retry. When neither address gives a model list, the check sends one Chat Completions request with a 1-token cap to the typed address, and to `{address}/v1` when the typed address gives 404; it saves the address whose chat route does not give 404, and the Model row becomes a text field. The check runs when the Address field commits, never while the user types, and keeps the existing request counter, so a slow reply never saves over a newer address. Governs R14.
 - KTD10. **Settings can open on a given pane.** `open_settings` takes an optional pane; a new Settings window reads it from its URL, and an open one receives an event. The processing page, the recording bar, the Status pane and the Summaries line use it. Governs R11, R20.
-- KTD11. **A job snapshots its endpoint at start, and the saved partial progress carries the provider, the host and the model.** `SummaryEndpoint` gains the provider. The saved plan's agreement check compares the provider, the host and the model as well as the limit; a difference discards the saved progress. Governs R25, R26.
+- KTD11. **A job snapshots its endpoint at start, and the saved partial progress carries the provider, the host and the model.** `SummaryEndpoint` gains the provider. The saved plan's agreement check compares the provider, the full address (scheme, host, port and path) and the model as well as the limit; a difference discards the saved progress. Comparing the full address meets R26's host rule and also catches a Custom path change on one host. Governs R25, R26.
 - KTD12. **The toolchain moves to Rust 1.95 first, in its own commit.** New clippy warnings are fixed in that commit, so the Rig change starts from a clean build. Governs R24. (session-settled: user-approved — chosen over pinning Rig 0.42 on Rust 1.94: an older API, and a later upgrade needs the toolchain change anyway)
 
 ### High-Level Technical Design
@@ -301,7 +301,7 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 
 **Approach:**
 1. Add `rig-core = { version = "=0.44.0", default-features = false }`.
-2. Implement Rig's `HttpClientExt` over one reqwest 0.12 client built as `Client::new` builds it today (`crates/summarize/src/client.rs`): no redirects, connect timeout, idle deadline while the body is read, 8 MiB cap for success and error bodies, errors through `without_url()`.
+2. Implement Rig's `HttpClientExt` over one reqwest 0.12 client built as `Client::new` builds it today (`crates/summarize/src/client.rs`): no redirects, connect timeout, today's response deadline while waiting for the headers, idle deadline while the body is read, 8 MiB cap for success and error bodies, errors through `without_url()`.
 3. Streaming and multipart sends return an error, because this plan uses neither.
 
 **Patterns to follow:** the body reader and deadline handling in `crates/summarize/src/client.rs`; the mock server in `crates/summarize/tests/common/mod.rs`.
@@ -310,6 +310,7 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 - A 302 reply returns an error with its status and location, and the mock at the location receives nothing.
 - A body larger than 8 MiB fails as too large, for a success reply and for an error reply.
 - A server that stops sending mid-body fails at the idle deadline.
+- A server that accepts the connection and sends no headers fails at the response deadline, not at the total deadline.
 - A connect failure to a closed port is reported as unreachable.
 - A transport error for a URL with `?key=secret` contains no `key=` and no host path.
 - A TLS failure is reported as TLS, not as unreachable.
@@ -368,7 +369,7 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 
 **Approach:**
 1. Add the provider to `SummaryEndpoint`; update its constructions (one helper in the tests replaces the literal copies where it can).
-2. Record the provider, host and model in the private `Plan` in `crates/pipeline/src/summarize.rs`; make `Plan::agrees_with` compare them, and treat a saved plan without them as not agreeing.
+2. Record the provider, full address and model in the private `Plan` in `crates/pipeline/src/summarize.rs`; make `Plan::agrees_with` compare them, and treat a saved plan without them as not agreeing.
 3. Compute the Ollama `num_ctx` per KTD7 from the current room, again after the cut-off path raises the reply reserve, and pass it with each request.
 4. Change the context-limit message that names "Settings > Summaries" to the AI Provider pane, and its test.
 
@@ -376,7 +377,8 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 
 **Test scenarios:**
 - Covers AE9. A run that failed after two parts with Custom, regenerated with Anthropic, discards the saved parts and requests all parts from the Anthropic mock.
-- A regenerate with the same provider, host and model keeps the saved parts (today's behaviour).
+- A regenerate with the same provider, address and model keeps the saved parts (today's behaviour).
+- A regenerate after the Custom address changes to another path on the same host discards the saved parts.
 - A saved plan from before this change (no provider fields) is discarded, not reused.
 - Covers AE10. A summary that started with the Ollama mock finishes there after the settings change to Anthropic; the next job goes to the Anthropic mock.
 - Covers AE6. An Ollama note that fits one call and needs about 20,000 tokens with its reply reserve sends `num_ctx` 20,480, and a short note sends 4,096.
@@ -444,6 +446,8 @@ U1 first (the toolchain), then U2 → U3 → U4 for the engine, then U5 → U6 �
 - Covers AE8. Saving key A for OpenRouter and key B for Custom at `openrouter.ai` keeps both, under different accounts.
 - The lazy move copies `summarize:litellm.ewal.io` into `summarize:custom:litellm.ewal.io` and then deletes the old entry; a failed write keeps the old entry.
 - A locked Keychain during the move leaves both entries and reports the locked state.
+- With both entries present after an interrupted cleanup, the next read deletes the old entry and keeps the new key unchanged.
+- Remove while the old entry still exists deletes both, and the next read finds no key.
 - Covers AE2. With no provider, the gate sends nothing and the processing view says no provider is set.
 - A cloud provider with no key is gated as not set up; Ollama with no key is allowed after the user chose it.
 - Covers AE1. Switching from Anthropic to Ollama and back restores Anthropic's model and key status.
