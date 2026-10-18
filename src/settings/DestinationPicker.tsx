@@ -58,9 +58,17 @@ function useMove() {
   // The number of Move events so far. A status read that started before
   // the last event is older than that event.
   const eventCount = useRef(0);
+  // The number of Moves that finished so far. A status read that started
+  // before the last finish can give the folder of another Move.
+  const finishCount = useRef(0);
   const read = useCallback(async () => {
     const count = eventCount.current;
+    const finishes = finishCount.current;
     const status = await commands.moveStatus();
+    if (finishes !== finishCount.current) {
+      if (current.current && current.current.folder === null) void read();
+      return;
+    }
     if (count !== eventCount.current) {
       // The events give no folder and no pause cause: take only those.
       const m = current.current;
@@ -89,6 +97,7 @@ function useMove() {
       eventCount.current += 1;
       const m = current.current;
       if (payload.state === "finished") {
+        finishCount.current += 1;
         setFinished({ moved: payload.moved, folder: m?.folder ?? null });
         setMove(null);
         return;
