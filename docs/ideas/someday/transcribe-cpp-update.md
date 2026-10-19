@@ -21,3 +21,4 @@ Handy went from 0.2.4 to 0.3.0, 0.3.1 and then 0.4.0 between 2026-09-29 and 2026
 - Shorthand reports that the Vulkan half-initialized-device crash after Modern Standby is still in 0.3.0 (see `docs/reference/borrowing-notes.md`). The update does not fix it.
 - Handy 3985508 runs Silero VAD through transcribe-cpp. The backend mask given to `init_backends_with` is fixed at the first registration in a process.
 - Do a real-audio route check before and after, as for the 0.2.4 update (archived PR 25).
+- Upkeep review, 2026-10-19 (issue #47): 0.4.0 also has the ggml GGUF loader overflow and malformed-file fixes and the ggml Vulkan Flash Attention out-of-bounds fix, which the 0.2.4 ggml pin does not have. It also adds Silero VAD, a backend allowlist, a repetition guard and a langid role (see `summary-language`). 0.3.0 removes `<unk>` from NeMo output, and 0.4.0 builds with `GGML_NATIVE=OFF` on macOS; a separate `fix:` PR fixes these two in Longhand before the update.
