@@ -336,4 +336,24 @@ describe("links", () => {
       expect(decodeURI(node.marks?.[0].attrs?.href)).toBe(href);
     }
   });
+
+  test("keep an address with a backslash", () => {
+    for (const href of [
+      "https://example.com/a\\",
+      "https://example.com/a\\)b",
+      "https://example.com/my file\\",
+      "https://example.com/my file\\>b",
+    ]) {
+      const json = doc(
+        p({ type: "text", text: "link", marks: [{ type: "link", attrs: { href, target: null } }] }),
+      );
+      const back = md2json(json2md(json));
+      expect(back.content).toHaveLength(1);
+      expect(back.content![0].content).toHaveLength(1);
+      const node = back.content![0].content![0];
+      expect(node.text).toBe("link");
+      expect(node.marks?.[0].type).toBe("link");
+      expect(decodeURI(node.marks?.[0].attrs?.href)).toBe(href);
+    }
+  });
 });
