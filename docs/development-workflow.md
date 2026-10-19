@@ -50,7 +50,9 @@ Run local checks, including:
 
 Dependency rules that apply to each change:
 
-- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- A PR fails the `cargo deny` check when `Cargo.lock` or `bun.lock` gains a version that is less than 7 days old, or a `bun.lock` entry that does not come from the npm registry (`scripts/check-dependency-age.ts`). When you must have such a version, for example for a security fix, add it to `min-age-exceptions.toml` with a reason, and remove the entry again after 7 days.
+- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, also add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- A PR fails the `cargo deny` check when it adds an advisory that `main` does not have (`scripts/check-new-advisories.ts`). An advisory that is already on `main` does not fail a PR.
 - `deny.toml` checks known vulnerabilities for the shipped targets only. Only the maintainer adds an entry to `[advisories] ignore`, and each entry has a `reason`. Run the check with `cargo deny check advisories`.
 
 CI runs only on:

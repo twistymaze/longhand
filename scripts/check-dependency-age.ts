@@ -1,0 +1,146 @@
+// Fails a PR that adds a dependency version that is less than 7 days old
+// (docs/development-workflow.md). The `cargo deny` CI job runs it on each PR.
+//
+//   bun scripts/check-dependency-age.ts <base-dir> <head-dir>
+//
+// It compares Cargo.lock and bun.lock of the base and the head. For each
+// version that the head adds, it reads the publish date: a crate from the
+// crates.io sparse index (`pubtime`), a JavaScript package from the npm
+// registry (`time`). A version that `min-age-exceptions.toml` of the head
+// lists, with a reason, passes. A bun.lock entry that does not come from
+// the npm registry fails unless the exception file lists it. A crate from
+// git or a path is not checked: deny.toml (`unknown-git = "deny"`) allows
+// only the git sources that it names.
+
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { addedVersions, type LockedVersion } from "./lockfiles";
+
+export const MINIMUM_AGE_DAYS = 7;
+const DAY = 86_400_000;
+const USER_AGENT = "longhand-dependency-age-check (https://github.com/twistymaze/longhand)";
+
+export type Exception = { ecosystem: "crate" | "package"; name: string; version: string; reason: string };
+export type PublishDate = (version: LockedVersion) => Promise<Date>;
+
+/// The entries of min-age-exceptions.toml. Each entry needs ecosystem,
+/// name, version and reason.
+export function parseExceptions(text: string): Exception[] {
+  const entries = ((Bun.TOML.parse(text) as { exception?: Partial<Exception>[] }).exception ?? []);
+  return entries.map((e, i) => {
+    for (const field of ["ecosystem", "name", "version", "reason"] as const) {
+      if (typeof e[field] !== "string" || e[field]!.trim() === "") {
+        throw new Error(`min-age-exceptions.toml: entry ${i + 1} has no ${field}`);
+      }
+    }
+    if (e.ecosystem !== "crate" && e.ecosystem !== "package") {
+      throw new Error(`min-age-exceptions.toml: entry ${i + 1} has ecosystem "${e.ecosystem}"; use "crate" or "package"`);
+    }
+    return e as Exception;
+  });
+}
+
+const describe = (v: LockedVersion) => `${v.ecosystem === "crate" ? "crate" : "package"} ${v.name} ${v.version}`;
+
+/// The problems with the added versions. A version that is not checked
+/// (a crate from git or a path) goes into `notes`.
+export async function checkAges(
+  added: LockedVersion[],
+  exceptions: Exception[],
+  now: Date,
+  publishDate: PublishDate,
+  notes: string[] = [],
+): Promise<string[]> {
+  const excepted = (v: LockedVersion) =>
+    exceptions.some((e) => e.ecosystem === v.ecosystem && e.name === v.name && e.version === v.version);
+  const problems: string[] = [];
+  for (const v of added) {
+    if (excepted(v)) continue;
+    if (!v.registry) {
+      if (v.ecosystem === "crate") notes.push(`not checked: ${describe(v)} (source ${v.source || "path"})`);
+      else problems.push(`not from the npm registry: ${describe(v)}. Add it to min-age-exceptions.toml with a reason, or use a registry version.`);
+      continue;
+    }
+    let published: Date;
+    try {
+      published = await publishDate(v);
+    } catch (error) {
+      problems.push(`publish date unknown: ${describe(v)} (${(error as Error).message}). This is a registry fault: run the check again.`);
+      continue;
+    }
+    if (now.getTime() - published.getTime() < MINIMUM_AGE_DAYS * DAY) {
+      problems.push(
+        `less than ${MINIMUM_AGE_DAYS} days old: ${describe(v)}, published ${published.toISOString().slice(0, 10)}. ` +
+          "Wait, or add it to min-age-exceptions.toml with a reason.",
+      );
+    }
+  }
+  return problems;
+}
+
+// The path of a crate in the sparse index (https://doc.rust-lang.org/cargo/reference/registry-index.html).
+function indexPath(name: string): string {
+  const n = name.toLowerCase();
+  if (n.length <= 2) return `${n.length}/${n}`;
+  if (n.length === 3) return `3/${n[0]}/${n}`;
+  return `${n.slice(0, 2)}/${n.slice(2, 4)}/${n}`;
+}
+
+async function fetchText(url: string): Promise<string> {
+  const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
+  return response.text();
+}
+
+/// Publish dates from crates.io and the npm registry, one request per name.
+export function registryPublishDate(): PublishDate {
+  const pages = new Map<string, Promise<string>>();
+  const page = (url: string) => {
+    if (!pages.has(url)) pages.set(url, fetchText(url));
+    return pages.get(url)!;
+  };
+  return async (v) => {
+    let date: string | undefined;
+    if (v.ecosystem === "crate") {
+      for (const line of (await page(`https://index.crates.io/${indexPath(v.name)}`)).split("\n")) {
+        if (line.trim() === "") continue;
+        const entry = JSON.parse(line) as { vers: string; pubtime?: string };
+        if (entry.vers === v.version) date = entry.pubtime;
+      }
+    } else {
+      const doc = JSON.parse(await page(`https://registry.npmjs.org/${v.name.replace("/", "%2f")}`)) as { time?: Record<string, string> };
+      date = doc.time?.[v.version];
+    }
+    if (!date) throw new Error("the registry gives no publish date for this version");
+    return new Date(date);
+  };
+}
+
+function readIfPresent(path: string): string {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+if (import.meta.main) {
+  const [baseDir, headDir] = process.argv.slice(2);
+  if (!baseDir || !headDir) {
+    console.error("usage: check-dependency-age.ts <base-dir> <head-dir>");
+    process.exit(2);
+  }
+  const lockfiles = (dir: string) => ({ cargo: readIfPresent(join(dir, "Cargo.lock")), bun: readIfPresent(join(dir, "bun.lock")) });
+  let exceptions: Exception[];
+  try {
+    exceptions = parseExceptions(readIfPresent(join(headDir, "min-age-exceptions.toml")));
+  } catch (error) {
+    console.error((error as Error).message);
+    process.exit(1);
+  }
+  const added = addedVersions(lockfiles(baseDir), lockfiles(headDir));
+  const notes: string[] = [];
+  const problems = await checkAges(added, exceptions, new Date(), registryPublishDate(), notes);
+  for (const note of notes) console.log(note);
+  if (problems.length > 0) {
+    console.log(`The head adds dependency versions that fail the ${MINIMUM_AGE_DAYS}-day rule:\n${problems.map((p) => `- ${p}`).join("\n")}`);
+    process.exit(1);
+  }
+  console.log(`Checked ${added.length} added dependency versions: each is at least ${MINIMUM_AGE_DAYS} days old or listed as an exception.`);
+}
