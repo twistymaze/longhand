@@ -58,17 +58,13 @@ jobs:
         # main ruleset, so `os` never changes. `runner` chooses where the job
         # runs: the self-hosted runner that a repository variable names, or GitHub's
         # runner when the variable is not set or the `hosted` input is true.
-        # A PR from an `upkeep/` branch, or a run started on such a branch,
-        # also runs on GitHub's runners: the
-        # weekly upkeep routine makes it, and its new third-party code must
-        # not run on the self-hosted runners (KTD16).
         # On GitHub, Windows runs on the standard runner, which is free for a
         # public repository and is the runner of the Windows release build.
         include:
           - os: macos-latest
-            runner: ${{ !inputs.hosted && !startsWith(github.head_ref, 'upkeep/') && !startsWith(github.ref, 'refs/heads/upkeep/') && vars.MACOS_RUNNER || 'macos-latest' }}
+            runner: ${{ !inputs.hosted && vars.MACOS_RUNNER || 'macos-latest' }}
           - os: windows-latest
-            runner: ${{ !inputs.hosted && !startsWith(github.head_ref, 'upkeep/') && !startsWith(github.ref, 'refs/heads/upkeep/') && vars.WINDOWS_RUNNER || 'windows-latest' }}
+            runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
     # The feature ideas check reads the merged pull requests. A job block
     # replaces the workflow block, so it names `contents` again.
@@ -272,9 +268,9 @@ jobs:
         if: runner.os == 'macOS'
         run: bun test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
 
-      - name: Upkeep script tests
+      - name: Dependency check script tests
         if: runner.os == 'macOS'
-        run: bun test ./scripts/upkeep/
+        run: bun test scripts/check-dependency-age.test.ts scripts/check-new-advisories.test.ts
 
       - name: rustfmt
         if: runner.os == 'macOS'
