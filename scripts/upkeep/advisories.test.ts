@@ -5,10 +5,14 @@ import {
   compare,
   markReported,
   noticeText,
+  loadVendored,
   runClassify,
   scan,
+  vendoredAdvisories,
+  VENDORED_REASON,
   type Finding,
   type ScanOutput,
+  type VendoredConfig,
 } from "./advisories";
 import { readMarkers, writeMarkers } from "./issue-markers";
 import type { Selection } from "./select-updates";
@@ -263,11 +267,15 @@ test("runClassify scans, applies the allowed updates, scans again and restores t
         steps.push("restore");
         applied = false;
       },
+      vendored: () => {
+        steps.push("vendored");
+        return [];
+      },
     },
     RECENT_BODY,
     NOW,
   );
-  expect(steps).toEqual(["scan", "select", "apply 1", "scan", "restore"]);
+  expect(steps).toEqual(["vendored", "scan", "select", "apply 1", "scan", "restore"]);
   expect(result.notices.map((n) => n.id)).toEqual(["RUSTSEC-2026-0367"]);
 });
 
@@ -281,9 +289,94 @@ test("runClassify stops when the scan cannot run", async () => {
     restore: () => {
       restored = true;
     },
+    vendored: () => [],
   };
   await expect(runClassify(tools, RECENT_BODY, NOW)).rejects.toThrow("audit could not run");
   expect(restored).toBe(true);
+});
+
+// Real fields of `gh api repos/ggml-org/llama.cpp/security-advisories`, shortened.
+const ghAdvisory = (ghsa: string, publishedAt: string) => ({
+  ghsa_id: ghsa,
+  published_at: publishedAt,
+  severity: "critical",
+  summary: "Unauthenticated RCE via GRAPH_COMPUTE buffer=0 bypass in llama.cpp RPC backend",
+  vulnerabilities: [{ package: { ecosystem: "other", name: "llama.cpp" }, vulnerable_version_range: "<= b7991" }],
+});
+const VENDORED: VendoredConfig = { since: "2026-10-19", repositories: ["ggml-org/llama.cpp", "ggml-org/whisper.cpp"] };
+
+/// The classify steps with no dependency advisory. `fetch` gives the published
+/// advisories of one vendored repository.
+function vendoredTools(fetch: (repository: string) => unknown[]) {
+  const steps: string[] = [];
+  return {
+    steps,
+    tools: {
+      scan: () => output([]),
+      select: async () => NO_SELECTION,
+      apply: () => {},
+      restore: () => steps.push("restore"),
+      vendored: () => vendoredAdvisories(VENDORED, fetch),
+    },
+  };
+}
+
+test("an advisory of a vendored project, published on or after `since`, gives one notice", async () => {
+  const { tools } = vendoredTools((repository) =>
+    repository === "ggml-org/llama.cpp" ? [ghAdvisory("GHSA-j8rj-fmpv-wcxw", "2026-10-19T00:00:00Z")] : [],
+  );
+  const result = await runClassify(tools, RECENT_BODY, NOW);
+  expect(result.notices).toEqual([
+    {
+      id: "GHSA-j8rj-fmpv-wcxw",
+      findings: [
+        {
+          ecosystem: "vendored",
+          id: "GHSA-j8rj-fmpv-wcxw",
+          name: "ggml-org/llama.cpp",
+          version: "<= b7991",
+          title: "Unauthenticated RCE via GRAPH_COMPUTE buffer=0 bypass in llama.cpp RPC backend",
+          severity: "critical",
+        },
+      ],
+      reason: VENDORED_REASON,
+    },
+  ]);
+  expect(result.reportedAdvisories).toEqual(["GHSA-j8rj-fmpv-wcxw"]);
+  const text = noticeText(result)!;
+  expect(text).toContain("GHSA-j8rj-fmpv-wcxw");
+  expect(text).toContain("ggml-org/llama.cpp");
+  expect(text).toContain("<= b7991");
+  expect(text).toContain("critical");
+  expect(text).toContain(VENDORED_REASON);
+});
+
+test("an advisory of a vendored project, published before `since`, gives no notice", async () => {
+  const { tools } = vendoredTools(() => [ghAdvisory("GHSA-old", "2026-10-18T23:59:59Z")]);
+  const result = await runClassify(tools, RECENT_BODY, NOW);
+  expect(result.notices).toEqual([]);
+  expect(noticeText(result)).toBeNull();
+});
+
+test("an advisory of a vendored project in the reported marker gives no second notice", async () => {
+  const { tools } = vendoredTools(() => [ghAdvisory("GHSA-j8rj-fmpv-wcxw", "2026-10-20T08:00:00Z")]);
+  const body = writeMarkers("Nothing is open.", { lastRun: "2026-10-15", reportedAdvisories: ["GHSA-j8rj-fmpv-wcxw"] });
+  const result = await runClassify(tools, body, NOW);
+  expect(result.notices).toEqual([]);
+});
+
+test("classify fails, with the repository name, when the advisories of a vendored project cannot be read", async () => {
+  const { tools } = vendoredTools((repository) => {
+    if (repository === "ggml-org/whisper.cpp") throw new Error("HTTP 502");
+    return [];
+  });
+  await expect(runClassify(tools, RECENT_BODY, NOW)).rejects.toThrow("ggml-org/whisper.cpp");
+});
+
+test("vendored.json lists the vendored projects and a valid date", () => {
+  const config = loadVendored();
+  expect(config.since).toBe("2026-10-19");
+  expect(config.repositories).toContain("ggml-org/llama.cpp");
 });
 
 test("addedIgnores names an advisory ignore and a licence that the head adds", () => {

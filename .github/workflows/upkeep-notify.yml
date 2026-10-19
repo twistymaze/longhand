@@ -4,7 +4,8 @@
 # So the routine adds the label "upkeep: needs review", and this workflow posts
 # the notice as the GitHub Actions bot, then removes the label (plan KTD10).
 #
-# The repository variable UPKEEP_MAINTAINER holds the maintainer's login.
+# The routine creates the tracking issue, so the author of the issue is the
+# maintainer. The notice mentions that account.
 
 name: Upkeep notice
 
@@ -29,12 +30,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ github.event.issue.number }}
-          MAINTAINER: ${{ vars.UPKEEP_MAINTAINER }}
+          MAINTAINER: ${{ github.event.issue.user.login }}
         run: |
-          if [[ -z "$MAINTAINER" ]]; then
-            echo "The repository variable UPKEEP_MAINTAINER is not set."
-            exit 1
-          fi
           gh api "repos/$REPO/issues/$ISSUE/comments" \
             -f body="@$MAINTAINER The weekly upkeep has new items to review. The issue body lists them."
           gh api -X DELETE "repos/$REPO/issues/$ISSUE/labels/upkeep:%20needs%20review"

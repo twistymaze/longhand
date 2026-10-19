@@ -1,0 +1,11 @@
+{
+  "comment": "The vendored C and C++ projects of Longhand. The daily advisory check (advisories.ts classify) reports each published security advisory of these repositories that was published on or after `since`. This check did not review the older advisories; the first weekly review covers the versions in use.",
+  "since": "2026-10-19",
+  "repositories": [
+    "ggml-org/llama.cpp",
+    "ggml-org/whisper.cpp",
+    "NVIDIA/NeMo-Speech.cpp",
+    "microsoft/onnxruntime",
+    "KhronosGroup/Vulkan-Loader"
+  ]
+}

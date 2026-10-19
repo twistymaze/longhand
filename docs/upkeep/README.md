@@ -2,11 +2,11 @@
 
 Longhand keeps its dependencies and its borrowed code current with three workflows and one weekly Claude Code routine. The maintainer merges each PR by hand. Nothing merges by itself.
 
-In these documents, "the maintainer" is the GitHub account in the repository variable `UPKEEP_MAINTAINER` (see [Labels and variable](#labels-and-variable)). The notices mention that account, and only its comments can defer or reject a security item.
+In these documents, "the maintainer" is the GitHub account that the routine acts as: the owner of the routine. The routine finds it with `GET /user`. It creates the tracking issue, so the notices mention the author of that issue. Only the maintainer's comments can defer or reject a security item.
 
 | Part | What it does | Where |
 |---|---|---|
-| Advisory check | Finds known vulnerabilities each day and on each PR that changes dependencies. A PR fails only for an advisory that it adds. | `.github/workflows/advisories.yml`, `scripts/upkeep/advisories.ts` |
+| Advisory check | Finds known vulnerabilities each day and on each PR that changes dependencies. A PR fails only for an advisory that it adds. Each day it also reports new security advisories of the vendored C and C++ projects in `scripts/upkeep/vendored.json`. | `.github/workflows/advisories.yml`, `scripts/upkeep/advisories.ts` |
 | Weekly routine | Prepares the dependency PR, the port PRs and the review log PR, and rewrites the tracking issue. | Claude Code cloud routine; instructions in `docs/upkeep/weekly-routine.md` |
 | Licence lists | Builds the full licence lists for an `upkeep/` branch, so that the routine runs no dependency code. | `.github/workflows/upkeep-licences.yml` |
 | Notices | Mentions the maintainer when the routine adds the label `upkeep: needs review`. | `.github/workflows/upkeep-notify.yml` |
@@ -22,17 +22,9 @@ The plan is `docs/plans/2026-10-18-1454-chore-dependency-and-upstream-upkeep-pla
 - Add an advisory ignore to `deny.toml`, with a `reason`, when the issue proposes one and you agree. The routine never adds one.
 - Change the held list in `scripts/upkeep/held.json` with a normal PR.
 
-## Labels and variable
+## Labels and issue
 
-Set the variable once:
-
-```sh
-gh variable set UPKEEP_MAINTAINER -R twistymaze/longhand --body <login>
-```
-
-`UPKEEP_MAINTAINER` is the maintainer's GitHub login. The notice mentions it, and `issue.ts` gives its comments the `maintainer` trust level.
-
-The routine creates the labels and the tracking issue at its first run (`issue.ts write`). The names are in `scripts/upkeep/issue.ts` (`LABELS`):
+No setup is necessary. The routine creates the labels and the tracking issue at its first run (`issue.ts write`). The names are in `scripts/upkeep/issue.ts` (`LABELS`):
 
 | Label | Use |
 |---|---|
@@ -46,7 +38,7 @@ Before the first run, the daily advisory check fails because it finds no trackin
 
 The routine runs in its own Claude Code cloud environment (KTD14). Do not use the environment of the studio-1 bridge: that machine has the signing keys and the CI runners.
 
-- **Connectors:** none.
+- **Connectors:** none. The session has a built-in GitHub tool server, which is not a connector; the routine uses it for the Actions calls that `gh api` cannot make (`weekly-routine.md`, step 2).
 - **Network:** custom allowlist with only these hosts:
   - GitHub: `github.com`, `api.github.com`, `codeload.github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `raw.githubusercontent.com`;
   - GitHub Actions logs and artifacts: `results-receiver.actions.githubusercontent.com`, `*.blob.core.windows.net`, `pipelines.actions.githubusercontent.com`;
@@ -75,7 +67,7 @@ The instructions are in the repository, so a change to them is a normal reviewed
 
 **Start a run by hand:** start the routine from the Claude Code routines list, or use `fire_trigger` from a Claude Code session. Do this for an urgent advisory, or after a change to the instructions.
 
-**Pause the routine:** disable the routine in the routines list. The daily advisory check then reports that the weekly run is overdue after 8 days. To stop the advisory check too, disable `advisories.yml` with `gh workflow disable advisories.yml -R twistymaze/longhand`. The routine enables it again at its next run.
+**Pause the routine:** disable the routine in the routines list. The daily advisory check then reports that the weekly run is overdue after 8 days. To stop the advisory check too, disable `advisories.yml` with `gh workflow disable advisories.yml -R twistymaze/longhand`, and enable it again with `gh workflow enable`. The routine cannot enable it.
 
 ## The daily advisory check
 

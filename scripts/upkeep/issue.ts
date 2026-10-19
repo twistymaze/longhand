@@ -3,7 +3,7 @@
 //   bun scripts/upkeep/issue.ts read [--number <n>]
 //     Prints JSON: the issue number, its body, its markers, and its comments.
 //     Each comment has a trust level:
-//       maintainer    the login in UPKEEP_MAINTAINER;
+//       maintainer    the account that runs the routine;
 //       collaborator  another OWNER, MEMBER or COLLABORATOR;
 //       data          all other accounts, and every bot.
 //     Only a `maintainer` comment can defer or reject an advisory or an
@@ -20,8 +20,8 @@
 // Before the first run there is no such issue: `read` then gives an empty
 // issue with the number null, and `write` creates the issue. `write` also
 // creates each upkeep label that does not exist.
-// UPKEEP_MAINTAINER comes from the environment, or else from the repository
-// variable of that name. The routine never comments on the issue (KTD11).
+// The maintainer is the account that runs the routine. Its login comes from
+// `GET /user`. The routine never comments on the issue (KTD11).
 
 import { readFileSync } from "node:fs";
 import { type Client, READY_LABEL, allPages, errorStatus, ghClient } from "./github";
@@ -53,17 +53,16 @@ export function trustOf(author: { login: string; type: string; association: stri
   return "data";
 }
 
-/// The maintainer login: UPKEEP_MAINTAINER from the environment, or else the repository variable.
+/// The maintainer login: the login of the account that runs the routine (`GET /user`).
 export function maintainerLogin(client: Client): string {
-  const fromEnv = process.env.UPKEEP_MAINTAINER?.trim();
-  if (fromEnv) return fromEnv;
+  let login: string | undefined;
   try {
-    const value = (client.call({ path: `repos/${client.repo}/actions/variables/UPKEEP_MAINTAINER` }) as { value?: string }).value?.trim();
-    if (value) return value;
+    login = (client.call({ path: "user" }) as { login?: string } | null)?.login?.trim();
   } catch (error) {
-    if (errorStatus(error) !== 404) throw error;
+    throw new Error(`could not read the account that runs the routine (GET /user): ${(error as Error).message}`);
   }
-  throw new Error("UPKEEP_MAINTAINER is not set in the environment or as a repository variable");
+  if (!login) throw new Error("could not read the account that runs the routine (GET /user gave no login)");
+  return login;
 }
 
 /// The number of the one open issue with the label `upkeep`, or null when there is none.

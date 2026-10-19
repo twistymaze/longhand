@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { type Finding, classify } from "./advisories";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -9,12 +9,6 @@ import { readMarkers } from "./issue-markers";
 // Each test gives the issue functions a fake REST client, so no test reaches the network.
 
 const REPO = "twistymaze/longhand";
-const savedMaintainer = process.env.UPKEEP_MAINTAINER;
-
-afterEach(() => {
-  if (savedMaintainer === undefined) delete process.env.UPKEEP_MAINTAINER;
-  else process.env.UPKEEP_MAINTAINER = savedMaintainer;
-});
 
 function fakeClient(routes: Record<string, unknown>): Client & { calls: Request[] } {
   const calls: Request[] = [];
@@ -42,6 +36,8 @@ const comment = (id: number, login: string, association: string, body: string, t
 const ISSUE_BODY = "Held: ort rc.11.\n\n<!-- upkeep:last-run 2026-10-11 -->\n<!-- upkeep:reported-advisories RUSTSEC-2026-0346 -->\n<!-- upkeep:overdue-notified 2026-10-04 -->\n";
 
 const routes = () => ({
+  // The account that runs the routine is the maintainer.
+  "GET user": { login: "ervwalter" },
   [`GET repos/${REPO}/issues`]: [
     { number: 3, title: "a PR with the label", pull_request: {}, body: "" },
     { number: 42, title: "Upkeep", body: ISSUE_BODY },
@@ -59,7 +55,6 @@ const routes = () => ({
 
 describe("issue read", () => {
   test("each comment has a trust level", () => {
-    process.env.UPKEEP_MAINTAINER = "ervwalter";
     const issue = readIssue(fakeClient(routes()));
     expect(issue.number).toBe(42);
     expect(issue.body).toBe(ISSUE_BODY);
@@ -73,15 +68,18 @@ describe("issue read", () => {
     expect(issue.comments[0].body).toBe("skip ort rc.11, wait for 2.0.0");
   });
 
-  test("the maintainer login comes from the repository variable when the environment has none", () => {
-    delete process.env.UPKEEP_MAINTAINER;
-    const client = fakeClient({ ...routes(), [`GET repos/${REPO}/actions/variables/UPKEEP_MAINTAINER`]: { name: "UPKEEP_MAINTAINER", value: "ervwalter" } });
-    expect(readIssue(client).comments[0].trust).toBe("maintainer");
+  test("the maintainer is the account that GET user gives", () => {
+    const client = fakeClient({ ...routes(), "GET user": { login: "helper" } });
+    expect(readIssue(client).comments.map((c) => [c.author, c.trust]).slice(0, 2)).toEqual([
+      ["ervwalter", "collaborator"],
+      ["helper", "maintainer"],
+    ]);
+    expect(client.calls.some((c) => c.path === "user")).toBe(true);
   });
 
-  test("with no maintainer login, read refuses", () => {
-    delete process.env.UPKEEP_MAINTAINER;
-    expect(() => readIssue(fakeClient(routes()))).toThrow("UPKEEP_MAINTAINER");
+  test("when GET user fails, read refuses", () => {
+    const { "GET user": _, ...withoutUser } = routes();
+    expect(() => readIssue(fakeClient(withoutUser))).toThrow("could not read the account that runs the routine");
   });
 
   test("trust rules", () => {
@@ -144,8 +142,7 @@ describe("issue write", () => {
 
 describe("issue read with no tracking issue", () => {
   test("gives an empty issue, so the first run can start", () => {
-    process.env.UPKEEP_MAINTAINER = "ervwalter";
-    const issue = readIssue(fakeClient({ [`GET repos/${REPO}/issues`]: [] }));
+    const issue = readIssue(fakeClient({ "GET user": { login: "ervwalter" }, [`GET repos/${REPO}/issues`]: [] }));
     expect(issue).toEqual({ number: null, body: "", markers: readMarkers(""), comments: [] });
   });
 });
@@ -177,5 +174,13 @@ describe("labels", () => {
     const workflow = readFileSync(join(import.meta.dir, "../../.github/workflows/upkeep-notify.yml"), "utf8");
     expect(workflow).toContain(`github.event.label.name == '${REVIEW_LABEL}'`);
     expect(workflow).toContain(`labels/${REVIEW_LABEL.replaceAll(" ", "%20")}`);
+  });
+
+  test("the notice workflows mention the author of the tracking issue, not a repository variable", () => {
+    const notify = readFileSync(join(import.meta.dir, "../../.github/workflows/upkeep-notify.yml"), "utf8");
+    const advisories = readFileSync(join(import.meta.dir, "../../.github/workflows/advisories.yml"), "utf8");
+    expect(notify).toContain("github.event.issue.user.login");
+    expect(advisories).toContain(".user.login");
+    for (const workflow of [notify, advisories]) expect(workflow).not.toContain("UPKEEP_MAINTAINER");
   });
 });

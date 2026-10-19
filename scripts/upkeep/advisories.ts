@@ -18,7 +18,11 @@
 //     select-updates.ts, and the advisories that only a held update fixes
 //     (KTD9). The script applies the allowed updates to the lockfiles, scans
 //     again, and then puts back the original Cargo.lock and bun.lock. It also
-//     finds when the last weekly run is more than 8 days old (KTD13).
+//     finds when the last weekly run is more than 8 days old (KTD13), and
+//     the security advisories of the vendored C and C++ projects in
+//     vendored.json that were published on or after its `since` date. It
+//     reads them with `gh api`, so GH_TOKEN must be set. When it cannot
+//     read the advisories of a project, it fails and writes nothing.
 //     Writes <out-dir>/result.json, and <out-dir>/notice.md when the
 //     maintainer must get a notice.
 //
@@ -49,8 +53,10 @@ import {
 /// A notice for a weekly run that is older than this number of days.
 const OVERDUE_DAYS = 8;
 
-/// One affected package version.
-export type Finding = { ecosystem: "crate" | "package"; id: string; name: string; version: string; title: string };
+/// One affected package version. For a vendored project, `name` is the
+/// repository, `version` is the affected version ranges, and `severity` is
+/// the severity of the advisory.
+export type Finding = { ecosystem: "crate" | "package" | "vendored"; id: string; name: string; version: string; title: string; severity?: string };
 
 /// The output of cargo-deny and bun audit for one checkout, and its bun.lock.
 export type ScanOutput = {
@@ -166,9 +172,80 @@ export type Classification = {
   reportedAdvisories: string[];
 };
 
+/// The vendored C and C++ projects, and the first publication date that the
+/// daily check reports (vendored.json).
+export type VendoredConfig = { since: string; repositories: string[] };
+
+export const VENDORED_REASON = "A vendored C or C++ project published this advisory. Check whether the version that Longhand uses is affected.";
+
+export function loadVendored(path = join(import.meta.dir, "vendored.json")): VendoredConfig {
+  const config = JSON.parse(readFileSync(path, "utf8")) as VendoredConfig;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(config.since) || Number.isNaN(Date.parse(`${config.since}T00:00:00Z`))) {
+    throw new Error(`${path}: since must be a date (YYYY-MM-DD), not ${JSON.stringify(config.since)}`);
+  }
+  if (!Array.isArray(config.repositories) || !config.repositories.every((repository) => /^[\w.-]+\/[\w.-]+$/.test(repository))) {
+    throw new Error(`${path}: repositories must be a list of owner/name values`);
+  }
+  return config;
+}
+
+/// The published security advisories of the vendored projects, published on
+/// or after `config.since`. `fetch` gives the advisories of one repository,
+/// as the GitHub REST API gives them. When `fetch` fails for a repository,
+/// this function fails with the repository name.
+export function vendoredAdvisories(config: VendoredConfig, fetch: (repository: string) => unknown[]): Finding[] {
+  const since = Date.parse(`${config.since}T00:00:00Z`);
+  const findings: Finding[] = [];
+  for (const repository of config.repositories) {
+    let advisories: any[];
+    try {
+      advisories = fetch(repository) as any[];
+    } catch (error) {
+      throw new Error(`Could not read the security advisories of ${repository}: ${(error as Error).message}`);
+    }
+    for (const advisory of advisories) {
+      const published = Date.parse(advisory.published_at ?? "");
+      if (Number.isNaN(published) || published < since) continue;
+      const ranges = (advisory.vulnerabilities ?? []).map((v: any) => v.vulnerable_version_range).filter(Boolean);
+      findings.push({
+        ecosystem: "vendored",
+        id: String(advisory.ghsa_id),
+        name: repository,
+        version: ranges.length > 0 ? ranges.join(", ") : "no version range given",
+        title: String(advisory.summary ?? "").trim(),
+        severity: String(advisory.severity ?? "unknown"),
+      });
+    }
+  }
+  return findings;
+}
+
+/// The published security advisories of `repository`, all pages, from `gh api`.
+/// The API uses cursor pages, so `gh api --paginate` follows the Link header.
+function ghSecurityAdvisories(repository: string): unknown[] {
+  const result = Bun.spawnSync(
+    ["gh", "api", "--paginate", `repos/${repository}/security-advisories?state=published&per_page=100`, "--jq", ".[]"],
+    { env: process.env, stdout: "pipe", stderr: "pipe" },
+  );
+  if (result.exitCode !== 0) throw new Error(`gh api failed: ${result.stderr.toString().trim()}`);
+  return result.stdout
+    .toString()
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+}
+
 /// Applies KTD9 and KTD13. `before` is the scan of the current lockfiles,
-/// `after` the scan after the allowed updates of `selection`.
-export function classify(input: { before: Finding[]; after: Finding[]; selection: Selection; issueBody: string; now: Date }): Classification {
+/// `after` the scan after the allowed updates of `selection`. `vendored` is
+/// the advisories of the vendored projects (vendoredAdvisories).
+export function classify(input: {
+  before: Finding[];
+  after: Finding[];
+  selection: Selection;
+  issueBody: string;
+  now: Date;
+  vendored?: Finding[];
+}): Classification {
   const markers = readMarkers(input.issueBody);
   const heldReasons = new Map<string, string>();
   for (const held of input.selection.held) for (const id of held.advisories ?? []) if (!heldReasons.has(id)) heldReasons.set(id, held.reason);
@@ -179,10 +256,19 @@ export function classify(input: { before: Finding[]; after: Finding[]; selection
     if (!list.some((other) => key(other) === key(f))) list.push(f);
     open.set(f.id, list);
   }
+  const vendored = new Map<string, Finding[]>();
+  for (const f of input.vendored ?? []) {
+    if (open.has(f.id)) continue;
+    const list = vendored.get(f.id) ?? [];
+    if (!list.some((other) => key(other) === key(f))) list.push(f);
+    vendored.set(f.id, list);
+  }
   const reported = new Set(markers.reportedAdvisories);
-  const notices = [...open.entries()]
-    .filter(([id]) => !reported.has(id))
-    .map(([id, findings]) => ({ id, findings, reason: heldReasons.get(id) ?? "The next weekly update does not remove it." }))
+  const notices = [
+    ...[...open.entries()].map(([id, findings]) => ({ id, findings, reason: heldReasons.get(id) ?? "The next weekly update does not remove it." })),
+    ...[...vendored.entries()].map(([id, findings]) => ({ id, findings, reason: VENDORED_REASON })),
+  ]
+    .filter((notice) => !reported.has(notice.id))
     .sort((a, b) => a.id.localeCompare(b.id));
 
   const days = daysSinceLastRun(input.issueBody, input.now);
@@ -201,13 +287,21 @@ export function classify(input: { before: Finding[]; after: Finding[]; selection
 /// maintainer gets no notice.
 export function noticeText(result: Classification): string | null {
   const parts: string[] = [];
-  if (result.notices.length > 0) {
-    const lines = result.notices.map((notice) => {
-      const versions = notice.findings.map((f) => `${f.name} ${f.version}`).join(", ");
-      const title = notice.findings.find((f) => f.title)?.title;
-      return `- ${notice.id} (${versions})${title ? `: ${title}` : ""}\n  ${notice.reason}`;
-    });
-    parts.push(`The daily advisory check found advisories that the weekly update cannot fix. Each one needs your decision.\n\n${lines.join("\n")}`);
+  const line = (notice: Notice) => {
+    const versions = notice.findings
+      .map((f) => (f.ecosystem === "vendored" ? `${f.name}, affected versions ${f.version}, severity ${f.severity}` : `${f.name} ${f.version}`))
+      .join("; ");
+    const title = notice.findings.find((f) => f.title)?.title;
+    return `- ${notice.id} (${versions})${title ? `: ${title}` : ""}\n  ${notice.reason}`;
+  };
+  const isVendored = (notice: Notice) => notice.findings.every((f) => f.ecosystem === "vendored");
+  const dependencies = result.notices.filter((notice) => !isVendored(notice));
+  const vendored = result.notices.filter(isVendored);
+  if (dependencies.length > 0) {
+    parts.push(`The daily advisory check found advisories that the weekly update cannot fix. Each one needs your decision.\n\n${dependencies.map(line).join("\n")}`);
+  }
+  if (vendored.length > 0) {
+    parts.push(`The daily advisory check found new advisories of vendored C or C++ projects.\n\n${vendored.map(line).join("\n")}`);
   }
   if (result.overdueNotice) {
     parts.push(
@@ -240,17 +334,20 @@ export type ClassifyTools = {
   apply(updates: Update[]): void;
   /// Puts back the original lockfiles.
   restore(): void;
+  /// The advisories of the vendored projects (vendoredAdvisories).
+  vendored(): Finding[];
 };
 
 export async function runClassify(tools: ClassifyTools, issueBody: string, now: Date): Promise<Classification> {
   try {
+    const vendored = tools.vendored();
     const before = scan(tools.scan());
     if (!before.ok) throw new Error(`The audit could not run.\n${before.error}`);
     const selection = await tools.select();
     tools.apply(selection.apply);
     const after = scan(tools.scan());
     if (!after.ok) throw new Error(`The audit could not run after the updates.\n${after.error}`);
-    return classify({ before: before.findings, after: after.findings, selection, issueBody, now });
+    return classify({ before: before.findings, after: after.findings, selection, issueBody, now, vendored });
   } finally {
     tools.restore();
   }
@@ -352,6 +449,7 @@ function systemClassifyTools(dir: string): ClassifyTools {
     restore: () => {
       for (const file of lockfiles) writeFileSync(file.path, file.text);
     },
+    vendored: () => vendoredAdvisories(loadVendored(), ghSecurityAdvisories),
   };
 }
 

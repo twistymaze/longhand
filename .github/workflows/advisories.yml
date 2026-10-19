@@ -7,12 +7,14 @@
 #   the PR adds an advisory ignore, a bun audit ignore or a licence (R3).
 # - Each day and on demand, it finds the advisories that the next weekly PR
 #   cannot fix (KTD9), and it finds when the last weekly run is more than
-#   8 days old (KTD13). The notice job then posts one comment that mentions
-#   the maintainer, as the GitHub Actions bot (KTD10). It records the
-#   advisory IDs in the issue body, so each advisory gives one notice only.
+#   8 days old (KTD13). It also finds the new security advisories of the
+#   vendored C and C++ projects in scripts/upkeep/vendored.json. The notice
+#   job then posts one comment that mentions the maintainer, as the GitHub
+#   Actions bot (KTD10). The maintainer is the author of the tracking issue,
+#   because the weekly routine creates it. The job records the advisory IDs
+#   in the issue body, so each advisory gives one notice only.
 #
 # Advisory text, such as a title, reaches the shell steps only in files.
-# The repository variable UPKEEP_MAINTAINER holds the maintainer's login.
 
 name: Advisories
 
@@ -116,8 +118,11 @@ jobs:
           gh api "repos/$REPO/issues/$number" --jq '.body // ""' > "$RUNNER_TEMP/issue-body.md"
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
+      # gh api reads the public advisories of the vendored projects.
       - name: Find the advisories that need a decision
         id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           bun scripts/upkeep/advisories.ts classify "$RUNNER_TEMP/issue-body.md" "$RUNNER_TEMP/advisories"
           if [[ -f "$RUNNER_TEMP/advisories/notice.md" ]]; then
@@ -160,14 +165,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           ISSUE: ${{ needs.daily.outputs.issue }}
-          MAINTAINER: ${{ vars.UPKEEP_MAINTAINER }}
         run: |
-          if [[ -z "$MAINTAINER" ]]; then
-            echo "The repository variable UPKEEP_MAINTAINER is not set."
+          maintainer=$(gh api "repos/$REPO/issues/$ISSUE" --jq '.user.login')
+          if [[ -z "$maintainer" ]]; then
+            echo "Could not read the author of the tracking issue."
             exit 1
           fi
           dir="$RUNNER_TEMP/advisories"
-          { printf '@%s ' "$MAINTAINER"; cat "$dir/notice.md"; } > "$dir/comment.md"
+          { printf '@%s ' "$maintainer"; cat "$dir/notice.md"; } > "$dir/comment.md"
           gh api "repos/$REPO/issues/$ISSUE/comments" -F body=@"$dir/comment.md" > /dev/null
           # Read the body again: the weekly routine can change it at any time.
           gh api "repos/$REPO/issues/$ISSUE" --jq '.body // ""' > "$dir/body.md"
