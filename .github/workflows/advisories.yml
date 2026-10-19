@@ -116,8 +116,6 @@ jobs:
           gh api "repos/$REPO/issues/$number" --jq '.body // ""' > "$RUNNER_TEMP/issue-body.md"
           echo "number=$number" >> "$GITHUB_OUTPUT"
 
-      # The script applies the allowed updates to the lockfiles of this
-      # checkout, scans again, and then puts back the original lockfiles.
       - name: Find the advisories that need a decision
         id: classify
         run: |

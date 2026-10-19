@@ -41,10 +41,19 @@ import {
   requiredChecks,
   setPrBody,
 } from "./github";
-import { type HeldList, type HeldRule, type Published, heldRule, loadHeld, systemTools } from "./select-updates";
+import {
+  type HeldList,
+  type HeldRule,
+  type Published,
+  MINIMUM_AGE,
+  denyDiagnostics,
+  heldRule,
+  loadHeld,
+  parseBunLock,
+  splitSpec,
+  systemTools,
+} from "./select-updates";
 
-/// The 7-day wait in milliseconds (R5).
-const MINIMUM_AGE = 7 * 24 * 60 * 60 * 1000;
 const CRATES_IO = new Set(["registry+https://github.com/rust-lang/crates.io-index", "sparse+https://index.crates.io/"]);
 /// The markers around the check result in the PR body.
 export const CHECK_START = "<!-- upkeep:check -->";
@@ -111,8 +120,6 @@ function branchProblems(kind: Kind, branch: string): string[] {
   return [];
 }
 
-// --- deps ---
-
 type LockCrate = { name: string; version: string; source?: string; dependencies?: string[] };
 
 function withoutKey(value: Record<string, unknown>, ...keys: string[]): Record<string, unknown> {
@@ -178,11 +185,6 @@ function cargoLockProblems(base: string, head: string, held: HeldList, check: Ve
   return problems;
 }
 
-function parseBunLock(text: string): any {
-  // bun.lock allows trailing commas, which JSON does not.
-  return JSON.parse(text.replace(/,(\s*[}\]])/g, "$1"));
-}
-
 function bunLockProblems(base: string, head: string, held: HeldList, check: Version[]): string[] {
   const [a, b] = [parseBunLock(base), parseBunLock(head)];
   const problems: string[] = [];
@@ -194,12 +196,11 @@ function bunLockProblems(base: string, head: string, held: HeldList, check: Vers
   for (const entry of Object.values(b.packages ?? {}) as unknown[][]) {
     if (baseEntries.has(JSON.stringify(entry))) continue;
     const spec = String(entry[0]);
-    const at = spec.lastIndexOf("@");
-    const version: Version = { ecosystem: "package", name: spec.slice(0, at), version: spec.slice(at + 1) };
+    const version: Version = { ecosystem: "package", ...splitSpec(spec) };
     if (seen.has(spec)) continue;
     seen.add(spec);
     const reason = heldRule(held.packages, version.name)?.reason;
-    if (at <= 0 || !SEMVER.test(version.version) || entry[1] !== "") problems.push(`not from the registry: package ${spec}`);
+    if (spec.lastIndexOf("@") <= 0 || !SEMVER.test(version.version) || entry[1] !== "") problems.push(`not from the registry: package ${spec}`);
     else if (reason) problems.push(`held: ${describe(version)} (${reason})`);
     else check.push(version);
   }
@@ -297,8 +298,6 @@ async function depsProblems(client: Client, files: string[], base: string, head:
   return problems;
 }
 
-// --- port ---
-
 type ProvenanceRecord = { path: string; repository: string; start: number; end: number };
 
 function provenanceRecords(text: string): ProvenanceRecord[] {
@@ -378,8 +377,6 @@ function portProblems(client: Client, branch: string, files: string[], base: str
   return problems;
 }
 
-// --- check ---
-
 /// All failed conditions of a PR. An empty list means that the PR passes.
 export async function evaluate(client: Client, pr: any, kind: Kind, registry: Registry, held: HeldList): Promise<string[]> {
   const branch: string = pr.head.ref;
@@ -435,10 +432,8 @@ export function systemRegistry(repository: string): Registry {
     npmVersions: tools.npmVersions,
     advisoryPackages: async () => {
       const names = new Set<string>();
-      for (const line of tools.cargoDenyAdvisories().split("\n")) {
-        if (!line.trim().startsWith("{")) continue;
-        const item = JSON.parse(line);
-        const name = item.type === "diagnostic" ? item.fields?.advisory?.package : null;
+      for (const item of denyDiagnostics(tools.cargoDenyAdvisories())) {
+        const name = item.fields?.advisory?.package;
         if (name) names.add(`crate:${name}`);
       }
       for (const name of Object.keys(tools.bun.audit())) names.add(`package:${name}`);

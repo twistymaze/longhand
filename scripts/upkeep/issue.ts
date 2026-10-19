@@ -114,7 +114,7 @@ if (import.meta.main) {
   try {
     const client = ghClient();
     if (command === "read") {
-      console.log(JSON.stringify(readIssue(client, number ?? findIssue(client)), null, 2));
+      console.log(JSON.stringify(readIssue(client, number), null, 2));
     } else if (command === "write" && file !== undefined) {
       const lastRun = keepLastRun ? null : new Date().toISOString().slice(0, 10);
       writeIssue(client, readFileSync(file, "utf8"), { lastRun, number });

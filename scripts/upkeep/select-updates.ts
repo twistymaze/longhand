@@ -37,7 +37,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 /// The 7-day wait in milliseconds. bunfig.toml has the same value in seconds.
-const MINIMUM_AGE = 7 * 24 * 60 * 60 * 1000;
+export const MINIMUM_AGE = 7 * 24 * 60 * 60 * 1000;
 const USER_AGENT = "longhand-upkeep (https://github.com/twistymaze/longhand)";
 const HELD_FILE = join(import.meta.dir, "held.json");
 const BUN_UPDATE = ["update", "--lockfile-only", "--ignore-scripts"];
@@ -166,13 +166,24 @@ function cargoChanges(output: string): { name: string; from: string; to: string 
 
 type CrateAdvisory = { name: string; version: string; ids: string[]; patched: (string | null)[] };
 
+/// The items in cargo-deny's JSON lines. Other lines are ignored.
+export function denyItems(text: string): any[] {
+  return text
+    .split("\n")
+    .filter((line) => line.trim().startsWith("{"))
+    .map((line) => JSON.parse(line));
+}
+
+/// The diagnostic items in cargo-deny's JSON lines.
+export function denyDiagnostics(text: string): any[] {
+  return denyItems(text).filter((item) => item.type === "diagnostic");
+}
+
 /// The advisories in cargo-deny's JSON lines, one entry for each crate version.
 function crateAdvisories(text: string): CrateAdvisory[] {
   const byCrate = new Map<string, CrateAdvisory>();
-  for (const line of text.split("\n")) {
-    if (!line.trim().startsWith("{")) continue;
-    const item = JSON.parse(line);
-    const advisory = item.type === "diagnostic" ? item.fields?.advisory : null;
+  for (const item of denyDiagnostics(text)) {
+    const advisory = item.fields?.advisory;
     if (!advisory) continue;
     const notes: string[] = item.fields.notes ?? [];
     // cargo-deny writes the patched ranges as "Upgrade to >=1.2.3, <1.3.0 OR >=1.3.4".
@@ -232,16 +243,22 @@ function onlyUsedByHeld(meta: CargoMetadata, rules: HeldRule[]): Map<string, { r
   return derived;
 }
 
+/// The parsed bun.lock. bun.lock is JSON with trailing commas.
+export function parseBunLock(text: string): any {
+  return JSON.parse(text.replace(/,(\s*[}\]])/g, "$1"));
+}
+
+/// The name and version of a bun.lock package spec `name@version`.
+export function splitSpec(spec: string): { name: string; version: string } {
+  const at = spec.lastIndexOf("@");
+  return { name: spec.slice(0, at), version: spec.slice(at + 1) };
+}
+
 /// The packages in bun.lock, by lock key, with their names and versions.
 function lockPackages(text: string): Map<string, { name: string; version: string }> {
-  // bun.lock is JSON with trailing commas.
-  const lock = JSON.parse(text.replace(/,(\s*[}\]])/g, "$1"));
+  const lock = parseBunLock(text);
   const packages = new Map<string, { name: string; version: string }>();
-  for (const [key, value] of Object.entries(lock.packages ?? {})) {
-    const spec = (value as string[])[0];
-    const at = spec.lastIndexOf("@");
-    packages.set(key, { name: spec.slice(0, at), version: spec.slice(at + 1) });
-  }
+  for (const [key, value] of Object.entries(lock.packages ?? {})) packages.set(key, splitSpec((value as string[])[0]));
   return packages;
 }
 
@@ -494,15 +511,34 @@ export function systemBunTools(repository: string, bun = process.execPath): BunT
 
 /// The real cargo, cargo-deny, bun and registries for `repository`.
 export function systemTools(repository: string): Tools {
-  let lastRequest = 0;
+  // crates.io allows at most one request each second. The npm registry
+  // needs no delay.
+  const spacing: Record<string, number> = { "crates.io": 1000 };
+  const lastRequest = new Map<string, number>();
   const getJson = async (url: string) => {
-    // crates.io allows at most one request each second.
-    const wait = lastRequest + 1000 - Date.now();
+    const host = new URL(url).host;
+    const wait = (lastRequest.get(host) ?? 0) + (spacing[host] ?? 0) - Date.now();
     if (wait > 0) await Bun.sleep(wait);
-    lastRequest = Date.now();
+    lastRequest.set(host, Date.now());
     const response = await fetch(url, { headers: { "User-Agent": USER_AGENT, Accept: "application/json" } });
     if (!response.ok) throw new Error(`${url} returned ${response.status}`);
     return response.json();
+  };
+  /// Keeps one lookup for each name. A failed lookup is not kept.
+  const cached = (lookup: (name: string) => Promise<Published[]>) => {
+    const results = new Map<string, Promise<Published[]>>();
+    return (name: string): Promise<Published[]> => {
+      let result = results.get(name);
+      if (result === undefined) {
+        result = lookup(name);
+        results.set(name, result);
+        const kept = result;
+        kept.catch(() => {
+          if (results.get(name) === kept) results.delete(name);
+        });
+      }
+      return result;
+    };
   };
   return {
     now: () => new Date(),
@@ -514,7 +550,7 @@ export function systemTools(repository: string): Tools {
     // cargo-deny writes its JSON lines to standard error, and exits with 1
     // when it finds advisories.
     cargoDenyAdvisories: () => run(["cargo", "deny", "--format", "json", "check", "advisories"], repository, [0, 1]).stderr,
-    crateVersions: async (name) => {
+    crateVersions: cached(async (name) => {
       const versions: Published[] = [];
       let page: string | null = "";
       while (page !== null) {
@@ -523,13 +559,13 @@ export function systemTools(repository: string): Tools {
         page = data.meta?.next_page ?? null;
       }
       return versions;
-    },
+    }),
     packageJson: () => JSON.parse(readFileSync(join(repository, "package.json"), "utf8")),
     bun: systemBunTools(repository),
-    npmVersions: async (name) => {
+    npmVersions: cached(async (name) => {
       const data = await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`);
       return Object.keys(data.versions ?? {}).map((version) => ({ version, published: new Date(data.time[version]), yanked: false }));
-    },
+    }),
   };
 }
 

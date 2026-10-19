@@ -269,8 +269,6 @@ jobs:
         if: runner.os == 'macOS'
         run: bun test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
 
-      # The scripts of the weekly upkeep routine (docs/upkeep/README.md).
-      # The tests use fakes for gh and the registries, so they need no network.
       - name: Upkeep script tests
         if: runner.os == 'macOS'
         run: bun test ./scripts/upkeep/

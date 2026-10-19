@@ -32,7 +32,18 @@
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { daysSinceLastRun, NO_LAST_RUN, readMarkers, writeMarkers } from "./issue-markers";
-import { loadHeld, selectUpdates, systemTools, type AuditReport, type Selection, type Update } from "./select-updates";
+import {
+  denyDiagnostics,
+  denyItems,
+  loadHeld,
+  parseBunLock,
+  selectUpdates,
+  splitSpec,
+  systemTools,
+  type AuditReport,
+  type Selection,
+  type Update,
+} from "./select-updates";
 
 /// A notice for a weekly run that is older than this number of days.
 const OVERDUE_DAYS = 8;
@@ -53,12 +64,9 @@ export type Scan = { ok: true; findings: Finding[] } | { ok: false; error: strin
 /// ID, so its ID is "yanked:<name>@<version>".
 function denyFindings(output: { exitCode: number; stderr: string }): Scan {
   const findings: Finding[] = [];
-  let summary = false;
-  for (const line of output.stderr.split("\n")) {
-    if (!line.trim().startsWith("{")) continue;
-    const item = JSON.parse(line);
-    if (item.type === "summary") summary = true;
-    if (item.type !== "diagnostic" || item.fields?.severity !== "error") continue;
+  const summary = denyItems(output.stderr).some((item) => item.type === "summary");
+  for (const item of denyDiagnostics(output.stderr)) {
+    if (item.fields?.severity !== "error") continue;
     const advisory = item.fields.advisory;
     const graphs: { Krate: { name: string; version: string } }[] = item.fields.graphs ?? [];
     if (advisory) {
@@ -81,13 +89,10 @@ function denyFindings(output: { exitCode: number; stderr: string }): Scan {
 
 /// The package versions in bun.lock, by name.
 function lockVersions(text: string): Map<string, string[]> {
-  // bun.lock is JSON with trailing commas.
-  const lock = JSON.parse(text.replace(/,(\s*[}\]])/g, "$1"));
+  const lock = parseBunLock(text);
   const versions = new Map<string, string[]>();
   for (const value of Object.values(lock.packages ?? {})) {
-    const spec = (value as string[])[0];
-    const at = spec.lastIndexOf("@");
-    const [name, version] = [spec.slice(0, at), spec.slice(at + 1)];
+    const { name, version } = splitSpec((value as string[])[0]);
     versions.set(name, [...(versions.get(name) ?? []), version]);
   }
   return versions;
