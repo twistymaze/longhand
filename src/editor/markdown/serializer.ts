@@ -238,10 +238,12 @@ export function getSerializer(): MarkdownSerializer {
         close(_state: MarkdownSerializerState, mark) {
           const href: string = mark.attrs.href ?? "";
           // A destination with whitespace is valid only in angle brackets.
+          // Escape the backslash too: else a backslash in the address
+          // escapes the character after it.
           if (/[\s<>]/.test(href)) {
-            return `](<${href.replace(/[<>]/g, "\\$&")}>)`;
+            return `](<${href.replace(/[\\<>]/g, "\\$&")}>)`;
           }
-          return `](${href.replace(/[()]/g, "\\$&")})`;
+          return `](${href.replace(/[\\()]/g, "\\$&")})`;
         },
         mixable: true,
       },
