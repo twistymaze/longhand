@@ -516,6 +516,93 @@ mod tests {
         );
     }
 
+    /// A NeMo model gives `<unk>` for a character outside its vocabulary.
+    /// The marker is not speech, so no output path keeps it.
+    #[test]
+    fn unknown_markers_are_removed_from_text_segments_tokens_and_words() {
+        let token = |text: &str, t0_ms| transcribe_cpp::Token {
+            t0_ms,
+            t1_ms: t0_ms + 100,
+            text: text.into(),
+            ..Default::default()
+        };
+        let word = |text: &str, t0_ms| transcribe_cpp::Word {
+            t0_ms,
+            t1_ms: t0_ms + 100,
+            text: text.into(),
+            ..Default::default()
+        };
+        let text = " the caf<unk> is <unk> open <unk>";
+        let part = || crate::recovery::DecodedPart {
+            offset: 0,
+            samples: 16_000,
+            transcript: transcribe_cpp::Transcript {
+                text: text.into(),
+                segments: vec![
+                    transcribe_cpp::Segment {
+                        t0_ms: 0,
+                        t1_ms: 500,
+                        text: text.into(),
+                        ..Default::default()
+                    },
+                    transcribe_cpp::Segment {
+                        t0_ms: 500,
+                        t1_ms: 600,
+                        text: " <unk> ".into(),
+                        ..Default::default()
+                    },
+                ],
+                tokens: vec![
+                    token("\u{2581}the", 0),
+                    token("\u{2581}caf", 100),
+                    token("<unk>", 200),
+                    token("\u{2581}is", 300),
+                    token("\u{2581}<unk>", 400),
+                    token(" <unk>", 450),
+                    token("\u{2581}open", 500),
+                ],
+                words: vec![
+                    word("the", 0),
+                    word("caf<unk>", 100),
+                    word("is", 300),
+                    word("<unk>", 400),
+                    word("open", 500),
+                ],
+                ..Default::default()
+            },
+        };
+
+        let plain = text_from_parts(vec![part()]);
+        assert_eq!(plain.text, "the caf is open");
+        assert_eq!(
+            plain.segments,
+            vec![AsrSegment {
+                start_ms: 0,
+                end_ms: 500,
+                text: "the caf is open".into()
+            }]
+        );
+
+        for timing in [TimestampKind::Token, TimestampKind::Word] {
+            let tokens = tokens_from_parts(vec![part()], timing);
+            assert!(
+                tokens.iter().all(|t| !t.text.contains("<unk>")),
+                "{timing:?}: {tokens:?}"
+            );
+            let words = crate::words_from_tokens(&tokens, 0);
+            assert_eq!(
+                spans(&words),
+                vec![
+                    (0, 100, "the"),
+                    (100, 200, "caf"),
+                    (300, 400, "is"),
+                    (500, 600, "open")
+                ],
+                "{timing:?}"
+            );
+        }
+    }
+
     fn snapshot(kind: TimestampKind) -> transcribe_cpp::Transcript {
         let token = |text: &str, t0_ms, t1_ms| transcribe_cpp::Token {
             t0_ms,
