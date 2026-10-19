@@ -586,9 +586,10 @@ mod tests {
                     token("\u{2581}caf", 100),
                     token("<unk>", 200),
                     token("\u{2581}is", 300),
-                    token("\u{2581}<unk>", 400),
-                    token(" <unk>", 450),
-                    token("\u{2581}open", 500),
+                    token(" <unk>", 400),
+                    token("open", 500),
+                    token("\u{2581}<unk>", 600),
+                    token("ok", 700),
                 ],
                 words: vec![
                     word("the", 0),
@@ -596,6 +597,8 @@ mod tests {
                     word("is", 300),
                     word("<unk>", 400),
                     word("open", 500),
+                    word("<unk>", 600),
+                    word("ok", 700),
                 ],
                 ..Default::default()
             },
@@ -625,7 +628,8 @@ mod tests {
                     (0, 100, "the"),
                     (100, 200, "caf"),
                     (300, 400, "is"),
-                    (500, 600, "open")
+                    (500, 600, "open"),
+                    (700, 800, "ok")
                 ],
                 "{timing:?}"
             );
@@ -641,6 +645,12 @@ mod tests {
         });
         assert_eq!(text.committed, "a caf");
         assert_eq!(text.tentative, " b");
+        let text = live_text(transcribe_cpp::StreamText {
+            committed: "hello <unk>".into(),
+            tentative: " world".into(),
+            ..Default::default()
+        });
+        assert_eq!(text.committed + &text.tentative, "hello world");
         assert_eq!(without_unknown("\u{2581}<unk>"), "\u{2581}");
         assert!(matches!(
             without_unknown("no  marker"),
