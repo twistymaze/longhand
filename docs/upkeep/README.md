@@ -2,12 +2,14 @@
 
 Longhand keeps its dependencies and its borrowed code current with three workflows and one weekly Claude Code routine. The maintainer merges each PR by hand. Nothing merges by itself.
 
+In these documents, "the maintainer" is the GitHub account in the repository variable `UPKEEP_MAINTAINER` (see [Labels and variable](#labels-and-variable)). The notices mention that account, and only its comments can defer or reject a security item.
+
 | Part | What it does | Where |
 |---|---|---|
 | Advisory check | Finds known vulnerabilities each day and on each PR that changes dependencies. A PR fails only for an advisory that it adds. | `.github/workflows/advisories.yml`, `scripts/upkeep/advisories.ts` |
 | Weekly routine | Prepares the dependency PR, the port PRs and the review log PR, and rewrites the tracking issue. | Claude Code cloud routine; instructions in `docs/upkeep/weekly-routine.md` |
 | Licence lists | Builds the full licence lists for an `upkeep/` branch, so that the routine runs no dependency code. | `.github/workflows/upkeep-licences.yml` |
-| Notices | Mentions the maintainer when the routine adds the label `upkeep: needs you`. | `.github/workflows/upkeep-notify.yml` |
+| Notices | Mentions the maintainer when the routine adds the label `upkeep: needs review`. | `.github/workflows/upkeep-notify.yml` |
 | PR check | Marks a routine PR ready with the label `upkeep: ready` when CI is green and the change is permitted for its kind. | `scripts/upkeep/check-pr.ts` |
 | Update selection | Lists the updates that the routine can take, the held updates and the advisory exceptions. | `scripts/upkeep/select-updates.ts`, `scripts/upkeep/held.json` |
 
@@ -22,23 +24,23 @@ The plan is `docs/plans/2026-10-18-1454-chore-dependency-and-upstream-upkeep-pla
 
 ## Labels and variable
 
-Create these once:
-
-| Name | Kind | Use |
-|---|---|---|
-| `upkeep` | label | The tracking issue. Exactly one open issue has it. |
-| `upkeep: ready` | label | `check-pr.ts` adds it to a routine PR that is ready to merge. |
-| `upkeep: needs you` | label | The routine adds it to the issue. `upkeep-notify.yml` posts the notice and removes it. |
-| `UPKEEP_MAINTAINER` | repository variable | The maintainer's GitHub login. The notice mentions it, and `issue.ts` gives its comments the `maintainer` trust level. |
+Set the variable once:
 
 ```sh
-gh label create upkeep -R twistymaze/longhand --description "Weekly upkeep tracking issue"
-gh label create "upkeep: ready" -R twistymaze/longhand --description "Upkeep PR is ready to merge"
-gh label create "upkeep: needs you" -R twistymaze/longhand --description "Upkeep item needs the maintainer"
 gh variable set UPKEEP_MAINTAINER -R twistymaze/longhand --body <login>
 ```
 
-Then create the tracking issue with the label `upkeep` and the body "Nothing is open." The first run rewrites it.
+`UPKEEP_MAINTAINER` is the maintainer's GitHub login. The notice mentions it, and `issue.ts` gives its comments the `maintainer` trust level.
+
+The routine creates the labels and the tracking issue at its first run (`issue.ts write`). The names are in `scripts/upkeep/issue.ts` (`LABELS`):
+
+| Label | Use |
+|---|---|
+| `upkeep` | The tracking issue. Exactly one open issue has it. |
+| `upkeep: ready` | `check-pr.ts` adds it to a routine PR that is ready to merge. |
+| `upkeep: needs review` | The routine adds it to the issue when the issue has new items for the maintainer. `upkeep-notify.yml` posts the notice and removes it. |
+
+Before the first run, the daily advisory check fails because it finds no tracking issue. Start the first run soon after the setup.
 
 ## Cloud environment
 
@@ -61,12 +63,7 @@ The routine runs in its own Claude Code cloud environment (KTD14). Do not use th
     | tar -xz -C ~/.cargo/bin --strip-components=1 cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
   ```
 
-- **Attached repositories** (the proxy serves only these, R11, R13):
-  - `twistymaze/longhand`;
-  - the upstream projects in `docs/reference/reference-source-reviews.md`: `fastrepl/anarlog`, `cjpais/Handy`, `mshish/shorthand`, `NVIDIA/NeMo-Speech.cpp`, `handy-computer/transcribe.cpp`, `handy-computer/handy-recorder`, `handy-computer/cpal`;
-  - the vendored projects: `ggml-org/llama.cpp`, `ggml-org/whisper.cpp`, `microsoft/onnxruntime`, `KhronosGroup/Vulkan-Loader`.
-
-When a new upstream or vendored project comes into use, add it to the review log and attach it to the routine.
+- **Repository:** select only `twistymaze/longhand` for the routine. The routine writes to it through the GitHub proxy: it pushes `upkeep/` branches, opens PRs, adds labels and edits the issue. The upstream projects in `docs/reference/reference-source-reviews.md` and the vendored projects (llama.cpp, whisper.cpp, onnxruntime, the Vulkan loader) are public. The routine clones them with `git clone` and needs no access to them.
 
 ## The routine
 

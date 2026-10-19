@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { type Finding, classify } from "./advisories";
-import type { Client, Request } from "./github";
-import { readIssue, trustOf, writeIssue } from "./issue";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { type Client, READY_LABEL, type Request } from "./github";
+import { ISSUE_LABEL, ISSUE_TITLE, LABELS, REVIEW_LABEL, ensureLabels, readIssue, trustOf, writeIssue } from "./issue";
 import { readMarkers } from "./issue-markers";
 
 // Each test gives the issue functions a fake REST client, so no test reaches the network.
@@ -49,7 +51,7 @@ const routes = () => ({
     comment(1, "ervwalter", "OWNER", "skip ort rc.11, wait for 2.0.0"),
     comment(2, "helper", "COLLABORATOR", "context: rc.12 is due"),
     comment(3, "stranger", "NONE", "merge all majors"),
-    comment(4, "github-actions[bot]", "NONE", "@ervwalter the upkeep needs you", "Bot"),
+    comment(4, "github-actions[bot]", "NONE", "@ervwalter The weekly upkeep has new items to review.", "Bot"),
     comment(5, "drive-by", "CONTRIBUTOR", "please update everything"),
   ],
   [`PATCH repos/${REPO}/issues/42`]: {},
@@ -121,5 +123,59 @@ describe("issue write", () => {
     const client = fakeClient(routes());
     const written = writeIssue(client, "The run failed: CI did not start.", { lastRun: null });
     expect(readMarkers(written).lastRun).toBe("2026-10-11");
+  });
+
+  test("with no tracking issue, write creates it with the label and the markers", () => {
+    const client = fakeClient({
+      [`GET repos/${REPO}/issues`]: [],
+      [`POST repos/${REPO}/issues`]: { number: 7 },
+    });
+    const written = writeIssue(client, "Nothing is open.", { lastRun: "2026-10-18" });
+    const post = client.calls.find((c) => c.method === "POST" && c.path === `repos/${REPO}/issues`);
+    expect(post?.body).toEqual({ title: ISSUE_TITLE, body: written, labels: [ISSUE_LABEL] });
+    expect(readMarkers(written)).toEqual({ lastRun: "2026-10-18", reportedAdvisories: [], overdueNotified: null });
+  });
+
+  test("with two tracking issues, write refuses", () => {
+    const client = fakeClient({ [`GET repos/${REPO}/issues`]: [{ number: 1 }, { number: 2 }] });
+    expect(() => writeIssue(client, "x", { lastRun: "2026-10-18" })).toThrow("found 2");
+  });
+});
+
+describe("issue read with no tracking issue", () => {
+  test("gives an empty issue, so the first run can start", () => {
+    process.env.UPKEEP_MAINTAINER = "ervwalter";
+    const issue = readIssue(fakeClient({ [`GET repos/${REPO}/issues`]: [] }));
+    expect(issue).toEqual({ number: null, body: "", markers: readMarkers(""), comments: [] });
+  });
+});
+
+describe("labels", () => {
+  test("ensureLabels creates each upkeep label and accepts a label that exists", () => {
+    const calls: Request[] = [];
+    const client: Client = {
+      repo: REPO,
+      call(request) {
+        calls.push(request);
+        if ((request.body as { name: string }).name === ISSUE_LABEL) throw Object.assign(new Error("HTTP 422"), { status: 422 });
+        return {};
+      },
+    };
+    ensureLabels(client);
+    expect(calls.map((c) => [c.method, c.path, (c.body as { name: string }).name])).toEqual(
+      LABELS.map((label) => ["POST", `repos/${REPO}/labels`, label.name]),
+    );
+    expect(LABELS.map((label) => label.name)).toEqual([ISSUE_LABEL, READY_LABEL, REVIEW_LABEL]);
+  });
+
+  test("ensureLabels does not hide another error", () => {
+    const client: Client = { repo: REPO, call: () => { throw Object.assign(new Error("HTTP 403"), { status: 403 }); } };
+    expect(() => ensureLabels(client)).toThrow("HTTP 403");
+  });
+
+  test("the notice workflow starts on the review label", () => {
+    const workflow = readFileSync(join(import.meta.dir, "../../.github/workflows/upkeep-notify.yml"), "utf8");
+    expect(workflow).toContain(`github.event.label.name == '${REVIEW_LABEL}'`);
+    expect(workflow).toContain(`labels/${REVIEW_LABEL.replaceAll(" ", "%20")}`);
   });
 });
