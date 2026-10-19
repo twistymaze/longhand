@@ -98,9 +98,18 @@ runs:
     # in each job, and Windows refuses while a job on the other runner (or a
     # leftover process) runs it (EBUSY). With the version fixed, setup-bun
     # keeps a matching bun.exe and does not write it.
+    #
+    # A self-hosted runner does not use the bun cache. The cache keeps the
+    # path of bun relative to the work folder, and the work folder of a
+    # self-hosted runner is one level deeper than on GitHub's runners. So an
+    # entry that a GitHub runner saved unpacks next to the runner folder,
+    # not into ~/.bun/bin, and setup-bun stops with "Unable to locate
+    # executable". A self-hosted runner keeps ~/.bun between jobs, so only
+    # its first job after a reset downloads bun.
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       with:
         bun-version-file: package.json
+        no-cache: ${{ runner.environment != 'github-hosted' }}
 
     - name: Install frontend dependencies
       shell: bash
