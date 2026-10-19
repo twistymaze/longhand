@@ -593,10 +593,14 @@ jobs:
 
       # Tauri signs, notarizes and staples the app, then makes the updater
       # archive and its signature from the stapled app. LONGHAND_RELEASE
-      # makes this build check for updates (KTD5).
+      # makes this build check for updates (KTD5). The transcribe-cpp build
+      # reads TRANSCRIBE_CMAKE_ARGS. GGML_NATIVE=OFF builds the CPU code for
+      # all Apple silicon, not for the CPU of the runner, so the app runs on
+      # an M1 when the runner has a newer chip.
       - name: Tauri build (release, notarized)
         if: steps.version.outputs.due == 'true'
         env:
+          TRANSCRIBE_CMAKE_ARGS: -DGGML_NATIVE=OFF
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -627,6 +631,10 @@ jobs:
           spctl -a -vv "$app"
           spctl -a -vv -t open --context context:primary-signature "$DMG"
           test -s target/release/bundle/macos/Longhand.app.tar.gz.sig
+          # The cache can keep older transcribe-cpp builds; the newest is this one.
+          cache=$(ls -t target/release/build/transcribe-cpp-sys-*/out/build/CMakeCache.txt | head -n 1)
+          grep -q '^GGML_NATIVE:BOOL=OFF$' "$cache" \
+            || { echo "transcribe-cpp was built for the CPU of the runner: $cache"; exit 1; }
 
       # release-publish gets the files from this artifact and runs no build
       # code (R25).

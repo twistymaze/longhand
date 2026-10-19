@@ -6,6 +6,7 @@
 //! collapsing to text, because the join and the session reading surface need
 //! times, and windows are padded to the minimum Whisper returns text for.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Once;
 
@@ -257,14 +258,35 @@ fn tokens_from_parts(
     tokens
 }
 
+/// The text that a NeMo model gives for a character outside its vocabulary.
+/// transcribe-cpp 0.2.4 keeps it in all output; it is not speech.
+const UNKNOWN: &str = "<unk>";
+
+/// `text` without the unknown marker. Where a marker is removed, each run of
+/// whitespace becomes its first character, so no double space stays and a
+/// leading word boundary stays.
+fn without_unknown(text: &str) -> Cow<'_, str> {
+    if !text.contains(UNKNOWN) {
+        return Cow::Borrowed(text);
+    }
+    let mut clean = String::with_capacity(text.len());
+    for c in text.replace(UNKNOWN, "").chars() {
+        if c.is_whitespace() && clean.ends_with(char::is_whitespace) {
+            continue;
+        }
+        clean.push(c);
+    }
+    Cow::Owned(clean)
+}
+
 fn text_from_parts(parts: Vec<crate::recovery::DecodedPart>) -> WindowText {
     let mut result = WindowText::default();
     for part in parts {
         let limit_ms = part.samples as u64 / SAMPLES_PER_MS;
         let offset_ms = part.offset as u64 / SAMPLES_PER_MS;
-        crate::recovery::append_text(&mut result.text, &part.transcript.text);
+        crate::recovery::append_text(&mut result.text, &without_unknown(&part.transcript.text));
         for segment in part.transcript.segments {
-            let text = segment.text.trim().to_string();
+            let text = without_unknown(&segment.text).trim().to_string();
             if text.is_empty() {
                 continue;
             }
@@ -285,7 +307,8 @@ fn word_tokens(words: &[transcribe_cpp::Word], limit_ms: u64) -> Vec<TimedToken>
     words
         .iter()
         .filter_map(|word| {
-            let text = word.text.trim();
+            let text = without_unknown(&word.text);
+            let text = text.trim();
             if text.is_empty() {
                 return None;
             }
@@ -317,24 +340,43 @@ fn run_error(e: transcribe_cpp::Error) -> AsrError {
 }
 
 /// Tokens with text, with times clamped into `[0, limit_ms]`. Special
-/// tokens such as `<|endoftext|>` are not speech.
+/// tokens such as `<|endoftext|>` and the unknown marker are not speech. A
+/// token that keeps only a word boundary after the unknown marker is removed
+/// stays, because the boundary starts the next word.
 fn timed_tokens(tokens: &[transcribe_cpp::Token], limit_ms: u64) -> Vec<TimedToken> {
     tokens
         .iter()
-        .filter(|t| {
-            let text = t.text.trim();
-            let special = text.starts_with("<|") && text.ends_with("|>");
-            !text.is_empty() && !special
-        })
-        .map(|t| {
+        .filter_map(|t| {
+            let text = without_unknown(&t.text);
+            let trimmed = text.trim();
+            let special = trimmed.starts_with("<|") && trimmed.ends_with("|>");
+            let boundary = trimmed.is_empty() && !text.is_empty() && text != t.text.as_str();
+            if special || (trimmed.is_empty() && !boundary) {
+                return None;
+            }
             let start = (t.t0_ms.max(0) as u64).min(limit_ms);
-            TimedToken {
-                text: t.text.clone(),
+            Some(TimedToken {
+                text: text.into_owned(),
                 start_ms: start,
                 end_ms: (t.t1_ms.max(0) as u64).clamp(start, limit_ms),
-            }
+            })
         })
         .collect()
+}
+
+/// The live text without unknown markers. Where a marker was removed, the
+/// tentative text does not start with a second space after the committed text.
+fn live_text(text: transcribe_cpp::StreamText) -> LiveText {
+    let committed = without_unknown(&text.committed);
+    let mut tentative = without_unknown(&text.tentative);
+    let removed = committed != text.committed.as_str() || tentative != text.tentative.as_str();
+    if removed && committed.ends_with(char::is_whitespace) {
+        tentative = Cow::Owned(tentative.trim_start().to_string());
+    }
+    LiveText {
+        committed: committed.into_owned(),
+        tentative: tentative.into_owned(),
+    }
 }
 
 /// A `transcribe-cpp` stream on the engine's session. The stream holds the
@@ -350,11 +392,7 @@ impl LiveStream for EngineStream<'_> {
     }
 
     fn text(&self) -> LiveText {
-        let text = self.stream.text();
-        LiveText {
-            committed: text.committed,
-            tentative: text.tentative,
-        }
+        live_text(self.stream.text())
     }
 
     fn finish(&mut self) -> Result<Vec<TimedToken>, AsrError> {
@@ -514,6 +552,119 @@ mod tests {
             crate::join_words(&crate::words_from_tokens(&tokens, 0)),
             "first second"
         );
+    }
+
+    /// A NeMo model gives `<unk>` for a character outside its vocabulary.
+    /// The marker is not speech, so no output path keeps it.
+    #[test]
+    fn unknown_markers_are_removed_from_text_segments_tokens_and_words() {
+        let token = |text: &str, t0_ms| transcribe_cpp::Token {
+            t0_ms,
+            t1_ms: t0_ms + 100,
+            text: text.into(),
+            ..Default::default()
+        };
+        let word = |text: &str, t0_ms| transcribe_cpp::Word {
+            t0_ms,
+            t1_ms: t0_ms + 100,
+            text: text.into(),
+            ..Default::default()
+        };
+        let text = " the caf<unk> is <unk> open <unk>";
+        let part = || crate::recovery::DecodedPart {
+            offset: 0,
+            samples: 16_000,
+            transcript: transcribe_cpp::Transcript {
+                text: text.into(),
+                segments: vec![
+                    transcribe_cpp::Segment {
+                        t0_ms: 0,
+                        t1_ms: 500,
+                        text: text.into(),
+                        ..Default::default()
+                    },
+                    transcribe_cpp::Segment {
+                        t0_ms: 500,
+                        t1_ms: 600,
+                        text: " <unk> ".into(),
+                        ..Default::default()
+                    },
+                ],
+                tokens: vec![
+                    token("\u{2581}the", 0),
+                    token("\u{2581}caf", 100),
+                    token("<unk>", 200),
+                    token("\u{2581}is", 300),
+                    token(" <unk>", 400),
+                    token("open", 500),
+                    token("\u{2581}<unk>", 600),
+                    token("ok", 700),
+                ],
+                words: vec![
+                    word("the", 0),
+                    word("caf<unk>", 100),
+                    word("is", 300),
+                    word("<unk>", 400),
+                    word("open", 500),
+                    word("<unk>", 600),
+                    word("ok", 700),
+                ],
+                ..Default::default()
+            },
+        };
+
+        let plain = text_from_parts(vec![part()]);
+        assert_eq!(plain.text, "the caf is open");
+        assert_eq!(
+            plain.segments,
+            vec![AsrSegment {
+                start_ms: 0,
+                end_ms: 500,
+                text: "the caf is open".into()
+            }]
+        );
+
+        for timing in [TimestampKind::Token, TimestampKind::Word] {
+            let tokens = tokens_from_parts(vec![part()], timing);
+            assert!(
+                tokens.iter().all(|t| !t.text.contains("<unk>")),
+                "{timing:?}: {tokens:?}"
+            );
+            let words = crate::words_from_tokens(&tokens, 0);
+            assert_eq!(
+                spans(&words),
+                vec![
+                    (0, 100, "the"),
+                    (100, 200, "caf"),
+                    (300, 400, "is"),
+                    (500, 600, "open"),
+                    (700, 800, "ok")
+                ],
+                "{timing:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn live_text_and_plain_text_lose_unknown_markers_and_their_double_spaces() {
+        let text = live_text(transcribe_cpp::StreamText {
+            committed: "a <unk> caf<unk>".into(),
+            tentative: "<unk> b".into(),
+            ..Default::default()
+        });
+        assert_eq!(text.committed, "a caf");
+        assert_eq!(text.tentative, " b");
+        let text = live_text(transcribe_cpp::StreamText {
+            committed: "hello <unk>".into(),
+            tentative: " world".into(),
+            ..Default::default()
+        });
+        assert_eq!(text.committed + &text.tentative, "hello world");
+        assert_eq!(without_unknown("\u{2581}<unk>"), "\u{2581}");
+        assert!(matches!(
+            without_unknown("no  marker"),
+            std::borrow::Cow::Borrowed("no  marker")
+        ));
     }
 
     fn snapshot(kind: TimestampKind) -> transcribe_cpp::Transcript {
