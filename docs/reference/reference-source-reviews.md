@@ -1,6 +1,6 @@
 # Reference source reviews
 
-This file records, for each upstream project, the baseline of the last review. The weekly upkeep routine reads each baseline, reviews the changes after it, and moves it forward. See `docs/upkeep/README.md` for the routine.
+This file records, for each upstream project, the baseline of the last review. The weekly upkeep routine reads each baseline, reviews the changes after it, and moves it forward. Its instructions are in the maintainer's private upkeep repository (`docs/development-workflow.md`, "Dependency and upstream upkeep").
 
 ## Review status
 

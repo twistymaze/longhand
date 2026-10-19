@@ -16,9 +16,10 @@ all-features = false
 targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
 
 # Known vulnerabilities, unmaintained and unsound crates, and yanked versions
-# (RustSec). The scheduled advisory workflow and each PR that changes
-# dependencies run this check. Only the maintainer adds an ignore, and each
-# ignore has a reason (docs/upkeep/README.md).
+# (RustSec). The `cargo deny` CI job fails a PR that adds an advisory that
+# the base does not have (scripts/check-new-advisories.ts). Only the
+# maintainer adds an ignore, and each ignore has a reason
+# (docs/development-workflow.md).
 [advisories]
 yanked = "deny"
 # Report an unmaintained crate only when a Longhand crate uses it directly.

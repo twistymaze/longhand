@@ -50,7 +50,9 @@ Run local checks, including:
 
 Dependency rules that apply to each change:
 
-- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- A PR fails the `cargo deny` check when `Cargo.lock` or `bun.lock` gains a version that is less than 7 days old, or a `bun.lock` entry that does not come from the npm registry (`scripts/check-dependency-age.ts`). When you must have such a version, for example for a security fix, add it to `min-age-exceptions.toml` with a reason, and remove the entry again after 7 days.
+- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, also add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- A PR fails the `cargo deny` check when it adds an advisory that `main` does not have (`scripts/check-new-advisories.ts`). An advisory that is already on `main` does not fail a PR.
 - `deny.toml` checks known vulnerabilities for the shipped targets only. Only the maintainer adds an entry to `[advisories] ignore`, and each entry has a `reason`. Run the check with `cargo deny check advisories`.
 
 CI runs only on:
@@ -69,7 +71,7 @@ Commit per unit and push in batches. Continue implementation after a push. Once 
 
 ### Dependency and upstream upkeep
 
-A daily advisory check and a weekly Claude Code routine keep the dependencies and the borrowed code current. The routine opens `build(deps)`, `fix(upstream)` and `docs(upkeep)` PRs on `upkeep/` branches, marks each PR ready with the label `upkeep: ready`, and writes all other items in the tracking issue (label `upkeep`). The maintainer merges each ready PR. [Upkeep](upkeep/README.md) gives the setup, how to start and pause the routine, and the held updates.
+A weekly Claude routine on the maintainer's machine keeps the dependencies and the borrowed code current. Its instructions and scripts are in a private repository. It opens a `build(deps)` PR only for patch versions with fix-only release notes and for high or critical security fixes, and `fix(upstream)`, `fix` (code scanning) and `docs(upkeep)` PRs on `upkeep/` branches. It marks each PR ready with the label `upkeep: ready`, and writes all other items, such as proposed updates and alerts, in the tracking issue (label `upkeep`). The maintainer merges each ready PR. Routine PRs pass the same checks as all other PRs.
 
 ### Before a PR
 
