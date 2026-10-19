@@ -311,6 +311,71 @@ test("a crate that cargo cannot update alone is not held when an applied update 
   expect(result.held).toEqual([]);
 });
 
+test("an update that moves another crate to a version 2 days old is held", async () => {
+  const result = await selectUpdates(
+    tools({
+      graph: { "longhand@0.1.0": ["foo@1.0.0", "bar@1.0.0"], "foo@1.0.0": ["bar@1.0.0"], "bar@1.0.0": [] },
+      updates: ["    Updating foo v1.0.0 -> v1.1.0"],
+      moves: { "foo@1.0.0": ["    Updating bar v1.0.0 -> v1.0.5", "    Updating foo v1.0.0 -> v1.1.0"] },
+      crates: { foo: [published("1.0.0", 90), published("1.1.0", 30)], bar: [published("1.0.0", 90), published("1.0.5", 2)] },
+    }),
+    HELD,
+  );
+  expect(result.apply).toEqual([]);
+  expect(result.held).toEqual([
+    { ecosystem: "crate", name: "foo", version: "1.0.0", to: "1.1.0", reason: "brings bar 1.0.5, which is less than 7 days old" },
+  ]);
+});
+
+test("an update that adds a crate version 2 days old is held", async () => {
+  const result = await selectUpdates(
+    tools({
+      graph: { "longhand@0.1.0": ["foo@1.0.0"], "foo@1.0.0": [] },
+      updates: ["    Updating foo v1.0.0 -> v1.1.0"],
+      moves: { "foo@1.0.0": ["      Adding baz v0.3.1", "    Updating foo v1.0.0 -> v1.1.0"] },
+      crates: { foo: [published("1.0.0", 90), published("1.1.0", 30)], baz: [published("0.3.1", 2)] },
+    }),
+    HELD,
+  );
+  expect(result.apply).toEqual([]);
+  expect(result.held).toEqual([
+    { ecosystem: "crate", name: "foo", version: "1.0.0", to: "1.1.0", reason: "brings baz 0.3.1, which is less than 7 days old" },
+  ]);
+});
+
+test("an update that moves another crate to a version 10 days old is applied", async () => {
+  const result = await selectUpdates(
+    tools({
+      graph: { "longhand@0.1.0": ["foo@1.0.0", "bar@1.0.0"], "foo@1.0.0": ["bar@1.0.0"], "bar@1.0.0": [] },
+      updates: ["    Updating foo v1.0.0 -> v1.1.0"],
+      moves: { "foo@1.0.0": ["    Updating bar v1.0.0 -> v1.0.5", "      Adding baz v0.3.1", "    Updating foo v1.0.0 -> v1.1.0"] },
+      crates: {
+        foo: [published("1.0.0", 90), published("1.1.0", 30)],
+        bar: [published("1.0.0", 90), published("1.0.5", 10)],
+        baz: [published("0.3.1", 10)],
+      },
+    }),
+    HELD,
+  );
+  expect(result.apply.map((update) => `${update.name}@${update.to}`)).toEqual(["foo@1.1.0"]);
+  expect(result.held).toEqual([]);
+});
+
+test("an advisory exception that moves another crate to a young version is applied", async () => {
+  const result = await selectUpdates(
+    tools({
+      graph: { "longhand@0.1.0": ["rustls@0.23.45"], "rustls@0.23.45": ["ring@0.17.8"], "ring@0.17.8": [] },
+      updates: [],
+      moves: { "rustls@0.23.45": ["    Updating ring v0.17.8 -> v0.17.9", "    Updating rustls v0.23.45 -> v0.23.46"] },
+      crates: { rustls: [published("0.23.45", 20), published("0.23.46", 2)], ring: [published("0.17.8", 90), published("0.17.9", 2)] },
+      advisories: [advisory("RUSTSEC-2026-0346", "rustls", "0.23.45", ">=0.23.46")],
+    }),
+    HELD,
+  );
+  expect(result.apply.map((update) => `${update.name}@${update.to}`)).toEqual(["rustls@0.23.46"]);
+  expect(result.exceptions.map((entry) => entry.name)).toEqual(["rustls"]);
+});
+
 test("a crates.io API error holds that crate, and the other crates continue", async () => {
   const result = await selectUpdates(
     tools({

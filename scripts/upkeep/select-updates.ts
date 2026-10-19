@@ -30,7 +30,10 @@
 // package on the command line. The command updates only that package.
 //
 // The script tries each update alone. When an update moves a held
-// dependency, the script holds the update.
+// dependency, the script holds the update. When it adds or moves another
+// crate to a version that is less than 7 days old, the script also holds
+// it, because check-pr refuses that version. An advisory exception is not
+// held for this reason.
 
 import { cpSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,11 +158,14 @@ function chooseFix(fixing: Published[], now: Date): { version: Published; except
 }
 
 /// Cargo's update lines: "Updating x v1 -> v2", "Adding x v1", "Removing x v1".
-function cargoChanges(output: string): { name: string; from: string; to: string | null }[] {
+/// An added crate has no `from`, and a removed crate has no `to`.
+function cargoChanges(output: string): { name: string; from: string | null; to: string | null }[] {
   const changes = [];
   for (const line of output.split("\n")) {
     const match = line.match(/^\s*(Updating|Downgrading|Adding|Removing)\s+(\S+)\s+v(\S+)(?:\s+->\s+v(\S+))?/);
-    if (match) changes.push({ name: match[2], from: match[3], to: match[4] ?? null });
+    if (!match) continue;
+    if (match[1] === "Adding") changes.push({ name: match[2], from: null, to: match[3] });
+    else changes.push({ name: match[2], from: match[3], to: match[4] ?? null });
   }
   return changes;
 }
@@ -327,7 +333,7 @@ async function selectCrates(tools: Tools, held: HeldList, now: Date, result: Sel
 
   const withAdvisory = new Set(advisories.map((a) => `${a.name}@${a.version}`));
   for (const change of cargoChanges(tools.cargoDryRun([]).output)) {
-    if (change.to === null || withAdvisory.has(`${change.name}@${change.from}`)) continue;
+    if (change.from === null || change.to === null || withAdvisory.has(`${change.name}@${change.from}`)) continue;
     const isHeld = heldCrate(change.name, change.from);
     if (isHeld) {
       result.held.push({ ecosystem: "crate", name: change.name, version: change.from, ...isHeld });
@@ -353,6 +359,25 @@ async function selectCrates(tools: Tools, held: HeldList, now: Date, result: Sel
   // not held when an applied update moves it.
   const failed: Held[] = [];
   const movedByApply = new Set<string>();
+  const versionsOf = new Map<string, Promise<Published[]>>();
+  /// The reason to hold an update whose dry run adds or moves crates to
+  /// these versions, or null when each version is 7 days old.
+  const youngVersion = async (others: { name: string; to: string | null }[]): Promise<string | null> => {
+    for (const { name, to } of others) {
+      if (to === null) continue;
+      if (!versionsOf.has(name)) versionsOf.set(name, tools.crateVersions(name));
+      let found: Published | undefined;
+      try {
+        found = (await versionsOf.get(name)!).find((v) => v.version === to);
+      } catch {
+        return `publish date unknown: ${name} ${to}`;
+      }
+      if (!found) return `publish date unknown: ${name} ${to}`;
+      if (found.yanked) return `brings ${name} ${to}, which is yanked`;
+      if (!oldEnough(found, now)) return `brings ${name} ${to}, which is less than 7 days old`;
+    }
+    return null;
+  };
   for (const { exception, ...update } of planned) {
     const args = ["-p", `${update.name}@${update.from}`, "--precise", update.to];
     const extra = update.advisories ? { advisories: update.advisories } : {};
@@ -365,14 +390,21 @@ async function selectCrates(tools: Tools, held: HeldList, now: Date, result: Sel
     }
     const changes = cargoChanges(run.output);
     const moves = changes
-      .filter((change) => change.name !== update.name && heldCrate(change.name, change.from) !== null)
+      .filter((change) => change.name !== update.name && heldCrate(change.name, (change.from ?? change.to)!) !== null)
       .map((change) => change.name);
     if (moves.length > 0) {
       result.held.push({ ...heldUpdate, reason: "moves a held dependency", moves: [...new Set(moves)].sort() });
       continue;
     }
+    // check-pr refuses each new Cargo.lock entry that is less than 7 days
+    // old. An advisory exception is the only update that can bring one.
+    const young = exception ? null : await youngVersion(changes.filter((change) => change.name !== update.name));
+    if (young !== null) {
+      failed.push({ ...heldUpdate, reason: young });
+      continue;
+    }
     result.apply.push({ ...update, command: ["cargo", "update", ...args] });
-    for (const change of changes) movedByApply.add(`${change.name}@${change.from}`);
+    for (const change of changes) if (change.from !== null) movedByApply.add(`${change.name}@${change.from}`);
     if (exception) {
       result.exceptions.push({ ecosystem: "crate", name: update.name, version: update.to, published: exception.published.toISOString(), advisories: update.advisories! });
     }

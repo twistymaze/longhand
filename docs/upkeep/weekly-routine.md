@@ -103,7 +103,7 @@ The licence lists are generated from a build, so a workflow makes them.
 
 The PR body lists each update with its versions, each advisory that it fixes, each exception, and each removed ignore.
 
-- When no PR on `upkeep/deps` is open, open one: `gh api repos/twistymaze/longhand/pulls -f head=upkeep/deps -f base=main -f title='build(deps): ...' -f body=@body.md`. Write the date of this run in the body as the date on which the PR started to wait.
+- When no PR on `upkeep/deps` is open, open one: `gh api repos/twistymaze/longhand/pulls -f head=upkeep/deps -f base=main -f title='build(deps): ...' -F body=@body.md`. Write the date of this run in the body as the date on which the PR started to wait.
 - When a PR is open, run `bun scripts/upkeep/github.ts update-pr upkeep/deps HEAD --body-file body.md` again with the final body. Keep the first date on which it started to wait (`firstRun` in step 4).
 
 The title names the important changes, for example `build(deps): update 12 dependencies, fix RUSTSEC-2026-0346`.

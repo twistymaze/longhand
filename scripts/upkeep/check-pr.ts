@@ -8,6 +8,7 @@
 //     the checked head SHA in the PR body. It never merges.
 //
 // A PR passes only when all of these are true:
+//   - the head branch is in the repository, not in a fork;
 //   - the branch fits the kind (upkeep/deps, upkeep/port-<project>-<commit>,
 //     upkeep/review-log), and the title type fits the kind, with no + or !;
 //   - the required checks are successful on the head commit (a deps PR also
@@ -382,6 +383,9 @@ export async function evaluate(client: Client, pr: any, kind: Kind, registry: Re
   const branch: string = pr.head.ref;
   const head: string = pr.head.sha;
   const problems = [...branchProblems(kind, branch), ...titleProblems(kind, pr.title)];
+  // A fork can have a branch with the same name. Only a branch of the repository itself is a routine PR.
+  const headRepo: string | undefined = pr.head.repo?.full_name;
+  if (headRepo !== client.repo) problems.push(`head is not in the repository: ${headRepo ?? "unknown"}`);
   problems.push(...checkProblems(checkRuns(client, head), requiredChecks(kind)));
   const files = [...new Set(changedFiles(client, pr.number).map((f) => f.path))];
   for (const path of files) if (refusedPath(path)) problems.push(`refused path: ${path}`);
@@ -408,19 +412,28 @@ export async function runCheckPr(client: Client, number: number, kind: Kind, reg
   const pr = pullRequest(client, number);
   const headSha: string = pr.head.sha;
   const reasons = await evaluate(client, pr, kind, registry, held);
-  if (reasons.length === 0 && pullRequest(client, number).head.sha !== headSha) {
-    reasons.push(`head changed during the check (checked ${headSha})`);
-  }
-  const ok = reasons.length === 0;
-  const hasLabel = pr.labels.some((label: { name: string }) => label.name === READY_LABEL);
-  if (ok) addLabel(client, number, READY_LABEL);
-  else if (hasLabel) removeLabel(client, number, READY_LABEL);
+  const headChanged = `head changed during the check (checked ${headSha})`;
+  if (reasons.length === 0 && pullRequest(client, number).head.sha !== headSha) reasons.push(headChanged);
   const date = registry.now().toISOString().slice(0, 10);
-  const text = ok
-    ? `Upkeep check (${kind}) passed at head ${headSha} on ${date}.`
-    : `Upkeep check (${kind}) refused at head ${headSha} on ${date}:\n${reasons.map((r) => `- ${r}`).join("\n")}`;
-  setPrBody(client, number, withCheckRecord(pr.body ?? "", text));
-  return { ok, reasons, headSha };
+  const refusedText = () => `Upkeep check (${kind}) refused at head ${headSha} on ${date}:\n${reasons.map((r) => `- ${r}`).join("\n")}`;
+  if (reasons.length > 0) {
+    if (pr.labels.some((label: { name: string }) => label.name === READY_LABEL)) removeLabel(client, number, READY_LABEL);
+    setPrBody(client, number, withCheckRecord(pr.body ?? "", refusedText()));
+    return { ok: false, reasons, headSha };
+  }
+  // Write the record before the label, so that the label is never on the PR without its record.
+  setPrBody(client, number, withCheckRecord(pr.body ?? "", `Upkeep check (${kind}) passed at head ${headSha} on ${date}.`));
+  addLabel(client, number, READY_LABEL);
+  // update-pr can push a new head after the last read and before the label.
+  // Read the head again, and remove the label when it is not the checked head.
+  const after = pullRequest(client, number);
+  if (after.head.sha !== headSha) {
+    removeLabel(client, number, READY_LABEL);
+    reasons.push(headChanged);
+    setPrBody(client, number, withCheckRecord(after.body ?? "", refusedText()));
+    return { ok: false, reasons, headSha };
+  }
+  return { ok: true, reasons, headSha };
 }
 
 /// The real registries, and the advisory output of the checkout in `repository`.

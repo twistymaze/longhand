@@ -69,7 +69,8 @@ function record(path: string, repository: string, revision: string): string {
 const SUMMARIZE_PROVENANCE = `# Provenance\n\n${record("src/prompt.rs", ANARLOG, "1111111")}\n${record("src/parse.rs", HANDY, "2222222")}`;
 const AUDIO_PROVENANCE = `# Provenance\n\n${record("src/config.rs", HANDY, "3333333")}`;
 
-type FileChange = { base: string | null; head: string | null };
+/// `renamedFrom` makes the change a rename from that path.
+type FileChange = { base: string | null; head: string | null; renamedFrom?: string };
 
 type Scenario = {
   kind: Kind;
@@ -81,8 +82,12 @@ type Scenario = {
   unchanged?: Record<string, string>;
   labels?: string[];
   body?: string;
-  /// The head SHA that a second read of the PR gives.
+  /// The head SHA that a later read of the PR gives.
   headAfter?: string;
+  /// The number of PR reads that give head1 before `headAfter` (default 1).
+  headReadsBefore?: number;
+  /// The repository of the head branch (default REPO).
+  headRepo?: string;
 };
 
 function fakeClient(s: Scenario): Client & { calls: Request[] } {
@@ -104,13 +109,13 @@ function fakeClient(s: Scenario): Client & { calls: Request[] } {
       };
       if (method === "GET" && path === `repos/${REPO}/pulls/7`) {
         prReads++;
-        const sha = prReads > 1 && s.headAfter ? s.headAfter : "head1";
+        const sha = prReads > (s.headReadsBefore ?? 1) && s.headAfter ? s.headAfter : "head1";
         return {
           number: 7,
           title,
           body: s.body ?? "Weekly updates.",
           labels: (s.labels ?? []).map((name) => ({ name })),
-          head: { ref: branch, sha, repo: { full_name: REPO } },
+          head: { ref: branch, sha, repo: { full_name: s.headRepo ?? REPO } },
           base: { ref: "main", sha: "base1" },
         };
       }
@@ -121,7 +126,8 @@ function fakeClient(s: Scenario): Client & { calls: Request[] } {
       if (method === "GET" && path.startsWith(`repos/${REPO}/pulls/7/files`)) {
         return Object.entries(s.files).map(([filename, change]) => ({
           filename,
-          status: change.base === null ? "added" : change.head === null ? "removed" : "modified",
+          status: change.renamedFrom ? "renamed" : change.base === null ? "added" : change.head === null ? "removed" : "modified",
+          ...(change.renamedFrom ? { previous_filename: change.renamedFrom } : {}),
         }));
       }
       if (method === "GET" && path === `repos/${REPO}/compare/base1...head1`) return { merge_base_commit: { sha: "mb" } };
@@ -379,6 +385,22 @@ describe("refused paths, branch and title", () => {
     expect(r.reasons.join("\n")).toContain("refused path: .github/workflows/ci.yml");
   });
 
+  test("a port PR that renames .github/workflows/ci.yml to a test file: refuses the old path", async () => {
+    const r = await run({
+      kind: "port",
+      files: { "crates/summarize/tests/ci.rs": { base: null, head: "test", renamedFrom: ".github/workflows/ci.yml" } },
+    });
+    expect(r.ok).toBe(false);
+    expect(r.reasons).toContain("refused path: .github/workflows/ci.yml");
+  });
+
+  test("a PR from a fork on branch upkeep/deps: refuses", async () => {
+    const r = await run({ kind: "deps", files: serdeUpdate, headRepo: "someone/longhand" });
+    expect(r.ok).toBe(false);
+    expect(r.reasons).toContain("head is not in the repository: someone/longhand");
+    expect(r.labelAdded).toBe(false);
+  });
+
   test("branch fix/x instead of upkeep/...: refuses", async () => {
     const r = await run({ kind: "deps", branch: "fix/x", files: serdeUpdate });
     expect(r.ok).toBe(false);
@@ -506,5 +528,26 @@ describe("ready label", () => {
     expect(r.ok).toBe(false);
     expect(r.reasons.join("\n")).toContain("head changed");
     expect(r.labelAdded).toBe(false);
+  });
+
+  test("the head changes after the last read before the label: the label is removed and the check refuses", async () => {
+    const r = await run({ kind: "deps", files: serdeUpdate, headAfter: "head2", headReadsBefore: 2 });
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join("\n")).toContain("head changed during the check (checked head1)");
+    const add = r.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/issues/7/labels"));
+    const remove = r.calls.findIndex((c) => c.method === "DELETE" && c.path.includes("/labels/upkeep%3A%20ready"));
+    expect(add).toBeGreaterThanOrEqual(0);
+    expect(remove).toBeGreaterThan(add);
+    const lastBody = (r.calls.filter((c) => c.method === "PATCH").pop()?.body as { body: string }).body;
+    expect(lastBody).toContain("refused at head head1");
+  });
+
+  test("a pass writes the check record before it adds the label", async () => {
+    const r = await run({ kind: "deps", files: serdeUpdate });
+    const patch = r.calls.findIndex((c) => c.method === "PATCH");
+    const add = r.calls.findIndex((c) => c.method === "POST" && c.path.endsWith("/issues/7/labels"));
+    expect(r.ok).toBe(true);
+    expect(patch).toBeGreaterThanOrEqual(0);
+    expect(add).toBeGreaterThan(patch);
   });
 });
