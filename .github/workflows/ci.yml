@@ -141,11 +141,13 @@ jobs:
 
       # The Bun version comes from packageManager in package.json, so every
       # runner uses the same version and a self-hosted runner keeps its
-      # bun.exe (see .github/actions/windows-build-setup).
+      # bun.exe (see .github/actions/windows-build-setup). A self-hosted
+      # runner does not use the bun cache: see that file.
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         if: runner.os == 'macOS'
         with:
           bun-version-file: package.json
+          no-cache: ${{ runner.environment != 'github-hosted' }}
 
       - name: Install frontend dependencies
         if: runner.os == 'macOS'
