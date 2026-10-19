@@ -63,12 +63,7 @@ The routine runs in its own Claude Code cloud environment (KTD14). Do not use th
     | tar -xz -C ~/.cargo/bin --strip-components=1 cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny
   ```
 
-- **Attached repositories** (the proxy serves only these, R11, R13):
-  - `twistymaze/longhand`;
-  - the upstream projects in `docs/reference/reference-source-reviews.md`: `fastrepl/anarlog`, `cjpais/Handy`, `mshish/shorthand`, `NVIDIA/NeMo-Speech.cpp`, `handy-computer/transcribe.cpp`, `handy-computer/handy-recorder`, `handy-computer/cpal`;
-  - the vendored projects: `ggml-org/llama.cpp`, `ggml-org/whisper.cpp`, `microsoft/onnxruntime`, `KhronosGroup/Vulkan-Loader`.
-
-When a new upstream or vendored project comes into use, add it to the review log and attach it to the routine.
+- **Repository:** select only `twistymaze/longhand` for the routine. The routine writes to it through the GitHub proxy: it pushes `upkeep/` branches, opens PRs, adds labels and edits the issue. The upstream projects in `docs/reference/reference-source-reviews.md` and the vendored projects (llama.cpp, whisper.cpp, onnxruntime, the Vulkan loader) are public. The routine clones them with `git clone` and needs no access to them.
 
 ## The routine
 

@@ -128,7 +128,7 @@ Run `bun scripts/upkeep/check-pr.ts <pr> --kind deps` from a checkout of the cur
 
 Do the "Weekly procedure" in `docs/reference/reference-source-reviews.md`. It gives the baselines, the clone commands and the four groups (Act now, Idea, Note only, Not relevant).
 
-1. **Vendored C and C++ code and bundled binaries (R13).** For llama.cpp, whisper.cpp, NeMo-Speech.cpp, onnxruntime and the Vulkan loader, read the release notes after the version that Longhand uses, and the GitHub security advisories of each repository (`gh api repos/<owner>/<repo>/security-advisories`). Write each security issue that applies to the version that Longhand uses in the issue as "Act now". The routine does not update these (they are held).
+1. **Vendored C and C++ code and bundled binaries (R13).** For llama.cpp, whisper.cpp, NeMo-Speech.cpp, onnxruntime and the Vulkan loader, read the release notes after the version that Longhand uses, and the GitHub security advisories of each repository (`gh api repos/<owner>/<repo>/security-advisories` and `gh api repos/<owner>/<repo>/releases`). These repositories are not attached to the routine. If the proxy refuses these API reads, clone the repository and read its tags and changelog, and read the advisories at `https://github.com/<owner>/<repo>/security/advisories`. Write in the issue which source you used. Write each security issue that applies to the version that Longhand uses in the issue as "Act now". The routine does not update these (they are held).
 2. **Small fixes (R14).** A fix is small only when all of these are true:
    - it is a local fix to code that a `PROVENANCE.md` record lists as borrowed from that project;
    - it changes a few files and only those files;
