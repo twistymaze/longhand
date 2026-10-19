@@ -24,23 +24,23 @@ The plan is `docs/plans/2026-10-18-1454-chore-dependency-and-upstream-upkeep-pla
 
 ## Labels and variable
 
-Create these once:
-
-| Name | Kind | Use |
-|---|---|---|
-| `upkeep` | label | The tracking issue. Exactly one open issue has it. |
-| `upkeep: ready` | label | `check-pr.ts` adds it to a routine PR that is ready to merge. |
-| `upkeep: needs review` | label | The routine adds it to the issue. `upkeep-notify.yml` posts the notice and removes it. |
-| `UPKEEP_MAINTAINER` | repository variable | The maintainer's GitHub login. The notice mentions it, and `issue.ts` gives its comments the `maintainer` trust level. |
+Set the variable once:
 
 ```sh
-gh label create upkeep -R twistymaze/longhand --description "Weekly upkeep tracking issue"
-gh label create "upkeep: ready" -R twistymaze/longhand --description "Upkeep PR is ready to merge"
-gh label create "upkeep: needs review" -R twistymaze/longhand --description "Upkeep issue has new items for the maintainer to review"
 gh variable set UPKEEP_MAINTAINER -R twistymaze/longhand --body <login>
 ```
 
-Then create the tracking issue with the label `upkeep` and the body "Nothing is open." The first run rewrites it.
+`UPKEEP_MAINTAINER` is the maintainer's GitHub login. The notice mentions it, and `issue.ts` gives its comments the `maintainer` trust level.
+
+The routine creates the labels and the tracking issue at its first run (`issue.ts write`). The names are in `scripts/upkeep/issue.ts` (`LABELS`):
+
+| Label | Use |
+|---|---|
+| `upkeep` | The tracking issue. Exactly one open issue has it. |
+| `upkeep: ready` | `check-pr.ts` adds it to a routine PR that is ready to merge. |
+| `upkeep: needs review` | The routine adds it to the issue when the issue has new items for the maintainer. `upkeep-notify.yml` posts the notice and removes it. |
+
+Before the first run, the daily advisory check fails because it finds no tracking issue. Start the first run soon after the setup.
 
 ## Cloud environment
 

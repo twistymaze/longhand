@@ -47,7 +47,7 @@ gh api -X PUT repos/twistymaze/longhand/actions/workflows/advisories.yml/enable
 
 ### 3. Read the tracking issue (R18, R19)
 
-Run `bun scripts/upkeep/issue.ts read`. It prints JSON with the issue number, the body, the markers, and each comment with its trust level. Make a list of the decisions that apply to this run:
+Run `bun scripts/upkeep/issue.ts read`. It prints JSON with the issue number, the body, the markers, and each comment with its trust level. At the first run there is no issue: the number is null and the body is empty, and step 12 creates the issue. Make a list of the decisions that apply to this run:
 
 - holds, deferrals and rejections, each with its reason and its author;
 - context for an item;
@@ -144,7 +144,7 @@ Do the "Weekly procedure" in `docs/reference/reference-source-reviews.md`. It gi
 
 ### 12. Rewrite the tracking issue (R18–R21, R26)
 
-Write the new issue body in a file, then run `bun scripts/upkeep/issue.ts write <file>`. The script sets the date of this run and keeps the other markers that the daily advisory workflow reads. Do not write markers (`<!-- upkeep:... -->`) in the file. Write the body from the previous issue (step 3) and from this run. Do not add a section for history. Use these sections, in this order, and leave out a section that has no item:
+Write the new issue body in a file, then run `bun scripts/upkeep/issue.ts write <file>`. The script sets the date of this run and keeps the other markers that the daily advisory workflow reads. When no issue exists, it creates the issue and any missing upkeep label; run `issue.ts read` again to get the issue number for step 13. Do not write markers (`<!-- upkeep:... -->`) in the file. Write the body from the previous issue (step 3) and from this run. Do not add a section for history. Use these sections, in this order, and leave out a section that has no item:
 
 1. **Needs a decision.** Advisories that need a held update or that no update fixes (R25), at the top. Then proposed ignores (R3), unported "Act now" fixes, test defects, and failures of this run.
 2. **PRs ready to merge.** Each PR with the label `upkeep: ready`, and since when it waits.
