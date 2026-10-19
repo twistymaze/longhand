@@ -70,6 +70,15 @@ jobs:
           if [ -z "$TAG" ]; then
             echo "No release targets this commit. Nothing to build."
           else
+            # The build job writes the caches of the default branch, so it
+            # builds only a commit that is on main. The target of a release
+            # can be a branch name, so the step resolves it to a SHA first.
+            commit=$(gh api "repos/$REPOSITORY/commits/$commit" --jq .sha)
+            status=$(gh api "repos/$REPOSITORY/compare/$commit...main" --jq .status)
+            if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
+              echo "::error::Commit $commit of release $TAG is not on main ($status). Nothing to build."
+              exit 1
+            fi
             echo "Release $TAG, commit $commit"
           fi
           {
