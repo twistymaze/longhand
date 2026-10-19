@@ -10,6 +10,8 @@ execution: code
 
 # Dependency and Upstream Upkeep - Plan
 
+> Replaced by [Local Upkeep Routine - Plan](2026-10-18-2151-chore-local-upkeep-routine-plan.md). This plan records the cloud design.
+
 ## Goal Capsule
 
 - **Objective:** When nobody works on Longhand for weeks, the security fixes that need no held update, safe dependency updates and small upstream bug fixes still reach users after one merge by the maintainer, and the maintainer gets a notice only when a PR is ready to merge, a decision is necessary or a hand test is necessary.
