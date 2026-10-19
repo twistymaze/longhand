@@ -58,13 +58,16 @@ jobs:
         # main ruleset, so `os` never changes. `runner` chooses where the job
         # runs: the self-hosted runner that a repository variable names, or GitHub's
         # runner when the variable is not set or the `hosted` input is true.
+        # A PR from an `upkeep/` branch also runs on GitHub's runners: the
+        # weekly upkeep routine makes it, and its new third-party code must
+        # not run on the self-hosted runners (KTD16).
         # On GitHub, Windows runs on the standard runner, which is free for a
         # public repository and is the runner of the Windows release build.
         include:
           - os: macos-latest
-            runner: ${{ !inputs.hosted && vars.MACOS_RUNNER || 'macos-latest' }}
+            runner: ${{ !inputs.hosted && !startsWith(github.head_ref, 'upkeep/') && vars.MACOS_RUNNER || 'macos-latest' }}
           - os: windows-latest
-            runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
+            runner: ${{ !inputs.hosted && !startsWith(github.head_ref, 'upkeep/') && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
     # The feature ideas check reads the merged pull requests. A job block
     # replaces the workflow block, so it names `contents` again.
@@ -265,6 +268,12 @@ jobs:
       - name: Release script tests
         if: runner.os == 'macOS'
         run: bun test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
+
+      # The scripts of the weekly upkeep routine (docs/upkeep/README.md).
+      # The tests use fakes for gh and the registries, so they need no network.
+      - name: Upkeep script tests
+        if: runner.os == 'macOS'
+        run: bun test ./scripts/upkeep/
 
       - name: rustfmt
         if: runner.os == 'macOS'

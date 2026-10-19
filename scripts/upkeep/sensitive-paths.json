@@ -1,0 +1,20 @@
+{
+  "comment": "Paths that a port PR of the weekly upkeep must not change (R14). Only a signed build can test the capture, audio, permission, Keychain and native helper code, so a fix in these paths goes to the tracking issue. check-pr.ts matches each changed path against these glob patterns.",
+  "paths": [
+    "crates/audio/**",
+    "crates/audio-*/**",
+    "crates/recorder/**",
+    "crates/aec/**",
+    "crates/secrets/**",
+    "crates/nemo-runtime/**",
+    "native/**",
+    "src-tauri/src/audio.rs",
+    "src-tauri/src/commands/capture.rs",
+    "src-tauri/src/managers/capture.rs",
+    "src-tauri/src/commands/readiness.rs",
+    "src-tauri/src/managers/secrets.rs",
+    "src-tauri/capabilities/**",
+    "src-tauri/Entitlements.plist",
+    "src-tauri/Info.plist"
+  ]
+}
