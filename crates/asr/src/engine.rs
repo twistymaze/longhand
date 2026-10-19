@@ -341,8 +341,8 @@ fn run_error(e: transcribe_cpp::Error) -> AsrError {
 
 /// Tokens with text, with times clamped into `[0, limit_ms]`. Special
 /// tokens such as `<|endoftext|>` and the unknown marker are not speech. A
-/// token that keeps only a SentencePiece marker after the unknown marker is
-/// removed stays, because it starts the next word.
+/// token that keeps only a word boundary after the unknown marker is removed
+/// stays, because the boundary starts the next word.
 fn timed_tokens(tokens: &[transcribe_cpp::Token], limit_ms: u64) -> Vec<TimedToken> {
     tokens
         .iter()
@@ -350,7 +350,8 @@ fn timed_tokens(tokens: &[transcribe_cpp::Token], limit_ms: u64) -> Vec<TimedTok
             let text = without_unknown(&t.text);
             let trimmed = text.trim();
             let special = trimmed.starts_with("<|") && trimmed.ends_with("|>");
-            if trimmed.is_empty() || special {
+            let boundary = trimmed.is_empty() && !text.is_empty() && text != t.text.as_str();
+            if special || (trimmed.is_empty() && !boundary) {
                 return None;
             }
             let start = (t.t0_ms.max(0) as u64).min(limit_ms);
@@ -363,10 +364,18 @@ fn timed_tokens(tokens: &[transcribe_cpp::Token], limit_ms: u64) -> Vec<TimedTok
         .collect()
 }
 
+/// The live text without unknown markers. Where a marker was removed, the
+/// tentative text does not start with a second space after the committed text.
 fn live_text(text: transcribe_cpp::StreamText) -> LiveText {
+    let committed = without_unknown(&text.committed);
+    let mut tentative = without_unknown(&text.tentative);
+    let removed = committed != text.committed.as_str() || tentative != text.tentative.as_str();
+    if removed && committed.ends_with(char::is_whitespace) {
+        tentative = Cow::Owned(tentative.trim_start().to_string());
+    }
     LiveText {
-        committed: without_unknown(&text.committed).into_owned(),
-        tentative: without_unknown(&text.tentative).into_owned(),
+        committed: committed.into_owned(),
+        tentative: tentative.into_owned(),
     }
 }
 
