@@ -67,6 +67,10 @@ Docs-only changes need no PR. Commit and push them directly on `main`; CI costs 
 
 Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open, also for a small fix.
 
+### Dependency and upstream upkeep
+
+A daily advisory check and a weekly Claude Code routine keep the dependencies and the borrowed code current. The routine opens `build(deps)`, `fix(upstream)` and `docs(upkeep)` PRs on `upkeep/` branches, marks each PR ready with the label `upkeep: ready`, and writes all other items in the tracking issue (label `upkeep`). The maintainer merges each ready PR. [Upkeep](upkeep/README.md) gives the setup, how to start and pause the routine, and the held updates.
+
 ### Before a PR
 
 Other worktrees often merge into `main` while a branch is in progress. Immediately before you create a PR:
