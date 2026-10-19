@@ -17,3 +17,6 @@ Stay on supported versions of the migration crate.
 
 ## Notes / Current state
 Check the changelog for changes to migration behaviour, and run the session-core migration tests.
+
+## Outcome
+Shipped in twistymaze/longhand#50: rusqlite_migration 2.6.0, together with rusqlite 0.40.2. The exact pin stays on purpose, because each rusqlite_migration release accepts one rusqlite minor version. The comment in `crates/session-core/Cargo.toml` gives this reason.
