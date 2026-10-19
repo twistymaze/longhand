@@ -406,8 +406,11 @@ jobs:
   # versions that the PR adds (docs/development-workflow.md): each one must
   # be at least 7 days old or listed in min-age-exceptions.toml, and the PR
   # must add no advisory that the base does not have. These checks run the
-  # scripts of the base checkout and read the PR's lockfiles as data, so a
-  # PR cannot change the check that judges it.
+  # scripts of the base checkout, with the base bunfig.toml, and read the
+  # PR's lockfiles as data. A change to a check script in the PR has no
+  # effect on its own run. The PR's workflow and tool configuration (this
+  # file, .npmrc, .cargo/config.toml) still apply to the run, so review
+  # each change to them.
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
@@ -417,6 +420,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
         with:
           command: check licenses sources bans
@@ -444,19 +449,26 @@ jobs:
 
       # The base runs its own copy of each check script. Only a base that
       # does not have the script yet (the PR that adds it) runs the head's.
+      # The steps run in the base checkout, so bun reads the base
+      # bunfig.toml and not a preload or setting that the PR adds.
       - name: Check the age of added dependency versions
+        id: age
         if: github.event_name == 'pull_request'
+        working-directory: base
         run: |
-          script=base/scripts/check-dependency-age.ts
-          [[ -f "$script" ]] || script=scripts/check-dependency-age.ts
-          bun "$script" base .
+          script=scripts/check-dependency-age.ts
+          [[ -f "$script" ]] || script=../scripts/check-dependency-age.ts
+          bun --no-env-file "$script" . ..
 
+      # This step also runs when the age check fails, so that one run shows
+      # both results.
       - name: Check for advisories that the PR adds
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && (steps.age.outcome == 'success' || steps.age.outcome == 'failure') }}
+        working-directory: base
         run: |
-          script=base/scripts/check-new-advisories.ts
-          [[ -f "$script" ]] || script=scripts/check-new-advisories.ts
-          bun "$script" base .
+          script=scripts/check-new-advisories.ts
+          [[ -f "$script" ]] || script=../scripts/check-new-advisories.ts
+          bun --no-env-file "$script" . ..
 
   # Builds the release that a push to main is due for, and signs and
   # notarizes it (docs/releases.md). The workflow-level concurrency group

@@ -111,6 +111,14 @@ test("compare fails for a second affected copy of a JavaScript package", () => {
   expect(result.added.map((f) => `${f.id} ${f.name} ${f.version}`)).toEqual(["1241209 source-map-js 1.0.2"]);
 });
 
+test("compare fails for a second affected copy at the same version", () => {
+  const base = output([], SOURCE_MAP_AUDIT, bunLock({ "source-map-js": "source-map-js@1.2.1" }));
+  const head = output([], SOURCE_MAP_AUDIT, bunLock({ "source-map-js": "source-map-js@1.2.1", "vite/source-map-js": "source-map-js@1.2.1" }));
+  const result = compare(scan(base), scan(head));
+  expect(result.ok).toBe(false);
+  expect(result.added.map((f) => `${f.name} ${f.version}`)).toEqual(["source-map-js 1.2.1"]);
+});
+
 test("compare passes when the head removes an advisory", () => {
   const result = compare(scan(output([DENY_LINES.rustls], SOURCE_MAP_AUDIT, bunLock({ "source-map-js": "source-map-js@1.2.1" }))), scan(output([])));
   expect(result.ok).toBe(true);
@@ -133,7 +141,8 @@ test("compare fails with 'audit could not run' when bun audit cannot reach the r
   expect(result.ok).toBe(false);
   expect(result.message).toContain("audit could not run");
   expect(result.message).toContain("ConnectionRefused");
-  expect(result.message).not.toContain("new advisory");
+  expect(result.added).toEqual([]);
+  expect(result.message).not.toContain("The head adds");
 });
 
 test("compare fails with 'audit could not run' when cargo-deny writes no summary", () => {

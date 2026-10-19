@@ -12,7 +12,7 @@
 // package to a version that is still affected. Fails with "audit could not
 // run" when a tool cannot run.
 //
-// Both checkouts use the deny.toml of the base. A PR that changes deny.toml
+// Both checkouts use the deny.toml and bunfig.toml of the base. A PR that changes deny.toml
 // then cannot hide its own advisory, and a stricter rule in the PR does not
 // report an old finding as new.
 
@@ -89,7 +89,9 @@ function auditFindings(output: { exitCode: number; stdout: string; stderr: strin
   for (const [name, entries] of Object.entries(report)) {
     for (const entry of entries) {
       const affected = (versions.get(name) ?? []).filter((version) => Bun.semver.satisfies(version, entry.vulnerable_versions));
-      for (const version of new Set(affected.length > 0 ? affected : [entry.vulnerable_versions])) {
+      // One finding for each affected bun.lock entry, so that two copies of
+      // one version count as two.
+      for (const version of affected.length > 0 ? affected : [entry.vulnerable_versions]) {
         findings.push({ ecosystem: "package", id: String(entry.id), name, version, title: String(entry.title ?? "").trim() });
       }
     }
@@ -114,19 +116,17 @@ export function scan(output: ScanOutput): Scan {
 const group = (f: Finding) => `${f.ecosystem} ${f.id} ${f.name}`;
 const describe = (f: Finding) => `${f.id} (${f.name} ${f.version})${f.title ? `: ${f.title}` : ""}`;
 
-/// The distinct affected versions of each (ecosystem, advisory, package).
-function copies(findings: Finding[]): Map<string, Map<string, Finding>> {
-  const groups = new Map<string, Map<string, Finding>>();
-  for (const f of findings) {
-    const versions = groups.get(group(f)) ?? new Map<string, Finding>();
-    versions.set(f.version, f);
-    groups.set(group(f), versions);
-  }
+/// The affected copies of each (ecosystem, advisory, package). Each finding
+/// is one copy.
+function copies(findings: Finding[]): Map<string, Finding[]> {
+  const groups = new Map<string, Finding[]>();
+  for (const f of findings) groups.set(group(f), [...(groups.get(group(f)) ?? []), f]);
   return groups;
 }
 
 /// The advisories that the head adds. For a group with more copies on the
-/// head, the added findings are the head versions that the base does not have.
+/// head, the added findings are the head copies of each version beyond the
+/// number of copies of that version on the base.
 export function compare(base: Scan, head: Scan): { ok: boolean; added: Finding[]; message: string } {
   const failures = [base.ok ? null : `base: ${base.error}`, head.ok ? null : `head: ${head.error}`].filter(Boolean);
   if (!base.ok || !head.ok) {
@@ -134,25 +134,38 @@ export function compare(base: Scan, head: Scan): { ok: boolean; added: Finding[]
   }
   const known = copies(base.findings);
   const added: Finding[] = [];
-  for (const [key, versions] of copies(head.findings)) {
-    const before = known.get(key);
-    if (before && versions.size <= before.size) continue;
-    added.push(...[...versions.values()].filter((f) => !before?.has(f.version)));
+  for (const [key, headCopies] of copies(head.findings)) {
+    const baseCopies = known.get(key) ?? [];
+    if (headCopies.length <= baseCopies.length) continue;
+    const remaining = new Map<string, number>();
+    for (const f of baseCopies) remaining.set(f.version, (remaining.get(f.version) ?? 0) + 1);
+    for (const f of headCopies) {
+      const count = remaining.get(f.version) ?? 0;
+      if (count > 0) remaining.set(f.version, count - 1);
+      else added.push(f);
+    }
   }
   if (added.length === 0) return { ok: true, added, message: "The head adds no advisory." };
   return { ok: false, added, message: `The head adds these advisories:\n${added.map((f) => `- ${describe(f)}`).join("\n")}` };
 }
 
+/// A tool that runs longer than this is stopped, and the check fails with
+/// "audit could not run".
+const TOOL_TIMEOUT_MS = 10 * 60 * 1000;
+
 function run(command: string[], cwd: string): { exitCode: number; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(command, { cwd });
-  return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+  const result = Bun.spawnSync(command, { cwd, timeout: TOOL_TIMEOUT_MS });
+  // A stopped process has a null exit code.
+  return { exitCode: result.exitCode ?? -1, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 
-/// Runs cargo-deny and bun audit in `dir`, with the rules in `denyConfig`.
-function scanDir(dir: string, denyConfig: string): ScanOutput {
+/// Runs cargo-deny and bun audit in `dir`, with the rules in `denyConfig`
+/// and the bun settings in `bunConfig`. bun audit then does not read a
+/// bunfig.toml or .env file of `dir`.
+function scanDir(dir: string, denyConfig: string, bunConfig: string): ScanOutput {
   return {
     deny: run(["cargo", "deny", "--format", "json", "--config", resolve(denyConfig), "check", "advisories"], dir),
-    audit: run([process.execPath, "audit", "--json"], dir),
+    audit: run([process.execPath, `--config=${resolve(bunConfig)}`, "--no-env-file", "audit", "--json"], dir),
     bunLock: readFileSync(join(dir, "bun.lock"), "utf8"),
   };
 }
@@ -163,8 +176,9 @@ if (import.meta.main) {
     console.error("usage: check-new-advisories.ts <base-dir> <head-dir>");
     process.exit(2);
   }
-  const baseConfig = join(baseDir, "deny.toml");
-  const result = compare(scan(scanDir(baseDir, baseConfig)), scan(scanDir(headDir, baseConfig)));
+  const denyConfig = join(baseDir, "deny.toml");
+  const bunConfig = join(baseDir, "bunfig.toml");
+  const result = compare(scan(scanDir(baseDir, denyConfig, bunConfig)), scan(scanDir(headDir, denyConfig, bunConfig)));
   console.log(result.message);
   process.exit(result.ok ? 0 : 1);
 }

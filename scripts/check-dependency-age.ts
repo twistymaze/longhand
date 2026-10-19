@@ -87,7 +87,7 @@ function indexPath(name: string): string {
 }
 
 async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+  const response = await fetch(url, { headers: { "User-Agent": USER_AGENT }, signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`HTTP ${response.status} from ${url}`);
   return response.text();
 }
