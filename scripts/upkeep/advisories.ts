@@ -2,7 +2,8 @@
 // (R1, R2, R3, R21, R25; KTD6, KTD8, KTD9, KTD13). advisories.yml runs it.
 //
 //   bun scripts/upkeep/advisories.ts compare <base-dir> <head-dir>
-//     Runs cargo-deny and bun audit in the two checkouts. Fails when the head
+//     Runs cargo-deny (with the deny.toml of the base) and bun audit in the
+//     two checkouts. Fails when the head
 //     has an affected package version (advisory ID, package and version) that
 //     the base does not have. Fails with "audit could not run" when a tool
 //     cannot run.
@@ -30,7 +31,7 @@
 // gives it to shell steps only in files and environment variables.
 
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { daysSinceLastRun, NO_LAST_RUN, readMarkers, writeMarkers } from "./issue-markers";
 import {
   denyDiagnostics,
@@ -291,10 +292,11 @@ function run(command: string[], cwd: string): { exitCode: number; stdout: string
   return { exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
 }
 
-/// Runs cargo-deny and bun audit in `dir`.
-function scanDir(dir: string): ScanOutput {
+/// Runs cargo-deny and bun audit in `dir`. cargo-deny uses the rules in
+/// `denyConfig`, by default the deny.toml of `dir`.
+function scanDir(dir: string, denyConfig = join(dir, "deny.toml")): ScanOutput {
   return {
-    deny: run(["cargo", "deny", "--format", "json", "check", "advisories"], dir),
+    deny: run(["cargo", "deny", "--format", "json", "--config", resolve(denyConfig), "check", "advisories"], dir),
     audit: run([process.execPath, "audit", "--json"], dir),
     bunLock: readFileSync(join(dir, "bun.lock"), "utf8"),
   };
@@ -363,7 +365,11 @@ if (import.meta.main) {
   };
   if (!first || !second) usage();
   if (command === "compare") {
-    const result = compare(scan(scanDir(first)), scan(scanDir(second)));
+    // Both checkouts use the rules of the base. A PR that changes deny.toml
+    // then cannot hide its own advisory, and a stricter rule in the PR does
+    // not report an old finding as new.
+    const baseConfig = join(first, "deny.toml");
+    const result = compare(scan(scanDir(first, baseConfig)), scan(scanDir(second, baseConfig)));
     console.log(result.message);
     process.exit(result.ok ? 0 : 1);
   } else if (command === "ignores") {
