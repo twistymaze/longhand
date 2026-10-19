@@ -30,7 +30,7 @@ Use this procedure when the maintainer starts a review by hand. It starts from t
 
 ## Log
 
-The log ends on 2026-10-15. The upkeep tracking issue records the later reviews.
+The log ends on 2026-10-15. Later reviews write their open findings in the upkeep tracking issue, and record their baselines in the private upkeep repository.
 
 ### 2026-10-15
 
