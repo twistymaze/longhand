@@ -595,7 +595,7 @@ export function systemTools(repository: string): Tools {
     packageJson: () => JSON.parse(readFileSync(join(repository, "package.json"), "utf8")),
     bun: systemBunTools(repository),
     npmVersions: cached(async (name) => {
-      const data = await getJson(`https://registry.npmjs.org/${name.replace("/", "%2f")}`);
+      const data = await getJson(`https://registry.npmjs.org/${name.replaceAll("/", "%2f")}`);
       return Object.keys(data.versions ?? {}).map((version) => ({ version, published: new Date(data.time[version]), yanked: false }));
     }),
   };
