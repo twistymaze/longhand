@@ -2,12 +2,14 @@
 
 Longhand keeps its dependencies and its borrowed code current with three workflows and one weekly Claude Code routine. The maintainer merges each PR by hand. Nothing merges by itself.
 
+In these documents, "the maintainer" is the GitHub account in the repository variable `UPKEEP_MAINTAINER` (see [Labels and variable](#labels-and-variable)). The notices mention that account, and only its comments can defer or reject a security item.
+
 | Part | What it does | Where |
 |---|---|---|
 | Advisory check | Finds known vulnerabilities each day and on each PR that changes dependencies. A PR fails only for an advisory that it adds. | `.github/workflows/advisories.yml`, `scripts/upkeep/advisories.ts` |
 | Weekly routine | Prepares the dependency PR, the port PRs and the review log PR, and rewrites the tracking issue. | Claude Code cloud routine; instructions in `docs/upkeep/weekly-routine.md` |
 | Licence lists | Builds the full licence lists for an `upkeep/` branch, so that the routine runs no dependency code. | `.github/workflows/upkeep-licences.yml` |
-| Notices | Mentions the maintainer when the routine adds the label `upkeep: needs you`. | `.github/workflows/upkeep-notify.yml` |
+| Notices | Mentions the maintainer when the routine adds the label `upkeep: needs review`. | `.github/workflows/upkeep-notify.yml` |
 | PR check | Marks a routine PR ready with the label `upkeep: ready` when CI is green and the change is permitted for its kind. | `scripts/upkeep/check-pr.ts` |
 | Update selection | Lists the updates that the routine can take, the held updates and the advisory exceptions. | `scripts/upkeep/select-updates.ts`, `scripts/upkeep/held.json` |
 
@@ -28,13 +30,13 @@ Create these once:
 |---|---|---|
 | `upkeep` | label | The tracking issue. Exactly one open issue has it. |
 | `upkeep: ready` | label | `check-pr.ts` adds it to a routine PR that is ready to merge. |
-| `upkeep: needs you` | label | The routine adds it to the issue. `upkeep-notify.yml` posts the notice and removes it. |
+| `upkeep: needs review` | label | The routine adds it to the issue. `upkeep-notify.yml` posts the notice and removes it. |
 | `UPKEEP_MAINTAINER` | repository variable | The maintainer's GitHub login. The notice mentions it, and `issue.ts` gives its comments the `maintainer` trust level. |
 
 ```sh
 gh label create upkeep -R twistymaze/longhand --description "Weekly upkeep tracking issue"
 gh label create "upkeep: ready" -R twistymaze/longhand --description "Upkeep PR is ready to merge"
-gh label create "upkeep: needs you" -R twistymaze/longhand --description "Upkeep item needs the maintainer"
+gh label create "upkeep: needs review" -R twistymaze/longhand --description "Upkeep issue has new items for the maintainer to review"
 gh variable set UPKEEP_MAINTAINER -R twistymaze/longhand --body <login>
 ```
 

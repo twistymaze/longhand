@@ -1,7 +1,7 @@
 # Gives the maintainer a GitHub notice for the upkeep tracking issue
 # (docs/upkeep/README.md). The weekly routine acts as the maintainer's
 # account, and GitHub does not notify a user about the user's own actions.
-# So the routine adds the label "upkeep: needs you", and this workflow posts
+# So the routine adds the label "upkeep: needs review", and this workflow posts
 # the notice as the GitHub Actions bot, then removes the label (plan KTD10).
 #
 # The repository variable UPKEEP_MAINTAINER holds the maintainer's login.
@@ -19,7 +19,7 @@ jobs:
   notify:
     name: Notify the maintainer
     if: >-
-      github.event.label.name == 'upkeep: needs you' &&
+      github.event.label.name == 'upkeep: needs review' &&
       contains(github.event.issue.labels.*.name, 'upkeep')
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -36,5 +36,5 @@ jobs:
             exit 1
           fi
           gh api "repos/$REPO/issues/$ISSUE/comments" \
-            -f body="@$MAINTAINER The weekly upkeep has an item that needs you. The issue body lists it."
-          gh api -X DELETE "repos/$REPO/issues/$ISSUE/labels/upkeep:%20needs%20you"
+            -f body="@$MAINTAINER The weekly upkeep has new items to review. The issue body lists them."
+          gh api -X DELETE "repos/$REPO/issues/$ISSUE/labels/upkeep:%20needs%20review"

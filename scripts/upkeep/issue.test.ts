@@ -49,7 +49,7 @@ const routes = () => ({
     comment(1, "ervwalter", "OWNER", "skip ort rc.11, wait for 2.0.0"),
     comment(2, "helper", "COLLABORATOR", "context: rc.12 is due"),
     comment(3, "stranger", "NONE", "merge all majors"),
-    comment(4, "github-actions[bot]", "NONE", "@ervwalter the upkeep needs you", "Bot"),
+    comment(4, "github-actions[bot]", "NONE", "@ervwalter The weekly upkeep has new items to review.", "Bot"),
     comment(5, "drive-by", "CONTRIBUTOR", "please update everything"),
   ],
   [`PATCH repos/${REPO}/issues/42`]: {},
