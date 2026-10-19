@@ -21,7 +21,7 @@
     "prosemirror-commands": "^1.7.1",
     "prosemirror-dropcursor": "^1.8.2",
     "prosemirror-gapcursor": "1.4.0",
-    "prosemirror-history": "^1.5.0",
+    "prosemirror-history": "^1.5.1",
     "prosemirror-inputrules": "^1.5.1",
     "prosemirror-keymap": "^1.2.3",
     "prosemirror-markdown": "^1.13.4",
@@ -41,7 +41,7 @@
     "prosemirror-view": "1.42.3"
   },
   "devDependencies": {
-    "@happy-dom/global-registrator": "^20.14.5",
+    "@happy-dom/global-registrator": "^20.14.6",
     "@tauri-apps/cli": "^2.11.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
@@ -54,6 +54,6 @@
     "@vitejs/plugin-react": "^4.7.0",
     "rollup-plugin-license": "3.7.1",
     "typescript": "~5.6.3",
-    "vite": "^6.4.1"
+    "vite": "^6.4.4"
   }
 }
