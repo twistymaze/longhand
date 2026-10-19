@@ -1,16 +1,44 @@
 # Reference source reviews
 
-This file records the upstream commit up to which each clone in `reference-source/` was reviewed. Review each clone again about every two weeks.
+This file records, for each upstream project, the baseline of the last review. The weekly upkeep routine reads each baseline, reviews the changes after it, and moves it forward. See `docs/upkeep/README.md` for the routine.
 
 ## Review status
 
-| Clone | Upstream | Reviewed through | Review date |
+A baseline is a commit for a repository and a release version for a crate. Each project has one row.
+
+| Project | Upstream | Reviewed through | Review date |
 | --- | --- | --- | --- |
 | anarlog | https://github.com/fastrepl/anarlog | `afb35650` | 2026-10-15 |
 | Handy | https://github.com/cjpais/Handy | `9e57a0d` | 2026-10-15 |
 | shorthand | https://github.com/mshish/shorthand | `567640c` | 2026-10-15 |
+| NeMo-Speech.cpp | https://github.com/NVIDIA/NeMo-Speech.cpp | `97a15afa5caa9bce5baaa86c1184103877af4101` (the revision in `native/nemo-helper/runtime.json`) | 2026-10-18 |
+| transcribe-cpp (crate) | https://github.com/handy-computer/transcribe.cpp | 0.2.4 (the version in `Cargo.lock`) | 2026-10-18 |
+| handy-recorder (crate) | https://github.com/handy-computer/handy-recorder | 0.1.0 (the version in `docs/reference/borrowing-notes.md`) | 2026-10-18 |
+| handy-cpal (crate) | https://github.com/handy-computer/cpal | 0.18.2 (the version in `docs/reference/borrowing-notes.md`) | 2026-10-18 |
 
-## Procedure
+The review date of the last four rows is the date on which the baseline was set. No review has covered them yet. The first run reviews all changes after the baseline.
+
+Handy keeps its recorder and resampler in the crates `handy-recorder` and `handy-cpal` (since a42131d). Longhand copied files from both crates. A change to them does not show in Handy's history, so a review reads the source of the crate releases after the baseline and compares it with the files that Longhand copied. `PROVENANCE.md` lists those files.
+
+## Weekly procedure
+
+The upkeep routine does this procedure each week. It clones each repository fresh. It does not use `reference-source/`.
+
+1. Read the baseline of each project in the table above.
+2. For each repository, clone it and read the commits after the baseline with `git log` and `git diff <baseline>..origin/main`. For each crate, clone the repository of the crate and read the changes between the baseline release and the newest release. Use only read-only commands on the cloned code.
+3. Sort each change into one of these groups:
+   - **Act now**: a fix to code that `PROVENANCE.md` records as borrowed, or a defect that Longhand also has. The routine ports a small fix in its own `fix(upstream)` PR. It lists a larger fix in the tracking issue.
+   - **Idea**: a change worth a feature idea. The routine writes it in the tracking issue (label `upkeep`). It does not write a file in `docs/ideas/`. The maintainer files an idea from the issue.
+   - **Note only**: a verified fact worth keeping. The routine writes it in the tracking issue. The maintainer adds it to `docs/reference/borrowing-notes.md`.
+   - **Not relevant**: web, billing, marketing, cloud-only features, and similar changes.
+4. Save the tracking issue. The issue records each finding of the run that Longhand has not ported.
+5. Move the baselines forward in this file, and add an entry to the log below. Do this only after step 4 is complete. Use the branch `upkeep/review-log` and a PR with a title that starts with `docs(upkeep):`. Change only this file in the PR.
+6. If a PR on `upkeep/review-log` is still open from an earlier run, update that PR with this week's baselines and log entry. Do not open a second PR. The PR body and the issue say since when the PR has waited.
+7. The maintainer merges the PR. The routine never merges it. A baseline does not move until the PR is merged, so a run before the merge reviews the same changes again. This is intended.
+
+## Manual procedure
+
+Use this procedure when the maintainer starts a review by hand. It uses the local clones in `reference-source/`. Do not run it at the same time as the routine. If a PR on `upkeep/review-log` is open, update that PR.
 
 1. Fetch each clone. Do not pull yet. The working tree must stay at the reviewed commit until the review is complete.
 
@@ -21,15 +49,10 @@ This file records the upstream commit up to which each clone in `reference-sourc
    done
    ```
 
-2. Review the new commits with `git log` and `git diff <reviewed>..origin/main` only. For each clone, sort each commit into one of these groups:
-   - **Act now**: a fix to code that `PROVENANCE.md` records as borrowed, or a defect that Longhand also has.
-   - **Idea**: a change worth a file in `docs/ideas/`. Create it with the procedure in `docs/ideas/README.md`.
-   - **Note only**: a verified fact worth keeping. Add it to `docs/reference/borrowing-notes.md`.
-   - **Not relevant**: web, billing, marketing, cloud-only features, and similar changes.
-3. Fast-forward each clone to the reviewed commit: `git -C reference-source/<clone> merge --ff-only <commit>`.
-4. Update the table above and add an entry to the log below. Commit this file on `main`.
-
-Handy keeps its recorder and resampler in the external crates `handy-recorder` and `handy-cpal` (since a42131d). Until `docs/ideas/someday/handy-recorder-crates.md` is decided, also compare the new releases of those crates with the files that Longhand copied.
+2. Review the new commits with `git log` and `git diff <reviewed>..origin/main` only. Sort each change into the groups of the weekly procedure. For a manual review, write an "Idea" with the procedure in `docs/ideas/README.md`, and add a "Note only" to `docs/reference/borrowing-notes.md`.
+3. For NeMo-Speech.cpp, transcribe-cpp, `handy-recorder` and `handy-cpal`, clone the repository in a scratch folder outside the checkout and read the changes after the baseline.
+4. Fast-forward each local clone to the reviewed commit: `git -C reference-source/<clone> merge --ff-only <commit>`.
+5. Update the table above and add an entry to the log below. Commit this file as a docs-only change.
 
 ## Log
 

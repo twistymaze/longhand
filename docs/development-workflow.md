@@ -48,6 +48,11 @@ Run local checks, including:
 - `scripts/check-windows.sh`: lints for Windows from macOS in seconds, except crates that build C or C++.
 - `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies. Run it after each change that adds or removes a dependency, and commit the files that it writes. In a new worktree, run `bun install --frozen-lockfile` first: a copied `node_modules` can be older than `bun.lock` and writes wrong versions into `js-packages.json`.
 
+Dependency rules that apply to each change:
+
+- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- `deny.toml` checks known vulnerabilities for the shipped targets only. Only the maintainer adds an entry to `[advisories] ignore`, and each entry has a `reason`. Run the check with `cargo deny check advisories`.
+
 CI runs only on:
 
 - Pull requests into `main`.
@@ -61,6 +66,10 @@ The Markdown files of the agent skill in `plugins/` match the docs pattern of th
 Docs-only changes need no PR. Commit and push them directly on `main`; CI costs more than it checks for these changes. This includes plans, ideas, solutions, `CONCEPTS.md`, and agent guidance.
 
 Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open, also for a small fix.
+
+### Dependency and upstream upkeep
+
+A daily advisory check and a weekly Claude Code routine keep the dependencies and the borrowed code current. The routine opens `build(deps)`, `fix(upstream)` and `docs(upkeep)` PRs on `upkeep/` branches, marks each PR ready with the label `upkeep: ready`, and writes all other items in the tracking issue (label `upkeep`). The maintainer merges each ready PR. [Upkeep](upkeep/README.md) gives the setup, how to start and pause the routine, and the held updates.
 
 ### Before a PR
 
