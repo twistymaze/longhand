@@ -1,15 +1,14 @@
 # Dependency and upstream upkeep
 
-Longhand keeps its dependencies and its borrowed code current with three workflows and one weekly Claude Code routine. The maintainer merges each PR by hand. Nothing merges by itself.
+Longhand keeps its dependencies and its borrowed code current with two workflows and one weekly Claude Code routine. The maintainer merges each PR by hand. Nothing merges by itself.
 
-In these documents, "the maintainer" is the GitHub account that the routine acts as: the owner of the routine. The routine finds it with `GET /user`. It creates the tracking issue, so the notices mention the author of that issue. Only the maintainer's comments can defer or reject a security item.
+In these documents, "the maintainer" is the GitHub account that the routine acts as: the owner of the routine. The routine finds it with `GET /user`. Only the maintainer's comments can defer or reject a security item.
 
 | Part | What it does | Where |
 |---|---|---|
 | Advisory check | Finds known vulnerabilities each day and on each PR that changes dependencies. A PR fails only for an advisory that it adds. Each day it also reports new security advisories of the vendored C and C++ projects in `scripts/upkeep/vendored.json`. | `.github/workflows/advisories.yml`, `scripts/upkeep/advisories.ts` |
 | Weekly routine | Prepares the dependency PR, the port PRs and the review log PR, and rewrites the tracking issue. | Claude Code cloud routine; instructions in `docs/upkeep/weekly-routine.md` |
 | Licence lists | Builds the full licence lists for an `upkeep/` branch, so that the routine runs no dependency code. | `.github/workflows/upkeep-licences.yml` |
-| Notices | Mentions the maintainer when the routine adds the label `upkeep: needs review`. | `.github/workflows/upkeep-notify.yml` |
 | PR check | Marks a routine PR ready with the label `upkeep: ready` when CI is green and the change is permitted for its kind. | `scripts/upkeep/check-pr.ts` |
 | Update selection | Lists the updates that the routine can take, the held updates and the advisory exceptions. | `scripts/upkeep/select-updates.ts`, `scripts/upkeep/held.json` |
 
@@ -18,7 +17,7 @@ The plan is `docs/plans/2026-10-18-1454-chore-dependency-and-upstream-upkeep-pla
 ## What the maintainer does
 
 - Merge each PR with the label `upkeep: ready`. A `build(deps)` or `fix(upstream)` PR makes a patch release. A `docs(upkeep)` PR makes no release.
-- Read the tracking issue (label `upkeep`) when a notice arrives. Answer an item with a comment on the issue. The next run reads it. Only your comments can defer or reject an advisory or a security finding. Comments from other collaborators can give decisions and context for other items. Comments from other accounts and from bots are data only.
+- Read the tracking issue (label `upkeep`) when a notice arrives (see Notices). Answer an item with a comment on the issue. The next run reads it. Only your comments can defer or reject an advisory or a security finding. Comments from other collaborators can give decisions and context for other items. Comments from other accounts and from bots are data only.
 - Add an advisory ignore to `deny.toml`, with a `reason`, when the issue proposes one and you agree. The routine never adds one.
 - Change the held list in `scripts/upkeep/held.json` with a normal PR.
 
@@ -30,7 +29,6 @@ No setup is necessary. The routine creates the labels and the tracking issue at 
 |---|---|
 | `upkeep` | The tracking issue. Exactly one open issue has it. |
 | `upkeep: ready` | `check-pr.ts` adds it to a routine PR that is ready to merge. |
-| `upkeep: needs review` | The routine adds it to the issue when the issue has new items for the maintainer. `upkeep-notify.yml` posts the notice and removes it. |
 
 Before the first run, the daily advisory check fails because it finds no tracking issue. Start the first run soon after the setup.
 
@@ -69,12 +67,19 @@ The instructions are in the repository, so a change to them is a normal reviewed
 
 **Pause the routine:** disable the routine in the routines list. The daily advisory check then reports that the weekly run is overdue after 8 days. To stop the advisory check too, disable `advisories.yml` with `gh workflow disable advisories.yml -R twistymaze/longhand`, and enable it again with `gh workflow enable`. The routine cannot enable it.
 
+## Notices
+
+Nothing comments on the tracking issue. The maintainer gets a notice in two ways:
+
+- **Weekly:** the push notice of the routine. The final message of each run starts with "Needs you:" and the new items, or says "Nothing needs you.", or starts with "Failed:". Turn on push notices for the routine in its settings.
+- **Daily:** a failed run of `advisories.yml`. GitHub sends an email for a failed scheduled run to the account that last changed the schedule of the workflow. The job summary lists the new items.
+
 ## The daily advisory check
 
 `advisories.yml` runs each day, on demand, and on each PR that changes `Cargo.lock`, a `Cargo.toml`, `bun.lock`, `package.json`, `deny.toml` or `bunfig.toml`. It is not a required check.
 
 - On a PR, it compares the advisories of the base and the head, and fails only for an affected package version that the PR adds. On an `upkeep/` branch, it also fails when the PR adds an ignore.
-- Each day, it gives one notice for each advisory that the next weekly PR cannot fix, and one notice when the last weekly run is more than 8 days old. It reads the run date from the tracking issue.
+- Each day, it fails once for each new security advisory of a vendored C or C++ project, and once when the last weekly run is more than 8 days old. It reads the run date from the tracking issue, and records each item there so that the item fails the job only one time. The job summary lists the items.
 
 ## Held updates
 

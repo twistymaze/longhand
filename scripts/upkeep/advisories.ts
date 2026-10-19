@@ -13,18 +13,14 @@
 //     or about.toml, or adds an `--ignore` to a bun audit command (R3).
 //
 //   bun scripts/upkeep/advisories.ts classify <issue-body-file> <out-dir>
-//     Run from the repository root. Finds the advisories that need a
-//     decision: the advisories that stay after the allowed updates of
-//     select-updates.ts, and the advisories that only a held update fixes
-//     (KTD9). The script applies the allowed updates to the lockfiles, scans
-//     again, and then puts back the original Cargo.lock and bun.lock. It also
-//     finds when the last weekly run is more than 8 days old (KTD13), and
+//     Finds when the last weekly run is more than 8 days old (KTD13), and
 //     the security advisories of the vendored C and C++ projects in
 //     vendored.json that were published on or after its `since` date. It
 //     reads them with `gh api`, so GH_TOKEN must be set. When it cannot
 //     read the advisories of a project, it fails and writes nothing.
 //     Writes <out-dir>/result.json, and <out-dir>/notice.md when the
-//     maintainer must get a notice.
+//     maintainer must get a notice. The weekly routine reports the
+//     advisories of the Rust and JavaScript dependencies.
 //
 //   bun scripts/upkeep/advisories.ts mark <result-file> <issue-body-file>
 //     Prints the issue body with the advisories of the notice added to the
@@ -40,14 +36,9 @@ import { daysSinceLastRun, NO_LAST_RUN, readMarkers, writeMarkers } from "./issu
 import {
   denyDiagnostics,
   denyItems,
-  loadHeld,
   parseBunLock,
-  selectUpdates,
   splitSpec,
-  systemTools,
   type AuditReport,
-  type Selection,
-  type Update,
 } from "./select-updates";
 
 /// A notice for a weekly run that is older than this number of days.
@@ -235,39 +226,19 @@ function ghSecurityAdvisories(repository: string): unknown[] {
     .map((line) => JSON.parse(line));
 }
 
-/// Applies KTD9 and KTD13. `before` is the scan of the current lockfiles,
-/// `after` the scan after the allowed updates of `selection`. `vendored` is
-/// the advisories of the vendored projects (vendoredAdvisories).
-export function classify(input: {
-  before: Finding[];
-  after: Finding[];
-  selection: Selection;
-  issueBody: string;
-  now: Date;
-  vendored?: Finding[];
-}): Classification {
+/// Applies KTD13 and finds the vendored advisories that need a notice.
+/// `vendored` is the advisories of the vendored projects (vendoredAdvisories).
+export function classify(input: { issueBody: string; now: Date; vendored: Finding[] }): Classification {
   const markers = readMarkers(input.issueBody);
-  const heldReasons = new Map<string, string>();
-  for (const held of input.selection.held) for (const id of held.advisories ?? []) if (!heldReasons.has(id)) heldReasons.set(id, held.reason);
-
-  const open = new Map<string, Finding[]>();
-  for (const f of [...input.after, ...input.before.filter((f) => heldReasons.has(f.id))]) {
-    const list = open.get(f.id) ?? [];
-    if (!list.some((other) => key(other) === key(f))) list.push(f);
-    open.set(f.id, list);
-  }
   const vendored = new Map<string, Finding[]>();
-  for (const f of input.vendored ?? []) {
-    if (open.has(f.id)) continue;
+  for (const f of input.vendored) {
     const list = vendored.get(f.id) ?? [];
     if (!list.some((other) => key(other) === key(f))) list.push(f);
     vendored.set(f.id, list);
   }
   const reported = new Set(markers.reportedAdvisories);
-  const notices = [
-    ...[...open.entries()].map(([id, findings]) => ({ id, findings, reason: heldReasons.get(id) ?? "The next weekly update does not remove it." })),
-    ...[...vendored.entries()].map(([id, findings]) => ({ id, findings, reason: VENDORED_REASON })),
-  ]
+  const notices = [...vendored.entries()]
+    .map(([id, findings]) => ({ id, findings, reason: VENDORED_REASON }))
     .filter((notice) => !reported.has(notice.id))
     .sort((a, b) => a.id.localeCompare(b.id));
 
@@ -283,25 +254,16 @@ export function classify(input: {
   };
 }
 
-/// The text of the notice comment, without the mention, or null when the
-/// maintainer gets no notice.
+/// The text of the notice, or null when the maintainer gets no notice.
 export function noticeText(result: Classification): string | null {
   const parts: string[] = [];
   const line = (notice: Notice) => {
-    const versions = notice.findings
-      .map((f) => (f.ecosystem === "vendored" ? `${f.name}, affected versions ${f.version}, severity ${f.severity}` : `${f.name} ${f.version}`))
-      .join("; ");
+    const versions = notice.findings.map((f) => `${f.name}, affected versions ${f.version}, severity ${f.severity}`).join("; ");
     const title = notice.findings.find((f) => f.title)?.title;
     return `- ${notice.id} (${versions})${title ? `: ${title}` : ""}\n  ${notice.reason}`;
   };
-  const isVendored = (notice: Notice) => notice.findings.every((f) => f.ecosystem === "vendored");
-  const dependencies = result.notices.filter((notice) => !isVendored(notice));
-  const vendored = result.notices.filter(isVendored);
-  if (dependencies.length > 0) {
-    parts.push(`The daily advisory check found advisories that the weekly update cannot fix. Each one needs your decision.\n\n${dependencies.map(line).join("\n")}`);
-  }
-  if (vendored.length > 0) {
-    parts.push(`The daily advisory check found new advisories of vendored C or C++ projects.\n\n${vendored.map(line).join("\n")}`);
+  if (result.notices.length > 0) {
+    parts.push(`The daily advisory check found new advisories of vendored C or C++ projects.\n\n${result.notices.map(line).join("\n")}`);
   }
   if (result.overdueNotice) {
     parts.push(
@@ -322,35 +284,6 @@ export function markReported(body: string, result: Classification): string {
     reportedAdvisories: [...markers.reportedAdvisories, ...result.reportedAdvisories],
     overdueNotified: result.overdueNotice ? (markers.lastRun ?? NO_LAST_RUN) : undefined,
   });
-}
-
-/// The steps of classify. Tests replace them.
-export type ClassifyTools = {
-  /// cargo-deny and bun audit on the current lockfiles.
-  scan(): ScanOutput;
-  /// The selection of select-updates.ts.
-  select(): Promise<Selection>;
-  /// Applies the updates to the lockfiles.
-  apply(updates: Update[]): void;
-  /// Puts back the original lockfiles.
-  restore(): void;
-  /// The advisories of the vendored projects (vendoredAdvisories).
-  vendored(): Finding[];
-};
-
-export async function runClassify(tools: ClassifyTools, issueBody: string, now: Date): Promise<Classification> {
-  try {
-    const vendored = tools.vendored();
-    const before = scan(tools.scan());
-    if (!before.ok) throw new Error(`The audit could not run.\n${before.error}`);
-    const selection = await tools.select();
-    tools.apply(selection.apply);
-    const after = scan(tools.scan());
-    if (!after.ok) throw new Error(`The audit could not run after the updates.\n${after.error}`);
-    return classify({ before: before.findings, after: after.findings, selection, issueBody, now, vendored });
-  } finally {
-    tools.restore();
-  }
 }
 
 /// The settings that can hide an advisory or allow a licence.
@@ -430,29 +363,6 @@ function ignoreFiles(dir: string): IgnoreFiles {
   };
 }
 
-/// The classify steps for the repository in `dir`. Each update runs on the
-/// lockfiles of `dir`; `restore` writes back the original lockfiles.
-function systemClassifyTools(dir: string): ClassifyTools {
-  const lockfiles = ["Cargo.lock", "bun.lock"].map((name) => ({ path: join(dir, name), text: readFileSync(join(dir, name), "utf8") }));
-  return {
-    scan: () => scanDir(dir),
-    select: () => selectUpdates(systemTools(dir), loadHeld()),
-    apply: (updates) => {
-      for (const update of updates) {
-        const command = update.command[0] === "bun" ? [process.execPath, ...update.command.slice(1)] : update.command;
-        const result = run(command, dir);
-        // A failed update leaves its advisory in the second scan, so the
-        // advisory gets a notice.
-        if (result.exitCode !== 0) console.error(`${update.command.join(" ")} failed: ${lastLine(result.stderr)}`);
-      }
-    },
-    restore: () => {
-      for (const file of lockfiles) writeFileSync(file.path, file.text);
-    },
-    vendored: () => vendoredAdvisories(loadVendored(), ghSecurityAdvisories),
-  };
-}
-
 if (import.meta.main) {
   const [command, first, second] = process.argv.slice(2);
   const usage = () => {
@@ -479,7 +389,8 @@ if (import.meta.main) {
       process.exit(1);
     }
   } else if (command === "classify") {
-    const result = await runClassify(systemClassifyTools(process.cwd()), readFileSync(first, "utf8"), new Date());
+    const vendored = vendoredAdvisories(loadVendored(), ghSecurityAdvisories);
+    const result = classify({ issueBody: readFileSync(first, "utf8"), now: new Date(), vendored });
     mkdirSync(second, { recursive: true });
     writeFileSync(join(second, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
     const text = noticeText(result);

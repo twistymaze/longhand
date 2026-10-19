@@ -6,7 +6,6 @@ import {
   markReported,
   noticeText,
   loadVendored,
-  runClassify,
   scan,
   vendoredAdvisories,
   VENDORED_REASON,
@@ -15,7 +14,6 @@ import {
   type VendoredConfig,
 } from "./advisories";
 import { readMarkers, writeMarkers } from "./issue-markers";
-import type { Selection } from "./select-updates";
 
 // The tests give the script the text that cargo-deny and bun audit write, so
 // no test runs cargo, bun or a registry, and no test reaches the network.
@@ -161,51 +159,11 @@ test("compare fails with 'audit could not run' when cargo-deny writes no summary
   expect(result.message).toContain("audit could not run");
 });
 
-const finding = (id: string, name: string, version = "1.0.0"): Finding => ({ ecosystem: "crate", id, name, version, title: `${id} title` });
-const NO_SELECTION: Selection = { apply: [], held: [], exceptions: [] };
 const RECENT_BODY = writeMarkers("Nothing is open.", { lastRun: "2026-10-15", reportedAdvisories: [] });
-
-test("classify gives no notice for an advisory that the allowed updates remove", () => {
-  const selection: Selection = {
-    apply: [{ ecosystem: "crate", name: "rustls", from: "0.23.45", to: "0.23.46", command: [], advisories: ["A"] }],
-    held: [],
-    exceptions: [],
-  };
-  const result = classify({ before: [finding("A", "rustls")], after: [], selection, issueBody: RECENT_BODY, now: NOW });
-  expect(result.notices).toEqual([]);
-  expect(result.overdue).toBe(false);
-  expect(noticeText(result)).toBeNull();
-});
-
-test("classify gives one notice for an advisory that stays, and none the next day", () => {
-  const first = classify({ before: [finding("B", "zip")], after: [finding("B", "zip")], selection: NO_SELECTION, issueBody: RECENT_BODY, now: NOW });
-  expect(first.notices.map((n) => n.id)).toEqual(["B"]);
-  expect(first.notices[0].reason).toBe("The next weekly update does not remove it.");
-  expect(first.reportedAdvisories).toEqual(["B"]);
-
-  const nextBody = markReported(RECENT_BODY, first);
-  expect(readMarkers(nextBody).reportedAdvisories).toEqual(["B"]);
-  expect(readMarkers(nextBody).lastRun).toBe("2026-10-15");
-  const next = classify({ before: [finding("B", "zip")], after: [finding("B", "zip")], selection: NO_SELECTION, issueBody: nextBody, now: NOW });
-  expect(next.notices).toEqual([]);
-  expect(noticeText(next)).toBeNull();
-});
-
-test("classify gives a notice for an advisory that needs an update to a held crate", () => {
-  const selection: Selection = {
-    apply: [],
-    held: [{ ecosystem: "crate", name: "wasapi", version: "0.23.0", advisories: ["C"], reason: "advisory: the fix needs a held update. Platform API crate." }],
-    exceptions: [],
-  };
-  const result = classify({ before: [finding("C", "wasapi")], after: [finding("C", "wasapi")], selection, issueBody: RECENT_BODY, now: NOW });
-  expect(result.notices.map((n) => n.id)).toEqual(["C"]);
-  expect(result.notices[0].reason).toBe("advisory: the fix needs a held update. Platform API crate.");
-  expect(noticeText(result)).toContain("C (wasapi 1.0.0)");
-});
 
 test("classify gives an overdue notice when the last run is 9 days old", () => {
   const body = writeMarkers("", { lastRun: "2026-10-09", reportedAdvisories: [] });
-  const result = classify({ before: [], after: [], selection: NO_SELECTION, issueBody: body, now: NOW });
+  const result = classify({ issueBody: body, now: NOW, vendored: [] });
   expect(result.overdue).toBe(true);
   expect(result.daysSinceLastRun).toBe(9);
   expect(noticeText(result)).toContain("9 days ago");
@@ -213,11 +171,11 @@ test("classify gives an overdue notice when the last run is 9 days old", () => {
 
 test("classify gives the overdue notice once for each last run date", () => {
   const body = writeMarkers("", { lastRun: "2026-10-09", reportedAdvisories: [] });
-  const first = classify({ before: [], after: [], selection: NO_SELECTION, issueBody: body, now: NOW });
+  const first = classify({ issueBody: body, now: NOW, vendored: [] });
   expect(first.overdueNotice).toBe(true);
 
   const nextBody = markReported(body, first);
-  const next = classify({ before: [], after: [], selection: NO_SELECTION, issueBody: nextBody, now: NOW });
+  const next = classify({ issueBody: nextBody, now: NOW, vendored: [] });
   expect(next.overdue).toBe(true);
   expect(next.overdueNotice).toBe(false);
   expect(noticeText(next)).toBeNull();
@@ -225,74 +183,21 @@ test("classify gives the overdue notice once for each last run date", () => {
   // A new weekly run on 2026-10-12 that is overdue again 9 days later gives a new notice.
   const later = writeMarkers(nextBody, { lastRun: "2026-10-12", reportedAdvisories: [] });
   const laterNow = new Date("2026-10-21T06:00:00Z");
-  expect(classify({ before: [], after: [], selection: NO_SELECTION, issueBody: later, now: laterNow }).overdueNotice).toBe(true);
+  expect(classify({ issueBody: later, now: laterNow, vendored: [] }).overdueNotice).toBe(true);
 });
 
-test("classify gives no overdue notice when the last run is 3 days old", () => {
-  const result = classify({ before: [], after: [], selection: NO_SELECTION, issueBody: RECENT_BODY, now: NOW });
+test("classify gives no notice when the last run is 3 days old and no vendored advisory is new", () => {
+  const result = classify({ issueBody: RECENT_BODY, now: NOW, vendored: [] });
   expect(result.overdue).toBe(false);
+  expect(result.notices).toEqual([]);
   expect(noticeText(result)).toBeNull();
 });
 
 test("classify gives an overdue notice when the issue has no last run marker", () => {
-  const result = classify({ before: [], after: [], selection: NO_SELECTION, issueBody: "Nothing is open.", now: NOW });
+  const result = classify({ issueBody: "Nothing is open.", now: NOW, vendored: [] });
   expect(result.overdue).toBe(true);
   expect(result.daysSinceLastRun).toBeNull();
   expect(noticeText(result)).toContain("no date of the last weekly run");
-});
-
-test("runClassify scans, applies the allowed updates, scans again and restores the lockfiles", async () => {
-  const steps: string[] = [];
-  const selection: Selection = {
-    apply: [{ ecosystem: "crate", name: "rustls", from: "0.23.45", to: "0.23.46", command: ["cargo", "update"], advisories: ["RUSTSEC-2026-0346"] }],
-    held: [],
-    exceptions: [],
-  };
-  let applied = false;
-  const result = await runClassify(
-    {
-      scan: () => {
-        steps.push("scan");
-        return output(applied ? [DENY_LINES.zip] : [DENY_LINES.rustls, DENY_LINES.zip]);
-      },
-      select: async () => {
-        steps.push("select");
-        return selection;
-      },
-      apply: (updates) => {
-        steps.push(`apply ${updates.length}`);
-        applied = true;
-      },
-      restore: () => {
-        steps.push("restore");
-        applied = false;
-      },
-      vendored: () => {
-        steps.push("vendored");
-        return [];
-      },
-    },
-    RECENT_BODY,
-    NOW,
-  );
-  expect(steps).toEqual(["vendored", "scan", "select", "apply 1", "scan", "restore"]);
-  expect(result.notices.map((n) => n.id)).toEqual(["RUSTSEC-2026-0367"]);
-});
-
-test("runClassify stops when the scan cannot run", async () => {
-  const failed: ScanOutput = { ...output([]), audit: { exitCode: 1, stdout: "", stderr: "error: ConnectionRefused" } };
-  let restored = false;
-  const tools = {
-    scan: () => failed,
-    select: async () => NO_SELECTION,
-    apply: () => {},
-    restore: () => {
-      restored = true;
-    },
-    vendored: () => [],
-  };
-  await expect(runClassify(tools, RECENT_BODY, NOW)).rejects.toThrow("audit could not run");
-  expect(restored).toBe(true);
 });
 
 // Real fields of `gh api repos/ggml-org/llama.cpp/security-advisories`, shortened.
@@ -305,27 +210,11 @@ const ghAdvisory = (ghsa: string, publishedAt: string) => ({
 });
 const VENDORED: VendoredConfig = { since: "2026-10-19", repositories: ["ggml-org/llama.cpp", "ggml-org/whisper.cpp"] };
 
-/// The classify steps with no dependency advisory. `fetch` gives the published
-/// advisories of one vendored repository.
-function vendoredTools(fetch: (repository: string) => unknown[]) {
-  const steps: string[] = [];
-  return {
-    steps,
-    tools: {
-      scan: () => output([]),
-      select: async () => NO_SELECTION,
-      apply: () => {},
-      restore: () => steps.push("restore"),
-      vendored: () => vendoredAdvisories(VENDORED, fetch),
-    },
-  };
-}
-
-test("an advisory of a vendored project, published on or after `since`, gives one notice", async () => {
-  const { tools } = vendoredTools((repository) =>
+test("an advisory of a vendored project, published on or after `since`, gives one notice", () => {
+  const vendored = vendoredAdvisories(VENDORED, (repository) =>
     repository === "ggml-org/llama.cpp" ? [ghAdvisory("GHSA-j8rj-fmpv-wcxw", "2026-10-19T00:00:00Z")] : [],
   );
-  const result = await runClassify(tools, RECENT_BODY, NOW);
+  const result = classify({ issueBody: RECENT_BODY, now: NOW, vendored });
   expect(result.notices).toEqual([
     {
       id: "GHSA-j8rj-fmpv-wcxw",
@@ -349,28 +238,24 @@ test("an advisory of a vendored project, published on or after `since`, gives on
   expect(text).toContain("<= b7991");
   expect(text).toContain("critical");
   expect(text).toContain(VENDORED_REASON);
+
+  const next = classify({ issueBody: markReported(RECENT_BODY, result), now: NOW, vendored });
+  expect(next.notices).toEqual([]);
+  expect(noticeText(next)).toBeNull();
 });
 
-test("an advisory of a vendored project, published before `since`, gives no notice", async () => {
-  const { tools } = vendoredTools(() => [ghAdvisory("GHSA-old", "2026-10-18T23:59:59Z")]);
-  const result = await runClassify(tools, RECENT_BODY, NOW);
-  expect(result.notices).toEqual([]);
-  expect(noticeText(result)).toBeNull();
+test("an advisory of a vendored project, published before `since`, gives no notice", () => {
+  const vendored = vendoredAdvisories(VENDORED, () => [ghAdvisory("GHSA-old", "2026-10-18T23:59:59Z")]);
+  expect(vendored).toEqual([]);
 });
 
-test("an advisory of a vendored project in the reported marker gives no second notice", async () => {
-  const { tools } = vendoredTools(() => [ghAdvisory("GHSA-j8rj-fmpv-wcxw", "2026-10-20T08:00:00Z")]);
-  const body = writeMarkers("Nothing is open.", { lastRun: "2026-10-15", reportedAdvisories: ["GHSA-j8rj-fmpv-wcxw"] });
-  const result = await runClassify(tools, body, NOW);
-  expect(result.notices).toEqual([]);
-});
-
-test("classify fails, with the repository name, when the advisories of a vendored project cannot be read", async () => {
-  const { tools } = vendoredTools((repository) => {
-    if (repository === "ggml-org/whisper.cpp") throw new Error("HTTP 502");
-    return [];
-  });
-  await expect(runClassify(tools, RECENT_BODY, NOW)).rejects.toThrow("ggml-org/whisper.cpp");
+test("vendoredAdvisories fails, with the repository name, when the advisories of a vendored project cannot be read", () => {
+  expect(() =>
+    vendoredAdvisories(VENDORED, (repository) => {
+      if (repository === "ggml-org/whisper.cpp") throw new Error("HTTP 502");
+      return [];
+    }),
+  ).toThrow("ggml-org/whisper.cpp");
 });
 
 test("vendored.json lists the vendored projects and a valid date", () => {

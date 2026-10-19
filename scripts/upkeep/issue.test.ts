@@ -3,7 +3,7 @@ import { type Finding, classify } from "./advisories";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Client, READY_LABEL, type Request } from "./github";
-import { ISSUE_LABEL, ISSUE_TITLE, LABELS, REVIEW_LABEL, ensureLabels, readIssue, trustOf, writeIssue } from "./issue";
+import { ISSUE_LABEL, ISSUE_TITLE, LABELS, ensureLabels, readIssue, trustOf, writeIssue } from "./issue";
 import { readMarkers } from "./issue-markers";
 
 // Each test gives the issue functions a fake REST client, so no test reaches the network.
@@ -104,14 +104,8 @@ describe("issue write", () => {
 
     // The daily advisory check reads the same body: the run is not overdue,
     // and an advisory that has had its notice gets no second notice.
-    const finding: Finding = { ecosystem: "crate", id: "RUSTSEC-2026-0346", name: "rustls", version: "0.23.45", title: "x" };
-    const result = classify({
-      before: [finding],
-      after: [finding],
-      selection: { apply: [], held: [], exceptions: [] },
-      issueBody: written,
-      now: new Date("2026-10-20T06:00:00Z"),
-    });
+    const finding: Finding = { ecosystem: "vendored", id: "RUSTSEC-2026-0346", name: "ggml-org/llama.cpp", version: "<= b7991", title: "x" };
+    const result = classify({ issueBody: written, now: new Date("2026-10-20T06:00:00Z"), vendored: [finding] });
     expect(result.lastRun).toBe("2026-10-18");
     expect(result.overdue).toBe(false);
     expect(result.notices).toEqual([]);
@@ -162,7 +156,7 @@ describe("labels", () => {
     expect(calls.map((c) => [c.method, c.path, (c.body as { name: string }).name])).toEqual(
       LABELS.map((label) => ["POST", `repos/${REPO}/labels`, label.name]),
     );
-    expect(LABELS.map((label) => label.name)).toEqual([ISSUE_LABEL, READY_LABEL, REVIEW_LABEL]);
+    expect(LABELS.map((label) => label.name)).toEqual([ISSUE_LABEL, READY_LABEL]);
   });
 
   test("ensureLabels does not hide another error", () => {
@@ -170,17 +164,9 @@ describe("labels", () => {
     expect(() => ensureLabels(client)).toThrow("HTTP 403");
   });
 
-  test("the notice workflow starts on the review label", () => {
-    const workflow = readFileSync(join(import.meta.dir, "../../.github/workflows/upkeep-notify.yml"), "utf8");
-    expect(workflow).toContain(`github.event.label.name == '${REVIEW_LABEL}'`);
-    expect(workflow).toContain(`labels/${REVIEW_LABEL.replaceAll(" ", "%20")}`);
-  });
-
-  test("the notice workflows mention the author of the tracking issue, not a repository variable", () => {
-    const notify = readFileSync(join(import.meta.dir, "../../.github/workflows/upkeep-notify.yml"), "utf8");
+  test("no upkeep workflow comments on the tracking issue", () => {
     const advisories = readFileSync(join(import.meta.dir, "../../.github/workflows/advisories.yml"), "utf8");
-    expect(notify).toContain("github.event.issue.user.login");
-    expect(advisories).toContain(".user.login");
-    for (const workflow of [notify, advisories]) expect(workflow).not.toContain("UPKEEP_MAINTAINER");
+    expect(advisories).not.toContain("/comments");
+    expect(advisories).not.toContain("UPKEEP_MAINTAINER");
   });
 });

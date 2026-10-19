@@ -21,7 +21,8 @@
 // issue with the number null, and `write` creates the issue. `write` also
 // creates each upkeep label that does not exist.
 // The maintainer is the account that runs the routine. Its login comes from
-// `GET /user`. The routine never comments on the issue (KTD11).
+// `GET /user`. Nothing comments on the issue (KTD11): the routine tells the
+// maintainer about new items in the push notice at the end of its run.
 
 import { readFileSync } from "node:fs";
 import { type Client, READY_LABEL, allPages, errorStatus, ghClient } from "./github";
@@ -29,14 +30,10 @@ import { type Markers, readMarkers, writeMarkers } from "./issue-markers";
 
 export const ISSUE_LABEL = "upkeep";
 export const ISSUE_TITLE = "Weekly upkeep";
-/// The label that the routine adds to the issue when it has new items for
-/// the maintainer. upkeep-notify.yml then posts the notice.
-export const REVIEW_LABEL = "upkeep: needs review";
 /// The labels of the upkeep. `issue.ts write` creates each one that does not exist.
 export const LABELS = [
   { name: ISSUE_LABEL, color: "5319e7", description: "Weekly upkeep tracking issue" },
   { name: READY_LABEL, color: "0e8a16", description: "Upkeep PR is ready to merge" },
-  { name: REVIEW_LABEL, color: "d93f0b", description: "Upkeep issue has new items for the maintainer to review" },
 ];
 const COLLABORATOR = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const MARKER_LINE = /^[ \t]*<!-- upkeep:(last-run|reported-advisories|overdue-notified)\b[^>]*-->[ \t]*\n?/gm;
