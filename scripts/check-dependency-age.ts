@@ -108,7 +108,7 @@ export function registryPublishDate(): PublishDate {
         if (entry.vers === v.version) date = entry.pubtime;
       }
     } else {
-      const doc = JSON.parse(await page(`https://registry.npmjs.org/${v.name.replace("/", "%2f")}`)) as { time?: Record<string, string> };
+      const doc = JSON.parse(await page(`https://registry.npmjs.org/${v.name.replaceAll("/", "%2f")}`)) as { time?: Record<string, string> };
       date = doc.time?.[v.version];
     }
     if (!date) throw new Error("the registry gives no publish date for this version");
