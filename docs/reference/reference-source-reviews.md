@@ -8,11 +8,11 @@ A baseline is a commit for a repository and a release version for a crate. Each 
 
 | Project | Upstream | Reviewed through | Review date |
 | --- | --- | --- | --- |
-| anarlog | https://github.com/fastrepl/anarlog | `afb35650` | 2026-10-15 |
-| Handy | https://github.com/cjpais/Handy | `9e57a0d` | 2026-10-15 |
-| shorthand | https://github.com/mshish/shorthand | `567640c` | 2026-10-15 |
-| NeMo-Speech.cpp | https://github.com/NVIDIA/NeMo-Speech.cpp | `97a15afa5caa9bce5baaa86c1184103877af4101` (the revision in `native/nemo-helper/runtime.json`) | 2026-10-18 |
-| transcribe-cpp (crate) | https://github.com/handy-computer/transcribe.cpp | 0.2.4 (the version in `Cargo.lock`) | 2026-10-18 |
+| anarlog | https://github.com/fastrepl/anarlog | `6fd155aa` | 2026-10-18 |
+| Handy | https://github.com/cjpais/Handy | `9e57a0d` | 2026-10-18 |
+| shorthand | https://github.com/mshish/shorthand | `1ad024a` | 2026-10-18 |
+| NeMo-Speech.cpp | https://github.com/NVIDIA/NeMo-Speech.cpp | `caa3f47c7c75fa2e9e6340272ebad57c1647dd44` (`native/nemo-helper/runtime.json` stays at `97a15afa` until the helper is updated) | 2026-10-18 |
+| transcribe-cpp (crate) | https://github.com/handy-computer/transcribe.cpp | 0.4.0 (`Cargo.lock` stays at 0.2.4 until the update) | 2026-10-18 |
 | handy-recorder (crate) | https://github.com/handy-computer/handy-recorder | 0.1.0 (the version in `docs/reference/borrowing-notes.md`) | 2026-10-18 |
 | handy-cpal (crate) | https://github.com/handy-computer/cpal | 0.18.2 (the version in `docs/reference/borrowing-notes.md`) | 2026-10-18 |
 
@@ -55,6 +55,23 @@ Use this procedure when the maintainer starts a review by hand. It uses the loca
 5. Update the table above and add an entry to the log below. Commit this file as a docs-only change.
 
 ## Log
+
+### 2026-10-18
+
+Ranges: anarlog `afb35650..6fd155aa` (13 commits, none relevant), Handy `9e57a0d` (no new commits), shorthand `567640c..1ad024a` (1 commit: a merge of Handy main up to `9e57a0d`), NeMo-Speech.cpp `97a15afa..caa3f47c` (10 commits), and transcribe-cpp 0.2.4 to 0.4.0 (21 commits). handy-recorder and handy-cpal have no new crate release. This was the first run of the local upkeep routine. The findings are in the upkeep tracking issue.
+
+**Act now** (in the tracking issue; no small port)
+- transcribe.cpp `1da90df` (0.3.0): NeMo models emit `<unk>`, and Longhand shows it as text.
+- transcribe.cpp `d2ab83a` (0.4.0): the macOS build targets the CPU of the build machine (`GGML_NATIVE=ON`).
+- transcribe.cpp `a13b27a` (unreleased): the licences of parakeet-unified-en-0.6b and whisper-large-v3-turbo in `crates/models/catalog.json` are wrong.
+- NeMo-Speech.cpp `caa3f47`: diarization compaction gives older words one speaker in a stream longer than about 20 minutes with no finals.
+- Security fixes in vendored code: ggml GGUF loader and Vulkan Flash Attention fixes, the nlohmann json deep-nesting fix, ONNX Runtime 1.24.1 to 1.31.0, and Vulkan-Loader after 1.4.309.0.
+
+**Ideas** (in the tracking issue): extend `transcribe-cpp-update`; spoken-language detection with transcribe.cpp langid; a NeMo helper update.
+
+**Note only** (in the tracking issue): the published handy-cpal 0.18.2 is upstream cpal 0.18.2 plus one PulseAudio fix; NeMo replaced its ggml submodule with one llama.cpp pin, so `scripts/build-nemo.sh` and `scripts/patch-nemo.ts` must change with the next pin; whisper.cpp fixes do not apply.
+
+**Not relevant:** 13 anarlog commits (cloud sync, web, billing, release notes), NeMo TTS, ITN and CUDA commits, and new transcribe.cpp model families and bindings.
 
 ### 2026-10-15
 
