@@ -35,7 +35,7 @@ Each kind of PR has a fixed branch, so that the next run finds the PR again (R26
 
 1. Clone `twistymaze/longhand` and check out `main`. Read this file from that checkout.
 2. Make sure that the tools are present: `rustup` with the toolchain in `rust-toolchain.toml`, `cargo-deny`, `bun`, and `gh`. The setup script of the environment installs them (`docs/upkeep/README.md`).
-3. Get the maintainer login: `gh api repos/twistymaze/longhand/actions/variables/UPKEEP_MAINTAINER --jq .value`. Set it as `UPKEEP_MAINTAINER` for the scripts.
+3. Do not set `UPKEEP_MAINTAINER` in the environment. `issue.ts` reads the repository variable itself. If `issue.ts read` reports that it is not set, stop the run: without it, no comment can get the `maintainer` trust level.
 
 ### 2. Enable the advisory workflow again (KTD13)
 
