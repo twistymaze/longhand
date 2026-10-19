@@ -1277,7 +1277,7 @@ dunce 1.0.5
 hound 3.5.1
 knf-rs-sys 0.3.2 (includes kaldi-native-fbank)
 ring 0.17.14
-rusqlite_migration 2.5.0
+rusqlite_migration 2.6.0
 ryu 1.0.23
 sync_wrapper 1.0.2
 
@@ -2460,8 +2460,6 @@ glob 0.3.4
     Copyright (c) 2014 The Rust Project Developers
 global-hotkey 0.8.0
     Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy
-hashbrown 0.16.1
-    Copyright (c) 2016 Amanieu d'Antras
 hashbrown 0.17.1
     Copyright (c) 2016 Amanieu d'Antras
 heck 0.5.0
@@ -2515,7 +2513,7 @@ knf-rs 0.3.2
 knf-rs-sys 0.3.2 (includes kaldi-native-fbank)
 libc 0.2.189
     Copyright (c) The Rust Project Developers
-libsqlite3-sys 0.37.0 (includes SQLite)
+libsqlite3-sys 0.38.2 (includes SQLite)
     Copyright (c) 2014 The rusqlite developers
 lock_api 0.4.14
     Copyright (c) 2016 The Rust Project Developers
@@ -2530,6 +2528,7 @@ mime 0.3.17
 mime_guess 2.0.5
     Copyright (c) 2015 Austin Bonander
 minisign-verify 0.2.5
+minisign-verify 0.3.0
 miniz_oxide 0.8.9
     Copyright (c) 2017 Frommi
     Copyright (c) 2017-2024 oyvindln
@@ -2631,8 +2630,6 @@ regex-automata 0.4.18
     Copyright (c) 2014 The Rust Project Developers
 regex-syntax 0.8.11
     Copyright (c) 2014 The Rust Project Developers
-reqwest 0.12.28
-    Copyright (c) 2016-2025 Sean McArthur
 reqwest 0.13.5
     Copyright (c) 2016-2026 Sean McArthur
 rfd 0.16.0
@@ -2643,7 +2640,7 @@ rig-http 0.44.0
 rtrb 0.4.0
 rubato 0.16.2
     Copyright (c) 2020 Henrik Enquist
-rusqlite 0.39.0
+rusqlite 0.40.2
     Copyright (c) 2014 The rusqlite developers
 rustc-hash 2.1.3
 rustfft 6.4.1
@@ -2677,8 +2674,6 @@ serde_json 1.0.151
 serde_repr 0.1.21
 serde_spanned 1.1.2
     Copyright (c) Individual contributors
-serde_urlencoded 0.7.1
-    Copyright (c) 2016 Anthony Ramine
 serde_with 3.23.0
     Copyright (c) 2015
 serde_with_macros 3.23.0
@@ -2890,7 +2885,6 @@ windows-result 0.3.4
 windows-result 0.4.1
 windows-strings 0.4.2
 windows-strings 0.5.1
-windows-sys 0.52.0
 windows-sys 0.59.0
 windows-sys 0.60.2
 windows-sys 0.61.2
@@ -3093,7 +3087,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
 
-libsqlite3-sys 0.37.0 (includes SQLite)
+libsqlite3-sys 0.38.2 (includes SQLite)
 
 The author disclaims copyright to this source code.  In place of
 ** a legal notice, here is a blessing:
@@ -3127,7 +3121,7 @@ the following restrictions:
 
 ------------------------------------------------------------------------
 
-hashlink 0.11.1
+hashlink 0.12.2
 
 This work is derived in part from the `linked-hash-map` crate, Copyright (c)
 2015 The Rust Project Developers
