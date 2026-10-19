@@ -2,22 +2,27 @@
 // change adds. The dependency checks in the `cargo deny` CI job use it
 // (check-dependency-age.ts, check-new-advisories.ts).
 
-export const CRATES_IO = new Set([
+const CRATES_IO = new Set([
   "registry+https://github.com/rust-lang/crates.io-index",
   "sparse+https://index.crates.io/",
 ]);
 
+export type Ecosystem = "crate" | "package";
+
+/// The text of Cargo.lock and bun.lock. A missing lockfile is "".
+export type Lockfiles = { cargo: string; bun: string };
+
 /// One package version in a lockfile. `registry` is false for a crate or a
 /// package that does not come from crates.io or the npm registry.
-export type LockedVersion = { ecosystem: "crate" | "package"; name: string; version: string; registry: boolean; source: string };
+export type LockedVersion = { ecosystem: Ecosystem; name: string; version: string; registry: boolean; source: string };
 
 /// The parsed bun.lock. bun.lock is JSON with trailing commas.
-export function parseBunLock(text: string): any {
+function parseBunLock(text: string): { packages?: Record<string, unknown[]> } {
   return JSON.parse(text.replace(/,(\s*[}\]])/g, "$1"));
 }
 
 /// The name and version of a bun.lock package spec `name@version`.
-export function splitSpec(spec: string): { name: string; version: string } {
+function splitSpec(spec: string): { name: string; version: string } {
   const at = spec.lastIndexOf("@");
   return { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
@@ -26,7 +31,7 @@ export function splitSpec(spec: string): { name: string; version: string } {
 export function bunLockVersions(text: string): Map<string, string[]> {
   const versions = new Map<string, string[]>();
   for (const entry of Object.values(parseBunLock(text).packages ?? {})) {
-    const { name, version } = splitSpec(String((entry as unknown[])[0]));
+    const { name, version } = splitSpec(String(entry[0]));
     versions.set(name, [...(versions.get(name) ?? []), version]);
   }
   return versions;
@@ -50,20 +55,20 @@ function cargoVersions(text: string): LockedVersion[] {
 // a spec that is not `name@semver`. A workspace package is part of this
 // repository, so it is not a dependency version.
 function bunVersions(text: string): LockedVersion[] {
-  const entries = Object.values(parseBunLock(text).packages ?? {}) as unknown[][];
-  return entries.filter((entry) => !splitSpec(String(entry[0])).version.startsWith("workspace:")).map((entry) => {
+  return Object.values(parseBunLock(text).packages ?? {}).flatMap((entry): LockedVersion[] => {
     const spec = String(entry[0]);
     const { name, version } = splitSpec(spec);
+    if (version.startsWith("workspace:")) return [];
     const registry = spec.lastIndexOf("@") > 0 && SEMVER.test(version) && entry[1] === "";
-    return { ecosystem: "package", name, version, source: registry ? "" : String(entry[1] || spec), registry };
+    return [{ ecosystem: "package", name, version, source: registry ? "" : String(entry[1] || spec), registry }];
   });
 }
 
 /// The versions in the head lockfiles that the base lockfiles do not have.
 /// A missing lockfile counts as empty.
-export function addedVersions(base: { cargo: string; bun: string }, head: { cargo: string; bun: string }): LockedVersion[] {
+export function addedVersions(base: Lockfiles, head: Lockfiles): LockedVersion[] {
   const key = (v: LockedVersion) => `${v.ecosystem} ${v.name} ${v.version} ${v.source}`;
-  const parse = (lock: { cargo: string; bun: string }) => [
+  const parse = (lock: Lockfiles) => [
     ...(lock.cargo ? cargoVersions(lock.cargo) : []),
     ...(lock.bun ? bunVersions(lock.bun) : []),
   ];

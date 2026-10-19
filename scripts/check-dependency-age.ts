@@ -12,15 +12,15 @@
 // git or a path is not checked: deny.toml (`unknown-git = "deny"`) allows
 // only the git sources that it names.
 
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { addedVersions, type LockedVersion } from "./lockfiles";
+import { addedVersions, type Ecosystem, type LockedVersion, type Lockfiles } from "./lockfiles";
 
 export const MINIMUM_AGE_DAYS = 7;
 const DAY = 86_400_000;
 const USER_AGENT = "longhand-dependency-age-check (https://github.com/twistymaze/longhand)";
 
-export type Exception = { ecosystem: "crate" | "package"; name: string; version: string; reason: string };
+export type Exception = { ecosystem: Ecosystem; name: string; version: string; reason: string };
 export type PublishDate = (version: LockedVersion) => Promise<Date>;
 
 /// The entries of min-age-exceptions.toml. Each entry needs ecosystem,
@@ -40,7 +40,7 @@ export function parseExceptions(text: string): Exception[] {
   });
 }
 
-const describe = (v: LockedVersion) => `${v.ecosystem === "crate" ? "crate" : "package"} ${v.name} ${v.version}`;
+const describe = (v: LockedVersion) => `${v.ecosystem} ${v.name} ${v.version}`;
 
 /// The problems with the added versions. A version that is not checked
 /// (a crate from git or a path) goes into `notes`.
@@ -117,7 +117,12 @@ export function registryPublishDate(): PublishDate {
 }
 
 function readIfPresent(path: string): string {
-  return existsSync(path) ? readFileSync(path, "utf8") : "";
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
 }
 
 if (import.meta.main) {
@@ -126,7 +131,7 @@ if (import.meta.main) {
     console.error("usage: check-dependency-age.ts <base-dir> <head-dir>");
     process.exit(2);
   }
-  const lockfiles = (dir: string) => ({ cargo: readIfPresent(join(dir, "Cargo.lock")), bun: readIfPresent(join(dir, "bun.lock")) });
+  const lockfiles = (dir: string): Lockfiles => ({ cargo: readIfPresent(join(dir, "Cargo.lock")), bun: readIfPresent(join(dir, "bun.lock")) });
   let exceptions: Exception[];
   try {
     exceptions = parseExceptions(readIfPresent(join(headDir, "min-age-exceptions.toml")));

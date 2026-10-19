@@ -18,10 +18,10 @@
 
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { bunLockVersions } from "./lockfiles";
+import { bunLockVersions, type Ecosystem } from "./lockfiles";
 
 /// One affected package version.
-export type Finding = { ecosystem: "crate" | "package"; id: string; name: string; version: string; title: string };
+export type Finding = { ecosystem: Ecosystem; id: string; name: string; version: string; title: string };
 
 /// The output of cargo-deny and bun audit for one checkout, and its bun.lock.
 export type ScanOutput = {
@@ -105,9 +105,10 @@ function lastLine(text: string): string {
 export function scan(output: ScanOutput): Scan {
   const deny = denyFindings(output.deny);
   const audit = auditFindings(output.audit, output.bunLock);
-  const errors = [deny, audit].flatMap((result) => (result.ok ? [] : [result.error]));
-  if (errors.length > 0) return { ok: false, error: errors.join("\n") };
-  return { ok: true, findings: [...(deny as { findings: Finding[] }).findings, ...(audit as { findings: Finding[] }).findings] };
+  if (!deny.ok || !audit.ok) {
+    return { ok: false, error: [deny, audit].flatMap((result) => (result.ok ? [] : [result.error])).join("\n") };
+  }
+  return { ok: true, findings: [...deny.findings, ...audit.findings] };
 }
 
 const group = (f: Finding) => `${f.ecosystem} ${f.id} ${f.name}`;
