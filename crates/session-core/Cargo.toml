@@ -7,10 +7,10 @@ publish.workspace = true
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
-# 2.6 is the first to accept rusqlite 0.40 and needs rustc 1.95; the
-# pin stays until a separate update checks the migration changes.
-rusqlite_migration = "=2.5.0"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# Exact pin: each rusqlite_migration release accepts one rusqlite minor
+# version. Update both together and read the migration changes first.
+rusqlite_migration = "=2.6.0"
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
