@@ -71,7 +71,7 @@ Commit per unit and push in batches. Continue implementation after a push. Once 
 
 ### Dependency and upstream upkeep
 
-A weekly Claude routine on the maintainer's machine keeps the dependencies and the borrowed code current. Its instructions and scripts are in a private repository. It opens a `build(deps)` PR only for patch versions with fix-only release notes and for high or critical security fixes, and `fix(upstream)` and `fix` (code scanning) PRs on `upkeep/` branches. It marks each PR ready with the label `upkeep: ready`, and writes all other items, such as proposed updates and alerts, in the tracking issue (label `upkeep`). The maintainer merges each ready PR. Routine PRs pass the same checks as all other PRs.
+A weekly Claude routine on the maintainer's machine keeps the dependencies and the borrowed code current. Its instructions and scripts are in a private repository. It opens a `build(deps)` PR only for patch versions with fix-only release notes and for high or critical security fixes, and `fix(upstream)` and `fix` (code scanning) PRs on `upkeep/` branches. It marks each PR ready with the label `upkeep: ready`, and records all other items, such as proposed updates and alerts, in a private repository. The maintainer merges each ready PR. Routine PRs pass the same checks as all other PRs.
 
 ### Before a PR
 

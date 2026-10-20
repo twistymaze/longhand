@@ -1,6 +1,6 @@
 # Reference source reviews
 
-The weekly upkeep routine reviews the upstream projects of Longhand. It keeps the review baselines in the maintainer's private upkeep repository, and writes its findings in the upkeep tracking issue (label `upkeep`). See `docs/development-workflow.md`, "Dependency and upstream upkeep".
+The weekly upkeep routine reviews the upstream projects of Longhand. It keeps the review baselines and records its findings in the maintainer's private upkeep repository. See `docs/development-workflow.md`, "Dependency and upstream upkeep".
 
 A baseline is the last reviewed commit for a repository, or the last reviewed release version for a crate.
 
@@ -30,7 +30,7 @@ Use this procedure when the maintainer starts a review by hand. It starts from t
 
 ## Log
 
-The log ends on 2026-10-15. Later reviews write their open findings in the upkeep tracking issue, and record their baselines in the private upkeep repository.
+The log ends on 2026-10-15. Later reviews record their open findings and their baselines in the private upkeep repository.
 
 ### 2026-10-15
 
