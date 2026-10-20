@@ -1,14 +1,14 @@
 # Dependency versions that may be less than 7 days old in a PR.
 #
 # The `cargo deny` CI job fails a PR that adds a version to Cargo.lock or
-# bun.lock that its registry published less than 7 days ago
+# package-lock.json that its registry published less than 7 days ago
 # (scripts/check-dependency-age.ts). An entry here allows one exact
 # version. Each entry has a reason, for example the advisory ID of the
 # security fix that needs the version. Remove the entry when the version is
 # 7 days old.
 #
 # [[exception]]
-# ecosystem = "crate"   # "crate" (Cargo.lock) or "package" (bun.lock)
+# ecosystem = "crate"   # "crate" (Cargo.lock) or "package" (package-lock.json)
 # name = "rustls"
 # version = "0.23.31"
 # reason = "RUSTSEC-2026-0400: the fix is only in this version"

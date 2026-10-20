@@ -15,14 +15,5 @@
     "strict": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["scripts/**/*.ts"],
-  // These files still use Bun. U4 and U5 move them to Node and remove this
-  // exclusion.
-  "exclude": [
-    "scripts/check-dependency-age.ts",
-    "scripts/check-dependency-age.test.ts",
-    "scripts/check-new-advisories.ts",
-    "scripts/check-new-advisories.test.ts",
-    "scripts/lockfiles.ts"
-  ]
+  "include": ["scripts/**/*.ts"]
 }

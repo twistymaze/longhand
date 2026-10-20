@@ -1,20 +1,27 @@
 // Fails a PR that adds a dependency version that is less than 7 days old
 // (docs/development-workflow.md). The `cargo deny` CI job runs it on each PR.
 //
-//   bun scripts/check-dependency-age.ts <base-dir> <head-dir>
+//   node scripts/check-dependency-age.ts <base-dir> <head-dir>
 //
-// It compares Cargo.lock and bun.lock of the base and the head. For each
-// version that the head adds, it reads the publish date: a crate from the
-// crates.io sparse index (`pubtime`), a JavaScript package from the npm
-// registry (`time`). A version that `min-age-exceptions.toml` of the head
-// lists, with a reason, passes. A bun.lock entry that does not come from
-// the npm registry fails unless the exception file lists it. A crate from
-// git or a path is not checked: deny.toml (`unknown-git = "deny"`) allows
-// only the git sources that it names.
+// It compares Cargo.lock and package-lock.json of the base and the head.
+// A base that has no package-lock.json is a legacy base: its JavaScript
+// versions come from its bun.lock.
+//
+// For each version that the head adds, it reads the publish date: a crate
+// from the crates.io sparse index (`pubtime`), a JavaScript package from
+// the npm registry (`time`). A version that `min-age-exceptions.toml` of
+// the head lists, with a reason, passes. A package-lock.json entry that
+// does not come from the npm registry fails unless the exception file
+// lists it. An entry comes from the npm registry only when its `resolved`
+// URL is the registry.npmjs.org tarball of its name and version, it has an
+// `integrity` value, and it is not an alias for another package. A crate
+// from git or a path is not checked: deny.toml (`unknown-git = "deny"`)
+// allows only the git sources that it names.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { addedVersions, type Ecosystem, type LockedVersion, type Lockfiles } from "./lockfiles";
+import { addedVersions, type Ecosystem, type LockedVersion, type Lockfiles } from "./lockfiles.ts";
+import { parseToml } from "./lib/toml.ts";
 
 export const MINIMUM_AGE_DAYS = 7;
 const DAY = 86_400_000;
@@ -26,7 +33,7 @@ export type PublishDate = (version: LockedVersion) => Promise<Date>;
 /// The entries of min-age-exceptions.toml. Each entry needs ecosystem,
 /// name, version and reason.
 export function parseExceptions(text: string): Exception[] {
-  const entries = ((Bun.TOML.parse(text) as { exception?: Partial<Exception>[] }).exception ?? []);
+  const entries = (parseToml(text) as unknown as { exception?: Partial<Exception>[] }).exception ?? [];
   return entries.map((e, i) => {
     for (const field of ["ecosystem", "name", "version", "reason"] as const) {
       if (typeof e[field] !== "string" || e[field]!.trim() === "") {
@@ -58,7 +65,7 @@ export async function checkAges(
     if (excepted(v)) continue;
     if (!v.registry) {
       if (v.ecosystem === "crate") notes.push(`not checked: ${describe(v)} (source ${v.source || "path"})`);
-      else problems.push(`not from the npm registry: ${describe(v)}. Add it to min-age-exceptions.toml with a reason, or use a registry version.`);
+      else problems.push(`not from the npm registry: ${describe(v)} (source ${v.source}). Add it to min-age-exceptions.toml with a reason, or use a registry version.`);
       continue;
     }
     let published: Date;
@@ -131,7 +138,13 @@ if (import.meta.main) {
     console.error("usage: check-dependency-age.ts <base-dir> <head-dir>");
     process.exit(2);
   }
-  const lockfiles = (dir: string): Lockfiles => ({ cargo: readIfPresent(join(dir, "Cargo.lock")), bun: readIfPresent(join(dir, "bun.lock")) });
+  const cargo = (dir: string) => readIfPresent(join(dir, "Cargo.lock"));
+  // Only the base can be a legacy base. The head is always read from
+  // package-lock.json.
+  const base: Lockfiles = existsSync(join(baseDir, "package-lock.json"))
+    ? { cargo: cargo(baseDir), npm: readIfPresent(join(baseDir, "package-lock.json")) }
+    : { cargo: cargo(baseDir), npm: "", bun: readIfPresent(join(baseDir, "bun.lock")) };
+  const head: Lockfiles = { cargo: cargo(headDir), npm: readIfPresent(join(headDir, "package-lock.json")) };
   let exceptions: Exception[];
   try {
     exceptions = parseExceptions(readIfPresent(join(headDir, "min-age-exceptions.toml")));
@@ -139,7 +152,7 @@ if (import.meta.main) {
     console.error((error as Error).message);
     process.exit(1);
   }
-  const added = addedVersions(lockfiles(baseDir), lockfiles(headDir));
+  const added = addedVersions(base, head);
   const notes: string[] = [];
   const problems = await checkAges(added, exceptions, new Date(), registryPublishDate(), notes);
   for (const note of notes) console.log(note);
