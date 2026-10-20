@@ -4,6 +4,7 @@ description: "Use npm and package-lock.json instead of bun.lock, so that GitHub 
 area: distribution
 added: 2026-10-18
 source: "conversation about the dependency upkeep and GitHub security features (2026-10-18)"
+plan: docs/plans/2026-10-19-2254-chore-bun-to-npm-plan.md
 ---
 
 # Move the JavaScript packages from bun to npm
@@ -23,11 +24,11 @@ Longhand uses bun because Handy uses it (KTD2 of the walking skeleton plan), not
 bun does more than install packages. Each of these needs a replacement or a decision:
 
 - **Package installs and `bun.lock`:** `package-lock.json`. Change `bun install --frozen-lockfile` to `npm ci` in CI, `scripts/check-licences.sh` and the upkeep routine.
-- **The 7-day minimum release age** (`minimumReleaseAge` in `bunfig.toml`): npm has no rolling age setting, only `--before <date>`. Find how to keep the 7-day wait, for example a check of `package-lock.json` like the planned check of `Cargo.lock`.
+- **The 7-day minimum release age** (`minimumReleaseAge` in `bunfig.toml`): npm 11.10 and later has `min-release-age`, in days. The CI age check reads the lockfile too.
 - **Frontend tests** (`bun test`, the happy-dom preload in `bunfig.toml`): for example Vitest, which works with Vite.
 - **Repository scripts** (`bun scripts/*.ts`): some use bun functions (`Bun.spawnSync`, `Bun.file`). Node 22 and later can run TypeScript directly; change the bun functions to Node functions. A script can also stay on bun when it uses no packages.
 - **Tauri commands** in `src-tauri/tauri.conf.json` (`beforeDevCommand`, `beforeBuildCommand`) and the CI setup steps (`setup-bun`, the self-hosted bun cache rule).
 - **The agent rule** in `CLAUDE.md` ("JavaScript packages only through `bun`") and `docs/development-workflow.md`.
 - **The upkeep routine:** `bun audit` and `bun outdated` become `npm audit` and `npm outdated`.
 
-pnpm is the other choice: GitHub reads `pnpm-lock.yaml`, and pnpm has a `minimumReleaseAge` setting. anarlog uses pnpm.
+pnpm is the other choice: GitHub reads `pnpm-lock.yaml`, and anarlog uses pnpm. npm 11.10 and later also has a minimum release age (`min-release-age`, in days), so the plan chose npm.
