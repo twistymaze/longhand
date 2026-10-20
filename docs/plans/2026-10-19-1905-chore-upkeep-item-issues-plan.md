@@ -56,28 +56,33 @@ The single body also cannot show progress. On 2026-10-19 a session merged five P
 
 **What the routine does on each run**
 
-- R4. For a new item, the routine opens an issue. For a known item, it updates the issue body to the current state. When an item goes away (the update merged, the alert was dismissed or fixed, the finding was filed), it closes the issue with a short comment that gives the cause.
+- R4. For a new item, the routine opens an issue. For a known item, it updates the issue body to the current state. When an item goes away (the update merged, the alert was dismissed or fixed, the finding was filed), it closes the issue with a short comment that gives the cause. It closes an item as gone only when the step that finds that kind of item completed in this run; a failed or skipped step leaves its item issues unchanged. When an item comes back after its issue was closed as completed, the routine opens a new issue that links the closed one.
 - R5. An item issue links each upkeep PR that covers it, and shows whether that PR is ready.
 - R6. The routine writes a comment on an item issue only when the item changes in a way that matters: a new version, a new advisory, new alerts of the rule, a covering PR that became ready, or a CI failure. It writes no comment when nothing changed.
-- R7. The routine never writes a comment, and never links or names the private repository, in `twistymaze/longhand`.
+- R7. The routine never writes a comment in `twistymaze/longhand`. No text that the routine or a session writes there (alert dismissal text, PR bodies, the note on the old issue) links or names the private repository. A dismissal text gives the approver and the reason only.
 
 **Decisions by the maintainer or a session**
 
 - R8. A deferral adds the label `deferred` and a comment with the reason. The issue stays open. The routine keeps its body up to date, and does not list it as new in the notice.
-- R9. A rejection closes the issue as "not planned", with a comment that gives the reason. The routine does not open it again. When the item changes in a way that matters (R6), the routine opens a new issue that links the closed one.
+- R9. A rejection closes the issue as "not planned", with a comment that gives the reason. The routine does not open it again. When a rejected item gets a new advisory, a new major or minor version (for a 0.x version, a new minor version), or new alerts of its rule, the routine opens a new issue that links the closed one. A new patch version of the rejected version does not open an issue.
 - R10. A session or the maintainer can comment on an item, defer it, reject it, or close it when the work is done, with no wait for a run. A session closes an item issue after its PR merges, because a public PR cannot close a private issue (R7).
 - R11. A maintainer comment on an item issue can still approve a dismissal of that item's alerts when no session is open, as the old tracking issue allowed.
 
-**Safety of the routine's own comments**
+**Safety of comments written with the maintainer's account**
 
-- R12. A dismissal is approved only by a comment that the maintainer wrote. The approval check ignores each comment that the routine wrote, also when the routine wrote it with the maintainer's account.
-- R13. A routine comment or body never contains an approval line on its own line. Text that comes from fetched content (release notes, advisories, alert text) cannot make one.
+- R12. A dismissal is approved only by a comment that the maintainer wrote. The approval check ignores each comment that the routine wrote, also when the routine wrote it with the maintainer's account. The routine never adds the label `deferred` and never closes an issue as "not planned": only the maintainer or a session does that (R8, R9).
+- R13. A routine comment, a session comment, or an issue body never contains an approval line on its own line. Text that comes from fetched content (release notes, advisories, alert text) cannot make one. A session dismisses an approved alert directly, and does not write an approval comment.
 
 **Notice and documentation**
 
-- R14. The phone notice names each new item and links its issue. It does not list deferred items as new.
+- R14. The phone notice names each new item and each item with a change that matters under R6 in this run, and links its issue. It always names an update that fixes a high or critical advisory, and each malware alert, as the notice does today. It does not list a deferred item as new, but it names a change that matters on a deferred item. GitHub sends no notification for comments that the maintainer's own account writes, so the notice is the only alert.
 - R15. The upkeep README and ROUTINE.md describe the item issues in place of the tracking issue. The session steps (README "Working on proposals") close and comment on item issues in place of rewriting a body.
-- R16. The public Longhand docs that mention the tracking issue say only that the routine records its findings in the private upkeep repository: [docs/development-workflow.md](../development-workflow.md) and [docs/reference/reference-source-reviews.md](../reference/reference-source-reviews.md).
+- R16. The public Longhand docs that mention the tracking issue say only that the routine records its findings in a private repository, with no name of or link to that repository: [docs/development-workflow.md](../development-workflow.md) and [docs/reference/reference-source-reviews.md](../reference/reference-source-reviews.md).
+
+**Switch from the old issue**
+
+- R17. The session that ships this change starts one run by hand. That run creates the item issues. Each item that the "Decided in session" section of the old issue #47 records as deferred gets the label `deferred` and a comment with the recorded reason, and the notice does not list it as new.
+- R18. After that run, the session deletes issue #47 in `twistymaze/longhand`. A closed issue keeps its body and its edit history readable, so only a delete removes the list of open security fixes from public view.
 
 ### Acceptance Examples
 
@@ -91,14 +96,14 @@ The single body also cannot show progress. On 2026-10-19 a session merged five P
 
 - Deferred for later: a weekly digest issue, and labels or milestones beyond `deferred`.
 - Not in scope: a change to the upkeep PRs, their branches, or the `upkeep: ready` label in `twistymaze/longhand`.
-- Not in scope: a move of today's open items by hand. The next run creates the item issues, also for the items that were deferred on 2026-10-19.
+- Not in scope: a move of today's open items by hand. The first run creates the item issues (R17).
 - Removed: the single tracking issue, its run-date markers, ROUTINE step 12 (rewrite the tracking issue) and README step 9 (update the issue at the end of a session).
 
 ### Dependencies / Assumptions
 
 - The routine's `gh` login can create issues, labels and comments in the private upkeep repository. The login already pushes the baselines commit there.
 - The routine can tell its own comments from the maintainer's comments, although both come from one account. Planning decides how.
-- Issue #47 in `twistymaze/longhand` closes with a short neutral note when this change ships. The note does not name the private repository.
+- The maintainer's account can delete issues in `twistymaze/longhand` (repository admin).
 
 ### Outstanding Questions
 
@@ -107,6 +112,9 @@ The single body also cannot show progress. On 2026-10-19 a session merged five P
 - How the stable key of an item is built and stored (for example a hidden marker in the body), and how the routine finds an item again after an alert number or package version changes.
 - How the routine marks its own comments so that R12 can ignore them.
 - Whether the last-run date stays somewhere, now that no tracking-issue body holds it.
+- How the routine finds each item issue whose comments can approve a dismissal (R11), now that approvals are on many issues.
+- How the routine keeps fetched text from imitating an item key in a body, as `writeIssue` removes marker lines today.
+- How all routine comments go through one script, so that each one carries the mark that R12 needs.
 
 ### Sources / Research
 
