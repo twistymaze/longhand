@@ -149,7 +149,7 @@ export function parseToml(text: string): TomlTable {
       continue;
     }
     const assignment = /^([^=\s]+)\s*=\s*/.exec(rest);
-    if (!assignment) c.fail(`expected "key = value", a [table] or an [[array-of-tables]], found "${rest}"`);
+    if (!assignment) return c.fail(`expected "key = value", a [table] or an [[array-of-tables]], found "${rest}"`);
     const key = assignment[1];
     if (!KEY.test(key)) c.fail(`the key "${key}" is not a bare key`);
     if (Object.hasOwn(table, key)) c.fail(`the key "${key}" is already defined`);

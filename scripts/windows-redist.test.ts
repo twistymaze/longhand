@@ -1,8 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { findWindowsDependency, windowsRedistRoots } from "./windows-redist";
+import { afterEach, test } from "node:test";
+import { findWindowsDependency, windowsRedistRoots } from "./windows-redist.ts";
 
 const fixtures: string[] = [];
 afterEach(() => { for (const root of fixtures.splice(0)) rmSync(root, { recursive: true }); });
@@ -20,21 +21,21 @@ function fixture() {
 }
 test("includes the OpenMP redistributable that provides VCOMP140 alongside the CRT", () => {
   const root = fixture();
-  expect(windowsRedistRoots(root, "x64").sort()).toEqual([
+  assert.deepEqual(windowsRedistRoots(root, "x64").sort(), [
     join(root, "x64", "Microsoft.VC143.CRT"),
     join(root, "x64", "Microsoft.VC143.OpenMP"),
   ]);
 });
 test("uses only the requested runtime architecture and excludes debug or unrelated folders", () => {
   const root = fixture();
-  expect(windowsRedistRoots(root, "arm64").sort()).toEqual([
+  assert.deepEqual(windowsRedistRoots(root, "arm64").sort(), [
     join(root, "arm64", "Microsoft.VC143.CRT"),
     join(root, "arm64", "Microsoft.VC143.OpenMP"),
   ]);
 });
 test("an absent redistributable directory leaves dependency validation to fail closed", () => {
-  expect(windowsRedistRoots(undefined, "x64")).toEqual([]);
-  expect(windowsRedistRoots(join(fixture(), "absent"), "x64")).toEqual([]);
+  assert.deepEqual(windowsRedistRoots(undefined, "x64"), []);
+  assert.deepEqual(windowsRedistRoots(join(fixture(), "absent"), "x64"), []);
 });
 
 test("resolves the private SDK, CRT, OpenMP and explicit Vulkan loader dependency chain", () => {
@@ -53,22 +54,22 @@ test("resolves the private SDK, CRT, OpenMP and explicit Vulkan loader dependenc
   const queue = ["ggml-vulkan.dll"];
   for (let i = 0; i < queue.length; i++) {
     const name = queue[i]!;
-    expect(findWindowsDependency(name, roots, vulkan)).toBeDefined();
+    assert.notEqual(findWindowsDependency(name, roots, vulkan), undefined);
     queue.push(...dependencies[name]!);
   }
-  expect(findWindowsDependency("VULKAN-1.DLL", roots, vulkan)).toBe(join(vulkan, "vulkan-1.dll"));
+  assert.equal(findWindowsDependency("VULKAN-1.DLL", roots, vulkan), join(vulkan, "vulkan-1.dll"));
 });
 test("the explicit Vulkan directory cannot supply unrelated runtime or system DLLs", () => {
   const root = fixture();
   writeFileSync(join(root, "msvcp140.dll"), "fixture");
   writeFileSync(join(root, "kernel32.dll"), "fixture");
-  expect(findWindowsDependency("msvcp140.dll", [], root)).toBeUndefined();
-  expect(findWindowsDependency("kernel32.dll", [], root)).toBeUndefined();
-  expect(findWindowsDependency("vulkan-1.dll", [], root)).toBeUndefined();
+  assert.equal(findWindowsDependency("msvcp140.dll", [], root), undefined);
+  assert.equal(findWindowsDependency("kernel32.dll", [], root), undefined);
+  assert.equal(findWindowsDependency("vulkan-1.dll", [], root), undefined);
 });
 
 test("a missing explicit loader fails closed even when an SDK loader exists", () => {
   const root = fixture();
   writeFileSync(join(root, "vulkan-1.dll"), "unselected SDK copy");
-  expect(findWindowsDependency("vulkan-1.dll", [root], join(root, "absent"))).toBeUndefined();
+  assert.equal(findWindowsDependency("vulkan-1.dll", [root], join(root, "absent")), undefined);
 });

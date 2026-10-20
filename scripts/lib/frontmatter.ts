@@ -59,7 +59,7 @@ export function parseFrontmatter(text: string): Frontmatter {
     if (line.trim() === "" || line.trimStart().startsWith("#")) return;
     if (/^\s/.test(line)) fail("an indented line (a nested value) is not supported");
     const match = LINE.exec(line.trimEnd());
-    if (!match) fail(`expected "key: value", found "${line}"`);
+    if (!match) return fail(`expected "key: value", found "${line}"`);
     const [, key, raw = ""] = match;
     if (Object.hasOwn(meta, key)) fail(`the key "${key}" is already defined`);
     if (raw === "" || raw.startsWith("#")) fail(`the key "${key}" has no value; a nested mapping or a block list is not supported`);

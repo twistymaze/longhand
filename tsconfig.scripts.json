@@ -1,0 +1,28 @@
+{
+  // Type checks the repository scripts as Node runs them: with built-in type
+  // stripping, so each relative import names the .ts file.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["scripts/**/*.ts"],
+  // These files still use Bun. U4 and U5 move them to Node and remove this
+  // exclusion.
+  "exclude": [
+    "scripts/check-dependency-age.ts",
+    "scripts/check-dependency-age.test.ts",
+    "scripts/check-new-advisories.ts",
+    "scripts/check-new-advisories.test.ts",
+    "scripts/lockfiles.ts"
+  ]
+}

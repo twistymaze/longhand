@@ -1,6 +1,6 @@
 // Computes whether a release is due, its version and its notes (KTD1, KTD10).
 //
-//   bun scripts/release-version.ts <notes file>
+//   node scripts/release-version.ts <notes file>
 //     Run from the repository root. Prints `due=<true|false>` and
 //     `version=<X.Y.Z>` for $GITHUB_OUTPUT. When a release is due, it writes
 //     the release notes to <notes file>.
@@ -14,8 +14,10 @@
 // the type or scope of a release type gives a major, and a `+` after the type
 // or scope of `feat` gives a minor (docs/releases.md).
 
+import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { compareVersions } from "./lib/version.ts";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
 // The marker grammar is also in cliff.toml (commit_preprocessors),
@@ -42,7 +44,7 @@ export type ReleaseFacts = { due: boolean; version: string; notes: string | null
 export function latestReleaseTag(tags: string[]): string | null {
   const versions = tags.flatMap((tag) => tag.match(RELEASE_TAG)?.[1] ?? []);
   if (versions.length === 0) return null;
-  versions.sort((a, b) => Bun.semver.order(a, b));
+  versions.sort(compareVersions);
   return `v${versions[versions.length - 1]}`;
 }
 
@@ -76,16 +78,14 @@ export function releaseFacts(tools: Tools): ReleaseFacts {
 }
 
 function run(command: string[], cwd: string): string {
-  let result;
-  try {
-    result = Bun.spawnSync(command, { cwd });
-  } catch (error) {
-    throw new Error(`cannot run ${command[0]}: ${(error as Error).message}`);
+  const [program, ...args] = command;
+  const result = spawnSync(program, args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  // spawnSync does not throw when it cannot start the program: it sets `error`.
+  if (result.error) throw new Error(`cannot run ${program}: ${result.error.message}`);
+  if (result.status !== 0) {
+    throw new Error(`${command.join(" ")} failed with exit code ${result.status}: ${result.stderr}`);
   }
-  if (result.exitCode !== 0) {
-    throw new Error(`${command.join(" ")} failed with exit code ${result.exitCode}: ${result.stderr.toString()}`);
-  }
-  return result.stdout.toString();
+  return result.stdout;
 }
 
 /// The real git and git-cliff in `repository`, with the configuration file `config`.
@@ -103,7 +103,7 @@ if (import.meta.main) {
     console.error("usage: release-version.ts <notes file>");
     process.exit(2);
   }
-  const facts = releaseFacts(systemTools(process.cwd(), join(import.meta.dir, "..", "cliff.toml")));
+  const facts = releaseFacts(systemTools(process.cwd(), join(import.meta.dirname, "..", "cliff.toml")));
   if (facts.notes !== null) writeFileSync(notesFile, facts.notes);
   console.log(`due=${facts.due}`);
   console.log(`version=${facts.version}`);

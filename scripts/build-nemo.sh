@@ -19,7 +19,7 @@ fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == 97a15afa5caa9bce5baaa86c1184103877af4101 ]] || { echo 'NeMo revision mismatch' >&2; exit 2; }
 [[ "$(git -C "$source_dir/ggml" rev-parse HEAD)" == c03b4e2bcece5134827881af90242086daf75be5 ]] || { echo 'ggml revision mismatch' >&2; exit 2; }
 [[ "$(git -C "$source_dir/llama.cpp" rev-parse HEAD)" == 560445bf34c87356ad0f8d80fb03ec5488850b65 ]] || { echo 'llama.cpp revision mismatch' >&2; exit 2; }
-bun "$root/scripts/patch-nemo.ts" "$source_dir"
+node "$root/scripts/patch-nemo.ts" "$source_dir"
 if [[ ! -e "$tokenizer_source/.git" ]]; then
   git clone --no-checkout https://github.com/google/sentencepiece.git "$tokenizer_source"
   git -C "$tokenizer_source" checkout --detach 17d7580d6407802f85855d2cc9190634e2c95624
@@ -43,5 +43,5 @@ cmake --build "$sdk_build" --config Release
 cmake -S "$root/native/nemo-helper" -B "$helper_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DLONGHAND_NEMO_SOURCE="$source_dir" -DLONGHAND_NEMO_BUILD="$sdk_build"
 cmake --build "$helper_build" --config Release
 # This manifest is input to package-nemo.ts. The packager owns the private dependency closure.
-bun -e 'await Bun.write(process.argv[1], JSON.stringify({helper:process.argv[2],sdkBin:process.argv[3]},null,2)+"\n")' "$helper_build/build-output.json" "$helper_build/longhand-nemo-helper$([[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]] && echo .exe || true)" "$sdk_build/bin"
+node -e 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify({helper:process.argv[2],sdkBin:process.argv[3]},null,2)+"\n")' "$helper_build/build-output.json" "$helper_build/longhand-nemo-helper$([[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]] && echo .exe || true)" "$sdk_build/bin"
 echo "$helper_build/build-output.json"
