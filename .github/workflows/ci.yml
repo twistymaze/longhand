@@ -341,9 +341,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        # PowerShell removes an unquoted `--` before npm.ps1 gets the
+        # arguments, so npm reads the Tauri flags as its own. Quote it.
         run: |
           Remove-Item -Recurse -Force target/debug/bundle -ErrorAction SilentlyContinue
-          npm run tauri -- build --debug --bundles nsis
+          npm run tauri '--' build --debug --bundles nsis
           if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
 
       # A runner has the runtime installed, so launching the app here would

@@ -153,8 +153,10 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
           LONGHAND_BUILD_COMMIT: ${{ needs.find.outputs.commit }}
+        # PowerShell removes an unquoted `--` before npm.ps1 gets the
+        # arguments, so npm reads the Tauri flags as its own. Quote it.
         run: |
-          npm run tauri -- build --bundles nsis --config "$env:RUNNER_TEMP/release.json"
+          npm run tauri '--' build --bundles nsis --config "$env:RUNNER_TEMP/release.json"
           if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
