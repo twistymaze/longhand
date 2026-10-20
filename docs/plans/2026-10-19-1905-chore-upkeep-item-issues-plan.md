@@ -305,7 +305,7 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 
 **Result:** The run of 2026-10-20 opened #1–#70; a stopped step added `deferred` to 38 of them. The maintainer rejected the per-package model, so U11 replaces the rest of this unit (the #47 deferrals and the delete of #47 by the session).
 
-### U8. Group items in the item model
+### U8. Group items in the item model (done)
 
 **Goal:** The item model holds groups: a model-chosen key, a list of findings, and per-finding diff and R9 tests.
 
@@ -335,7 +335,9 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 
 **Verification:** `bun test ./scripts/items.test.ts` passes, and each AE above has a named test.
 
-### U9. Group sync: match, merge, closed findings and source tests
+**Result:** upkeep 7362dee, with U9.
+
+### U9. Group sync: match, merge, closed findings and source tests (done)
 
 **Goal:** `sync` places each listed group by key or by finding, merges and closes issues per finding, and applies the source tests of KTD15.
 
@@ -375,7 +377,9 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 
 **Verification:** `bun test ./scripts/` and `bun run typecheck` pass.
 
-### U10. Routine and session instructions for groups and urgent fixes
+**Result:** upkeep 7362dee, 59e9595 (simplify) and b895d7a (9 code-review fixes, each with a test).
+
+### U10. Routine and session instructions for groups and urgent fixes (done)
 
 **Goal:** ROUTINE.md and README.md tell the model how to group, how to reuse open keys, how to find held-set and Act now fixes from scratch, and how sessions act on groups.
 
@@ -398,6 +402,8 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 
 **Verification:** ROUTINE.md names no per-package item key in any step, and its step 12 example `items.json` passes `items.ts` validation in a test fixture.
 
+**Result:** upkeep 6591076; b895d7a adds the `covered` rule for code-fix alerts.
+
 ### U11. Fresh start
 
 **Goal:** The 70 per-package issues are gone, one grouped run made the new item issues, and the run found the urgent fixes from scratch.
@@ -417,6 +423,8 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 **Test expectation:** none — a one-time operation; its checks are the verification.
 
 **Verification:** `items.ts read` lists no issue with a per-package key; the run's `sync.json` has `complete: true`; the maintainer accepts the groups.
+
+**Result:** The maintainer deleted #1–#70 on 2026-10-20. The run of 2026-10-20 opened 32 grouped issues (#71–#102) and Longhand PR #58. It found the held security fixes from scratch (#71–#75). Its first sync reported 26 needed findings that no item held (young `@rollup/*` packages and `@tauri-apps/plugin-opener`); the run added them and the second sync was complete. The maintainer kept R9 as written.
 
 ---
 
