@@ -16,7 +16,7 @@ execution: code
 - **Means:** Move the upkeep tracking from the one public tracking issue in `twistymaze/longhand` to one issue for each item in the private upkeep repository, written by one script from a list that the routine prepares (KTD2).
 - **Product authority:** The maintainer. The decisions below come from the brainstorm and the planning synthesis of 2026-10-19.
 - **Target repositories:** the private upkeep repository (scripts, README.md, ROUTINE.md, bootstrap.sh; paths in U1–U5 are relative to it) and this repository (U6). Both take direct commits on `main`: the upkeep repository has no PR flow, and the Longhand change is docs only.
-- **Stop conditions:** Stop and ask when a change would make the routine write in `twistymaze/longhand` (R7), add `deferred`, or close as "not planned" (R12).
+- **Stop conditions:** Stop and ask when a change would make the routine write a new comment, issue or label in `twistymaze/longhand` (R7), add `deferred`, or close as "not planned" (R12).
 - **Who finishes:** One session runs U1–U6, then U7 with the maintainer present.
 - **Open blockers:** None.
 
@@ -26,9 +26,9 @@ execution: code
 
 ### Summary
 
-The weekly upkeep routine tracks its results in the private upkeep repository, with one issue for each item that a person must act on or decide. Each run finds the item issues again, updates their bodies, comments when an item changes in a way that matters, opens issues for new items, and closes issues whose items are gone. A session or the maintainer comments on an item, defers it, rejects it, or closes it directly.
+The weekly upkeep routine tracks its results in the private upkeep repository, with one issue for each item that a person must act on or decide. Each run finds the item issues again, updates their bodies, comments when an item changes in a way that matters, opens issues for new items, and closes the issues of the kinds that R4 lists when their items are gone. A person closes the other kinds. A session or the maintainer comments on an item, defers it, rejects it, or closes it directly.
 
-**Product Contract preservation:** changed R3, R4, R11, R12, R13, R17, R18 at the planning synthesis of 2026-10-19, with the maintainer's approval. R3 adds malware alerts and leaves out work that an upkeep PR covers. R4 gives a close rule for each item kind, because a run finds some kinds only once. R11 and R12 name the issue and the comments that can approve. R13 marks session comments. R17 and R18 let the session, not the routine, add the 2026-10-19 deferrals (the old R17 conflicted with R12).
+**Product Contract preservation:** changed R3, R4, R11, R12, R13, R17, R18 at the planning synthesis of 2026-10-19, with the maintainer's approval. R3 adds malware alerts and leaves out work that an upkeep PR covers. R4 gives a close rule for each item kind, because a run finds some kinds only once. R11 and R12 name the issue and the comments that can approve. R13 marks session comments. R17 and R18 let the session, not the routine, add the 2026-10-19 deferrals (the old R17 conflicted with R12). Plan review, no scope change: R4 states the port-item exception in the person-closes sentence, R7 drops a note on #47 that no step writes, and the Summary cites R4's close rule.
 
 ### Problem Frame
 
@@ -68,10 +68,10 @@ The single body also cannot show progress. On 2026-10-19 a session merged five P
   - a port item: its port PR merged;
   - a run-failure item: the same step completed in a later run.
 
-  Only a person closes an Act now, Idea, Note or test-defect item, because a run finds those once. A failed or skipped step leaves its item issues unchanged. When an item comes back after its issue was closed as completed, the routine opens a new issue that links the closed one.
+  Except for a port item whose PR merged, only a person closes an Act now, Idea, Note or test-defect item, because a run finds those once. A failed or skipped step leaves its item issues unchanged. When an item comes back after its issue was closed as completed, the routine opens a new issue that links the closed one.
 - R5. An item issue links each upkeep PR that covers it, and shows whether that PR is ready.
 - R6. The routine writes a comment on an item issue only when the item changes in a way that matters: a new version, a new advisory, new alerts of the rule, a covering PR that became ready, or a CI failure. It writes no comment when nothing changed.
-- R7. The routine never writes a comment in `twistymaze/longhand`. No text that the routine or a session writes there (alert dismissal text, PR bodies, the note on the old issue) links or names the private repository. A dismissal text gives the approver and the reason only.
+- R7. The routine never writes a comment in `twistymaze/longhand`. No text that the routine or a session writes there (alert dismissal text, PR bodies) links or names the private repository. A dismissal text gives the approver and the reason only.
 
 **Decisions by the maintainer or a session**
 
@@ -114,7 +114,7 @@ The single body also cannot show progress. On 2026-10-19 a session merged five P
 - Not in scope: a move of today's open items by hand. The first run creates the item issues (R17).
 - Not in scope: the existing public mentions of the private repository's name in `docs/ideas/next/local-upkeep-routine.md` and the 2026-10-18 plan. Git history already holds them, so an edit removes nothing.
 - Removed: the single tracking issue, its run-date markers, ROUTINE step 12 (rewrite the tracking issue) and README step 9 (update the issue at the end of a session).
-- Considered and not built: a second guard that checks each public text for the private repository's name before it is sent. R7 has one writer for each public text (U3 for dismissals; PR bodies already never name it), and a test covers each. Build the guard if a new public writer appears.
+- Considered and not built: a second guard that checks each public text for the private repository's name before it is sent. R7 has one writer for each public text (dismissal text and PR bodies), and a U3 test covers each. Build the guard if a new public writer appears.
 
 ### Dependencies / Assumptions
 
@@ -133,28 +133,28 @@ The single body also cannot show progress. On 2026-10-19 a session merged five P
 
 ### Key Technical Decisions
 
-- KTD1. **A second client for the private repository.** Today one `Client` serves one repository (`scripts/github.ts`, `UPKEEP_REPO`), and `alerts.ts dismiss` uses it for both the issue and the alert. Add an items repository constant with its own environment override, and pass two clients wherever both repositories are used. PR and alert calls keep the Longhand client. Covers R1, R7.
-- KTD2. **One script writes all item issues: `scripts/items.ts`.** The routine (the model) writes the wanted item list to `work/run/items.json`: key, kind, title, Markdown body, producer step, state facts and covering PRs. `items.ts sync` reads it and the live issues, and makes every write: open, update, comment, close, labels. It prints the new, changed and closed lists that step 14 uses. The model never calls `gh` for issues. This keeps diffing, marks and sanitizing in tested code, not in prose. Covers R2, R4, R6, R13, R14.
-- KTD3. **A hidden state marker in each body.** Each body ends with one `<!-- upkeep:item {json} -->` line: key, kind, producer step, version line and target version, advisory ids, alert numbers, covering PR numbers with head SHA, ready state and CI state. `sync` compares the new facts with this marker to decide what changed (R6). "PR ready" and "CI failed" count as a change once for each head SHA, so the weekly rebuild of the dependency PR does not comment each week. The body is created with its marker, so a crash cannot make an issue without a key. Covers R2, R4, R6.
+- KTD1. **A second client for the private repository.** Today one `Client` serves one repository (`scripts/github.ts`, `UPKEEP_REPO`), and `alerts.ts dismiss` uses it for both the issue and the alert. Add an items repository constant with its own environment override, and pass two clients wherever both repositories are used. PR and alert calls keep the Longhand client. Before its first write, `items.ts sync` reads the items repository and stops with a failed step when the repository is not private, so a wrong override cannot publish findings. Covers R1, R7.
+- KTD2. **One script writes all item issues: `scripts/items.ts`.** The routine (the model) writes the wanted item list to `work/run/items.json`: key, kind, title, Markdown body, producer step, state facts and covering PRs. `items.ts sync` reads it and the live issues, and makes every write: open, update, comment, close, labels. It prints the new, changed and closed lists that step 14 uses. The model never calls `gh` for issues. This keeps diffing, marks and sanitizing in tested code, not in prose. `sync` does not trust the list as complete: it closes an alert, malware, dependency or held-set item only when `work/run/alerts.json` and `work/run/selection.json` (script output) also lack its key. A key that those files still have but the list leaves out is reported as failed and stays open. For a port item, `sync` reads the state of the covering PR in its marker through the Longhand client (read only), and closes the item when that PR merged, also when the list does not name it. Covers R2, R4, R6, R13, R14.
+- KTD3. **A hidden state marker in each body.** Each body ends with one `<!-- upkeep:item {json} -->` line: key, kind, producer step, version line and target version, advisory ids, alert numbers with rule, file and message, covering PR numbers with head SHA, ready state and CI state. `sync` compares the new facts with this marker to decide what changed (R6). "PR ready" and "CI failed" count as a change once for each head SHA, so the weekly rebuild of the dependency PR does not comment each week. The body is created with its marker, so a crash cannot make an issue without a key. Covers R2, R4, R6.
 - KTD4. **Item keys, by kind.** The key is stable for one decision:
 
   | Kind | Produced by step | Key | Closes by itself when (R4) | Covering PR |
   |---|---|---|---|---|
-  | dependency proposal | 5–7 | `update:<ecosystem>:<name>` (plus the `from` major when the lockfile has two versions) | the selection no longer has it | none |
-  | held set with a security fix | 5 | `held:<held.json rule>` | the selection no longer has a security fix for it | none |
-  | alert proposal (dismissal or a fix that no PR makes) | 4 | `alert:code-scanning:<rule>:<class>` or `alert:dependabot:<advisory>` | no open alert of that key remains | none |
+  | dependency proposal | 5–7 | `update:<ecosystem>:<name>@<from line>` | the selection no longer has it | none |
+  | held set with a security fix | 5 | `held:<held.json rule>`, or `held:<ecosystem>:<name>` for an update held only because it moves a held dependency | the selection no longer has a security fix for it | none |
+  | alert proposal (dismissal, or a fix that no PR and no selection entry makes) | 4 | `alert:code-scanning:<rule>:<class>` or `alert:dependabot:<advisory>` | no open alert of that key remains | none |
   | malware alert | 4 | `malware:<package>` | the alert is gone | none |
   | Act now (port or larger fix) | 10 | `upstream:<project>:<commit or advisory>` | its port PR merged | `upkeep/port-…` |
-  | Idea, Note | 10 | `idea:` or `note:<project>:<commit>` | never (a person closes it) | none |
+  | Idea, Note | 10 | `idea:<project>:<commit>` or `note:<project>:<commit>` | never (a person closes it) | none |
   | test defect | 7, 11 | `test-defect:<test name>` | never | none |
   | run failure | any | `failure:<step>` | that step completes in a later run | none |
 
-  The dependency key has no version line, so a deferred 0.13 item becomes 0.14 in place and keeps its label (AE2). R9 compares the version line in a closed issue's marker with the new target to decide whether to open a new issue (AE3). R9's "new alerts of its rule" means more open alerts than the closed marker records, because CodeQL renumbers alerts when a file moves. Covers R2, R4, R9.
+  The `from line` is the major version of the locked version (the minor for 0.x). It stays the same until the dependency is updated, so a deferred item moves from target 0.13 to 0.14 in place and keeps its label (AE2), and a second locked version of the same crate gets its own key. A Dependabot alert whose fix the selection lists as a `proposal` or `held` update belongs to that dependency or held item: its advisory and alert numbers go in that item's marker, so one decision has one issue (R2) and `alerts.ts dismiss` finds it. R9 compares the target version line in a closed issue's marker with the new target to decide whether to open a new issue (AE3). R9's "new alerts of its rule" means an alert whose rule, file and message are not in the closed marker; a renumbered alert with the same rule, file and message is not new. For `upstream:`, `idea:` and `note:` keys, a closed issue with the same key stops `sync` from opening a new issue, because a run reviews the same upstream range again after a failed step 13. Covers R2, R4, R9.
 - KTD5. **Marks on agent comments.** A routine comment starts with `<!-- upkeep:routine -->`, and a session comment with `<!-- upkeep:session -->`. Only `items.ts` writes routine comments. Sessions use `items.ts comment --as session` for every item comment, and README requires it. Trust reading (`issue.ts` `trustOf`) gives these comments a `routine` or `session` trust, which never approves. Covers R12, R13.
 - KTD6. **Sanitizing.** Before a body or comment is written, `items.ts` removes every `<!-- upkeep:` text from the supplied Markdown (not only at a line start) and then adds its own marker. It changes each line that is an approval line after trim, for example by putting it in a quote. The approval text for the maintainer stays inline code inside a sentence, as `issue.ts entry` writes it today. A copied line therefore still approves, and no line of the body approves by itself. Covers R13, AE4.
 - KTD7. **Approvals come from the item that holds the alert.** `alerts.ts dismiss <kind> <number>` finds the open item issue whose marker lists that alert number, and reads only its comments. The dismissal text is "Dismissed by the upkeep routine. <author> approved it. <reason>", with no link. Covers R7, R11, R12.
 - KTD8. **Labels by repository.** `upkeep` (the item filter) and `deferred` are created in the private repository by `items.ts sync`. `upkeep: ready` stays in Longhand, and only `check-pr.ts` uses it. Covers R8.
-- KTD9. **Order and safety in `sync`.** Writes go one at a time. A 403 or 429 stops the sync and reports a failed step. The routine runs the sync again on the next run, and it is idempotent. Before each write, `sync` reads the issue again. It never edits a closed issue and never removes `deferred`. It updates the body before it writes the comment. When two open issues have one key, it uses the lower number and reports the other. Covers R4, R6, R12.
+- KTD9. **Order and safety in `sync`.** Writes go one at a time. A 403 or 429 stops the sync and reports a failed step. The routine runs the sync again on the next run, and it is idempotent. Before each write, `sync` reads the issue again. It never edits a closed issue and never removes `deferred`. Each material change gets a change id (a hash of the new facts). `sync` writes the comment first, with the change id in its mark, and then the body. When the next run finds a stale body and a last routine comment with the same change id, it updates the body and writes no second comment. When two open issues have one key, it uses the lower number and reports the other. On a failure, `sync` still prints the lists of what it completed, so the "Failed:" notice names the issues that it opened. Covers R4, R6, R12, R14.
 - KTD10. **The run-date marker goes away.** Only `writeIssue` read it. Step 13 (baselines) runs only after `items.ts sync` succeeded, because the upstream findings exist only in the item issues once the baseline moves. Covers R4.
 - KTD11. **`bootstrap.sh` requires the `repo` scope.** The `security_events` scope alone cannot write issues in a private repository. Covers the first assumption.
 
@@ -197,9 +197,9 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 
 ### U1. Item model, keys and safe text
 
-**Goal:** Pure functions for item keys, the state marker, the material-change diff and text sanitizing.
+**Goal:** Pure functions for item keys, the state marker, the material-change diff, text sanitizing, and the comment marks with their trust reading.
 
-**Requirements:** R2, R6, R9, R13; KTD3, KTD4, KTD6.
+**Requirements:** R2, R6, R9, R12, R13; KTD3, KTD4, KTD5, KTD6.
 
 **Dependencies:** none.
 
@@ -210,13 +210,16 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 2. Define the marker read and write, and a diff that returns `new`, `changed` (with the reasons of R6), `same` or `gone`.
 3. Define the R9 test: new version line (0.x minor), new advisory, or more alerts than recorded.
 4. Define sanitizing: strip every `<!-- upkeep:` text, and neutralize any line that is an approval line after trim.
+5. Define the routine and session marks (with the change id of KTD9), and the trust reading that gives a marked maintainer comment `routine` or `session` trust (KTD5). U2 and U3 both use them.
 
 **Patterns to follow:** `scripts/issue.ts` `approvalText` and `plain()`; header comment and `///` doc comments as in `scripts/issue.ts`.
 
 **Test scenarios:**
 - Covers AE1. Marker with target 0.13.5 and new target 0.13.6 gives `changed` with reason "new version"; the same target gives `same`.
-- Covers AE3. A closed marker at sha2 0.11 and target 0.11.2 gives no reopen; target 0.12.0 gives a reopen; a 1.x line needs a major change.
-- A rejected rule item that recorded 3 alerts and now has 3 renumbered alerts gives no reopen; 4 alerts gives a reopen.
+- Covers AE3. A closed marker at sha2 0.11 and target 0.11.2 gives no reopen; target 0.12.0 gives a reopen; a rejected 1.2 target reopens on 1.3 and not on 1.2.5 (R9).
+- A rejected rule item with alerts A and B: renumbered alerts with the same rule, file and message give no reopen; B gone and a new alert C in another file gives a reopen.
+- A dependency with one locked version keeps its key when a second locked version appears or goes away.
+- A maintainer comment that starts with the routine mark reads as `routine`, with the session mark as `session`, with no mark as `maintainer`; a bot comment with a mark stays `data`.
 - PR ready on a head SHA already in the marker gives `same`; ready on a new head SHA gives `changed`.
 - Covers AE4. Text with a line `dismiss code-scanning 5 false positive` comes out with no line that equals an approval line after trim; inline code inside a sentence stays.
 - Text with `<!-- upkeep:item {...} -->` in the middle of a line comes out without it.
@@ -224,21 +227,23 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 
 **Verification:** `bun test ./scripts/items.test.ts` passes, and each AE above has a named test.
 
+**Note:** U1 and U4 have no dependency on each other; U2 needs both.
+
 ### U2. Item sync and notice lists
 
 **Goal:** `items.ts sync` and `items.ts read`, which write and read item issues in the private repository, and print the lists for the notice.
 
 **Requirements:** R1, R3, R4, R5, R6, R8, R9, R12, R14; KTD1, KTD2, KTD8, KTD9, KTD10; AE1, AE2, AE5, AE6, AE7.
 
-**Dependencies:** U1.
+**Dependencies:** U1, U4.
 
 **Files:** `scripts/items.ts` (sync and read commands), `scripts/items.test.ts`, `scripts/github.ts` (items repository constant and client), `scripts/github.test.ts`.
 
 **Approach:**
-1. `read` lists open item issues and the issues closed in the last 120 days that carry the `upkeep` label, with markers, labels and comments with trust (U3).
-2. `sync <items.json> --completed <steps>` matches wanted items to issues by key and applies R4: open new, update body, comment on change, close by kind rule, open a linked new issue after a completed or rejected close (R9).
+1. `read` lists every open and every closed issue that carries the `upkeep` label, at any age, with markers, labels and comments with trust (U1). R9 must hold for a rejection of any age.
+2. `sync <items.json> --alerts <alerts.json> --selection <selection.json> --completed <steps>` checks that the items repository is private (KTD1), matches wanted items to issues by key, and applies R4 with the source checks of KTD2: open new, update body, comment on change, close by kind rule, open a linked new issue after a completed or rejected close (R9, KTD4).
 3. Before each write it re-reads the issue (KTD9). It creates `upkeep` and `deferred` in the private repository when missing.
-4. It prints JSON: `new` (not deferred), `changed` (deferred included), `closed`, `failed`, and `alwaysName` (high or critical security fixes, malware).
+4. It prints JSON: `new` (not deferred), `changed` (deferred included), `closed`, `failed`, and `malware`. Step 14 takes the high or critical security-fix updates from `selection.json`, because those are not items (U5).
 
 **Patterns to follow:** route-map `fakeClient` in `scripts/issue.test.ts`; `allPages`, `errorStatus` and 422 handling in `scripts/github.ts`; `ensureLabels`.
 
@@ -250,6 +255,13 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 - Covers AE6. An Act now key that is missing this week leaves its issue open, with no call.
 - Covers AE7. With `--completed` that lacks step 7, a missing proposal from step 7 stays open.
 - A dependency key that is missing while its step completed closes the issue as completed, with a cause comment.
+- An alert key that `items.json` leaves out but `alerts.json` still has is reported as failed, and its issue stays open.
+- An Act now item that `items.json` does not list, whose marker names a merged port PR, closes as completed.
+- An Idea key found again after a person closed its issue opens nothing.
+- A "not planned" issue closed 200 days ago, with no material change, causes no new issue.
+- A `recommend` Dependabot alert whose fix is a selection proposal gives exactly one issue, the dependency item.
+- An items repository that is not private stops the sync before any write.
+- A failure after the comment and before the body update: the next sync updates the body and writes no second comment.
 - A key that comes back after a completed close opens a new issue that links the old one.
 - An issue that a person closed while the run was in progress is not edited.
 - Two open issues with one key: sync uses the lower number and reports the other.
@@ -266,13 +278,14 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 
 **Dependencies:** U1, U2.
 
-**Files:** `scripts/issue.ts` (trust and the `comment` helper move here or into `items.ts`; remove the single-issue `read`/`write`), `scripts/issue.test.ts`, `scripts/issue-markers.ts` and `scripts/issue-markers.test.ts` (delete), `scripts/alerts.ts`, `scripts/alerts.test.ts`, `scripts/items.ts` (`comment --as routine|session`).
+**Files:** `scripts/issue.ts` (use the U1 trust reading; remove the single-issue `read`/`write`), `scripts/issue.test.ts`, `scripts/issue-markers.ts` and `scripts/issue-markers.test.ts` (delete), `scripts/alerts.ts`, `scripts/alerts.test.ts`, `scripts/items.ts` (session commands), `scripts/items.test.ts`, `scripts/github.test.ts`, `scripts/check-pr.test.ts`.
 
 **Approach:**
-1. `trustOf` returns `routine` or `session` for a maintainer comment that starts with the mark; only `maintainer` approves.
+1. Only `maintainer` trust approves (U1 gives marked comments `routine` or `session`).
 2. `alerts.ts dismiss` takes the Longhand client and the items client, finds the open item issue whose marker lists the alert, and checks only its comments.
 3. The dismissal text has no link (KTD7).
 4. Keep `issue.ts entry` for the alert line, with the approval text inline.
+5. Add session commands that each write one session-marked comment: `items.ts comment <key> --as session`, and `items.ts defer|reject|close <key> --reason <text>`, which also add `deferred`, close as "not planned", or close as completed.
 
 **Patterns to follow:** existing `dismissAlert` tests in `scripts/alerts.test.ts`; fake `gh` on PATH in the same file.
 
@@ -282,6 +295,8 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 - An unmarked maintainer comment on the holding open item approves, and the PATCH text names the author and reason and contains no `github.com` link and no private repository name.
 - An approval on another item, or on a closed item, refuses.
 - A collaborator or bot comment never approves (existing behavior stays).
+- `items.ts defer <key> --reason r` adds `deferred` and one session-marked comment; `reject` closes as "not planned"; `close` closes as completed; each refuses a key with no open issue.
+- The PR bodies that the routine writes in Longhand (`github.ts` and `check-pr.ts`) and the dismissal text never contain the private repository's name.
 
 **Verification:** `bun test ./scripts/` passes; `grep` finds no use of the removed single-issue functions.
 
@@ -295,12 +310,13 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 
 **Files:** `scripts/select-updates.ts`, `scripts/select-updates.test.ts`.
 
-**Approach:** Add the matched rule (`name` or `prefix`) to each `held` update, also for a dependency that a held crate holds (`holdsDependencies`).
+**Approach:** Add the matched rule (`name` or `prefix`) to each `held` update, also for a dependency that a held crate holds (`holdsDependencies`). An update held only because it moves a held dependency gets no rule, and keeps its `moves` list for the body (KTD4 gives it its own key).
 
 **Test scenarios:**
 - An update of `tauri-build` is held with the rule `tauri-build`.
 - A crate that only a held crate uses is held with that crate's rule.
 - An exact pin is held with a rule marked as a pin.
+- A package whose security fix moves a held package is held with no rule and with its `moves` list.
 
 **Verification:** `bun test ./scripts/select-updates.test.ts` passes.
 
@@ -317,8 +333,8 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 **Approach:**
 1. Rules 2 and 4: comments are trusted by the marks; the routine comments only through `items.ts`, only in the private repository.
 2. Step 2 reads items. Step 3 dismisses from the holding item. Steps 4–11 add wanted items instead of issue sections.
-3. Replace step 12 with "write `work/run/items.json` and run `items.ts sync`". Step 13 runs only after a successful sync. Step 14 builds the notice from the sync output.
-4. README: the maintainer and session steps use item issues; sessions use `items.ts comment --as session`; remove step 9; the supervised-run checks name item issues.
+3. Replace step 12 with "write `work/run/items.json` and run `items.ts sync`". Step 13 runs only after a successful sync. Step 14 builds the notice from the sync output, plus the high or critical security-fix updates from `work/run/selection.json`.
+4. README: the maintainer and session steps use item issues; sessions use the `items.ts` session commands (U3) for every item comment, deferral, rejection and close; remove step 9; the supervised-run checks name item issues.
 5. `bootstrap.sh` requires `repo`.
 
 **Test expectation:** none — instructions and a shell check; U7's first run proves them.
@@ -353,8 +369,8 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 
 **Approach:**
 1. Check #47 for maintainer comments, and dismiss any approved alert directly (R17). Then start the scheduled task by hand ("Run now").
-2. Check the run's item issues against #47.
-3. Add `deferred` and the recorded reason with `items.ts comment --as session` to each item that #47's "Decided in session" section defers.
+2. Check the run's item issues against #47. When the sync stopped on a rate limit (KTD9), start the task by hand again; the sync is idempotent.
+3. Run `items.ts defer <key> --reason <recorded reason>` for each item that #47's "Decided in session" section defers.
 4. Ask the maintainer, then delete #47.
 
 **Test expectation:** none — a one-time operation; its checks are the verification.
@@ -369,7 +385,7 @@ A key found again after ClosedDone, or after ClosedNotPlanned with a material ch
 |---|---|---|
 | Script tests | `bun test ./scripts/` | U1–U4 |
 | Typecheck | `bun run typecheck` | U1–U4 |
-| No private name in public text | a test in U3 for the dismissal text; `grep` of U6 files | R7, R16 |
+| No private name in public text | U3 tests for the dismissal text and the PR bodies; `grep` of U6 files | R7, R16 |
 | First run | the U7 checks | U5, U7 |
 
 Run tests in the sandbox first. `gh` and `bun` may need the sandbox off, as the upkeep README says. No Longhand app build is needed: nothing in the app changes.
