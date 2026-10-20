@@ -80,3 +80,36 @@ test("a multi-line string is an error with its line number", () => {
 test("a key that is given two times is an error with its line number", () => {
   assert.throws(() => parseToml('name = "a"\nname = "b"\n'), /line 2/);
 });
+
+test("\\u and \\U escapes give the character", () => {
+  assert.deepEqual(parseToml('a = "caf\\u00e9"\nb = "\\U0001F600"\n'), { a: "café", b: "😀" });
+});
+
+test("an escape that TOML does not define is an error with its line number", () => {
+  assert.throws(() => parseToml('a = "x"\nb = "\\q"\n'), /line 2/);
+  assert.throws(() => parseToml('a = "\\u00g9"\n'), /line 1/);
+});
+
+test("an unterminated string or array is an error with its line number", () => {
+  assert.throws(() => parseToml('a = "x"\nb = "open\n'), /line 2/);
+  assert.throws(() => parseToml('a = [\n "b",\n'), /TOML line/);
+});
+
+test("a header with a missing bracket is an error with its line number", () => {
+  assert.throws(() => parseToml('a = "x"\n[[package]\n'), /line 2/);
+});
+
+test("a [table] and an [[array]] with the same name are an error", () => {
+  assert.throws(() => parseToml("[[a]]\n[a]\n"), /line 2/);
+  assert.throws(() => parseToml("[a]\n[[a]]\n"), /line 2/);
+});
+
+test("a literal string is an error", () => {
+  assert.throws(() => parseToml("a = 'x'\n"), /line 1/);
+});
+
+test("the key __proto__ is an own property and does not change the prototype", () => {
+  const value = parseToml('__proto__ = "x"\n') as Record<string, unknown>;
+  assert.equal(Object.getOwnPropertyDescriptor(value, "__proto__")?.value, "x");
+  assert.equal(Object.getPrototypeOf(value), Object.prototype);
+});

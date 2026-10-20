@@ -169,7 +169,9 @@ export function scan(output: ScanOutput): Scan {
 /// The base and head scans for a legacy base, which has bun.lock and no
 /// package-lock.json. The base findings come from cargo-deny only. A head
 /// package finding whose name and version are in the base bun.lock is
-/// already on the base, so it is removed from the head findings.
+/// already on the base, so it is removed from the head findings. Each copy
+/// of that version in bun.lock removes one head copy of each advisory, so a
+/// head that adds a copy still reports it.
 export function legacyScans(baseDeny: { exitCode: number; stderr: string }, head: Scan, baseBunLock: string): { base: Scan; head: Scan } {
   const base = denyFindings(baseDeny);
   if (!head.ok) return { base, head };
@@ -179,7 +181,16 @@ export function legacyScans(baseDeny: { exitCode: number; stderr: string }, head
   } catch (error) {
     return { base, head: { ok: false, error: `base bun.lock could not be read: ${(error as Error).message}` } };
   }
-  const known = (f: Finding) => f.ecosystem === "package" && (versions.get(f.name) ?? []).includes(f.version);
+  const baseCopies = (f: Finding) => (versions.get(f.name) ?? []).filter((v) => v === f.version).length;
+  const removed = new Map<string, number>();
+  const known = (f: Finding) => {
+    if (f.ecosystem !== "package") return false;
+    const key = `${f.id} ${f.name} ${f.version}`;
+    const count = removed.get(key) ?? 0;
+    if (count >= baseCopies(f)) return false;
+    removed.set(key, count + 1);
+    return true;
+  };
   return { base, head: { ok: true, findings: head.findings.filter((f) => !known(f)) } };
 }
 

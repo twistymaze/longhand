@@ -278,6 +278,22 @@ test("with a legacy base, a head with only known findings passes", () => {
   assert.equal(compare(legacy.base, legacy.head).ok, true);
 });
 
+test("with a legacy base, a head that adds a second copy of a known version reports the added copy", () => {
+  const headLock = packageLock({ "node_modules/source-map-js": "1.2.1", "node_modules/vite/node_modules/source-map-js": "1.2.1" });
+  const head = scan(output([], sourceMapAudit("node_modules/source-map-js", "node_modules/vite/node_modules/source-map-js"), headLock));
+  const legacy = legacyScans(denyOutput([]), head, bunLock({ "source-map-js": "source-map-js@1.2.1" }));
+  const result = compare(legacy.base, legacy.head);
+  assert.equal(result.ok, false);
+  assert.deepEqual(ids(result.added), ["package 1241209 source-map-js 1.2.1"]);
+});
+
+test("with a legacy base, two copies in bun.lock cover two head copies", () => {
+  const headLock = packageLock({ "node_modules/source-map-js": "1.2.1", "node_modules/vite/node_modules/source-map-js": "1.2.1" });
+  const head = scan(output([], sourceMapAudit("node_modules/source-map-js", "node_modules/vite/node_modules/source-map-js"), headLock));
+  const legacy = legacyScans(denyOutput([]), head, bunLock({ "source-map-js": "source-map-js@1.2.1", "vite/source-map-js": "source-map-js@1.2.1" }));
+  assert.equal(compare(legacy.base, legacy.head).ok, true);
+});
+
 // Checkouts on disk for auditCheckout. Each test gets new folders.
 const scratch = mkdtempSync(join(tmpdir(), "longhand-advisories-test-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));

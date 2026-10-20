@@ -413,7 +413,8 @@ jobs:
   # effect on its own run. The PR's workflow and tool configuration (this
   # file, .github/actions, .cargo/config.toml) still apply to the run, so
   # review each change to them. The advisory check gives npm audit the
-  # base .npmrc, not the PR's.
+  # base .npmrc, not the PR's. The PR's .npmrc still applies to each
+  # `npm ci` in the other jobs, so also review each change to .npmrc.
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
