@@ -21,3 +21,7 @@ The cloud session could not read alerts, other repositories' advisories or most 
 ## Notes / Current state
 
 The plan replaces `docs/plans/2026-10-18-1454-chore-dependency-and-upstream-upkeep-plan.md`. PR #43 closes without a merge.
+
+## Outcome
+
+Done on 2026-10-20. [PR 44](https://github.com/twistymaze/longhand/pull/44) added the dependency age check and the new-advisory check to the required `cargo deny` job, and removed the cloud upkeep. PR #43 closed with no merge. The routine and its scripts are in the private repository `twistymaze/longhand-upkeep`. The follow-up plan [2026-10-19-1905-chore-upkeep-item-issues-plan.md](../../plans/2026-10-19-1905-chore-upkeep-item-issues-plan.md) moved the tracking issue to grouped item issues in that private repository. The run on 2026-10-20 made the first grouped issues.

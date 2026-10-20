@@ -134,7 +134,7 @@ The first run of the item issues (2026-10-20) showed three more problems. It ope
 - Not in scope: a migration of the 70 per-package issues or of their `deferred` labels. The fresh start replaces them (R17).
 - Not in scope: the Longhand move from bun to npm. Another session does it, and U8–U11 build on its upkeep changes.
 - Not in scope: a change to the scheduled task's prompt or schedule. The maintainer pauses it or lets it run (U11).
-- Not in scope: the existing public mentions of the private repository's name in `docs/ideas/next/local-upkeep-routine.md` and the 2026-10-18 plan. Git history already holds them, so an edit removes nothing.
+- Not in scope: the existing public mentions of the private repository's name in `docs/ideas/done/local-upkeep-routine.md` and the 2026-10-18 plan. Git history already holds them, so an edit removes nothing.
 - Removed: the single tracking issue, its run-date markers, the old ROUTINE step 12 (rewrite the tracking issue) and README step 9 (update the issue at the end of a session). The revision removes the per-package keys of KTD4 as item keys; they stay as finding keys.
 - Considered and not built: a second guard that checks each public text for the private repository's name before it is sent. R7 has one writer for each public text (dismissal text and PR bodies), and a U3 test covers each. Build the guard if a new public writer appears.
 - Considered and not built: groups that a script makes by a fixed rule (for example, one group for each crate family). Only the model can judge which updates one change does.
