@@ -18,16 +18,12 @@
 // option that stops it from reading the .npmrc of its project folder, so
 // npm audit runs in a new temporary folder that holds only copies of
 // package.json, package-lock.json and the base .npmrc.
-//
-// A base that has no package-lock.json is a legacy base (bun.lock). Then
-// npm audit runs only for the head, and a head finding for a package name
-// and version that the base bun.lock has is already on the base.
 
 import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { bunLockVersions, packageLockEntries, readIfPresent, type Ecosystem } from "./lockfiles.ts";
+import { packageLockEntries, readIfPresent, type Ecosystem } from "./lockfiles.ts";
 import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
 import { satisfies } from "./lib/version.ts";
 
@@ -166,34 +162,6 @@ export function scan(output: ScanOutput): Scan {
   return { ok: true, findings: [...deny.findings, ...audit.findings] };
 }
 
-/// The base and head scans for a legacy base, which has bun.lock and no
-/// package-lock.json. The base findings come from cargo-deny only. A head
-/// package finding whose name and version are in the base bun.lock is
-/// already on the base, so it is removed from the head findings. Each copy
-/// of that version in bun.lock removes one head copy of each advisory, so a
-/// head that adds a copy still reports it.
-export function legacyScans(baseDeny: { exitCode: number; stderr: string }, head: Scan, baseBunLock: string): { base: Scan; head: Scan } {
-  const base = denyFindings(baseDeny);
-  if (!head.ok) return { base, head };
-  let versions: Map<string, string[]>;
-  try {
-    versions = bunLockVersions(baseBunLock);
-  } catch (error) {
-    return { base, head: { ok: false, error: `base bun.lock could not be read: ${(error as Error).message}` } };
-  }
-  const baseCopies = (f: Finding) => (versions.get(f.name) ?? []).filter((v) => v === f.version).length;
-  const removed = new Map<string, number>();
-  const known = (f: Finding) => {
-    if (f.ecosystem !== "package") return false;
-    const key = `${f.id} ${f.name} ${f.version}`;
-    const count = removed.get(key) ?? 0;
-    if (count >= baseCopies(f)) return false;
-    removed.set(key, count + 1);
-    return true;
-  };
-  return { base, head: { ok: true, findings: head.findings.filter((f) => !known(f)) } };
-}
-
 const group = (f: Finding) => `${f.ecosystem} ${f.id} ${f.name}`;
 const describe = (f: Finding) => `${f.id} (${f.name} ${f.version})${f.title ? `: ${f.title}` : ""}`;
 
@@ -295,14 +263,7 @@ if (import.meta.main) {
     console.error("usage: check-new-advisories.ts <base-dir> <head-dir>");
     process.exit(2);
   }
-  const head = scan(scanDir(headDir, baseDir));
-  let result: ReturnType<typeof compare>;
-  if (existsSync(join(baseDir, "package-lock.json"))) {
-    result = compare(scan(scanDir(baseDir, baseDir)), head);
-  } else {
-    const legacy = legacyScans(denyDir(baseDir, join(baseDir, "deny.toml")), head, readIfPresent(join(baseDir, "bun.lock")));
-    result = compare(legacy.base, legacy.head);
-  }
+  const result = compare(scan(scanDir(baseDir, baseDir)), scan(scanDir(headDir, baseDir)));
   console.log(result.message);
   process.exit(result.ok ? 0 : 1);
 }

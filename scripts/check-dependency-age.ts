@@ -4,8 +4,6 @@
 //   node scripts/check-dependency-age.ts <base-dir> <head-dir>
 //
 // It compares Cargo.lock and package-lock.json of the base and the head.
-// A base that has no package-lock.json is a legacy base: its JavaScript
-// versions come from its bun.lock.
 //
 // For each version that the head adds, it reads the publish date: a crate
 // from the crates.io sparse index (`pubtime`), a JavaScript package from
@@ -18,7 +16,6 @@
 // from git or a path is not checked: deny.toml (`unknown-git = "deny"`)
 // allows only the git sources that it names.
 
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { addedVersions, readIfPresent, type Ecosystem, type LockedVersion, type Lockfiles } from "./lockfiles.ts";
 import { parseToml } from "./lib/toml.ts";
@@ -129,13 +126,12 @@ if (import.meta.main) {
     console.error("usage: check-dependency-age.ts <base-dir> <head-dir>");
     process.exit(2);
   }
-  const cargo = (dir: string) => readIfPresent(join(dir, "Cargo.lock"));
-  // Only the base can be a legacy base. The head is always read from
-  // package-lock.json.
-  const base: Lockfiles = existsSync(join(baseDir, "package-lock.json"))
-    ? { cargo: cargo(baseDir), npm: readIfPresent(join(baseDir, "package-lock.json")) }
-    : { cargo: cargo(baseDir), npm: "", bun: readIfPresent(join(baseDir, "bun.lock")) };
-  const head: Lockfiles = { cargo: cargo(headDir), npm: readIfPresent(join(headDir, "package-lock.json")) };
+  const lockfiles = (dir: string): Lockfiles => ({
+    cargo: readIfPresent(join(dir, "Cargo.lock")),
+    npm: readIfPresent(join(dir, "package-lock.json")),
+  });
+  const base = lockfiles(baseDir);
+  const head = lockfiles(headDir);
   let exceptions: Exception[];
   try {
     exceptions = parseExceptions(readIfPresent(join(headDir, "min-age-exceptions.toml")));
