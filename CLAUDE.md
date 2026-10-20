@@ -19,8 +19,9 @@ The user often asks for work in informal words and does not name a skill. When a
 - A commit: `ce-commit`. A PR: `ce-commit-push-pr`. An open PR: `ce-babysit-pr`.
 - A review of code: `ce-code-review`. A review of a document: `ce-doc-review`.
 - A solved problem with a lesson: `ce-compound`.
+- An in-depth question about how or why something works, or about what happened: `ce-explain`. A request for a judgment or a recommendation: `ce-pov`.
 
-Do the work directly when no skill matches, or when the task is small enough that a skill adds only steps (a question, one edit, one command). The rules in this file have priority over the skill when they are different.
+Do the work directly when no skill matches, or when the task is small enough that a skill adds only steps (a simple question, one edit, one command). The rules in this file have priority over the skill when they are different.
 
 ## Models and host tools
 
