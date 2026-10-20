@@ -77,7 +77,10 @@ export function viewOf(state: UpdateState): View | null {
   }
 }
 
+/// Before the first bytes arrive, the text is a no-break space. The line then
+/// keeps its height, and the window does not change size.
 function progressText({ downloaded, total }: { downloaded: number; total: number | null }): string {
+  if (downloaded === 0) return "\u00a0";
   return total ? `${formatBytes(downloaded)} of ${formatBytes(total)}` : formatBytes(downloaded);
 }
 
@@ -160,7 +163,16 @@ export function UpdateWindow() {
 
   if (!view) return <main className="h-screen bg-window" />;
   const choose = (choice: Choice) => void commands.chooseUpdate(choice);
-  const fraction = view.progress?.total ? Math.min(1, view.progress.downloaded / view.progress.total) : null;
+  // The fraction is null only when bytes arrive and the server sent no size.
+  // Before the first bytes arrive, the bar is empty.
+  const progress = view.progress;
+  const fraction = !progress
+    ? null
+    : progress.total
+      ? Math.min(1, progress.downloaded / progress.total)
+      : progress.downloaded === 0
+        ? 0
+        : null;
 
   return (
     <main
