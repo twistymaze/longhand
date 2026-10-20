@@ -41,6 +41,19 @@ describe("the update window", () => {
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("25");
   });
 
+  test("before the first bytes arrive, the bar is empty and shows no byte count", async () => {
+    open({ state: "downloading", version: NEW, downloaded: 0, total: null });
+    expect(await screen.findByText(`Downloading Longhand ${NEW}…`)).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("0");
+    expect(screen.queryByText("0 bytes")).toBeNull();
+  });
+
+  test("a download with no total size shows the byte count and no percentage", async () => {
+    open({ state: "downloading", version: NEW, downloaded: 3_000_000, total: null });
+    expect(await screen.findByText("3 MB")).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBeNull();
+  });
+
   test("the ready view offers Relaunch Now and Later", async () => {
     open({ state: "ready", version: NEW });
     expect(await screen.findByText(`Longhand ${NEW} is ready`)).toBeTruthy();
