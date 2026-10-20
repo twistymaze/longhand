@@ -1,8 +1,9 @@
 name: CI
 
-# The macOS job runs on GitHub's runner. The Windows job runs on a
-# self-hosted runner when the repository variable WINDOWS_RUNNER names it,
-# and on GitHub's runner otherwise. Local checks gate
+# The repository variables MACOS_RUNNER and WINDOWS_RUNNER choose the runner
+# of the macOS and Windows jobs: a self-hosted runner or a GitHub label (for
+# example a larger runner). With no variable, a job runs on GitHub's standard
+# runner. Local checks gate
 # day-to-day work (scripts/check-windows.sh included); CI runs when a branch
 # asks to merge, when a change that is not only docs is pushed to main, and
 # on demand: `gh workflow run ci.yml --ref <branch>`.
@@ -56,16 +57,13 @@ jobs:
         os: [macos-latest, windows-latest]
         # `os` names the job, and the job names are required checks in the
         # main ruleset, so `os` never changes. `runner` chooses where the job
-        # runs. macOS runs on GitHub's runner: the CodeQL Rust analysis takes
-        # longer than this job, so a self-hosted runner does not make a pull
-        # request finish sooner. Windows runs on the self-hosted runner that a
-        # repository variable names, or on GitHub's runner when the variable
-        # is not set or the `hosted` input is true. On GitHub, Windows runs on
-        # the standard runner, which is free for a public repository and is
-        # the runner of the Windows release build.
+        # runs: the runner that a repository variable names, or GitHub's
+        # standard runner when the variable is not set or the `hosted` input
+        # is true. The standard runners are free for a public repository. The
+        # standard Windows runner is the runner of the Windows release build.
         include:
           - os: macos-latest
-            runner: macos-latest-xlarge
+            runner: ${{ !inputs.hosted && vars.MACOS_RUNNER || 'macos-latest' }}
           - os: windows-latest
             runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
@@ -239,21 +237,39 @@ jobs:
         run: npm run build
 
       # The stored full licence list matches what each platform ships (R12).
+      # The lists change only when a licence input changes (the script
+      # names them). With no such change, the check only compares the
+      # js-packages.json that the frontend build wrote: a new import in the
+      # interface changes that file. A manual run checks everything.
+      - name: Licence inputs changed
+        id: licence-inputs
+        if: runner.os == 'macOS'
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'push' && github.event.before || '' }}
+        run: scripts/licence-inputs-changed.sh "$BASE" >> "$GITHUB_OUTPUT"
+
       # cargo-about reads `cargo metadata` and compiles nothing, so the Rust
       # cache key stays the same. `cargo fetch` unpacks the crates whose
       # licence files cargo-about reads offline.
       - name: Install cargo-about
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.licence-inputs.outputs.changed == 'true'
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cargo-about@0.9.2
 
+      # The steps before installed the packages and built the frontend.
       - name: Licences (R12)
         if: runner.os == 'macOS'
+        env:
+          CHANGED: ${{ steps.licence-inputs.outputs.changed }}
         run: |
-          cargo fetch --locked
           scripts/check-licences.sh --self-test
-          scripts/check-licences.sh
+          if [[ "$CHANGED" == true ]]; then
+            cargo fetch --locked
+            scripts/check-licences.sh --skip-build
+          else
+            scripts/check-licences.sh --skip-build --no-generate
+          fi
 
       - name: Frontend tests
         if: runner.os == 'macOS'

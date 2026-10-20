@@ -9,10 +9,11 @@
 //
 //   node scripts/licences/generate.ts [--js-packages <file>]
 
-import { spawnSync } from "child_process";
+import { execFile } from "child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { promisify } from "util";
 import { MAX_OUTPUT_BYTES } from "../lib/spawn.ts";
 import {
   cargoAboutProblems,
@@ -60,18 +61,23 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-function run(command: string, args: string[]): { stdout: string; stderr: string } {
-  const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
-  if (result.error) fail(`could not start ${command}: ${result.error.message}`);
-  if (result.status !== 0) fail(`${command} ${args.join(" ")} failed:\n${result.stderr}`);
-  return { stdout: result.stdout, stderr: result.stderr };
+const execFileAsync = promisify(execFile);
+
+async function run(command: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  try {
+    return await execFileAsync(command, args, { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
+  } catch (error) {
+    const { code, stderr, message } = error as { code?: string | number; stderr?: string; message: string };
+    if (typeof code === "string") fail(`could not start ${command}: ${message}`);
+    fail(`${command} ${args.join(" ")} failed:\n${stderr ?? message}`);
+  }
 }
 
 // cargo-about reports a clarify entry whose checksum does not match only as a
 // warning, and then uses the files it finds itself. Any warning fails here, so
 // a changed licence file cannot pass unreviewed.
-function cargoAbout(target: string): CargoAboutOutput {
-  const { stdout, stderr } = run("cargo", [
+async function cargoAbout(target: string): Promise<CargoAboutOutput> {
+  const { stdout, stderr } = await run("cargo", [
     "about",
     "generate",
     "--format",
@@ -175,7 +181,7 @@ function checkNoHostPaths(platform: string, text: string): void {
   }
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const jsIndex = args.indexOf("--js-packages");
   const jsFile = jsIndex >= 0 ? resolve(args[jsIndex + 1]) : join(GENERATED, "js-packages.json");
@@ -190,8 +196,11 @@ function main(): void {
   checkNpmVersions(manifest);
   const js = jsComponents(packages, manifest.packageLicences ?? {}, read);
 
-  for (const { platform, target, product } of PLATFORMS) {
-    const about = cargoAbout(target);
+  // cargo-about reads every crate's licence files and takes most of the
+  // time, so the runs for the two targets go at the same time.
+  const abouts = await Promise.all(PLATFORMS.map(({ target }) => cargoAbout(target)));
+  for (const [index, { platform, product }] of PLATFORMS.entries()) {
+    const about = abouts[index];
     checkOrtVersion(about, manifest);
     const components = [
       ...rustComponents(about, manifest.crateNotes),
@@ -205,4 +214,4 @@ function main(): void {
   }
 }
 
-if (import.meta.main) main();
+if (import.meta.main) await main();

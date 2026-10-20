@@ -10,6 +10,11 @@
 #   scripts/check-licences.sh              check the repository
 #   scripts/check-licences.sh --self-test  run the generator tests and prove the drift check fails when it should
 #
+# CI options, which can go together:
+#   --skip-build    do not run `npm ci` and `npm run build`: an earlier step ran them
+#   --no-generate   do not run the generator: only compare the js-packages.json
+#                   that the build wrote (scripts/licence-inputs-changed.sh)
+#
 # Needs cargo-about 0.9.2 (`cargo install cargo-about --locked --version 0.9.2`)
 # and npm 12 or later.
 
@@ -69,6 +74,25 @@ if [[ "${1:-}" == "--self-test" ]]; then
   exit $?
 fi
 
+skip_build=false
+generate=true
+for arg in "$@"; do
+  case "$arg" in
+    --skip-build) skip_build=true ;;
+    --no-generate) generate=false ;;
+    *) echo "unknown option: $arg"; exit 1 ;;
+  esac
+done
+
+if [[ "$generate" == false ]]; then
+  [[ "$skip_build" == true ]] || npm run build
+  if check_drift .; then
+    echo "licences ok (js-packages.json only)"
+    exit 0
+  fi
+  exit 1
+fi
+
 if ! command -v cargo-about >/dev/null; then
   echo "cargo-about is not installed: cargo install cargo-about --locked --version 0.9.2"
   exit 1
@@ -84,8 +108,10 @@ fi
 
 # npm ci installs exactly the versions in package-lock.json. A copied or old
 # node_modules would write wrong versions into js-packages.json.
-npm ci
-npm run build
+if [[ "$skip_build" == false ]]; then
+  npm ci
+  npm run build
+fi
 node scripts/licences/generate.ts
 if check_drift .; then
   echo "licences ok"
