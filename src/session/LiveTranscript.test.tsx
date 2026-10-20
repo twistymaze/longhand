@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef } from "react";
@@ -86,17 +86,17 @@ function controlledRecognitionSchedule() {
   const timerId = 456 as unknown as ReturnType<typeof setTimeout>;
   const originalSetTimeout = timers.setTimeout;
   const originalClearTimeout = timers.clearTimeout;
-  const request = spyOn(globalThis, "requestAnimationFrame").mockImplementation((next) => {
+  const request = vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((next) => {
     frame = next;
     return 123;
   });
-  const cancel = spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => {});
-  const setTimer = spyOn(timers, "setTimeout").mockImplementation((callback, delay, ...args) => {
+  const cancel = vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation(() => {});
+  const setTimer = vi.spyOn(timers, "setTimeout").mockImplementation((callback, delay, ...args) => {
     if (delay !== 100) return originalSetTimeout(callback, delay, ...args);
     timer = () => callback(...args);
     return timerId;
   });
-  const clearTimer = spyOn(timers, "clearTimeout").mockImplementation((id) => {
+  const clearTimer = vi.spyOn(timers, "clearTimeout").mockImplementation((id) => {
     if (id !== timerId) originalClearTimeout(id);
   });
   return {
@@ -614,7 +614,7 @@ describe("speaker rows (U6)", () => {
     sized(scroller, () => 3000, 500);
     await send(tauri, snapshot(1, [turn(0, 20_000, "g:0:0:1")]));
     // happy-dom does no layout: a heading is 20 px high and a paragraph 100 px.
-    const layout = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
       let y = 0;
       if (this !== scroller) {
         for (const el of scroller.querySelectorAll<HTMLElement>("h3, [data-key]")) {

@@ -1,6 +1,6 @@
 import { type Node as ProseMirrorNode } from "prosemirror-model";
 import { EditorState } from "prosemirror-state";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 
 import { schema } from "../note/schema";
 import { autolinkPlugin } from "./autolink";

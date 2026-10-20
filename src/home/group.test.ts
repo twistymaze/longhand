@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { SessionEntry } from "../bindings";
 import { sessionTitle } from "../processing/describe";
 import { groupByDay, rowTitle } from "./group";
@@ -54,7 +54,7 @@ describe("rowTitle", () => {
   test("shows the start time for a session with no title", () => {
     const started = new Date(2026, 9, 24, 14, 5);
     expect(rowTitle(entry("s", started), now)).toBe(sessionTitle(started.toISOString(), now));
-    expect(rowTitle(entry("s", started), now)).toStartWith("Today, ");
+    expect(rowTitle(entry("s", started), now)).toMatch(/^Today, /);
   });
 
   test("shows the title of a titled session", () => {

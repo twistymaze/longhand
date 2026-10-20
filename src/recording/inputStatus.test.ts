@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { inputStatus, QUIET_TICKS, STALL_AFTER_MS } from "./inputStatus";
 
 const base = { recording: true, lostReason: null, startedAt: 0 };

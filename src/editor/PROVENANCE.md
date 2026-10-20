@@ -234,7 +234,7 @@ Borrowed material in this directory, one record per file (R27). The source is An
 - Source paths: `packages/editor/src/plugins/autolink.test.ts`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — `bun:test`; Longhand adds the pasted-URL case
+- Status: modified — Vitest; Longhand adds the pasted-URL case
 
 ## `plugins/doc-change-listener.test.ts`
 
@@ -243,7 +243,7 @@ Borrowed material in this directory, one record per file (R27). The source is An
 - Source paths: `packages/editor/src/plugins/doc-change-listener.test.ts`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — `bun:test`
+- Status: modified — Vitest
 
 ## `widgets/format-toolbar.test.ts`
 
@@ -261,7 +261,7 @@ Borrowed material in this directory, one record per file (R27). The source is An
 - Source paths: `packages/editor/src/note/index.test.ts`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — only the IME composition case kept, split into one test for each rule; `bun:test` and fake timers in place of real waits; the toolbar mounts in a small `ProseMirror` harness in place of `NoteEditor`; composition events do not bubble and are cancelled, so that ProseMirror's own handler does not collapse the selection in the test DOM; Longhand adds the no-composition and unmount cases
+- Status: modified — only the IME composition case kept, split into one test for each rule; Vitest and fake timers in place of real waits; the toolbar mounts in a small `ProseMirror` harness in place of `NoteEditor`; composition events do not bubble and are cancelled, so that ProseMirror's own handler does not collapse the selection in the test DOM; Longhand adds the no-composition and unmount cases
 
 ## `node-views/task-checkbox.test.tsx`
 
@@ -270,4 +270,4 @@ Borrowed material in this directory, one record per file (R27). The source is An
 - Source paths: `packages/editor/src/node-views/task-checkbox.test.tsx`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — `bun:test`; `checked` in place of a task status
+- Status: modified — Vitest; `checked` in place of a task status

@@ -1,10 +1,10 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 function renderDialog(over: Partial<Parameters<typeof ConfirmDialog>[0]> = {}) {
-  const onConfirm = mock(() => {});
-  const onCancel = mock(() => {});
+  const onConfirm = vi.fn(() => {});
+  const onCancel = vi.fn(() => {});
   render(
     <ConfirmDialog
       title="Delete note?"
@@ -61,7 +61,7 @@ describe("ConfirmDialog", () => {
   });
 
   test("a second action sits between Cancel and the action, and Tab moves over the three", () => {
-    const onSecondary = mock(() => {});
+    const onSecondary = vi.fn(() => {});
     const { onConfirm, onCancel } = renderDialog({
       action: "Move Notes",
       destructive: false,

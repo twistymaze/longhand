@@ -1,6 +1,6 @@
 import { EditorState, type Plugin } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, vi } from "vitest";
 
 import { schema } from "../note/schema";
 import { docChangeListenerPlugin } from "./doc-change-listener";
@@ -17,7 +17,7 @@ function createState(text = "", plugins: Plugin[] = []) {
 
 describe("docChangeListenerPlugin", () => {
   it("reports only document changes", () => {
-    const onDocChanged = mock();
+    const onDocChanged = vi.fn();
     const plugin = docChangeListenerPlugin(onDocChanged);
     const previousState = createState("", [plugin]);
     const pluginView = plugin.spec.view?.({
@@ -40,7 +40,7 @@ describe("docChangeListenerPlugin", () => {
   });
 
   it("ignores document replacement from controlled prop sync", () => {
-    const onDocChanged = mock();
+    const onDocChanged = vi.fn();
     const plugin = docChangeListenerPlugin(onDocChanged);
     const previousState = createState("old", [plugin]);
     const pluginView = plugin.spec.view?.({

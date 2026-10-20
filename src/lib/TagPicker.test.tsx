@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { TagPicker } from "./TagPicker";
@@ -6,8 +6,8 @@ import { TagPicker } from "./TagPicker";
 const tags = ["Person::Nathan", "Person::Ana", "Project::Atlas", "urgent", "follow up"];
 
 function setup(applied: string[] = []) {
-  const onAdd = mock((_tag: string) => {});
-  const onOpen = mock(() => {});
+  const onAdd = vi.fn((_tag: string) => {});
+  const onOpen = vi.fn(() => {});
   render(<TagPicker tags={tags} applied={applied} onAdd={onAdd} onOpen={onOpen} />);
   const opener = screen.getByRole("button", { name: "Add Tag" });
   return { user: userEvent.setup(), opener, onAdd, onOpen };
@@ -92,8 +92,8 @@ describe("TagPicker", () => {
   });
 
   test("Escape does not reach the page", async () => {
-    const outer = mock(() => {});
-    const onAdd = mock((_tag: string) => {});
+    const outer = vi.fn(() => {});
+    const onAdd = vi.fn((_tag: string) => {});
     render(
       <div onKeyDown={(e) => e.key === "Escape" && outer()}>
         <TagPicker tags={tags} applied={[]} onAdd={onAdd} />

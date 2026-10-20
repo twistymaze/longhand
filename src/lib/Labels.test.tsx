@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { TagEntry } from "../bindings";
@@ -259,7 +259,7 @@ describe("labels", () => {
   });
 
   test("the remove control names the tag and reports a click", async () => {
-    const onRemove = mock(() => {});
+    const onRemove = vi.fn(() => {});
     render(<TagLabel text="Person::Nathan" onRemove={onRemove} />);
     await userEvent.setup().click(screen.getByRole("button", { name: "Remove Person: Nathan" }));
     expect(onRemove).toHaveBeenCalledTimes(1);

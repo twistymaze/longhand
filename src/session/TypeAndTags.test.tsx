@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NoteTypeList, TypeChangeResult } from "../bindings";
@@ -34,9 +34,9 @@ function mockRow(extra: Record<string, CommandHandler> = {}) {
 type Props = { noteType: string | null; tags: string[]; recording?: boolean };
 
 function renderRow(props: Props) {
-  const onNotice = mock((_n: Notice | null) => {});
-  const onChanged = mock(() => {});
-  const onTypeChanged = mock(() => {});
+  const onNotice = vi.fn((_n: Notice | null) => {});
+  const onChanged = vi.fn(() => {});
+  const onTypeChanged = vi.fn(() => {});
   const ui = (p: Props) => (
     <TypeAndTags
       sessionId="s1"

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { clearMocks } from "@tauri-apps/api/mocks";
 
@@ -12,7 +12,7 @@ afterEach(() => {
 
 function setup(title: string | null) {
   const tauri = mockTauri({ rename_session: () => ({ kind: "later" }) });
-  const onRenamed = mock(() => {});
+  const onRenamed = vi.fn(() => {});
   const view = render(<TitleField sessionId="s1" title={title} placeholder="Start" onRenamed={onRenamed} />);
   const field = () => screen.getByLabelText("Title") as HTMLInputElement;
   const rerender = (next: string | null) =>

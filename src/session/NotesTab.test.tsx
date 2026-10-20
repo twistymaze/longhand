@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { notesSaved } from "../lib/notesSaves";
@@ -30,10 +30,10 @@ const saves = (tauri: ReturnType<typeof mockTauri>) =>
 
 // The clock that the tab reads for the time since the last keystroke.
 let clock = 0;
-let clockSpy: ReturnType<typeof spyOn> | undefined;
+let clockSpy: ReturnType<typeof vi.spyOn> | undefined;
 beforeEach(() => {
   clock = 100_000;
-  clockSpy = spyOn(performance, "now").mockImplementation(() => clock);
+  clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
 });
 afterEach(() => clockSpy?.mockRestore());
 

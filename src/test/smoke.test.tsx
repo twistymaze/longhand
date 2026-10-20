@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { useEffect, useState } from "react";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -63,9 +63,9 @@ describe("DOM test environment", () => {
   });
 
   test("a failed expect on an element prints its markup, not the happy-dom internals", () => {
-    // bun prints each property of a happy-dom node, through to the document.
-    // On a large page that takes seconds, and a `waitFor` check that fails
-    // once then makes the test time out.
+    // The setup file gives each node a printer. Without it, the message shows
+    // only the empty tag, or a printer goes through each property of the node
+    // to the document, which takes seconds on a large page.
     render(<p>Checking</p>);
     let message = "";
     try {

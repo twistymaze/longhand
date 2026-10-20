@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { LiveRecognitionEvent, LiveRecognitionRow } from "../bindings";
 import { applyRecognition, applyRecognitionEvents, emptyRecognition, recognitionRows, type RecognitionView } from "./liveRecognition";
 

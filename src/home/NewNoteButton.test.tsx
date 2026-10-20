@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NewNoteType, NoteTypeEntry, NoteTypeList, Readiness } from "../bindings";
@@ -24,7 +24,7 @@ const unavailable: Readiness = {
 };
 
 function renderButton(records: boolean, readiness: Readiness = ready) {
-  const onStart = mock((_record: boolean) => {});
+  const onStart = vi.fn((_record: boolean) => {});
   const view = render(<NewNoteButton records={records} readiness={readiness} onStart={onStart} />);
   return { onStart, view };
 }
@@ -117,7 +117,7 @@ describe("NewNoteButton", () => {
   test("a click on the menu part focuses it before the menu opens", () => {
     renderButton(true);
     const button = choices();
-    const focus = mock(() => {});
+    const focus = vi.fn(() => {});
     const original = button.focus.bind(button);
     button.focus = () => {
       focus();
@@ -137,8 +137,8 @@ describe("NewNoteButton: note types (R24)", () => {
   ];
 
   function renderTyped(records = true) {
-    const onStart = mock((_record: boolean, _type?: NewNoteType) => {});
-    const onTypesChanged = mock((_list: NoteTypeList) => {});
+    const onStart = vi.fn((_record: boolean, _type?: NewNoteType) => {});
+    const onTypesChanged = vi.fn((_list: NoteTypeList) => {});
     render(
       <NewNoteButton records={records} readiness={ready} types={types} onStart={onStart} onTypesChanged={onTypesChanged} />,
     );

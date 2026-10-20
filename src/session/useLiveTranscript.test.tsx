@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { LiveTranscript as Catchup, LiveWord } from "../bindings";
 import { mockTauri } from "../test/tauri";

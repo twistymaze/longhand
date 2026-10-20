@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   ProseMirror,
@@ -23,7 +23,7 @@ import { FormatToolbar } from "./format-toolbar";
 const cancel = (event: Event) => event.preventDefault();
 
 beforeEach(() => {
-  jest.useFakeTimers();
+  vi.useFakeTimers();
   document.addEventListener("compositionstart", cancel, true);
   document.addEventListener("compositionend", cancel, true);
 });
@@ -32,7 +32,7 @@ afterEach(() => {
   cleanup();
   document.removeEventListener("compositionstart", cancel, true);
   document.removeEventListener("compositionend", cancel, true);
-  jest.useRealTimers();
+  vi.useRealTimers();
 });
 
 // Give the view to the test when it exists.
@@ -59,7 +59,7 @@ function setup() {
           if (view === next) return;
           view = next;
           // The DOM in tests has no layout, so give fixed coordinates.
-          spyOn(next, "coordsAtPos").mockReturnValue({ bottom: 20, left: 0, right: 40, top: 0 });
+          vi.spyOn(next, "coordsAtPos").mockReturnValue({ bottom: 20, left: 0, right: 40, top: 0 });
         }}
       />
       <FormatToolbar />
@@ -80,7 +80,7 @@ function setup() {
     });
   const advance = (ms: number) =>
     act(() => {
-      jest.advanceTimersByTime(ms);
+      vi.advanceTimersByTime(ms);
     });
   return { view: v, rendered, select, composition, advance };
 }
@@ -187,7 +187,7 @@ describe("FormatToolbar composition gate", () => {
   });
 
   test("unmount in the 50 ms window gives no error", () => {
-    const errors = spyOn(console, "error");
+    const errors = vi.spyOn(console, "error");
     try {
       const { rendered, select, composition, advance } = setup();
       composition("start");

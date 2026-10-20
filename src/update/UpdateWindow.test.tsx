@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -134,7 +134,7 @@ describe("the update window size", () => {
   // so it does not first show at the wrong size.
   test("a window that shows less than the content grows by the part that does not show, and then shows", async () => {
     mockWindows("update");
-    const measure = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    const measure = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
       DOMRect.fromRect({ width: 480, height: 132.2 }),
     );
     const viewport = [window.innerWidth, window.innerHeight] as const;

@@ -1,11 +1,11 @@
-import { describe, expect, it, mock } from "bun:test";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 
 import { TaskCheckbox } from "./task-checkbox";
 
 describe("TaskCheckbox", () => {
   it("calls onToggle when interactive", () => {
-    const onToggle = mock();
+    const onToggle = vi.fn();
 
     render(<TaskCheckbox checked={false} isInteractive onToggle={onToggle} />);
 
@@ -30,7 +30,7 @@ describe("TaskCheckbox", () => {
   });
 
   it("does not call onToggle when read-only", () => {
-    const onToggle = mock();
+    const onToggle = vi.fn();
     const view = render(<TaskCheckbox checked onToggle={onToggle} />);
 
     const checkbox = view.container.querySelector(

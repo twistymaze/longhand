@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { Node as PMNode } from "prosemirror-model";
 
 import { json2md, type JSONContent, markdownSchema, md2json } from "./markdown";
