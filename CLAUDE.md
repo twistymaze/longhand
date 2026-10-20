@@ -10,6 +10,18 @@ Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, bun).
 - Store lasting project knowledge in shared docs: rules here, terms in `CONCEPTS.md`, and verified lessons in `docs/solutions/`. Search relevant docs before work. Verify memory-derived lessons before adding them.
 - Keep machine-specific details in local memory and private data out of shared docs. Do not deliberately save project knowledge in Codex-only memory (including update notes), or merge or symlink the tools' memory stores. Background-generated Codex memories are supplementary.
 
+## Skills for informal requests
+
+The user often asks for work in informal words and does not name a skill. When a Compound Engineering skill matches the task, use it, also when the user does not name it. For example:
+
+- A defect or a failure: `ce-debug`.
+- A new idea or scope: `ce-brainstorm`. A plan: `ce-plan`. Implementation of a plan or a clear request: `ce-work`.
+- A commit: `ce-commit`. A PR: `ce-commit-push-pr`. An open PR: `ce-babysit-pr`.
+- A review of code: `ce-code-review`. A review of a document: `ce-doc-review`.
+- A solved problem with a lesson: `ce-compound`.
+
+Do the work directly when no skill matches, or when the task is small enough that a skill adds only steps (a question, one edit, one command). The rules in this file have priority over the skill when they are different.
+
 ## Models and host tools
 
 - Use the host's native models for normal work, including brainstorms and plans: Codex in Codex, Claude in Claude Code. Use another provider only at the user's request.
