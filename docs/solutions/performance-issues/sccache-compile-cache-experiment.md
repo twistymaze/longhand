@@ -1,6 +1,7 @@
 ---
 title: sccache and the release profile in CI, measured on hosted and self-hosted runners
 date: 2026-10-12
+last_updated: 2026-10-20
 category: performance-issues
 module: CI workflow (.github/workflows/ci.yml, release-windows.yml, .github/actions/sccache-setup)
 problem_type: performance_issue
@@ -72,6 +73,20 @@ The last step is the time from the last `Compiling` line to `Finished`: the app 
 - Windows: no measurable difference (4.8 min with, 4.2 to 6.4 min without). The switch rebuilds only 6 crates there.
 - No run with sccache was slower than the matching run without it.
 
+**Hosted macOS checks (added 2026-10-20, PR twistymaze/longhand#57):**
+
+| Runner | Warm job | Rust tests | Licences |
+|---|---|---|---|
+| Self-hosted Mac Studio (`longhand-macos`) | about 6 min | 4.4 min | 0.2 min |
+| `macos-latest-xlarge` (M2 Pro, 5 cores) | 11.1 to 13.4 min | 5.0 to 5.4 min | 1.0 min (0.6 min after the fix below) |
+| `macos-latest` (M1, 3 cores) | 22.1 min | 10.5 min | 2.5 min |
+
+- The CodeQL Rust analysis took about 13 min. It is the longest check of a PR, so a macOS checks job under 13 min does not make a PR finish later.
+- The first `macos-latest` run was cold (40.5 min, 0.5% Rust cache hits). The self-hosted runner had kept its sccache store in a local folder, so GitHub's cache had no macOS entries for the PR to read. A PR reads only its own cache entries and those of `main`.
+- `macos-latest` and `macos-latest-xlarge` share the rust-cache key (`v4-rust-checks-Darwin-arm64-…`) and the sccache entries. The first xlarge run used the cache of the `macos-latest` runs (98.9% hits). A change between the two runners stays warm.
+- One xlarge job waited 10 min in the queue for a machine. Another started after 5 s.
+- The licence step was slow because cargo-about reads the licence files of each crate, once for each target. PR #57 runs cargo-about only when a licence input changes (`scripts/licence-inputs-changed.sh`), runs the two targets at the same time, and does not install and build the frontend again in CI.
+
 ## What to know
 
 - **The log is misleading during the last step.** Cargo prints a line when a crate starts. With full LTO, the app crate and the link took minutes with no output, so the last crate that started (trash) seemed slow.
@@ -80,7 +95,7 @@ The last step is the time from the last `Compiling` line to `Finished`: the app 
 - **CMake refuses a build folder that another generator made.** The self-hosted Windows runner kept Visual Studio build folders in target/. The sccache setup action removes each CMake build folder that is not a Ninja build.
 - **The cmake-rs crate does not pass RUSTC_WRAPPER to CMake.** The C/C++ compiles of ggml need `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER`, and the Visual Studio generator ignores both.
 - **Use sccache v0.17.0.** v0.18.0 can panic at startup with "no CA certificates loaded" (mozilla/sccache#2869).
-- **Not measured:** rust-cache alone after a Cargo.lock change, so the share of the warm gain that comes from sccache is not known. The hosted `checks` matrix (`hosted=true`).
+- **Not measured:** rust-cache alone after a Cargo.lock change, so the share of the warm gain that comes from sccache is not known. The hosted Windows checks.
 - **A dependency update changes the licence lists.** The macOS licence check fails until `scripts/check-licences.sh` writes them again.
 
 ## Method notes for a later experiment
