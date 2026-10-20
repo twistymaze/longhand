@@ -65,7 +65,7 @@ jobs:
         # the runner of the Windows release build.
         include:
           - os: macos-latest
-            runner: macos-latest
+            runner: macos-latest-xlarge
           - os: windows-latest
             runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
