@@ -34,6 +34,15 @@ codegen-units = 16
 strip = true
 panic = "unwind"
 
+# Do not strip build scripts and proc macros. They run only on the build
+# machine and are not in the app. On macOS 27, rustc cannot load a release
+# proc macro that it stripped while MACOSX_DEPLOYMENT_TARGET is set (Tauri
+# sets it from `minimumSystemVersion`), and the build fails with E0463
+# "can't find crate". The strip puts the string table at an offset that is
+# not a multiple of 8, and the macOS 27 loader refuses the dylib.
+[profile.release.build-override]
+strip = false
+
 # Optimize the crates where the pipeline tests spend their time (R12,
 # KTD12). The test profile inherits these settings. `pipeline` makes the
 # generic rubato, realfft and rustfft code of its resampler, so the override
