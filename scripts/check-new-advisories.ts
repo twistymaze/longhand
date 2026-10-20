@@ -2,9 +2,9 @@
 // crate, or a yanked crate (docs/development-workflow.md). The `cargo deny`
 // CI job runs it on each PR.
 //
-//   bun scripts/check-new-advisories.ts <base-dir> <head-dir>
+//   node scripts/check-new-advisories.ts <base-dir> <head-dir>
 //
-// Runs cargo-deny (with the deny.toml of the base) and bun audit in the two
+// Runs cargo-deny (with the deny.toml of the base) and npm audit for the two
 // checkouts. A PR adds an advisory when the head has an (ecosystem,
 // advisory ID, package) that the base does not have, or more affected
 // copies of that package than the base has. An advisory that is already on
@@ -12,28 +12,48 @@
 // package to a version that is still affected. Fails with "audit could not
 // run" when a tool cannot run.
 //
-// Both checkouts use the deny.toml and bunfig.toml of the base. A PR that changes deny.toml
-// then cannot hide its own advisory, and a stricter rule in the PR does not
-// report an old finding as new.
+// Both checkouts use the deny.toml and the .npmrc of the base. A PR that
+// changes deny.toml or .npmrc then cannot hide its own advisory, and a
+// stricter rule in the PR does not report an old finding as new. npm has no
+// option that stops it from reading the .npmrc of its project folder, so
+// npm audit runs in a new temporary folder that holds only copies of
+// package.json, package-lock.json and the base .npmrc.
+//
+// A base that has no package-lock.json is a legacy base (bun.lock). Then
+// npm audit runs only for the head, and a head finding for a package name
+// and version that the base bun.lock has is already on the base.
 
-import { readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { bunLockVersions, type Ecosystem } from "./lockfiles";
+import { bunLockVersions, packageLockEntries, readIfPresent, type Ecosystem } from "./lockfiles.ts";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
+import { satisfies } from "./lib/version.ts";
 
 /// One affected package version.
 export type Finding = { ecosystem: Ecosystem; id: string; name: string; version: string; title: string };
 
-/// The output of cargo-deny and bun audit for one checkout, and its bun.lock.
+export type RunResult = { exitCode: number; stdout: string; stderr: string };
+
+/// The output of cargo-deny and npm audit for one checkout, and its package-lock.json.
 export type ScanOutput = {
   deny: { exitCode: number; stderr: string };
-  audit: { exitCode: number; stdout: string; stderr: string };
-  bunLock: string;
+  audit: RunResult;
+  packageLock: string;
 };
 
 export type Scan = { ok: true; findings: Finding[] } | { ok: false; error: string };
 
-/// bun audit's JSON: the advisories of each package.
-type AuditReport = Record<string, { id: number | string; vulnerable_versions: string; title?: string }[]>;
+/// One advisory in `via` of an npm audit vulnerability. A string in `via`
+/// is the name of another vulnerable package, not an advisory.
+type AuditAdvisory = { source?: number | string; url?: string; title?: string; range?: string };
+
+/// npm audit's JSON (auditReportVersion 2). `nodes` are package-lock.json keys.
+type AuditReport = {
+  vulnerabilities?: Record<string, { via?: (string | AuditAdvisory)[]; nodes?: string[] }>;
+  message?: string;
+};
 
 /// The items in cargo-deny's JSON lines. Other lines are ignored.
 function denyItems(text: string): any[] {
@@ -45,7 +65,7 @@ function denyItems(text: string): any[] {
 
 /// The findings in cargo-deny's JSON lines. A yanked crate has no advisory
 /// ID, so its ID is "yanked:<name>@<version>".
-function denyFindings(output: { exitCode: number; stderr: string }): Scan {
+export function denyFindings(output: { exitCode: number; stderr: string }): Scan {
   const items = denyItems(output.stderr);
   const findings: Finding[] = [];
   for (const item of items.filter((i) => i.type === "diagnostic")) {
@@ -70,29 +90,62 @@ function denyFindings(output: { exitCode: number; stderr: string }): Scan {
   return { ok: true, findings };
 }
 
-/// The findings in bun audit's JSON. bun audit gives no version, so the
-/// script takes each bun.lock version of the package that the advisory affects.
-function auditFindings(output: { exitCode: number; stdout: string; stderr: string }, bunLock: string): Scan {
+/// True when the advisory range contains the version. A range or a version
+/// outside the subset of scripts/lib/version.ts (for example a prerelease
+/// version) counts as affected, so that the check does not miss a finding.
+function inRange(version: string, range: string): boolean {
+  try {
+    return satisfies(version, range);
+  } catch {
+    return true;
+  }
+}
+
+/// The findings in npm audit's JSON. Each node of a vulnerability is one
+/// package-lock.json entry, and the script reads its version from the
+/// lockfile. An advisory applies to a node only when the node's version is
+/// in the advisory's range.
+function auditFindings(output: RunResult, packageLock: string): Scan {
   let report: AuditReport;
   try {
-    // bun audit exits with 1 when it finds advisories, and also when it cannot
-    // reach the registry. Only the first case gives a JSON object.
-    report = output.stdout.trim() === "" && output.exitCode === 0 ? {} : JSON.parse(output.stdout);
+    // npm audit exits with 1 when it finds advisories, and also when it
+    // cannot reach the registry. Only the first case gives a
+    // `vulnerabilities` object.
+    report = JSON.parse(output.stdout);
     if (typeof report !== "object" || report === null || Array.isArray(report)) throw new Error("not an object");
-    if (output.exitCode === 1 && Object.keys(report).length === 0) throw new Error("no advisories");
+    const vulnerabilities = report.vulnerabilities;
+    if (typeof vulnerabilities !== "object" || vulnerabilities === null || Array.isArray(vulnerabilities)) throw new Error("no vulnerabilities");
+    if (output.exitCode === 1 && Object.keys(vulnerabilities).length === 0) throw new Error("no advisories");
     if (![0, 1].includes(output.exitCode)) throw new Error("exit code");
   } catch {
-    return { ok: false, error: `bun audit exited with ${output.exitCode}: ${lastLine(output.stderr || output.stdout)}` };
+    let detail = lastLine(output.stderr || output.stdout);
+    try {
+      detail = String((JSON.parse(output.stdout) as AuditReport).message ?? detail);
+    } catch {
+      // The output is not JSON. Keep the last line.
+    }
+    return { ok: false, error: `npm audit exited with ${output.exitCode}: ${detail}` };
   }
-  const versions = bunLockVersions(bunLock);
+  let entries: ReturnType<typeof packageLockEntries>;
+  try {
+    entries = packageLockEntries(packageLock);
+  } catch (error) {
+    return { ok: false, error: `package-lock.json could not be read: ${(error as Error).message}` };
+  }
   const findings: Finding[] = [];
-  for (const [name, entries] of Object.entries(report)) {
-    for (const entry of entries) {
-      const affected = (versions.get(name) ?? []).filter((version) => Bun.semver.satisfies(version, entry.vulnerable_versions));
-      // One finding for each affected bun.lock entry, so that two copies of
+  for (const [name, vulnerability] of Object.entries(report.vulnerabilities ?? {})) {
+    const nodes = vulnerability.nodes ?? [];
+    for (const advisory of vulnerability.via ?? []) {
+      if (typeof advisory === "string") continue;
+      const id = String(advisory.source ?? advisory.url ?? "unknown");
+      const range = String(advisory.range ?? "*");
+      const affected = nodes
+        .map((node) => entries[node]?.version ?? "missing")
+        .filter((version) => inRange(version, range));
+      // One finding for each affected lockfile entry, so that two copies of
       // one version count as two.
-      for (const version of affected.length > 0 ? affected : [entry.vulnerable_versions]) {
-        findings.push({ ecosystem: "package", id: String(entry.id), name, version, title: String(entry.title ?? "").trim() });
+      for (const version of affected.length > 0 ? affected : [range]) {
+        findings.push({ ecosystem: "package", id, name, version, title: String(advisory.title ?? "").trim() });
       }
     }
   }
@@ -106,11 +159,39 @@ function lastLine(text: string): string {
 /// The findings of one checkout, or the reason that a tool could not run.
 export function scan(output: ScanOutput): Scan {
   const deny = denyFindings(output.deny);
-  const audit = auditFindings(output.audit, output.bunLock);
+  const audit = auditFindings(output.audit, output.packageLock);
   if (!deny.ok || !audit.ok) {
     return { ok: false, error: [deny, audit].flatMap((result) => (result.ok ? [] : [result.error])).join("\n") };
   }
   return { ok: true, findings: [...deny.findings, ...audit.findings] };
+}
+
+/// The base and head scans for a legacy base, which has bun.lock and no
+/// package-lock.json. The base findings come from cargo-deny only. A head
+/// package finding whose name and version are in the base bun.lock is
+/// already on the base, so it is removed from the head findings. Each copy
+/// of that version in bun.lock removes one head copy of each advisory, so a
+/// head that adds a copy still reports it.
+export function legacyScans(baseDeny: { exitCode: number; stderr: string }, head: Scan, baseBunLock: string): { base: Scan; head: Scan } {
+  const base = denyFindings(baseDeny);
+  if (!head.ok) return { base, head };
+  let versions: Map<string, string[]>;
+  try {
+    versions = bunLockVersions(baseBunLock);
+  } catch (error) {
+    return { base, head: { ok: false, error: `base bun.lock could not be read: ${(error as Error).message}` } };
+  }
+  const baseCopies = (f: Finding) => (versions.get(f.name) ?? []).filter((v) => v === f.version).length;
+  const removed = new Map<string, number>();
+  const known = (f: Finding) => {
+    if (f.ecosystem !== "package") return false;
+    const key = `${f.id} ${f.name} ${f.version}`;
+    const count = removed.get(key) ?? 0;
+    if (count >= baseCopies(f)) return false;
+    removed.set(key, count + 1);
+    return true;
+  };
+  return { base, head: { ok: true, findings: head.findings.filter((f) => !known(f)) } };
 }
 
 const group = (f: Finding) => `${f.ecosystem} ${f.id} ${f.name}`;
@@ -153,20 +234,58 @@ export function compare(base: Scan, head: Scan): { ok: boolean; added: Finding[]
 /// "audit could not run".
 const TOOL_TIMEOUT_MS = 10 * 60 * 1000;
 
-function run(command: string[], cwd: string): { exitCode: number; stdout: string; stderr: string } {
-  const result = Bun.spawnSync(command, { cwd, timeout: TOOL_TIMEOUT_MS });
-  // A stopped process has a null exit code.
-  return { exitCode: result.exitCode ?? -1, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+
+export type Runner = (command: string[], cwd: string) => RunResult;
+
+export const run: Runner = (command, cwd) => {
+  const result = spawnSync(command[0], command.slice(1), { cwd, timeout: TOOL_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES });
+  // A stopped process has a null exit code. A process that did not start
+  // has an error and no output.
+  const stderr = [result.stderr?.toString() ?? "", result.error ? String(result.error.message) : ""].filter(Boolean).join("\n");
+  return { exitCode: result.status ?? -1, stdout: result.stdout?.toString() ?? "", stderr };
+};
+
+/// Runs npm audit for the package-lock.json of `dir`, with the npm
+/// settings of `baseDir` only. The audit runs in a new temporary folder
+/// with a copy of package.json (without `devEngines`), a copy of
+/// package-lock.json, and a copy of the base .npmrc when the base has one.
+/// `devEngines` is removed because a PR can change it, and npm stops when
+/// its own version is outside that range. The empty user config file and
+/// `--registry` keep the user settings and another registry out. The
+/// folder is removed after the run.
+export function auditCheckout(dir: string, baseDir: string, runner: Runner = run): RunResult {
+  let folder: string | undefined;
+  try {
+    folder = mkdtempSync(join(tmpdir(), "longhand-audit-"));
+    const manifest = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as Record<string, unknown>;
+    delete manifest.devEngines;
+    writeFileSync(join(folder, "package.json"), JSON.stringify(manifest, null, 2));
+    copyFileSync(join(dir, "package-lock.json"), join(folder, "package-lock.json"));
+    if (existsSync(join(baseDir, ".npmrc"))) copyFileSync(join(baseDir, ".npmrc"), join(folder, ".npmrc"));
+    const userConfig = join(folder, "empty-user-config");
+    writeFileSync(userConfig, "");
+    return runner(
+      ["npm", "audit", "--json", "--package-lock-only", "--ignore-scripts", "--registry=https://registry.npmjs.org/", `--userconfig=${userConfig}`],
+      folder,
+    );
+  } catch (error) {
+    return { exitCode: -1, stdout: "", stderr: `the audit folder could not be made: ${(error as Error).message}` };
+  } finally {
+    if (folder) rmSync(folder, { recursive: true, force: true });
+  }
 }
 
-/// Runs cargo-deny and bun audit in `dir`, with the rules in `denyConfig`
-/// and the bun settings in `bunConfig`. bun audit then does not read a
-/// bunfig.toml or .env file of `dir`.
-function scanDir(dir: string, denyConfig: string, bunConfig: string): ScanOutput {
+/// Runs cargo-deny in `dir` with the rules in `denyConfig`.
+function denyDir(dir: string, denyConfig: string): { exitCode: number; stderr: string } {
+  return run(["cargo", "deny", "--format", "json", "--config", resolve(denyConfig), "check", "advisories"], dir);
+}
+
+/// Runs cargo-deny and npm audit for `dir`, with the settings of `baseDir`.
+function scanDir(dir: string, baseDir: string): ScanOutput {
   return {
-    deny: run(["cargo", "deny", "--format", "json", "--config", resolve(denyConfig), "check", "advisories"], dir),
-    audit: run([process.execPath, `--config=${resolve(bunConfig)}`, "--no-env-file", "audit", "--json"], dir),
-    bunLock: readFileSync(join(dir, "bun.lock"), "utf8"),
+    deny: denyDir(dir, join(baseDir, "deny.toml")),
+    audit: auditCheckout(dir, baseDir),
+    packageLock: readIfPresent(join(dir, "package-lock.json")),
   };
 }
 
@@ -176,9 +295,14 @@ if (import.meta.main) {
     console.error("usage: check-new-advisories.ts <base-dir> <head-dir>");
     process.exit(2);
   }
-  const denyConfig = join(baseDir, "deny.toml");
-  const bunConfig = join(baseDir, "bunfig.toml");
-  const result = compare(scan(scanDir(baseDir, denyConfig, bunConfig)), scan(scanDir(headDir, denyConfig, bunConfig)));
+  const head = scan(scanDir(headDir, baseDir));
+  let result: ReturnType<typeof compare>;
+  if (existsSync(join(baseDir, "package-lock.json"))) {
+    result = compare(scan(scanDir(baseDir, baseDir)), head);
+  } else {
+    const legacy = legacyScans(denyDir(baseDir, join(baseDir, "deny.toml")), head, readIfPresent(join(baseDir, "bun.lock")));
+    result = compare(legacy.base, legacy.head);
+  }
   console.log(result.message);
   process.exit(result.ok ? 0 : 1);
 }

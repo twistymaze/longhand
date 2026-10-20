@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { NoteTypeEntry, TagEntry } from "../bindings";
 import { generalIsChoice, keepExisting, menuOrder, noFilter, typesInUse } from "./filter";
 

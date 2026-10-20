@@ -4,7 +4,7 @@
 # ///
 """Render the shared SVG mark as the desktop source and tray template.
 
-The source PNG feeds `bun tauri icon` for macOS and Windows. The tray
+The source PNG feeds `npm run tauri -- icon` for macOS and Windows. The tray
 stays black on transparent so macOS can set its appearance.
 """
 

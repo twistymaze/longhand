@@ -1,6 +1,8 @@
 // Native helper protocol smoke test. Optional model/audio inputs stay local.
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import assert from "node:assert/strict";
 
 const args = process.argv.slice(2);
@@ -15,7 +17,7 @@ if (args.includes("--parent-death")) {
   worker.kill("SIGKILL");
   let alive = true;
   const start = performance.now();
-  while (performance.now() - start < 5000) { try { process.kill(pid, 0); } catch { alive = false; break; } await Bun.sleep(50); }
+  while (performance.now() - start < 5000) { try { process.kill(pid, 0); } catch { alive = false; break; } await sleep(50); }
   if (alive) { try { process.kill(pid, "SIGKILL"); } catch {} }
   assert(!alive, "Native helper survived parent death");
   console.log(JSON.stringify({ passed: true, test: "parent-death", elapsedMs: performance.now() - start }));
@@ -220,7 +222,11 @@ try {
     }
     const metrics = { passed: true, route, backend, samples: samples.length, coverageStart, coverageEnd, loadMs: readyAt - startedAt, processMs: finishAt - readyAt, finishMs: performance.now() - finishAt, totalMs: performance.now() - startedAt, wordUpdates: wordCount, uniqueWords: seenWordKeys.size, attributedWords, uniqueSpeakers, wordRevisionUpdates, speakerFinalWords, interimUpdates, interimTaggedUpdates, interimSpeakerRevisions, segmentUpdates: segmentCount, finalSegments: finalSegments.length, diagnosticBytes };
     const output = option("--output");
-    if (output) await Bun.write(output, JSON.stringify({ metrics, texts: [...texts.entries()], words: [...finalWords.values()], segments: currentSegments }, null, 2) + "\n");
+    if (output) {
+      // writeFileSync does not make the parent folder, so make it first.
+      mkdirSync(dirname(output), { recursive: true });
+      writeFileSync(output, JSON.stringify({ metrics, texts: [...texts.entries()], words: [...finalWords.values()], segments: currentSegments }, null, 2) + "\n");
+    }
     console.log(JSON.stringify(metrics));
   }
 } finally { clearTimeout(timer); child.kill("SIGKILL"); }

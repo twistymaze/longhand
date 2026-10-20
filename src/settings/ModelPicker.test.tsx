@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ModelPicker } from "./ModelPicker";
@@ -14,7 +14,7 @@ const many = [
 ];
 
 function setup(value: string, models: string[]) {
-  const onCommit = mock((_model: string) => {});
+  const onCommit = vi.fn((_model: string) => {});
   render(<ModelPicker value={value} models={models} onCommit={onCommit} />);
   const input = screen.getByRole("combobox") as HTMLInputElement;
   return { user: userEvent.setup(), input, onCommit };

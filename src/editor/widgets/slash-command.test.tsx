@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   ProseMirror,
@@ -106,7 +106,7 @@ describe("slash menu keys", () => {
           onView={(next) => {
             if (view === next) return;
             view = next;
-            spyOn(next, "coordsAtPos").mockReturnValue({ bottom: 20, left: 0, right: 40, top: 0 });
+            vi.spyOn(next, "coordsAtPos").mockReturnValue({ bottom: 20, left: 0, right: 40, top: 0 });
           }}
         />
         <SlashCommandMenu />

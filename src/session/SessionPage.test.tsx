@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
@@ -128,7 +128,7 @@ const recordingCapture = (id: string, over: Partial<Capture> = {}) =>
   });
 
 function sessionsOf(entries: SessionEntry[]): Sessions {
-  return { entries, stages: {}, starts: {}, live: {}, speakers: {}, version: {}, synced: {}, removed: {}, refresh: mock(async () => {}) };
+  return { entries, stages: {}, starts: {}, live: {}, speakers: {}, version: {}, synced: {}, removed: {}, refresh: vi.fn(async () => {}) };
 }
 
 function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Record<string, CommandHandler> = {}) {
@@ -1025,7 +1025,7 @@ describe("SessionPage", () => {
   test("Back returns to Home, and the recording continues", async () => {
     const e = entry("rec", { state: "capturing" });
     const tauri = mockPage(e);
-    const onBack = mock(() => {});
+    const onBack = vi.fn(() => {});
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]), onBack });
     await userEvent.setup().click(screen.getByRole("button", { name: "Back" }));
     expect(onBack).toHaveBeenCalled();
@@ -1065,7 +1065,7 @@ describe("SessionPage", () => {
   test("Delete in the menu asks once, moves the session to the Trash, and goes back", async () => {
     const e = entry("s", { title: "Budget review" });
     const tauri = mockPage(e, {}, { delete_session: () => null });
-    const onBack = mock(() => {});
+    const onBack = vi.fn(() => {});
     const sessions = sessionsOf([e]);
     renderPage({ id: "s", sessions, onBack });
     const user = userEvent.setup();
@@ -1084,7 +1084,7 @@ describe("SessionPage", () => {
     const e = entry("s", { title: "Budget review" });
     let finish!: () => void;
     mockPage(e, {}, { delete_session: () => new Promise<null>((r) => { finish = () => r(null); }) });
-    const onBack = mock(() => {});
+    const onBack = vi.fn(() => {});
     const sessions = sessionsOf([e]);
     const view = renderPage({ id: "s", sessions, onBack });
     const user = userEvent.setup();
@@ -1148,7 +1148,7 @@ describe("SessionPage", () => {
     }
     Object.defineProperty(globalThis, "ClipboardItem", { value: FakeClipboardItem, configurable: true, writable: true });
     const written: Record<string, string>[] = [];
-    const write = mock(async ([item]: FakeClipboardItem[]) => {
+    const write = vi.fn(async ([item]: FakeClipboardItem[]) => {
       const formats: Record<string, string> = {};
       for (const [type, blob] of Object.entries(item.items)) formats[type] = await blob.text();
       written.push(formats);
@@ -1390,7 +1390,7 @@ describe("SessionPage", () => {
 
     test("when the call throws, the previous summary shows again with an error", async () => {
       const { crash } = await start();
-      const quiet = spyOn(console, "error").mockImplementation(() => {});
+      const quiet = vi.spyOn(console, "error").mockImplementation(() => {});
       await crash();
       quiet.mockRestore();
       expect(await screen.findByText("We agreed the budget.")).toBeTruthy();

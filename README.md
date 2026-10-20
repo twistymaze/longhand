@@ -41,14 +41,15 @@ You need:
 
 - macOS 15 or later
 - Rust 1.95.0 (the repository's `rust-toolchain.toml` selects it)
-- [Bun](https://bun.sh)
+- [Node](https://nodejs.org) 24.15 or later, or Node 26
+- npm 12.2 or later (`npm install --global npm@12`)
 - CMake, Ninja and Git
 
 The first build also downloads and compiles the speech recognition libraries, so it takes some time.
 
 ```bash
-bun install
-APPLE_SIGNING_IDENTITY="-" bun tauri build --bundles app
+npm ci
+APPLE_SIGNING_IDENTITY="-" npm run tauri -- build --bundles app
 ```
 
 `APPLE_SIGNING_IDENTITY="-"` signs the app for your own computer only. Without it, the build tries to use the project's Developer ID certificate, which you do not have. The app is in `target/release/bundle/macos/`.

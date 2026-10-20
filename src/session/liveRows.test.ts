@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import fixture from "../../crates/pipeline/tests/fixtures/paragraph-rule.json";
 import {
   buildLiveRows,

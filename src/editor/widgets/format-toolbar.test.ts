@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "vitest";
 import { EditorState, TextSelection, type Transaction } from "prosemirror-state";
 
 import { schema } from "../note/schema";

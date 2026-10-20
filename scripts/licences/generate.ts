@@ -3,16 +3,17 @@
 //
 // It merges three sources:
 //   - cargo-about, run once for each target (about.toml), for the Rust crates;
-//   - licences/generated/js-packages.json, which `bun run build` writes, for the
+//   - licences/generated/js-packages.json, which `npm run build` writes, for the
 //     interface packages;
 //   - licences/manifest.json, for what no tool can read.
 //
-//   bun scripts/licences/generate.ts [--js-packages <file>]
+//   node scripts/licences/generate.ts [--js-packages <file>]
 
 import { spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { MAX_OUTPUT_BYTES } from "../lib/spawn.ts";
 import {
   cargoAboutProblems,
   checkNpmVersion,
@@ -26,9 +27,9 @@ import {
   type LicensedComponent,
   type NativeEntry,
   type PackageLicence,
-} from "./group";
+} from "./group.ts";
 
-const ROOT = resolve(import.meta.dir, "../..");
+const ROOT = resolve(import.meta.dirname, "../..");
 const GENERATED = join(ROOT, "licences/generated");
 
 const PLATFORMS = [
@@ -60,7 +61,7 @@ function fail(message: string): never {
 }
 
 function run(command: string, args: string[]): { stdout: string; stderr: string } {
-  const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
   if (result.error) fail(`could not start ${command}: ${result.error.message}`);
   if (result.status !== 0) fail(`${command} ${args.join(" ")} failed:\n${result.stderr}`);
   return { stdout: result.stdout, stderr: result.stderr };
@@ -145,7 +146,7 @@ function checkNpmVersions(manifest: Manifest): void {
   for (const entry of manifest.entries) {
     if (!entry.npmPackage) continue;
     const file = join(ROOT, "node_modules", entry.npmPackage, "package.json");
-    if (!existsSync(file)) fail(`${entry.npmPackage} is not in node_modules; run \`bun install\``);
+    if (!existsSync(file)) fail(`${entry.npmPackage} is not in node_modules; run \`npm ci\``);
     const { version } = JSON.parse(readFileSync(file, "utf8")) as { version: string };
     try {
       checkNpmVersion(entry, version);
@@ -179,7 +180,7 @@ function main(): void {
   const jsIndex = args.indexOf("--js-packages");
   const jsFile = jsIndex >= 0 ? resolve(args[jsIndex + 1]) : join(GENERATED, "js-packages.json");
   if (!existsSync(jsFile)) {
-    fail(`${jsFile} does not exist. Run \`bun run build\` first: the Vite build writes it.`);
+    fail(`${jsFile} does not exist. Run \`npm run build\` first: the Vite build writes it.`);
   }
   const packages = JSON.parse(readFileSync(jsFile, "utf8")) as JsPackage[];
   if (packages.length === 0) fail(`${jsFile} lists no packages; check rollup-plugin-license in vite.config.ts`);

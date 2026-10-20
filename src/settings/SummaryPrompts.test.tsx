@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
@@ -152,7 +152,7 @@ const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, m
 /// Moves the fake clock, then lets a queued save run.
 const advance = (ms: number) =>
   act(async () => {
-    jest.advanceTimersByTime(ms);
+    vi.advanceTimersByTime(ms);
   });
 const titleCalls = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "set_summary_prompt_title_text").map((c) => c.args);
@@ -215,7 +215,7 @@ describe("SummaryPrompts", () => {
   });
 
   test("typing saves the text one second after the last change, in one call", async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     try {
       const tauri = backend();
       renderPrompts();
@@ -236,7 +236,7 @@ describe("SummaryPrompts", () => {
       expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]);
       expect(textArea().textContent).toBe("Short note");
     } finally {
-      jest.useRealTimers();
+      vi.useRealTimers();
     }
   });
 
@@ -494,7 +494,7 @@ describe("SummaryPrompts", () => {
     await waitFor(() => expect(called(tauri, "close_settings_window")).toBe(1));
     const lines = logLines(tauri);
     expect(lines.slice(0, 3)).toEqual(["info: close requested", "info: the save is complete", "info: destroy called"]);
-    expect(lines[3]).toStartWith("error: destroy failed: Error: destroy refused");
+    expect(lines[3]).toMatch(/^error: destroy failed: Error: destroy refused/);
     expect(lines).toHaveLength(4);
   });
 

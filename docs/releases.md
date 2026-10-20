@@ -71,7 +71,7 @@ Do these steps once, in this order. Do a step again only to replace a credential
 1. **Make the updater key pair.** On your Mac:
 
    ```sh
-   bun tauri signer generate -w ~/.tauri/longhand-updater.key
+   npm run tauri -- signer generate -w ~/.tauri/longhand-updater.key
    ```
 
    Do not set a password. In GitHub, a password and the key are secrets in the same environment, so a password protects only copies of the key file outside GitHub. CI does not set `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep the private key file in your password manager. The public key is in `~/.tauri/longhand-updater.key.pub`. Put its contents in `plugins.updater.pubkey` in `src-tauri/tauri.conf.json`. The public key is not secret.

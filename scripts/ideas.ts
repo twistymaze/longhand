@@ -4,13 +4,16 @@
 // description, so this script reads only the frontmatter. docs/ideas/README.md
 // describes the rules.
 //
-//   bun scripts/ideas.ts [folder...] [--area <area>]   list ideas (Done shows only a count unless you name it)
-//   bun scripts/ideas.ts move <slug> <folder>           git mv the idea and change every link to it
-//   bun scripts/ideas.ts check                          find frontmatter errors and broken links
+//   node scripts/ideas.ts [folder...] [--area <area>]   list ideas (Done shows only a count unless you name it)
+//   node scripts/ideas.ts move <slug> <folder>           git mv the idea and change every link to it
+//   node scripts/ideas.ts check                          find frontmatter errors and broken links
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, normalize, relative, resolve } from "node:path";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
+import { parseFrontmatter } from "./lib/frontmatter.ts";
 
-const root = resolve(import.meta.dir, "..");
+const root = resolve(import.meta.dirname, "..");
 const ideasDir = join(root, "docs/ideas");
 const folders = ["next", "someday", "parked", "done"] as const;
 type Folder = (typeof folders)[number];
@@ -23,7 +26,7 @@ function readIdea(folder: Folder, file: string): Idea {
   const path = join(ideasDir, folder, file);
   const text = readFileSync(path, "utf8");
   const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(text);
-  const meta = match ? ((Bun.YAML.parse(match[1]) as Record<string, unknown>) ?? {}) : {};
+  const meta: Record<string, unknown> = match ? parseFrontmatter(match[1]) : {};
   return { slug: file.replace(/\.md$/, ""), folder, path, meta, body: match ? match[2] : text };
 }
 
@@ -94,8 +97,8 @@ function move(slug: string, folder: string) {
   if (existsSync(shotsTo)) fail(`${relative(root, shotsTo)} is already there. Move or remove it first.`);
   const shots = existsSync(shotsFrom);
   const shotsPath = rootPathOf(shotsFrom);
-  const git = Bun.spawnSync(["git", "mv", idea.path, to], { cwd: root, stderr: "pipe" });
-  if (git.exitCode !== 0) fail(`git mv failed: ${git.stderr.toString()}`);
+  const git = spawnSync("git", ["mv", idea.path, to], { cwd: root, encoding: "utf8" });
+  if (git.status !== 0) fail(`git mv failed: ${git.error?.message ?? git.stderr}`);
   if (shots) renameSync(shotsFrom, shotsTo);
   let changed = 0;
   for (const file of linkingFiles()) {
@@ -126,26 +129,24 @@ const inCi = Boolean(process.env.CI);
 const prLimit = 1000;
 
 function mergedBranches(): { branches: Set<string>; unread?: string } {
-  const ref = Bun.spawnSync(["git", "rev-parse", "--verify", "--quiet", "origin/main"], { cwd: root }).exitCode === 0 ? "origin/main" : "HEAD";
-  const git = Bun.spawnSync(["git", "log", ref, "--merges", "--format=%s"], { cwd: root, stderr: "pipe" });
+  const ref = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"], { cwd: root }).status === 0 ? "origin/main" : "HEAD";
+  const git = spawnSync("git", ["log", ref, "--merges", "--format=%s"], { cwd: root, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
   const branches = new Set<string>();
-  for (const line of git.stdout.toString().split("\n")) {
+  for (const line of (git.stdout ?? "").split("\n")) {
     const m = /^Merge pull request #\d+ from [^/]+\/(.+)$/.exec(line.trim());
     if (m) branches.add(m[1]);
   }
-  let gh: ReturnType<typeof Bun.spawnSync>;
-  try {
-    gh = Bun.spawnSync(["gh", "pr", "list", "--state", "merged", "--base", "main", "--limit", String(prLimit), "--json", "headRefName"], {
-      cwd: root,
-      stderr: "pipe",
-    });
-  } catch {
-    return { branches, unread: "gh is not installed" };
-  }
-  if (gh.exitCode !== 0) return { branches, unread: gh.stderr.toString().trim().split("\n")[0] || `gh exited ${gh.exitCode}` };
+  const gh = spawnSync("gh", ["pr", "list", "--state", "merged", "--base", "main", "--limit", String(prLimit), "--json", "headRefName"], {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: MAX_OUTPUT_BYTES,
+  });
+  // When no `gh` is on PATH, spawnSync does not throw: it sets `error` to ENOENT.
+  if ((gh.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return { branches, unread: "gh is not installed" };
+  if (gh.status !== 0) return { branches, unread: gh.stderr?.trim().split("\n")[0] || gh.error?.message || `gh exited ${gh.status}` };
   let prs: { headRefName: string }[];
   try {
-    prs = JSON.parse(gh.stdout.toString());
+    prs = JSON.parse(gh.stdout);
   } catch {
     return { branches, unread: "gh gave output that is not JSON" };
   }
@@ -177,7 +178,7 @@ function shippedButOpen(ideas: Idea[]): string[] {
     const branch = [`worktree-${topic}`, `codex/${topic}`].find((b) => branches.has(b));
     if (!branch) continue;
     const where = relative(root, i.path);
-    const text = `branch ${branch} of its plan merged; move it with "bun scripts/ideas.ts move ${i.slug} done" and write the PR in its file`;
+    const text = `branch ${branch} of its plan merged; move it with "node scripts/ideas.ts move ${i.slug} done" and write the PR in its file`;
     if (inCi) console.log(`::warning file=${where}::${text}`);
     else errors.push(`${where}: ${text}`);
   }
@@ -239,7 +240,7 @@ function list(args: string[]) {
   for (const [label, group, openByDefault] of groups) {
     if (!wanted(label)) continue;
     const show = openByDefault || named.length > 0;
-    console.log(`\n${label} (${group.length})${show ? "" : ": bun scripts/ideas.ts done"}`);
+    console.log(`\n${label} (${group.length})${show ? "" : ": node scripts/ideas.ts done"}`);
     if (!show) continue;
     for (const i of group) {
       console.log(`  ${i.slug}  [${i.meta.area}]`);
@@ -256,7 +257,7 @@ function fail(message: string): never {
 
 const [command, ...rest] = process.argv.slice(2);
 if (command === "move") {
-  if (rest.length !== 2) fail("Usage: bun scripts/ideas.ts move <slug> <folder>");
+  if (rest.length !== 2) fail("Usage: node scripts/ideas.ts move <slug> <folder>");
   move(rest[0], rest[1]);
 } else if (command === "check") {
   process.exit(check());

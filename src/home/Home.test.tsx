@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import {
   act,
   fireEvent,
@@ -255,7 +255,7 @@ describe("Home", () => {
       session_detail: () =>
         detail(e, "/Users/me/Longhand/2026-09-24 1405 Budget review"),
     });
-    const onOpen = mock((_id: string) => {});
+    const onOpen = vi.fn((_id: string) => {});
     renderHome({ entries: [e], onOpen });
 
     const user = userEvent.setup();
@@ -300,7 +300,7 @@ describe("Home", () => {
       session_document: () => document("Text."),
       session_detail: () => detail(entry("a"), null),
     });
-    const onOpen = mock((_id: string) => {});
+    const onOpen = vi.fn((_id: string) => {});
     renderHome({ entries: [entry("a", { title: "Budget review" })], onOpen });
     const user = userEvent.setup();
     await user.click(row("Budget review"));
@@ -320,7 +320,7 @@ describe("Home", () => {
       session_document: () => document("Text."),
       session_detail: () => detail(entry("a"), null),
     });
-    const onOpen = mock((_id: string) => {});
+    const onOpen = vi.fn((_id: string) => {});
     renderHome({ entries: [entry("a", { title: "Budget review" })], onOpen });
     await userEvent
       .setup()
@@ -334,7 +334,7 @@ describe("Home", () => {
   // Covers AE6.
   test("with a recording in progress, selects the recording row with its elapsed time and status preview", async () => {
     mockTauri();
-    const onOpen = mock((_id: string) => {});
+    const onOpen = vi.fn((_id: string) => {});
     renderHome({
       entries: [entry("rec", { state: "capturing" })],
       recording: {
@@ -465,7 +465,7 @@ describe("Home", () => {
       },
       delete_session_permanently: () => null,
     });
-    const onChanged = mock(() => {});
+    const onChanged = vi.fn(() => {});
     renderHome({
       entries: [entry("s", { title: "Budget review" })],
       onChanged,
@@ -561,7 +561,7 @@ describe("Home", () => {
         throw { kind: "failed", message: "the store is locked" };
       },
     });
-    const onChanged = mock(() => {});
+    const onChanged = vi.fn(() => {});
     renderHome({
       entries: [entry("s", { title: "Budget review" })],
       onChanged,
@@ -594,7 +594,7 @@ describe("Home", () => {
       session_detail: () => detail(entry("s"), null),
       rename_session: () => ({ kind: "moved", path: "/x/Budget review" }),
     });
-    const onChanged = mock(() => {});
+    const onChanged = vi.fn(() => {});
     renderHome({ entries: [entry("s", { title: "Old title" })], onChanged });
     const user = userEvent.setup();
 
@@ -950,7 +950,7 @@ test("loading, initial error and pending capture do not show an empty library", 
 
 test("arrow keys include interrupted and recording notes after a pointer selection", async () => {
   previewMocks();
-  const onOpen = mock(() => {});
+  const onOpen = vi.fn(() => {});
   render(
     home(
       [
@@ -981,7 +981,7 @@ test("arrow keys include interrupted and recording notes after a pointer selecti
 
 test("double-clicks on actions and rename stay inside those controls", async () => {
   previewMocks();
-  const onOpen = mock(() => {});
+  const onOpen = vi.fn(() => {});
   render(home([entry("a", { title: "Alpha" })], { onOpen }));
   const user = userEvent.setup();
   const actions = within(row("Alpha")).getByRole("button", { name: "Actions" });
@@ -1000,7 +1000,7 @@ test("successful deletion excludes stale data and restores keyboard focus to the
     session_detail: () => detail(entry("a"), null),
     delete_session: () => null,
   });
-  const onOpen = mock(() => {});
+  const onOpen = vi.fn(() => {});
   render(
     home([entry("a", { title: "Alpha" }), entry("b", { title: "Beta" })], {
       onOpen,
@@ -1122,7 +1122,7 @@ test("a restored note returns after a successful deletion refresh", async () => 
 
 test("a list read error offers Retry", async () => {
   previewMocks();
-  const onChanged = mock(() => {});
+  const onChanged = vi.fn(() => {});
   render(
     home([], { loaded: false, loadError: "Could not load notes.", onChanged }),
   );

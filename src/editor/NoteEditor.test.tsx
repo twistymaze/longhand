@@ -1,15 +1,15 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { NoteEditor, type NoteEditorProps, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS } from "./NoteEditor";
 
 beforeEach(() => {
-  jest.useFakeTimers();
+  vi.useFakeTimers();
 });
 
 afterEach(() => {
-  jest.useRealTimers();
+  vi.useRealTimers();
 });
 
 function setup(markdown: string, autoFocus = true) {
@@ -24,7 +24,7 @@ function setup(markdown: string, autoFocus = true) {
 
 function advance(ms: number) {
   act(() => {
-    jest.advanceTimersByTime(ms);
+    vi.advanceTimersByTime(ms);
   });
 }
 

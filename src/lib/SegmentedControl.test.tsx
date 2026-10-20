@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
@@ -28,7 +28,7 @@ function Harness({ kind, onChange }: { kind?: "tabs" | "radio"; onChange: (v: st
 
 describe("SegmentedControl", () => {
   test("the arrow keys move the selection and the focus, and wrap at the ends", () => {
-    const onChange = mock((_v: string, _click: boolean) => {});
+    const onChange = vi.fn((_v: string, _click: boolean) => {});
     render(<Harness onChange={onChange} />);
     const list = screen.getByRole("tablist", { name: "Show" });
     fireEvent.keyDown(list, { key: "ArrowRight" });
@@ -50,7 +50,7 @@ describe("SegmentedControl", () => {
   });
 
   test("a click chooses a segment and reports a click", async () => {
-    const onChange = mock((_v: string, _click: boolean) => {});
+    const onChange = vi.fn((_v: string, _click: boolean) => {});
     render(<Harness onChange={onChange} />);
     await userEvent.setup().click(screen.getByRole("tab", { name: "Transcript" }));
     expect(onChange.mock.calls).toEqual([["transcript", true]]);

@@ -1,4 +1,4 @@
-import { describe, expect, jest, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
@@ -102,7 +102,7 @@ const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, m
 /// Moves the fake clock, then lets a queued save run.
 const advance = (ms: number) =>
   act(async () => {
-    jest.advanceTimersByTime(ms);
+    vi.advanceTimersByTime(ms);
   });
 
 describe("Background", () => {
@@ -116,7 +116,7 @@ describe("Background", () => {
   });
 
   test("typing saves once, one second after the last change", async () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     try {
       const { tauri } = setup();
       // No delay between keys: the test moves the clock itself.
@@ -133,7 +133,7 @@ describe("Background", () => {
       await advance(2000);
       expect(saves(tauri)).toEqual(["Erv"]);
     } finally {
-      jest.useRealTimers();
+      vi.useRealTimers();
     }
   });
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { chordFromKey, type KeyPress } from "./chord";
 
 const press = (code: string, over: Partial<KeyPress> = {}): KeyPress => ({

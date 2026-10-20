@@ -7,7 +7,7 @@ Read the applicable section before manual tests, validation, pushes, or cleanup.
 At a manual test step, make a signed build immediately:
 
 ```sh
-bun tauri build --bundles app
+npm run tauri -- build --bundles app
 ```
 
 Test microphone and Keychain behaviour from this bundle. An unsigned `tauri dev` binary attributes microphone requests to the launching terminal.
@@ -43,17 +43,43 @@ The installer is not signed. A file copied with `scp` has no Mark of the Web, so
 
 ## Checks and CI
 
+The JavaScript tools are Node (`^24.15.0` or `^26`) and npm 12.2 or later. `devEngines` in `package.json` sets these versions. An older npm stops with `EBADDEVENGINES`. No Node release includes npm 12, so install it with `npm install --global npm@12`. In a new worktree, run `npm ci`. Do not copy `node_modules` from another checkout.
+
 Run local checks, including:
 
+- `npm run typecheck`: type-checks the app and the scripts (`tsconfig.scripts.json`).
+- `npm test`: runs the frontend tests with Vitest. To run one file, use `npx vitest run src/<path>.test.ts`.
+- `npm run test:scripts`: runs the script tests with `node --test`. To run one file, use `node --test scripts/<name>.test.ts`. Run each script with `node scripts/<name>.ts`.
 - `scripts/check-windows.sh`: lints for Windows from macOS in seconds, except crates that build C or C++.
-- `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies. Run it after each change that adds or removes a dependency, and commit the files that it writes. In a new worktree, run `bun install --frozen-lockfile` first: a copied `node_modules` can be older than `bun.lock` and writes wrong versions into `js-packages.json`.
+- `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies. Run it after each change that adds or removes a dependency, and commit the files that it writes. It runs `npm ci` first, so `js-packages.json` gets the versions in `package-lock.json`.
 
 Dependency rules that apply to each change:
 
-- A PR fails the `cargo deny` check when `Cargo.lock` or `bun.lock` gains a version that is less than 7 days old, or a `bun.lock` entry that does not come from the npm registry (`scripts/check-dependency-age.ts`). When you must have such a version, for example for a security fix, add it to `min-age-exceptions.toml` with a reason, and remove the entry again after 7 days.
-- `bunfig.toml` sets `minimumReleaseAge` to 7 days, so `bun add` and `bun update` do not take a JavaScript package version that is younger. When you must have a newer version, also add the package to `minimumReleaseAgeExcludes` with a comment that gives the reason, and remove it again after 7 days. A frozen install (`bun install --frozen-lockfile`) accepts a version that is already in `bun.lock`.
+- A PR fails the `cargo deny` check when `Cargo.lock` or `package-lock.json` gains a version that is less than 7 days old, or a `package-lock.json` entry that does not come from the npm registry (`scripts/check-dependency-age.ts`). [Dependency age](#dependency-age) gives the steps for a younger version.
+- `.npmrc` sets `allow-git=none` and `allow-remote=none`, so npm takes packages only from the registry.
+- `.npmrc` sets `strict-allow-scripts=true`. [Install scripts](#install-scripts) gives the rules.
 - A PR fails the `cargo deny` check when it adds an advisory that `main` does not have (`scripts/check-new-advisories.ts`). An advisory that is already on `main` does not fail a PR.
 - `deny.toml` checks known vulnerabilities for the shipped targets only. Only the maintainer adds an entry to `[advisories] ignore`, and each entry has a `reason`. Run the check with `cargo deny check advisories`.
+
+### Dependency age
+
+`.npmrc` sets `min-release-age=7`, so `npm install` and `npm update` do not take a JavaScript package version that is less than 7 days old. `npm ci` accepts a version that is already in `package-lock.json`.
+
+When you must have a younger version, for example for a security fix:
+
+1. For a direct dependency, run `npm install <name>@<version> --package-lock-only --ignore-scripts --min-release-age-exclude=<name>`.
+2. For a transitive dependency, first add an `overrides` entry for that exact version to `package.json`. Then run the same command.
+3. The exclusion removes the age limit for that package completely. Accept the result only when `package-lock.json` has the exact fixing version. If it has a different version, do not use the result.
+4. Add the version to `min-age-exceptions.toml` with a reason, and remove the entry again after 7 days.
+
+### Install scripts
+
+With `strict-allow-scripts=true`, `npm ci` stops before any install script runs when a package has an install script that `allowScripts` in `package.json` does not name. A PR that adds such a package must add an `allowScripts` entry, and its reason to this list:
+
+- `esbuild: false`: esbuild takes its binary from an optional platform package and needs no `postinstall`.
+- `fsevents: false`: fsevents includes a prebuilt `fsevents.node` and needs no install script.
+
+### CI
 
 CI runs only on:
 
@@ -128,7 +154,7 @@ After approval:
 5. Run `git fetch --prune origin`. GitHub deletes the head branch when the PR merges. If `git branch -r` still shows it, delete it with `git push origin --delete <branch>`.
 6. Remove the subagent worktrees of this work, in `.claude/worktrees/agent-*`. Subagents that run with worktree isolation create them, and the managed tool of the session does not remove them. For each one, confirm that `git status --short` shows no changes and that its commits are in `main`: `git cherry main <branch>` shows only `-` lines, or the files of the commit are in `main` in a later form. Then run `git worktree remove <path>` and delete its branch. If a subagent worktree has changes or commits that are not in `main`, keep it and tell the user.
 7. Run `ce-compound` for the work that the PR shipped.
-8. Move the idea of the work to `done/` with `bun scripts/ideas.ts move <slug> done`, and write the PR in its file ([Feature ideas](ideas/README.md)). Also move any other idea that the PR made unnecessary. Then run `bun scripts/ideas.ts check`.
+8. Move the idea of the work to `done/` with `node scripts/ideas.ts move <slug> done`, and write the PR in its file ([Feature ideas](ideas/README.md)). Also move any other idea that the PR made unnecessary. Then run `node scripts/ideas.ts check`.
 9. Commit the resulting docs on `main` and push them. Commit only this session's files by path, and run `git pull --rebase origin main` before the push.
 10. Make sure that nothing is left. `git worktree list` shows only the main checkout and the worktrees of open work. `git branch` and `git branch -r` show only `main` and the branches of open PRs. Report each remaining item and its reason. Also report whether `ce-babysit-pr` watched the PR until it was ready to merge ([Checks and CI](#checks-and-ci)).
 

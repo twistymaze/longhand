@@ -1,6 +1,6 @@
 # Longhand
 
-Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, bun). Records an in-person session on one microphone and produces a transcript and summary. The units (U1–U23) and checkpoint log in `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md` define scope and sequencing.
+Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, npm). Records an in-person session on one microphone and produces a transcript and summary. The units (U1–U23) and checkpoint log in `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md` define scope and sequencing.
 
 ## Shared project memory
 
@@ -57,7 +57,7 @@ UI text uses short, direct plain language with consistent terms, no metaphors, a
 
 ## Working in this repo
 
-- Use Python only through `uv`, JavaScript packages only through `bun`, and Rust 1.95.0.
+- Use Python only through `uv`, JavaScript packages only through npm, and Rust 1.95.0.
 - Test microphone and Keychain behaviour only in a signed bundle, never `tauri dev`. At each manual test step, build without waiting for a request. First read [Manual tests](docs/development-workflow.md#manual-tests); provide exact local and remote launch steps, and notarize for remote tests.
 - Keep the anarlog, Handy, and Shorthand clones in `reference-source/` read-only and untracked. Shorthand (https://github.com/mshish/shorthand, MIT) is a Handy fork that adds system audio and live meeting notes. Record borrowed code in `PROVENANCE.md`; `scripts/check-provenance.sh` enforces this.
 - Local checks are required. Before validation or a push, read [Checks and CI](docs/development-workflow.md#checks-and-ci). Commit per unit, push in batches, and continue implementation while CI runs. Before you create a PR, do the steps in [Before a PR](docs/development-workflow.md#before-a-pr): rebase when `main` has new code changes. Once the PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open.
@@ -81,5 +81,5 @@ UI text uses short, direct plain language with consistent terms, no metaphors, a
   - A commit pushed directly to `main` (docs-only work) uses only `docs`, `chore` or `ci`.
 - After a PR merges, offer cleanup and wait for approval. Before cleanup, read [After a merge](docs/development-workflow.md#after-a-merge).
 - Read relevant `docs/solutions/` entries before changing a documented area. Solutions use category folders and YAML fields `module`, `tags`, and `problem_type`.
-- Record each feature idea in its own file in `docs/ideas/`, even when it also appears in a plan or conversation. The folder is the status. List ideas with `bun scripts/ideas.ts`, and move them only with `bun scripts/ideas.ts move`. Follow `docs/ideas/README.md`. `ce-ideate` does not read or write this folder: before a run, give it the known ideas; after a run, file each survivor that is not brainstormed. The README gives the steps. Raise and resolve conflicts between this convention and plugin updates.
+- Record each feature idea in its own file in `docs/ideas/`, even when it also appears in a plan or conversation. The folder is the status. List ideas with `node scripts/ideas.ts`, and move them only with `node scripts/ideas.ts move`. Follow `docs/ideas/README.md`. `ce-ideate` does not read or write this folder: before a run, give it the known ideas; after a run, file each survivor that is not brainstormed. The README gives the steps. Raise and resolve conflicts between this convention and plugin updates.
 - Private, gitignored paths: `sample.m4a`, `sample.txt`, `fixtures/`, `manual-tests/` (manual test sessions), `docs/ideas/**/*-screenshots/` (real names), and `.env`. Never commit, print, or upload them.

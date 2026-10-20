@@ -1,10 +1,10 @@
 // Publishes one Longhand release to the GitHub Releases page of the source
 // repository, and attaches the Windows installer to it later (KTD4).
 //
-//   bun scripts/publish-release.ts publish <version> <dmg> <archive> <signature> <notes file>
+//   node scripts/publish-release.ts publish <version> <dmg> <archive> <signature> <notes file>
 //     Publishes the release v<version> on the built commit, with the DMG, the
 //     updater archive, its signature and latest.json as assets.
-//   bun scripts/publish-release.ts attach <tag> <installer>
+//   node scripts/publish-release.ts attach <tag> <installer>
 //     Uploads the installer to the release with the tag. It replaces an asset
 //     with the same name, so a re-run works. The old asset stays until the new
 //     one is uploaded, so a failed re-run does not remove the installer.
@@ -18,8 +18,8 @@
 // leaves at most a draft, which no user sees and which has no tag. A version
 // that is not higher than the latest release publishes nothing and ends
 // without an error. The concurrency group of the CI workflow keeps two
-// publishes from running at the same time. The script uses only Bun built-ins, because the
-// publish job runs no `bun install`.
+// publishes from running at the same time. The script uses only Node built-ins and
+// scripts/lib/, because the publish job runs no package install.
 //
 // When a newer CI run on main is queued or running, the publish command
 // publishes nothing and ends without an error. That run computes its version
@@ -28,7 +28,9 @@
 // the workflow token create a tag on this older commit (403, "Resource not
 // accessible by integration").
 
+import { openAsBlob, readFileSync } from "node:fs";
 import { basename } from "node:path";
+import { compareVersions } from "./lib/version.ts";
 
 export const MANIFEST_NAME = "latest.json";
 
@@ -67,7 +69,7 @@ export function buildManifest(args: {
 /// release yet means that any version is higher.
 export function isNewer(version: string, latestVersion: string | null): boolean {
   if (latestVersion === null) return true;
-  return Bun.semver.order(version, latestVersion) === 1;
+  return compareVersions(version, latestVersion) === 1;
 }
 
 export type Asset = { id: number; name: string };
@@ -292,19 +294,19 @@ export async function main(
         repository,
         version,
         commit,
-        dmg: Bun.file(dmg),
+        dmg: await openAsBlob(dmg),
         dmgName: basename(dmg),
-        archive: Bun.file(archive),
+        archive: await openAsBlob(archive),
         archiveName: basename(archive),
-        signature: await Bun.file(signature).text(),
-        notes: await Bun.file(notes).text(),
+        signature: readFileSync(signature, "utf8"),
+        notes: readFileSync(notes, "utf8"),
         now: () => new Date(),
       },
       log,
     );
   } else {
     const [tag, installer] = rest as [string, string];
-    await attach(makeApi(repository, token), { tag, installer: Bun.file(installer), installerName: basename(installer) }, log);
+    await attach(makeApi(repository, token), { tag, installer: await openAsBlob(installer), installerName: basename(installer) }, log);
   }
 }
 

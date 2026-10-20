@@ -6,7 +6,7 @@ import {
 } from "prosemirror-state";
 import { history } from "prosemirror-history";
 import type { EditorView } from "prosemirror-view";
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it } from "vitest";
 
 import { buildInputRules, buildKeymap } from "./keymap";
 import { schema } from "./schema";

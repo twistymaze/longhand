@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import type { Readiness, SessionDetail, SessionEntry } from "../bindings";
 import {
   entryStatus,
@@ -169,8 +169,8 @@ describe("wording", () => {
 
   test("titles name today and yesterday", () => {
     const now = new Date(2026, 8, 22, 18, 0);
-    expect(sessionTitle(new Date(2026, 8, 22, 14, 5).toISOString(), now)).toStartWith("Today, ");
-    expect(sessionTitle(new Date(2026, 8, 21, 9, 10).toISOString(), now)).toStartWith("Yesterday, ");
+    expect(sessionTitle(new Date(2026, 8, 22, 14, 5).toISOString(), now)).toMatch(/^Today, /);
+    expect(sessionTitle(new Date(2026, 8, 21, 9, 10).toISOString(), now)).toMatch(/^Yesterday, /);
   });
 
   test("durations read in hours and minutes", () => {

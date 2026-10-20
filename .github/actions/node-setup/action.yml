@@ -1,0 +1,67 @@
+name: Node and npm setup
+description: >-
+  Installs the Node version and the npm version that devEngines in
+  package.json gives, and stops the job when npm is older than 12. npm goes
+  into a folder of this job ($RUNNER_TEMP), so the shared tool folders of a
+  self-hosted runner do not change. No step restores a package cache.
+
+inputs:
+  package-json:
+    description: >-
+      The package.json that gives the Node and npm versions. The cargo deny
+      job sets the base checkout's file, so a PR cannot choose the versions
+      that check it.
+    required: false
+    default: package.json
+
+runs:
+  using: composite
+  steps:
+    # setup-node reads devEngines.runtime from the file. With no package
+    # cache, no job restores a cache that a PR could have written
+    # (docs/solutions/security-issues/dispatched-release-build-could-write-main-caches.md).
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version-file: ${{ inputs.package-json }}
+        package-manager-cache: false
+
+    # No Node release includes npm 12, so this step installs it. The install
+    # runs in a new empty folder with empty config files and the public
+    # registry, so no .npmrc of a checkout can change which npm it installs.
+    # The 7-day minimum release age also applies to npm itself.
+    - name: Install npm
+      shell: bash
+      env:
+        PACKAGE_JSON: ${{ inputs.package-json }}
+      run: |
+        set -euo pipefail
+        range=$(node -e 'const p = require(require("path").resolve(process.argv[1])); const v = p.devEngines?.packageManager; if (v?.name !== "npm" || !v.version) { console.error("devEngines.packageManager does not name an npm version"); process.exit(1) } console.log(v.version)' "$PACKAGE_JSON")
+        prefix="$RUNNER_TEMP/npm-tool"
+        work=$(mktemp -d "$RUNNER_TEMP/npm-install.XXXXXX")
+        : > "$work/user-npmrc"
+        : > "$work/global-npmrc"
+        cd "$work"
+        npm install --global --prefix "$prefix" "npm@$range" \
+          --ignore-scripts --min-release-age=7 \
+          --userconfig="$work/user-npmrc" --globalconfig="$work/global-npmrc" \
+          --registry=https://registry.npmjs.org/
+        # On Windows npm puts its command files in the prefix folder itself;
+        # on other systems it puts them in prefix/bin.
+        if [ "$RUNNER_OS" = Windows ]; then
+          echo "$prefix" >> "$GITHUB_PATH"
+        else
+          echo "$prefix/bin" >> "$GITHUB_PATH"
+        fi
+
+    # devEngines stops npm 10.9 and later before an install. An older npm
+    # does not read devEngines, so this check stops the job (KTD2).
+    - name: Check the npm version
+      shell: bash
+      run: |
+        set -euo pipefail
+        version=$(npm --version)
+        echo "npm $version at $(command -v npm)"
+        if [ "${version%%.*}" -lt 12 ]; then
+          echo "::error::npm $version is older than 12"
+          exit 1
+        fi

@@ -163,7 +163,7 @@ Keep these tests local and opt-in. See [Local recognition checks](../development
 From the implementation checkout:
 
 ```sh
-LONGHAND_ROUTE_MATRIX_SECONDS=300 bun scripts/validate-recognition/route-matrix.ts \
+LONGHAND_ROUTE_MATRIX_SECONDS=300 node scripts/validate-recognition/route-matrix.ts \
   /absolute/path/model-paths.json \
   /absolute/path/excerpt.wav \
   /absolute/path/installed/longhand-nemo-helper \

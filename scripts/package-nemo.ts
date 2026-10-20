@@ -1,15 +1,17 @@
 // Stage the helper and its private native dependency closure.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, renameSync, rmSync, chmodSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, chmodSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { findWindowsDependency, windowsRedistRoots } from "./windows-redist";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
+import { findWindowsDependency, windowsRedistRoots } from "./windows-redist.ts";
 
 const manifestPath = process.argv[2];
-if (!manifestPath) throw new Error("Use bun scripts/package-nemo.ts BUILD-OUTPUT.json [OUTPUT-DIR]");
-const input = await Bun.file(manifestPath).json() as { helper: string; sdkBin: string };
+if (!manifestPath) throw new Error("Use node scripts/package-nemo.ts BUILD-OUTPUT.json [OUTPUT-DIR]");
+const input = JSON.parse(readFileSync(manifestPath, "utf8")) as { helper: string; sdkBin: string };
 const helper = realpathSync(input.helper);
 const sdkBin = realpathSync(input.sdkBin);
-const output = resolve(process.argv[3] ?? join(import.meta.dir, "../src-tauri/nemo-runtime"));
+const output = resolve(process.argv[3] ?? join(import.meta.dirname, "../src-tauri/nemo-runtime"));
 const staging = `${output}.staging-${process.pid}`;
 if (existsSync(staging)) throw new Error(`Staging directory already exists: ${staging}`);
 if (existsSync(output) && !existsSync(join(output, "longhand-nemo-package.json"))) throw new Error("Refusing to replace an output directory without a generated NeMo package manifest");
@@ -17,9 +19,10 @@ mkdirSync(staging, { recursive: true });
 const binaries = join(staging, "bin");
 mkdirSync(binaries);
 function run(command: string[]) {
-  const result = Bun.spawnSync(command, { stdout: "pipe", stderr: "pipe" });
-  if (result.exitCode !== 0) throw new Error(`${command[0]} failed: ${result.stderr.toString()}`);
-  return result.stdout.toString();
+  const [program, ...args] = command;
+  const result = spawnSync(program, args, { encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
+  if (result.status !== 0) throw new Error(`${program} failed: ${result.error?.message ?? result.stderr}`);
+  return result.stdout;
 }
 function inside(path: string, root: string) { const rel = relative(root, path); return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)); }
 const copied = new Map<string, string>();
@@ -104,10 +107,10 @@ try {
   }
   const files = [];
   for (const name of readdirSync(binaries).sort()) {
-    const bytes = await Bun.file(join(binaries, name)).arrayBuffer();
-    files.push({ name: `bin/${name}`, bytes: bytes.byteLength, sha256: createHash("sha256").update(new Uint8Array(bytes)).digest("hex") });
+    const bytes = readFileSync(join(binaries, name));
+    files.push({ name: `bin/${name}`, bytes: bytes.byteLength, sha256: createHash("sha256").update(bytes).digest("hex") });
   }
-  await Bun.write(join(staging, "longhand-nemo-package.json"), JSON.stringify({ format: 1, protocolVersion: 1, runtimeRevision: "97a15afa5caa9bce5baaa86c1184103877af4101", platform: process.platform, arch: process.arch, helper: `bin/${helperName}`, files }, null, 2) + "\n");
+  writeFileSync(join(staging, "longhand-nemo-package.json"), JSON.stringify({ format: 1, protocolVersion: 1, runtimeRevision: "97a15afa5caa9bce5baaa86c1184103877af4101", platform: process.platform, arch: process.arch, helper: `bin/${helperName}`, files }, null, 2) + "\n");
   // This folder contains generated build output only. The marker was checked above.
   if (existsSync(output)) rmSync(output, { recursive: true });
   renameSync(staging, output);

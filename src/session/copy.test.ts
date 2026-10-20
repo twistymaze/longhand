@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test, vi } from "vitest";
 import type { SessionDocument } from "../bindings";
 import { copyText, tabHtml, tabMarkdown } from "./copy";
 
@@ -102,8 +102,8 @@ describe("copyText", () => {
   };
 
   test("writes one item with the HTML first and the markdown as plain text", async () => {
-    const write = mock(async (_items: FakeClipboardItem[]) => {});
-    const writeText = mock(async (_t: string) => {});
+    const write = vi.fn(async (_items: FakeClipboardItem[]) => {});
+    const writeText = vi.fn(async (_t: string) => {});
     setClipboard({ write, writeText });
     expect(await copyText("# A", "<h1>A</h1>\n")).toBe(true);
     const [item] = write.mock.calls[0][0];
@@ -114,14 +114,14 @@ describe("copyText", () => {
   });
 
   test("writes the markdown only when the clipboard refuses the item", async () => {
-    const writeText = mock(async (_t: string) => {});
+    const writeText = vi.fn(async (_t: string) => {});
     setClipboard({ write: refuse, writeText });
     expect(await copyText("# A", "<h1>A</h1>")).toBe(true);
     expect(writeText).toHaveBeenCalledWith("# A");
   });
 
   test("writes the markdown only when there is no ClipboardItem", async () => {
-    const writeText = mock(async (_t: string) => {});
+    const writeText = vi.fn(async (_t: string) => {});
     setClipboard({ writeText }, undefined);
     expect(await copyText("# A", "<h1>A</h1>")).toBe(true);
     expect(writeText).toHaveBeenCalledWith("# A");

@@ -1,13 +1,26 @@
-import { afterEach, expect, test } from "bun:test";
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
+import { afterEach, test } from "node:test";
 
 // Each test runs a copy of the script in a new git repository, so the script's
 // root is that repository. A fake `gh` is first on PATH in every test, so no
 // test reaches the network or depends on where the real `gh` is.
 
-const SCRIPT = join(import.meta.dir, "ideas.ts");
+const SCRIPT = join(import.meta.dirname, "ideas.ts");
+// The script imports helpers from this folder, so each copy of the script gets a copy of it.
+const LIB = join(import.meta.dirname, "lib");
+
+// The first `name` on PATH that exists.
+function which(name: string): string {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    const path = join(dir, name);
+    if (dir && existsSync(path)) return path;
+  }
+  throw new Error(`${name} is not on PATH`);
+}
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -22,8 +35,8 @@ type Gh =
   | { mode: "absent" };
 
 function git(root: string, ...args: string[]) {
-  const r = Bun.spawnSync(["git", "-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root, stderr: "pipe" });
-  if (r.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${r.stderr.toString()}`);
+  const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: root, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`git ${args.join(" ")}: ${r.error?.message ?? r.stderr}`);
 }
 
 function write(root: string, path: string, text: string) {
@@ -39,6 +52,7 @@ function repo(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "ideas-test-"));
   dirs.push(root);
   cpSync(SCRIPT, join(root, "scripts/ideas.ts"));
+  cpSync(LIB, join(root, "scripts/lib"), { recursive: true });
   write(root, ".gitignore", "/docs/ideas/**/*-screenshots/\n");
   write(root, "docs/ideas/README.md", "# Ideas\n");
   for (const folder of ["next", "someday", "parked", "done"]) mkdirSync(join(root, "docs/ideas", folder), { recursive: true });
@@ -56,7 +70,7 @@ function fakeGh(root: string, gh: Gh): string {
   if (gh.mode === "absent") {
     const bin = join(root, ".nogh");
     mkdirSync(bin, { recursive: true });
-    if (!existsSync(join(bin, "git"))) symlinkSync(Bun.which("git")!, join(bin, "git"));
+    if (!existsSync(join(bin, "git"))) symlinkSync(which("git"),join(bin, "git"));
     return bin;
   }
   const bin = join(root, ".bin");
@@ -86,8 +100,8 @@ function run(root: string, args: string[], gh: Gh, ci = false) {
   delete env.CI;
   delete env.GITHUB_ACTIONS;
   if (ci) env.CI = "true";
-  const r = Bun.spawnSync([process.execPath, join(root, "scripts/ideas.ts"), ...args], { cwd: root, env, stderr: "pipe" });
-  return { exitCode: r.exitCode, stdout: r.stdout.toString(), stderr: r.stderr.toString() };
+  const r = spawnSync(process.execPath, [join(root, "scripts/ideas.ts"), ...args], { cwd: root, env, encoding: "utf8" });
+  return { exitCode: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
 const noPrs: Gh = { mode: "list", branches: [] };
@@ -101,11 +115,12 @@ test("move takes the screenshots folder of the idea with it", () => {
   });
   write(root, "docs/ideas/next/x-screenshots/a.png", "png");
   const r = run(root, ["move", "x", "done"], noPrs);
-  expect({ exitCode: r.exitCode, stderr: r.stderr }).toEqual({ exitCode: 0, stderr: "" });
-  expect(readFileSync(join(root, "docs/ideas/done/x-screenshots/a.png"), "utf8")).toBe("png");
-  expect(existsSync(join(root, "docs/ideas/next/x-screenshots"))).toBe(false);
-  expect(readFileSync(join(root, "docs/ideas/done/x.md"), "utf8")).toContain("](x-screenshots/a.png)");
-  expect(readFileSync(join(root, "docs/notes.md"), "utf8")).toBe(
+  assert.deepEqual({ exitCode: r.exitCode, stderr: r.stderr }, { exitCode: 0, stderr: "" });
+  assert.equal(readFileSync(join(root, "docs/ideas/done/x-screenshots/a.png"), "utf8"), "png");
+  assert.equal(existsSync(join(root, "docs/ideas/next/x-screenshots")), false);
+  assert.ok(readFileSync(join(root, "docs/ideas/done/x.md"), "utf8").includes("](x-screenshots/a.png)"));
+  assert.equal(
+    readFileSync(join(root, "docs/notes.md"), "utf8"),
     "See `docs/ideas/done/x-screenshots/a.png` and `docs/ideas/next/x-screenshots.png`.\n",
   );
 });
@@ -116,11 +131,11 @@ for (const withSource of [true, false])
     if (withSource) write(root, "docs/ideas/next/x-screenshots/a.png", "mine");
     write(root, "docs/ideas/done/x-screenshots/b.png", "other");
     const r = run(root, ["move", "x", "done"], noPrs);
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toContain("x-screenshots");
-    expect(existsSync(join(root, "docs/ideas/next/x.md"))).toBe(true);
-    expect(existsSync(join(root, "docs/ideas/done/x.md"))).toBe(false);
-    if (withSource) expect(readFileSync(join(root, "docs/ideas/next/x-screenshots/a.png"), "utf8")).toBe("mine");
+    assert.notEqual(r.exitCode, 0);
+    assert.ok(r.stderr.includes("x-screenshots"));
+    assert.equal(existsSync(join(root, "docs/ideas/next/x.md")), true);
+    assert.equal(existsSync(join(root, "docs/ideas/done/x.md")), false);
+    if (withSource) assert.equal(readFileSync(join(root, "docs/ideas/next/x-screenshots/a.png"), "utf8"), "mine");
   });
 
 // ---------------------------------------------------------------- check
@@ -137,36 +152,36 @@ const squashMerged: Gh = { mode: "list", branches: [{ headRefName: "worktree-tal
 test("check reports an open idea whose plan branch merged into main by squash", () => {
   const root = shippedRepo();
   const r = run(root, ["check"], squashMerged);
-  expect(r.exitCode).toBe(1);
-  expect(r.stderr).toContain("docs/ideas/next/x.md: branch worktree-talk-to-notes of its plan merged");
-  expect(readFileSync(join(root, ".gh-args"), "utf8")).toBe("pr list --state merged --base main --limit 1000 --json headRefName\n");
+  assert.equal(r.exitCode, 1);
+  assert.ok(r.stderr.includes("docs/ideas/next/x.md: branch worktree-talk-to-notes of its plan merged"));
+  assert.equal(readFileSync(join(root, ".gh-args"), "utf8"), "pr list --state merged --base main --limit 1000 --json headRefName\n");
 });
 
 test("check reports an open idea whose codex plan branch merged", () => {
   const root = shippedRepo();
   const r = run(root, ["check"], { mode: "list", branches: [{ headRefName: "codex/talk-to-notes", base: "main" }] });
-  expect(r.exitCode).toBe(1);
-  expect(r.stderr).toContain("branch codex/talk-to-notes of its plan merged");
+  assert.equal(r.exitCode, 1);
+  assert.ok(r.stderr.includes("branch codex/talk-to-notes of its plan merged"));
 });
 
 test("check says that it did not read all merged PRs when gh gives the full limit", () => {
   const root = shippedRepo();
   const branches = Array.from({ length: 1000 }, (_, n) => ({ headRefName: `b${n}`, base: "main" }));
   const r = run(root, ["check"], { mode: "list", branches });
-  expect(r.stderr).toContain("Shipped-plan check: merged PRs not read (more than 1000 merged PRs)");
+  assert.ok(r.stderr.includes("Shipped-plan check: merged PRs not read (more than 1000 merged PRs)"));
 });
 
 test("check does not count a PR that merged into another branch", () => {
   const root = shippedRepo();
   const r = run(root, ["check"], { mode: "list", branches: [{ headRefName: "worktree-talk-to-notes", base: "release" }] });
-  expect(r.exitCode).toBe(0);
+  assert.equal(r.exitCode, 0);
 });
 
 test("in CI, a shipped idea is a warning and does not fail the check", () => {
   const root = shippedRepo();
   const r = run(root, ["check"], squashMerged, true);
-  expect(r.exitCode).toBe(0);
-  expect(r.stdout + r.stderr).toContain("::warning file=docs/ideas/next/x.md::");
+  assert.equal(r.exitCode, 0);
+  assert.ok((r.stdout + r.stderr).includes("::warning file=docs/ideas/next/x.md::"));
 });
 
 for (const [mode, reason] of [
@@ -178,23 +193,23 @@ for (const [mode, reason] of [
   test(`check says that it did not read merged PRs and passes when gh gives "${reason}"`, () => {
     const root = shippedRepo();
     const r = run(root, ["check"], { mode });
-    expect(r.exitCode).toBe(0);
-    expect(r.stderr).toContain(`Shipped-plan check: merged PRs not read (${reason}); merge commits only.`);
+    assert.equal(r.exitCode, 0);
+    assert.ok(r.stderr.includes(`Shipped-plan check: merged PRs not read (${reason}); merge commits only.`));
   });
 
 test("in CI, check fails when it cannot read merged PRs", () => {
   const root = shippedRepo();
   const r = run(root, ["check"], { mode: "fail" }, true);
-  expect(r.exitCode).toBe(1);
-  expect(r.stderr).toContain("Shipped-plan check: merged PRs not read");
+  assert.equal(r.exitCode, 1);
+  assert.ok(r.stderr.includes("Shipped-plan check: merged PRs not read"));
 });
 
 test("in CI, check fails when it cannot read merged PRs also with no open plan", () => {
   const root = repo({ "docs/ideas/someday/y.md": idea("y") });
   const r = run(root, ["check"], { mode: "absent" }, true);
-  expect(r.exitCode).toBe(1);
-  expect(r.stderr).toContain("Shipped-plan check: merged PRs not read");
-  expect(run(root, ["check"], { mode: "absent" }).exitCode).toBe(0);
+  assert.equal(r.exitCode, 1);
+  assert.ok(r.stderr.includes("Shipped-plan check: merged PRs not read"));
+  assert.equal(run(root, ["check"], { mode: "absent" }).exitCode, 0);
 });
 
 test("check still reports from a merge commit when gh is missing", () => {
@@ -206,6 +221,6 @@ test("check still reports from a merge commit when gh is missing", () => {
   git(root, "checkout", "-q", "main");
   git(root, "merge", "-q", "--no-ff", "-m", "Merge pull request #7 from owner/worktree-talk-to-notes", "worktree-talk-to-notes");
   const r = run(root, ["check"], { mode: "absent" });
-  expect(r.exitCode).toBe(1);
-  expect(r.stderr).toContain("branch worktree-talk-to-notes of its plan merged");
+  assert.equal(r.exitCode, 1);
+  assert.ok(r.stderr.includes("branch worktree-talk-to-notes of its plan merged"));
 });

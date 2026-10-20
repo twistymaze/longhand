@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { describe, expect, test } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ModelStatus } from "../bindings";
@@ -201,7 +202,7 @@ describe("About", () => {
   });
 
   test("the Settings opener allows only https, and every address the pane can open is https", async () => {
-    const capability = await Bun.file(`${import.meta.dir}/../../src-tauri/capabilities/settings.json`).json();
+    const capability = JSON.parse(readFileSync(`${import.meta.dirname}/../../src-tauri/capabilities/settings.json`, "utf8"));
     const opener = capability.permissions.find(
       (p: unknown) => typeof p === "object" && (p as { identifier: string }).identifier === "opener:allow-open-url",
     );
@@ -209,7 +210,7 @@ describe("About", () => {
 
     // The acknowledgement links, and the addresses in the licence details of
     // each component and of each model in the bundled catalog.
-    const catalog = await Bun.file(`${import.meta.dir}/../../crates/models/catalog.json`).json();
+    const catalog = JSON.parse(readFileSync(`${import.meta.dirname}/../../crates/models/catalog.json`, "utf8"));
     const details: string[] = components.flatMap((c) => [c.licence.url, c.source]);
     const walk = (v: unknown): void => {
       if (Array.isArray(v)) return v.forEach(walk);

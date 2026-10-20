@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, test, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import type { RecordingStatus } from "../bindings";
 import { mockTauri } from "../test/tauri";
@@ -111,11 +111,11 @@ test("recording starts and status polls do not check sound output; capture error
     setInterval(handler: TimerHandler, timeout?: number): number;
     clearInterval(id?: number): void;
   } = window;
-  const interval = spyOn(browserTimers, "setInterval").mockImplementation((handler, timeout) => {
+  const interval = vi.spyOn(browserTimers, "setInterval").mockImplementation((handler, timeout) => {
     timers.set(timeout!, handler as () => void);
     return timeout!;
   });
-  const clear = spyOn(browserTimers, "clearInterval").mockImplementation(() => {});
+  const clear = vi.spyOn(browserTimers, "clearInterval").mockImplementation(() => {});
   let unmount: (() => void) | undefined;
   try {
     const hook = renderHook(() => useCapture());

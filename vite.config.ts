@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -56,5 +57,13 @@ export default defineConfig(async () => ({
     watch: {
       ignored: ["**/src-tauri/**", "**/target/**", "**/reference-source/**", "**/fixtures/**"],
     },
+  },
+  // Vitest runs only the frontend tests. It does not skip `target/`, which
+  // holds the test files of vendored packages. The setup file registers
+  // happy-dom before each test file.
+  test: {
+    include: ["src/**/*.test.{ts,tsx}"],
+    environment: "node",
+    setupFiles: ["./src/test/setup.ts"],
   },
 }));

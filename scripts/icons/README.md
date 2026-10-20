@@ -14,7 +14,7 @@ Regenerate into a temporary directory, then copy only the desktop assets:
 
 ```sh
 uv run scripts/icons/make_icons.py /tmp/longhand-icons
-bun tauri icon /tmp/longhand-icons/app-icon.png --output /tmp/longhand-icons
+npm run tauri -- icon /tmp/longhand-icons/app-icon.png --output /tmp/longhand-icons
 cp /tmp/longhand-icons/{app-icon.png,tray.png,32x32.png,64x64.png,128x128.png,128x128@2x.png,icon.png,icon.icns,icon.ico} src-tauri/icons/
 ```
 

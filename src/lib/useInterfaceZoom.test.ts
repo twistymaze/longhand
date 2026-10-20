@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { act, renderHook } from "@testing-library/react";
 import { mockTauri } from "../test/tauri";
 import { zoomAction, useInterfaceZoom } from "./useInterfaceZoom";

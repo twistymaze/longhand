@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { Settings } from "../bindings";
 import { mockTauri } from "../test/tauri";

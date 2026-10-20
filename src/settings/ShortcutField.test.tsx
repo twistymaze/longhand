@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { ShortcutStatus, ShortcutStatuses } from "../bindings";
 import { mockTauri } from "../test/tauri";

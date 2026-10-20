@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test } from "vitest";
 import { mockTauri } from "../test/tauri";
 import { forwardErrorsToLog, logText } from "./log";
 
@@ -27,9 +27,9 @@ test("console errors, uncaught errors and unhandled rejections go to the app log
   expect(printed[0][0]).toBe("The save failed:");
   const sent = lines(tauri);
   expect(sent).toHaveLength(3);
-  expect(sent[0]).toStartWith('error: The save failed: Error: disk full\n');
-  expect(sent[0]).toEndWith(' {"id":"c1"}');
-  expect(sent[1]).toStartWith("error: Uncaught error: TypeError: x is undefined");
+  expect(sent[0]).toMatch(/^error: The save failed: Error: disk full\n/);
+  expect(sent[0]).toMatch(/ \{"id":"c1"\}$/);
+  expect(sent[1]).toMatch(/^error: Uncaught error: TypeError: x is undefined/);
   expect(sent[2]).toBe("error: Unhandled rejection: no answer");
 });
 
