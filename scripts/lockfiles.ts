@@ -1,10 +1,6 @@
 // Reads Cargo.lock and package-lock.json, and finds the package versions
 // that a change adds. The dependency checks in the `cargo deny` CI job use
 // it (check-dependency-age.ts, check-new-advisories.ts).
-//
-// It also reads bun.lock, but only for a base that has no
-// package-lock.json (a legacy base). This reader goes away when no open PR
-// has a legacy base.
 
 import { readFileSync } from "node:fs";
 import { parseToml } from "./lib/toml.ts";
@@ -18,36 +14,12 @@ const NPM_REGISTRY = "https://registry.npmjs.org/";
 
 export type Ecosystem = "crate" | "package";
 
-/// The text of Cargo.lock, package-lock.json and bun.lock. A missing
-/// lockfile is "". `bun` is read only when `npm` is "" (a legacy base).
-export type Lockfiles = { cargo: string; npm: string; bun?: string };
+/// The text of Cargo.lock and package-lock.json. A missing lockfile is "".
+export type Lockfiles = { cargo: string; npm: string };
 
 /// One package version in a lockfile. `registry` is false for a crate or a
 /// package that does not come from crates.io or the npm registry.
 export type LockedVersion = { ecosystem: Ecosystem; name: string; version: string; registry: boolean; source: string };
-
-/// The parsed bun.lock. bun.lock is JSON with trailing commas.
-function parseBunLock(text: string): { packages?: Record<string, unknown[]> } {
-  return JSON.parse(text.replace(/,(\s*[}\]])/g, "$1"));
-}
-
-/// The name and version of a bun.lock package spec `name@version`.
-function splitSpec(spec: string): { name: string; version: string } {
-  const at = spec.lastIndexOf("@");
-  return { name: spec.slice(0, at), version: spec.slice(at + 1) };
-}
-
-/// The package versions in bun.lock, by name. Only a legacy base uses it.
-export function bunLockVersions(text: string): Map<string, string[]> {
-  const versions = new Map<string, string[]>();
-  for (const entry of Object.values(parseBunLock(text).packages ?? {})) {
-    const { name, version } = splitSpec(String(entry[0]));
-    versions.set(name, [...(versions.get(name) ?? []), version]);
-  }
-  return versions;
-}
-
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function cargoVersions(text: string): LockedVersion[] {
   const lock = parseToml(text) as unknown as { package?: { name: string; version: string; source?: string }[] };
@@ -58,20 +30,6 @@ function cargoVersions(text: string): LockedVersion[] {
     source: c.source ?? "",
     registry: CRATES_IO.has(c.source ?? ""),
   }));
-}
-
-// A registry entry is ["name@version", "", {...}, "sha512-..."]. A git,
-// GitHub, tarball or workspace entry has a source in the second element or
-// a spec that is not `name@semver`. A workspace package is part of this
-// repository, so it is not a dependency version.
-function bunVersions(text: string): LockedVersion[] {
-  return Object.values(parseBunLock(text).packages ?? {}).flatMap((entry): LockedVersion[] => {
-    const spec = String(entry[0]);
-    const { name, version } = splitSpec(spec);
-    if (version.startsWith("workspace:")) return [];
-    const registry = spec.lastIndexOf("@") > 0 && SEMVER.test(version) && entry[1] === "";
-    return [{ ecosystem: "package", name, version, source: registry ? "" : String(entry[1] || spec), registry }];
-  });
 }
 
 /// One entry of the `packages` object of package-lock.json.
@@ -126,14 +84,12 @@ function npmVersions(text: string): LockedVersion[] {
 }
 
 /// The versions in the head lockfiles that the base lockfiles do not have.
-/// A missing lockfile counts as empty. A registry version has the source
-/// "", so a version in a legacy bun.lock matches the same version in
-/// package-lock.json.
+/// A missing lockfile counts as empty.
 export function addedVersions(base: Lockfiles, head: Lockfiles): LockedVersion[] {
   const key = (v: LockedVersion) => `${v.ecosystem} ${v.name} ${v.version} ${v.source}`;
   const parse = (lock: Lockfiles) => [
     ...(lock.cargo ? cargoVersions(lock.cargo) : []),
-    ...(lock.npm ? npmVersions(lock.npm) : lock.bun ? bunVersions(lock.bun) : []),
+    ...(lock.npm ? npmVersions(lock.npm) : []),
   ];
   const known = new Set(parse(base).map(key));
   const added = new Map<string, LockedVersion>();

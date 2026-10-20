@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { auditCheckout, compare, legacyScans, scan, type RunResult, type ScanOutput } from "./check-new-advisories.ts";
+import { auditCheckout, compare, scan, type RunResult, type ScanOutput } from "./check-new-advisories.ts";
 
 // The tests give the script the text that cargo-deny and npm audit write, so
 // no test runs cargo, npm or a registry, and no test reaches the network.
@@ -32,12 +32,6 @@ function packageLock(nodes: Record<string, string>): string {
   const packages: Record<string, object> = { "": { name: "longhand" } };
   for (const [key, version] of Object.entries(nodes)) packages[key] = { version, resolved: `https://registry.npmjs.org/x/-/x-${version}.tgz`, integrity: "sha512-x" };
   return JSON.stringify({ name: "longhand", lockfileVersion: 3, requires: true, packages });
-}
-
-/// A legacy bun.lock with these `name@version` packages.
-function bunLock(packages: Record<string, string>): string {
-  const entries = Object.entries(packages).map(([key, spec]) => `    "${key}": ["${spec}", "", {}, "sha512-x"],`);
-  return `{\n  "lockfileVersion": 1,\n  "packages": {\n${entries.join("\n")}\n  }\n}\n`;
 }
 
 // Real `npm audit --json --package-lock-only` output (npm 12.2.0), shortened:
@@ -261,37 +255,6 @@ test("compare passes when the PR moves an affected package to a version that is 
   const result = compare(scan(base), scan(head));
   assert.equal(result.ok, true);
   assert.deepEqual(result.added, []);
-});
-
-test("with a legacy base, a head finding for a name and version in bun.lock is not reported, and a new version is", () => {
-  const headLock = packageLock({ "node_modules/source-map-js": "1.2.1", "node_modules/vite/node_modules/source-map-js": "1.0.2" });
-  const head = scan(output([DENY_LINES.rustls], sourceMapAudit("node_modules/source-map-js", "node_modules/vite/node_modules/source-map-js"), headLock));
-  const legacy = legacyScans(denyOutput([DENY_LINES.rustls]), head, bunLock({ "source-map-js": "source-map-js@1.2.1" }));
-  const result = compare(legacy.base, legacy.head);
-  assert.equal(result.ok, false);
-  assert.deepEqual(ids(result.added), ["package 1241209 source-map-js 1.0.2"]);
-});
-
-test("with a legacy base, a head with only known findings passes", () => {
-  const head = scan(output([], sourceMapAudit(), packageLock({ "node_modules/source-map-js": "1.2.1" })));
-  const legacy = legacyScans(denyOutput([]), head, bunLock({ "source-map-js": "source-map-js@1.2.1" }));
-  assert.equal(compare(legacy.base, legacy.head).ok, true);
-});
-
-test("with a legacy base, a head that adds a second copy of a known version reports the added copy", () => {
-  const headLock = packageLock({ "node_modules/source-map-js": "1.2.1", "node_modules/vite/node_modules/source-map-js": "1.2.1" });
-  const head = scan(output([], sourceMapAudit("node_modules/source-map-js", "node_modules/vite/node_modules/source-map-js"), headLock));
-  const legacy = legacyScans(denyOutput([]), head, bunLock({ "source-map-js": "source-map-js@1.2.1" }));
-  const result = compare(legacy.base, legacy.head);
-  assert.equal(result.ok, false);
-  assert.deepEqual(ids(result.added), ["package 1241209 source-map-js 1.2.1"]);
-});
-
-test("with a legacy base, two copies in bun.lock cover two head copies", () => {
-  const headLock = packageLock({ "node_modules/source-map-js": "1.2.1", "node_modules/vite/node_modules/source-map-js": "1.2.1" });
-  const head = scan(output([], sourceMapAudit("node_modules/source-map-js", "node_modules/vite/node_modules/source-map-js"), headLock));
-  const legacy = legacyScans(denyOutput([]), head, bunLock({ "source-map-js": "source-map-js@1.2.1", "vite/source-map-js": "source-map-js@1.2.1" }));
-  assert.equal(compare(legacy.base, legacy.head).ok, true);
 });
 
 // Checkouts on disk for auditCheckout. Each test gets new folders.

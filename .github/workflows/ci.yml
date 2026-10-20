@@ -442,31 +442,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: github.event_name == 'pull_request'
 
-      # A base with package-lock.json gives the check scripts and the Node
-      # and npm versions, so a PR cannot choose the code or the Node that
-      # checks it. A base with no package-lock.json is the base of the PR
-      # that moves from Bun to npm (KTD11 of
-      # docs/plans/2026-10-19-2254-chore-bun-to-npm-plan.md): its scripts
-      # need Bun and cannot read package-lock.json, so that run uses the
-      # head's scripts and versions. A follow-up PR removes this fallback.
-      - name: Select the check scripts
-        id: base
-        if: github.event_name == 'pull_request'
-        run: |
-          if [[ -f base/package-lock.json ]]; then
-            echo "package-json=base/package.json" >> "$GITHUB_OUTPUT"
-            echo "scripts=scripts" >> "$GITHUB_OUTPUT"
-          else
-            echo "package-json=package.json" >> "$GITHUB_OUTPUT"
-            echo "scripts=../scripts" >> "$GITHUB_OUTPUT"
-          fi
-
-      # npm is a tool here, not a project package: the job installs no
-      # package. The advisory check runs npm audit.
+      # The base gives the check scripts and the Node and npm versions, so a
+      # PR cannot choose the code or the Node that checks it. npm is a tool
+      # here, not a project package: the job installs no package. The
+      # advisory check runs npm audit.
       - uses: ./.github/actions/node-setup
         if: github.event_name == 'pull_request'
         with:
-          package-json: ${{ steps.base.outputs.package-json }}
+          package-json: base/package.json
 
       - name: Install cargo-deny
         if: github.event_name == 'pull_request'
@@ -481,10 +464,8 @@ jobs:
         id: age
         if: github.event_name == 'pull_request'
         working-directory: base
-        env:
-          SCRIPTS: ${{ steps.base.outputs.scripts }}
         run: |
-          script=$SCRIPTS/check-dependency-age.ts
+          script=scripts/check-dependency-age.ts
           [[ -f "$script" ]] || script=../scripts/check-dependency-age.ts
           node "$script" . ..
 
@@ -493,10 +474,8 @@ jobs:
       - name: Check for advisories that the PR adds
         if: ${{ !cancelled() && github.event_name == 'pull_request' && (steps.age.outcome == 'success' || steps.age.outcome == 'failure') }}
         working-directory: base
-        env:
-          SCRIPTS: ${{ steps.base.outputs.scripts }}
         run: |
-          script=$SCRIPTS/check-new-advisories.ts
+          script=scripts/check-new-advisories.ts
           [[ -f "$script" ]] || script=../scripts/check-new-advisories.ts
           node "$script" . ..
 

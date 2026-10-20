@@ -27,11 +27,6 @@ function packageLock(entries: Record<string, PackageLockEntry>): string {
   return JSON.stringify({ name: "longhand", lockfileVersion: 3, requires: true, packages: { "": { name: "longhand" }, ...entries } }, null, 2);
 }
 
-/// A legacy bun.lock with these registry entries. bun writes trailing commas.
-function bunLock(entries: Record<string, unknown[]>): string {
-  return JSON.stringify({ lockfileVersion: 1, workspaces: { "": { name: "longhand" } }, packages: entries }, null, 2).replace(/\n(\s*)}/g, ",\n$1}");
-}
-
 const dates = (table: Record<string, Date>): PublishDate => async (v) => {
   const date = table[`${v.ecosystem} ${v.name} ${v.version}`];
   if (!date) throw new Error("HTTP 404");
@@ -160,19 +155,6 @@ test("a scoped package with the correct tarball URL is a registry entry", async 
   const added = addedVersions(EMPTY, head);
   assert.deepEqual(added.map((v) => `${v.name} ${v.version} ${v.registry}`), ["@scope/name 1.2.3 true"]);
   assert.deepEqual(await checkAges(added, [], NOW, dates({ "package @scope/name 1.2.3": daysAgo(30) })), []);
-});
-
-test("with a legacy base that has only bun.lock, versions in bun.lock are not added and a new version is checked", async () => {
-  const base = { cargo: cargoLock([]), npm: "", bun: bunLock({ "left-pad": ["left-pad@1.3.0", "", {}, "sha512-x"] }) };
-  const head = npmHead({
-    "node_modules/left-pad": registryEntry("left-pad", "1.3.0"),
-    "node_modules/source-map-js": registryEntry("source-map-js", "1.2.2"),
-  });
-  const added = addedVersions(base, head);
-  assert.deepEqual(added.map((v) => `${v.name} ${v.version}`), ["source-map-js 1.2.2"]);
-  const problems = await checkAges(added, [], NOW, dates({ "package source-map-js 1.2.2": daysAgo(1) }));
-  assert.equal(problems.length, 1);
-  assert.ok(problems[0].includes("source-map-js 1.2.2"));
 });
 
 test("a version in the lockfile at two paths is checked once", async () => {
