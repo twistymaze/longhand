@@ -139,19 +139,14 @@ jobs:
       # Cargo.lock change.
       - uses: ./.github/actions/sccache-setup
 
-      # The Bun version comes from packageManager in package.json, so every
-      # runner uses the same version and a self-hosted runner keeps its
-      # bun.exe (see .github/actions/windows-build-setup). A self-hosted
-      # runner does not use the bun cache: see that file.
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      # The Node and npm versions come from devEngines in package.json. On
+      # Windows, windows-build-setup did these two steps.
+      - uses: ./.github/actions/node-setup
         if: runner.os == 'macOS'
-        with:
-          bun-version-file: package.json
-          no-cache: ${{ runner.environment != 'github-hosted' }}
 
       - name: Install frontend dependencies
         if: runner.os == 'macOS'
-        run: bun install --frozen-lockfile
+        run: npm ci
 
       # Frontmatter and links of the feature ideas (docs/ideas/README.md).
       # The token lets `gh` list the merged pull requests; an idea whose plan
@@ -161,8 +156,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          bun test scripts/ideas.test.ts
-          bun scripts/ideas.ts check
+          node --test scripts/ideas.test.ts
+          node scripts/ideas.ts check
 
       # uv runs the skill scripts and their tests, and a Rust test runs
       # check.py through uv (KTD13 of the safe agent edits plan). It is
@@ -220,20 +215,25 @@ jobs:
         run: |
           export LONGHAND_NEMO_CACHE="${LONGHAND_NEMO_CACHE:-$NEMO_CACHE_IN_TEMP}"
           echo "LONGHAND_NEMO_CACHE=$LONGHAND_NEMO_CACHE" >> "$GITHUB_ENV"
-          bun test scripts/windows-redist.test.ts scripts/patch-nemo.test.ts
-          bun scripts/prepare-nemo.ts
+          node --test scripts/windows-redist.test.ts scripts/patch-nemo.test.ts
+          node scripts/prepare-nemo.ts
 
       - name: Native helper protocol smoke test
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
-        run: bun scripts/test-nemo.ts --helper "src-tauri/nemo-runtime/bin/longhand-nemo-helper${{ runner.os == 'Windows' && '.exe' || '' }}"
+        run: node scripts/test-nemo.ts --helper "src-tauri/nemo-runtime/bin/longhand-nemo-helper${{ runner.os == 'Windows' && '.exe' || '' }}"
 
       # The two jobs run side by side, so the run lasts as long as the slower
       # Windows job. Checks that come out the same on every platform
       # (frontend, formatting, lint, bindings, provenance) run on macOS only;
       # Windows runs what differs there: the tests and the installer.
+      # The typecheck of the app and of the scripts (tsconfig.scripts.json).
+      - name: Typecheck
+        if: runner.os == 'macOS'
+        run: npm run typecheck
+
       - name: Frontend build (typecheck + bundle)
         if: runner.os == 'macOS'
-        run: bun run build
+        run: npm run build
 
       # The stored full licence list matches what each platform ships (R12).
       # cargo-about reads `cargo metadata` and compiles nothing, so the Rust
@@ -254,7 +254,7 @@ jobs:
 
       - name: Frontend tests
         if: runner.os == 'macOS'
-        run: bun run test
+        run: npm test
 
       # The release scripts. The version tests run the real git-cliff on
       # temporary repositories.
@@ -266,11 +266,13 @@ jobs:
 
       - name: Release script tests
         if: runner.os == 'macOS'
-        run: bun test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
+        run: node --test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
 
+      # The tests of the own version, TOML and frontmatter readers, and of
+      # the dependency checks.
       - name: Dependency check script tests
         if: runner.os == 'macOS'
-        run: bun test scripts/check-dependency-age.test.ts scripts/check-new-advisories.test.ts
+        run: node --test "scripts/lib/**/*.test.ts" scripts/check-dependency-age.test.ts scripts/check-new-advisories.test.ts
 
       - name: rustfmt
         if: runner.os == 'macOS'
@@ -326,14 +328,14 @@ jobs:
           APPLE_SIGNING_IDENTITY: "-"
         run: |
           rm -rf target/debug/bundle
-          bun tauri build --debug --bundles app
+          npm run tauri -- build --debug --bundles app
 
       - name: Installed NeMo helper CPU inference (macOS)
         if: runner.os == 'macOS'
         run: |
           helper="target/debug/bundle/macos/Longhand.app/Contents/Frameworks/LonghandNeMo/longhand-nemo-helper"
           codesign --verify --strict "$helper"
-          bun scripts/validate-recognition/installed-smoke.ts "$helper"
+          node scripts/validate-recognition/installed-smoke.ts "$helper"
 
       - name: Tauri build (Windows installer)
         if: runner.os == 'Windows'
@@ -341,7 +343,7 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: |
           Remove-Item -Recurse -Force target/debug/bundle -ErrorAction SilentlyContinue
-          bun tauri build --debug --bundles nsis
+          npm run tauri -- build --debug --bundles nsis
           if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
 
       # A runner has the runtime installed, so launching the app here would
@@ -370,7 +372,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installer extraction failed" }
           $helper = Get-ChildItem target/recognition-installer -Recurse -Filter longhand-nemo-helper.exe | Select-Object -First 1
           if (-not $helper) { throw "Installer lacks the NeMo helper" }
-          bun scripts/validate-recognition/installed-smoke.ts $helper.FullName
+          node scripts/validate-recognition/installed-smoke.ts $helper.FullName
           if ($LASTEXITCODE -ne 0) { throw "Installed helper inference failed" }
 
       # Shows how much of the Dev Drive and the runner's disks the job used,
@@ -406,11 +408,12 @@ jobs:
   # versions that the PR adds (docs/development-workflow.md): each one must
   # be at least 7 days old or listed in min-age-exceptions.toml, and the PR
   # must add no advisory that the base does not have. These checks run the
-  # scripts of the base checkout, with the base bunfig.toml, and read the
+  # scripts of the base checkout on the base's Node version, and read the
   # PR's lockfiles as data. A change to a check script in the PR has no
   # effect on its own run. The PR's workflow and tool configuration (this
-  # file, .npmrc, .cargo/config.toml) still apply to the run, so review
-  # each change to them.
+  # file, .github/actions, .cargo/config.toml) still apply to the run, so
+  # review each change to them. The advisory check gives npm audit the
+  # base .npmrc, not the PR's.
   deny:
     name: cargo deny
     runs-on: ubuntu-latest
@@ -436,10 +439,31 @@ jobs:
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: github.event_name == 'pull_request'
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      # A base with package-lock.json gives the check scripts and the Node
+      # and npm versions, so a PR cannot choose the code or the Node that
+      # checks it. A base with no package-lock.json is the base of the PR
+      # that moves from Bun to npm (KTD11 of
+      # docs/plans/2026-10-19-2254-chore-bun-to-npm-plan.md): its scripts
+      # need Bun and cannot read package-lock.json, so that run uses the
+      # head's scripts and versions. A follow-up PR removes this fallback.
+      - name: Select the check scripts
+        id: base
+        if: github.event_name == 'pull_request'
+        run: |
+          if [[ -f base/package-lock.json ]]; then
+            echo "package-json=base/package.json" >> "$GITHUB_OUTPUT"
+            echo "scripts=scripts" >> "$GITHUB_OUTPUT"
+          else
+            echo "package-json=package.json" >> "$GITHUB_OUTPUT"
+            echo "scripts=../scripts" >> "$GITHUB_OUTPUT"
+          fi
+
+      # npm is a tool here, not a project package: the job installs no
+      # package. The advisory check runs npm audit.
+      - uses: ./.github/actions/node-setup
         if: github.event_name == 'pull_request'
         with:
-          bun-version-file: package.json
+          package-json: ${{ steps.base.outputs.package-json }}
 
       - name: Install cargo-deny
         if: github.event_name == 'pull_request'
@@ -449,26 +473,29 @@ jobs:
 
       # The base runs its own copy of each check script. Only a base that
       # does not have the script yet (the PR that adds it) runs the head's.
-      # The steps run in the base checkout, so bun reads the base
-      # bunfig.toml and not a preload or setting that the PR adds.
+      # The steps run in the base checkout.
       - name: Check the age of added dependency versions
         id: age
         if: github.event_name == 'pull_request'
         working-directory: base
+        env:
+          SCRIPTS: ${{ steps.base.outputs.scripts }}
         run: |
-          script=scripts/check-dependency-age.ts
+          script=$SCRIPTS/check-dependency-age.ts
           [[ -f "$script" ]] || script=../scripts/check-dependency-age.ts
-          bun --no-env-file "$script" . ..
+          node "$script" . ..
 
       # This step also runs when the age check fails, so that one run shows
       # both results.
       - name: Check for advisories that the PR adds
         if: ${{ !cancelled() && github.event_name == 'pull_request' && (steps.age.outcome == 'success' || steps.age.outcome == 'failure') }}
         working-directory: base
+        env:
+          SCRIPTS: ${{ steps.base.outputs.scripts }}
         run: |
-          script=scripts/check-new-advisories.ts
+          script=$SCRIPTS/check-new-advisories.ts
           [[ -f "$script" ]] || script=../scripts/check-new-advisories.ts
-          bun --no-env-file "$script" . ..
+          node "$script" . ..
 
   # Builds the release that a push to main is due for, and signs and
   # notarizes it (docs/releases.md). The workflow-level concurrency group
@@ -518,17 +545,19 @@ jobs:
         with:
           tool: git-cliff@2.14.2
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version-file: package.json
+      - uses: ./.github/actions/node-setup
 
       # Whether a release is due, its version and its notes (KTD1). When no
       # release is due, the other steps skip and release-publish does not run.
+      # The step calls node, not `npm run`, so that no npm output goes into
+      # GITHUB_OUTPUT. With `shell: bash`, a failed script fails the pipe
+      # (docs/solutions/workflow-issues/default-run-shell-hides-pipe-failures.md).
       - name: Release version
         id: version
+        shell: bash
         run: |
           mkdir -p "$RELEASE_FILES"
-          bun scripts/release-version.ts "$RELEASE_FILES/notes.md" | tee -a "$GITHUB_OUTPUT"
+          node scripts/release-version.ts "$RELEASE_FILES/notes.md" | tee -a "$GITHUB_OUTPUT"
 
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: steps.version.outputs.due == 'true'
@@ -549,7 +578,7 @@ jobs:
 
       - name: Install frontend dependencies
         if: steps.version.outputs.due == 'true'
-        run: bun install --frozen-lockfile
+        run: npm ci
 
       # The version goes into the build through a config file, not a commit
       # (KTD6). The config file also turns on the updater archive, so local
@@ -607,7 +636,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           LONGHAND_BUILD_COMMIT: ${{ github.sha }}
           LONGHAND_RELEASE: "1"
-        run: bun tauri build --bundles app,dmg --config "$RUNNER_TEMP/release.json"
+        run: npm run tauri -- build --bundles app,dmg --config "$RUNNER_TEMP/release.json"
 
       - name: Notarize and staple the DMG
         if: steps.version.outputs.due == 'true'
@@ -659,9 +688,9 @@ jobs:
           rm -f "$APPLE_API_KEY_PATH"
 
   # Publishes the built release. It is the only job in this workflow that
-  # can write to the repository, and it runs no build code: no `bun
-  # install` and no cargo, only the publish script, which uses Bun's
-  # built-ins (R25). It needs no secrets, so it has no environment.
+  # can write to the repository, and it runs no build code: no package
+  # install and no cargo, only the publish script, which uses only Node's
+  # built-in modules (R25). It needs no secrets, so it has no environment.
   release-publish:
     name: Release publish
     needs: release-build
@@ -675,9 +704,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      # Node only: this job runs no npm. No package cache, so the job that
+      # can write to the repository restores nothing that a PR wrote.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          bun-version-file: package.json
+          node-version-file: package.json
+          package-manager-cache: false
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -690,5 +722,5 @@ jobs:
           VERSION: ${{ needs.release-build.outputs.version }}
         run: |
           files="$RUNNER_TEMP/release"
-          bun scripts/publish-release.ts publish "$VERSION" "$(ls "$files"/*.dmg)" \
+          node scripts/publish-release.ts publish "$VERSION" "$(ls "$files"/*.dmg)" \
             "$files/Longhand.app.tar.gz" "$files/Longhand.app.tar.gz.sig" "$files/notes.md"

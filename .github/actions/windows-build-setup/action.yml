@@ -1,7 +1,7 @@
 name: Windows build setup
 description: >-
   Sets up a Windows runner to build Longhand: the Dev Drive, the Vulkan SDK,
-  SPIRV-Headers, the Rust toolchain, the Rust cache, MSVC, bun with the
+  SPIRV-Headers, the Rust toolchain, the Rust cache, MSVC, Node and npm with the
   frontend dependencies, and the VC++ runtime dirs. The CI checks and the
   release installer use this one definition, so they build the same way.
   The caller enables long paths before the checkout, and runs this action
@@ -93,28 +93,16 @@ runs:
     # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
     - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
 
-    # The two Windows runners share one VM user, so they share one
-    # ~/.bun/bin/bun.exe. With no fixed version, setup-bun replaces that file
-    # in each job, and Windows refuses while a job on the other runner (or a
-    # leftover process) runs it (EBUSY). With the version fixed, setup-bun
-    # keeps a matching bun.exe and does not write it.
-    #
-    # A self-hosted runner does not use the bun cache. The cache keeps the
-    # path of bun relative to the work folder, and the work folder of a
-    # self-hosted runner is one level deeper than on GitHub's runners. So an
-    # entry that a GitHub runner saved unpacks next to the runner folder,
-    # not into ~/.bun/bin, and setup-bun stops with "Unable to locate
-    # executable". A self-hosted runner keeps ~/.bun between jobs, so only
-    # its first job after a reset downloads bun.
-    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-      with:
-        bun-version-file: package.json
-        no-cache: ${{ runner.environment != 'github-hosted' }}
+    # The two Windows runners share one VM user. node-setup installs npm
+    # into the job's own temp folder, so a job never replaces a file that a
+    # job on the other runner runs
+    # (docs/solutions/build-errors/setup-bun-ebusy-on-shared-windows-runner.md).
+    - uses: ./.github/actions/node-setup
 
     - name: Install frontend dependencies
       shell: bash
       working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
-      run: bun install --frozen-lockfile
+      run: npm ci
 
     # The installer carries the VC++ runtime app-local, so Longhand starts
     # on a machine without a current redistributable. build.rs stages the

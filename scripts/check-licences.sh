@@ -10,7 +10,8 @@
 #   scripts/check-licences.sh              check the repository
 #   scripts/check-licences.sh --self-test  run the generator tests and prove the drift check fails when it should
 #
-# Needs cargo-about 0.9.2 (`cargo install cargo-about --locked --version 0.9.2`).
+# Needs cargo-about 0.9.2 (`cargo install cargo-about --locked --version 0.9.2`)
+# and npm 12 or later.
 
 set -euo pipefail
 
@@ -30,7 +31,7 @@ check_drift() {
 
 self_test() {
   local status=0 tmp out
-  bun test scripts/licences || status=1
+  node --test "scripts/licences/**/*.test.ts" || status=1
 
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -73,8 +74,19 @@ if ! command -v cargo-about >/dev/null; then
   exit 1
 fi
 
-bun run build
-bun scripts/licences/generate.ts
+# An npm older than 10.9 does not read devEngines in package.json, so this
+# check stops an npm older than 12 before it installs a package.
+npm_version="$(npm --version)"
+if [[ "${npm_version%%.*}" -lt 12 ]]; then
+  echo "npm $npm_version is older than 12. Install npm 12: npm install --global npm@12"
+  exit 1
+fi
+
+# npm ci installs exactly the versions in package-lock.json. A copied or old
+# node_modules would write wrong versions into js-packages.json.
+npm ci
+npm run build
+node scripts/licences/generate.ts
 if check_drift .; then
   echo "licences ok"
 else

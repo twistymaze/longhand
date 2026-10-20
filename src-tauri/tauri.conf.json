@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "net.ewal.longhand",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun scripts/prepare-nemo.ts && bun run build",
+    "beforeBuildCommand": "node scripts/prepare-nemo.ts && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
