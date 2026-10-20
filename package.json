@@ -3,7 +3,18 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "packageManager": "bun@1.4.3",
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "^24.15.0 || ^26.0.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": ">=12.2.0 <13",
+      "onFail": "error"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -54,6 +65,11 @@
     "@vitejs/plugin-react": "^4.7.0",
     "rollup-plugin-license": "3.7.1",
     "typescript": "~5.6.3",
-    "vite": "^6.4.4"
+    "vite": "^6.4.4",
+    "vitest": "^5.0.4"
+  },
+  "allowScripts": {
+    "esbuild": false,
+    "fsevents": false
   }
 }
