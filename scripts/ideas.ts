@@ -10,6 +10,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, normalize, relative, resolve } from "node:path";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
 import { parseFrontmatter } from "./lib/frontmatter.ts";
 
 const root = resolve(import.meta.dirname, "..");
@@ -129,7 +130,7 @@ const prLimit = 1000;
 
 function mergedBranches(): { branches: Set<string>; unread?: string } {
   const ref = spawnSync("git", ["rev-parse", "--verify", "--quiet", "origin/main"], { cwd: root }).status === 0 ? "origin/main" : "HEAD";
-  const git = spawnSync("git", ["log", ref, "--merges", "--format=%s"], { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const git = spawnSync("git", ["log", ref, "--merges", "--format=%s"], { cwd: root, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
   const branches = new Set<string>();
   for (const line of (git.stdout ?? "").split("\n")) {
     const m = /^Merge pull request #\d+ from [^/]+\/(.+)$/.exec(line.trim());
@@ -138,7 +139,7 @@ function mergedBranches(): { branches: Set<string>; unread?: string } {
   const gh = spawnSync("gh", ["pr", "list", "--state", "merged", "--base", "main", "--limit", String(prLimit), "--json", "headRefName"], {
     cwd: root,
     encoding: "utf8",
-    maxBuffer: 256 * 1024 * 1024,
+    maxBuffer: MAX_OUTPUT_BYTES,
   });
   // When no `gh` is on PATH, spawnSync does not throw: it sets `error` to ENOENT.
   if ((gh.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return { branches, unread: "gh is not installed" };

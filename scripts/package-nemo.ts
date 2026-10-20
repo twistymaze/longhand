@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, chmodSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { createHash } from "node:crypto";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
 import { findWindowsDependency, windowsRedistRoots } from "./windows-redist.ts";
 
 const manifestPath = process.argv[2];
@@ -19,7 +20,7 @@ const binaries = join(staging, "bin");
 mkdirSync(binaries);
 function run(command: string[]) {
   const [program, ...args] = command;
-  const result = spawnSync(program, args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync(program, args, { encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
   if (result.status !== 0) throw new Error(`${program} failed: ${result.error?.message ?? result.stderr}`);
   return result.stdout;
 }

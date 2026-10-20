@@ -13,6 +13,7 @@ import { spawnSync } from "child_process";
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join, resolve } from "path";
+import { MAX_OUTPUT_BYTES } from "../lib/spawn.ts";
 import {
   cargoAboutProblems,
   checkNpmVersion,
@@ -60,7 +61,7 @@ function fail(message: string): never {
 }
 
 function run(command: string, args: string[]): { stdout: string; stderr: string } {
-  const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync(command, args, { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
   if (result.error) fail(`could not start ${command}: ${result.error.message}`);
   if (result.status !== 0) fail(`${command} ${args.join(" ")} failed:\n${result.stderr}`);
   return { stdout: result.stdout, stderr: result.stderr };

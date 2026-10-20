@@ -10,8 +10,8 @@ import { afterEach, test } from "node:test";
 // test reaches the network or depends on where the real `gh` is.
 
 const SCRIPT = join(import.meta.dirname, "ideas.ts");
-// The script imports this helper, so each copy of the script gets a copy of it.
-const FRONTMATTER = join(import.meta.dirname, "lib/frontmatter.ts");
+// The script imports helpers from this folder, so each copy of the script gets a copy of it.
+const LIB = join(import.meta.dirname, "lib");
 
 // The first `name` on PATH that exists.
 function which(name: string): string {
@@ -52,7 +52,7 @@ function repo(files: Record<string, string>): string {
   const root = mkdtempSync(join(tmpdir(), "ideas-test-"));
   dirs.push(root);
   cpSync(SCRIPT, join(root, "scripts/ideas.ts"));
-  cpSync(FRONTMATTER, join(root, "scripts/lib/frontmatter.ts"));
+  cpSync(LIB, join(root, "scripts/lib"), { recursive: true });
   write(root, ".gitignore", "/docs/ideas/**/*-screenshots/\n");
   write(root, "docs/ideas/README.md", "# Ideas\n");
   for (const folder of ["next", "someday", "parked", "done"]) mkdirSync(join(root, "docs/ideas", folder), { recursive: true });

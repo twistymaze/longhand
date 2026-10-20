@@ -27,7 +27,8 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileS
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { bunLockVersions, packageLockEntries, type Ecosystem } from "./lockfiles.ts";
+import { bunLockVersions, packageLockEntries, readIfPresent, type Ecosystem } from "./lockfiles.ts";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
 import { satisfies } from "./lib/version.ts";
 
 /// One affected package version.
@@ -222,9 +223,6 @@ export function compare(base: Scan, head: Scan): { ok: boolean; added: Finding[]
 /// "audit could not run".
 const TOOL_TIMEOUT_MS = 10 * 60 * 1000;
 
-/// The output buffer of each tool. cargo-deny writes more JSON than Node's
-/// default of 1 MB.
-const MAX_OUTPUT_BYTES = 256 * 1024 * 1024;
 
 export type Runner = (command: string[], cwd: string) => RunResult;
 
@@ -269,15 +267,6 @@ export function auditCheckout(dir: string, baseDir: string, runner: Runner = run
 /// Runs cargo-deny in `dir` with the rules in `denyConfig`.
 function denyDir(dir: string, denyConfig: string): { exitCode: number; stderr: string } {
   return run(["cargo", "deny", "--format", "json", "--config", resolve(denyConfig), "check", "advisories"], dir);
-}
-
-function readIfPresent(path: string): string {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
 }
 
 /// Runs cargo-deny and npm audit for `dir`, with the settings of `baseDir`.

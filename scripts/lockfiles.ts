@@ -6,6 +6,7 @@
 // package-lock.json (a legacy base). This reader goes away when no open PR
 // has a legacy base.
 
+import { readFileSync } from "node:fs";
 import { parseToml } from "./lib/toml.ts";
 
 const CRATES_IO = new Set([
@@ -138,4 +139,14 @@ export function addedVersions(base: Lockfiles, head: Lockfiles): LockedVersion[]
   const added = new Map<string, LockedVersion>();
   for (const v of parse(head)) if (!known.has(key(v))) added.set(key(v), v);
   return [...added.values()];
+}
+
+/// The text of the file at `path`, or "" when the file does not exist.
+export function readIfPresent(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  }
 }

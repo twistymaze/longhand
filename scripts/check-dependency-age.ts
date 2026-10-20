@@ -18,9 +18,9 @@
 // from git or a path is not checked: deny.toml (`unknown-git = "deny"`)
 // allows only the git sources that it names.
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { addedVersions, type Ecosystem, type LockedVersion, type Lockfiles } from "./lockfiles.ts";
+import { addedVersions, readIfPresent, type Ecosystem, type LockedVersion, type Lockfiles } from "./lockfiles.ts";
 import { parseToml } from "./lib/toml.ts";
 
 export const MINIMUM_AGE_DAYS = 7;
@@ -121,15 +121,6 @@ export function registryPublishDate(): PublishDate {
     if (!date) throw new Error("the registry gives no publish date for this version");
     return new Date(date);
   };
-}
-
-function readIfPresent(path: string): string {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-    throw error;
-  }
 }
 
 if (import.meta.main) {

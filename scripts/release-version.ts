@@ -17,6 +17,7 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
 import { compareVersions } from "./lib/version.ts";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
@@ -79,7 +80,7 @@ export function releaseFacts(tools: Tools): ReleaseFacts {
 
 function run(command: string[], cwd: string): string {
   const [program, ...args] = command;
-  const result = spawnSync(program, args, { cwd, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  const result = spawnSync(program, args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
   // spawnSync does not throw when it cannot start the program: it sets `error`.
   if (result.error) throw new Error(`cannot run ${program}: ${result.error.message}`);
   if (result.status !== 0) {
