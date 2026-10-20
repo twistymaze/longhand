@@ -52,7 +52,7 @@ The cloud design also took every semver-compatible update, including minor versi
 - **A required check fails a PR that adds an advisory.** (session-settled: user-directed — chosen over the separate, non-required `advisories.yml`.) Governs R12.
 - **Dependabot findings are read. A low or moderate alert becomes a recommendation in the issue, and a malware alert goes into the notice only.** (session-settled: user-directed.) Governs R7, R8.
 - **No issue comments, and no daily workflow.** The notice is the routine's last step. The Studio is always on, so a missing weekly notice shows a stopped routine. (session-settled: user-approved — chosen over `upkeep-notify.yml` and the daily overdue check.) Governs R14, R15.
-- **JavaScript stays outside Dependabot until the move to npm.** (session-settled: user-directed — chosen over a dependency submission workflow for `bun.lock`: `docs/ideas/next/move-javascript-packages-to-npm.md` solves it.) Governs R9.
+- **JavaScript stays outside Dependabot until the move to npm.** (session-settled: user-directed — chosen over a dependency submission workflow for `bun.lock`: `docs/ideas/done/move-javascript-packages-to-npm.md` solves it.) Governs R9.
 
 ### Requirements
 
@@ -106,7 +106,7 @@ The cloud design also took every semver-compatible update, including minor versi
 ### Scope Boundaries
 
 - No cloud routine, cloud environment or GitHub Actions workflow for the upkeep.
-- No dependency submission for `bun.lock`, and no package manager move (`docs/ideas/next/move-javascript-packages-to-npm.md`).
+- No dependency submission for `bun.lock`, and no package manager move (`docs/ideas/done/move-javascript-packages-to-npm.md`).
 - The routine does not fix the current alerts outside its normal run; they are its first test cases (U9).
 - Secret scanning alerts are not read; GitHub emails them, and push protection is on.
 - No automatic merges.

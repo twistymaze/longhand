@@ -2,7 +2,7 @@
 title: A failed expect on a happy-dom node blocked waitFor and timed out a test
 date: 2026-10-01
 category: test-failures
-module: Frontend test environment (bun test, happy-dom, Testing Library)
+module: Frontend test environment (Vitest, happy-dom, Testing Library; bun test until PR #55)
 problem_type: test_failure
 component: testing_framework
 severity: medium
@@ -13,11 +13,12 @@ symptoms:
   - The test took 2.6 s locally and 3.0–4.0 s on CI while the tests next to it took 5–40 ms
 root_cause: config_error
 resolution_type: test_fix
-framework_version: bun test with happy-dom and @testing-library/react
+framework_version: bun test with happy-dom and @testing-library/react (the fix still applies on Vitest 5)
 related_components:
   - frontend
 tags:
   - bun-test
+  - vitest
   - happy-dom
   - testing-library
   - waitfor
@@ -50,10 +51,11 @@ Find the slow test and the slow step:
    ```sh
    bun test ./src/ --reporter=junit --reporter-outfile=$TMPDIR/all.xml
    ```
+   Since PR #55 the tests run on Vitest. The same report is `npx vitest run --reporter=junit --outputFile=$TMPDIR/all.xml`.
    The read-only test took 2.6 s. The tests next to it took 4–15 ms.
 2. Time the query and the assertion separately inside the `waitFor` callback. The query took 1 ms. The failed `expect(element).toBeNull()` took 2,290 ms.
 
-The fix is in the test preload, `src/test/setup.ts:29`. It gives each DOM node a `Symbol.for("nodejs.util.inspect.custom")` method that returns `prettyDOM` markup. Bun uses this method when it prints a received value.
+The fix is in the test setup file, `src/test/setup.ts`. It gives each DOM node a `Symbol.for("nodejs.util.inspect.custom")` method that returns `prettyDOM` markup. Bun used this method when it printed a received value. Vitest prints a node fast but shows only the empty tag (for example `<p></p>`), so the method stays: it gives the markup and the text in the failure message.
 
 ```ts
 Object.defineProperty(Node.prototype, Symbol.for("nodejs.util.inspect.custom"), {
@@ -67,7 +69,7 @@ Object.defineProperty(Node.prototype, Symbol.for("nodejs.util.inspect.custom"), 
 });
 ```
 
-After the fix, the test takes 11 ms. `src/test/smoke.test.tsx:65` checks that a failed `expect` on an element prints `<p>` markup and no `Symbol(` internals.
+After the fix, the test takes 11 ms. `src/test/smoke.test.tsx` checks that a failed `expect` on an element prints `<p>` markup and no `Symbol(` internals.
 
 ## Why This Works
 

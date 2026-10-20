@@ -32,3 +32,7 @@ bun does more than install packages. Each of these needs a replacement or a deci
 - **The upkeep routine:** `bun audit` and `bun outdated` become `npm audit` and `npm outdated`.
 
 pnpm is the other choice: GitHub reads `pnpm-lock.yaml`, and anarlog uses pnpm. npm 11.10 and later also has a minimum release age (`min-release-age`, in days), so the plan chose npm.
+
+## Outcome
+
+Shipped in [PR 55](https://github.com/twistymaze/longhand/pull/55) on 2026-10-20. Longhand uses npm 12 and `package-lock.json`, with no Bun left. `.npmrc` sets the 7-day minimum release age and refuses install scripts, git packages and remote packages. `devEngines` stops an install with an older npm. The frontend tests run on Vitest, and the repository scripts run on Node with small readers for versions, TOML and frontmatter. The cargo deny job keeps a fallback for a base without `package-lock.json`, until no open PR has a base from before PR 55.

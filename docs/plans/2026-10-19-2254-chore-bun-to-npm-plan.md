@@ -30,7 +30,7 @@ Longhand stops using Bun. npm 12 installs the JavaScript packages and writes `pa
 
 ### Problem Frame
 
-The GitHub dependency graph does not read `bun.lock`. It reads only `package.json`, so it knows only the packages that Longhand names directly. Dependabot therefore does not report advisories for most JavaScript packages. For example, `bun audit` reports GHSA-68fv-2mgg-jv7q in `source-map-js`, which Vite brings in, and Dependabot does not. The weekly upkeep routine runs `bun audit` to fill this gap, but that is a temporary measure that the maintainer does not accept for the long term (`docs/ideas/next/move-javascript-packages-to-npm.md`).
+The GitHub dependency graph does not read `bun.lock`. It reads only `package.json`, so it knows only the packages that Longhand names directly. Dependabot therefore does not report advisories for most JavaScript packages. For example, `bun audit` reports GHSA-68fv-2mgg-jv7q in `source-map-js`, which Vite brings in, and Dependabot does not. The weekly upkeep routine runs `bun audit` to fill this gap, but that is a temporary measure that the maintainer does not accept for the long term (`docs/ideas/done/move-javascript-packages-to-npm.md`).
 
 Longhand uses Bun because Handy uses it (KTD2 of the walking skeleton plan), not because of a decision about Bun. Bun now does four jobs: it installs packages, it holds back package versions for 7 days, it runs the tests, and it runs the repository scripts with Bun-only functions. The Bun setup in CI also caused failures on the self-hosted Windows runner (`docs/solutions/build-errors/setup-bun-ebusy-on-shared-windows-runner.md`).
 
@@ -129,7 +129,7 @@ The questions deferred to planning are resolved in the Planning Contract: Node a
 
 ### Sources / Research
 
-- `docs/ideas/next/move-javascript-packages-to-npm.md`: the idea and its list of Bun uses.
+- `docs/ideas/done/move-javascript-packages-to-npm.md`: the idea and its list of Bun uses.
 - `docs/plans/2026-10-11-1323-ci-releases-in-source-repository-plan.md`: R25, no build code in the publish jobs.
 - `docs/solutions/security-issues/pr-bunfig-controls-base-check-scripts.md` and `docs/solutions/build-errors/setup-bun-ebusy-on-shared-windows-runner.md`.
 - `reference-source/anarlog`: pnpm 11 with `allowBuilds`, Vitest for app packages, and Node `.mjs` scripts with `node --test`.

@@ -22,6 +22,9 @@ tags: [ci, self-hosted-runner, windows, bun, setup-bun]
 
 # setup-bun fails with EBUSY when two Windows runners share one user
 
+## Status
+Superseded on 2026-10-20 by PR #55. Longhand does not use Bun or `setup-bun` now. The `.github/actions/node-setup` action installs the npm version from `devEngines` into `$RUNNER_TEMP/npm-tool`, a folder of the job, not of the user. So two jobs do not write the same npm files. The Prevention rule about runners that share a user still applies to each tool that a step installs into the home folder.
+
 ## Problem
 The Windows check failed twice in the `setup-bun` step with `EBUSY` on `C:\Users\runner\.bun\bin\bun.exe`. No build step ran. A rerun passed.
 

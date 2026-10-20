@@ -19,6 +19,7 @@ tags:
   - cargo-deny
   - bun
   - bunfig
+  - npm
   - base-checkout
   - pull-request
   - required-check
@@ -43,39 +44,38 @@ The required `cargo deny` job checks the dependency versions that a PR adds. It 
 
 ## Solution
 
-Run each check step in the base checkout, and give `bun audit` the base settings when it reads the head lockfile (PR #44).
+Run each check step in the base checkout, and give the audit tool the base settings when it reads the head lockfile. PR #44 did this for Bun. PR #55 moved Longhand to npm and Node and kept the same rule.
 
-The age step is at `.github/workflows/ci.yml:457` to `:461`, and the advisory step has the same pattern at `:467` to `:471`:
+The age step and the advisory step in `.github/workflows/ci.yml` run in the base checkout:
 
 ```yaml
 - name: Check the age of added dependency versions
+  id: age
   if: github.event_name == 'pull_request'
   working-directory: base
+  env:
+    SCRIPTS: ${{ steps.base.outputs.scripts }}
   run: |
-    script=scripts/check-dependency-age.ts
+    script=$SCRIPTS/check-dependency-age.ts
     [[ -f "$script" ]] || script=../scripts/check-dependency-age.ts
-    bun --no-env-file "$script" . ..
+    node "$script" . ..
 ```
 
-`scripts/check-new-advisories.ts:168` runs the head audit with the base `bunfig.toml` and no `.env`:
+npm has no option that stops it from reading the `.npmrc` of its project folder. So `auditCheckout` in `scripts/check-new-advisories.ts` runs `npm audit` in a new temporary folder. The folder holds only copies of the head `package.json` (without `devEngines`) and `package-lock.json`, and a copy of the base `.npmrc`. The command also gives an empty `--userconfig`, `--ignore-scripts`, `--package-lock-only` and `--registry=https://registry.npmjs.org/`.
 
-```ts
-audit: run([process.execPath, `--config=${resolve(bunConfig)}`, "--no-env-file", "audit", "--json"], dir),
-```
-
-`bun --config=<file>` fails when the file does not exist, so a base without `bunfig.toml` stops the check. It does not fall back to the head settings.
-
-The first checkout of the job also sets `persist-credentials: false` (`.github/workflows/ci.yml:424`).
+The first checkout of the job also sets `persist-credentials: false`.
 
 ## Why This Works
 
-bun reads `bunfig.toml` from the working directory (or from `--config`), and it loads `.env` unless `--no-env-file` is given. In the base checkout, the only `bunfig.toml` is the base copy, so the PR cannot add a `preload` or change a setting for the check process. The PR's lockfiles stay data that the script reads by path (`..`).
+Node reads no configuration file from its working directory, unless a flag such as `--env-file` names one. npm reads `.npmrc` from the project folder. In the temporary audit folder, the only `.npmrc` is the base copy, so the PR cannot change the registry or another setting of the audit. The PR's lockfiles stay data that the scripts read by path (`..`).
+
+Until PR #55, the same rule applied to Bun: Bun read `bunfig.toml` from the working directory (or from `--config`) and loaded `.env` unless `--no-env-file` was given. The check ran `bun --no-env-file` in the base checkout and `bun audit` with `--config=<base bunfig.toml>`.
 
 ## Prevention
 
-- When a CI step runs base code against PR files, make the base checkout the working directory, and pass the base configuration explicitly to each tool that reads configuration from its working directory (bun, npm, cargo).
-- Know the remaining limit. On a `pull_request` event, GitHub runs the workflow file from the PR merge ref. The PR can change `ci.yml` itself, for example the `if:` of a check step, and an `.npmrc` or `.cargo/config.toml` that the PR adds (the repository has neither today) still applies to `bun audit` and `cargo deny` in the head checkout. Review of those files is the control, and the comment above the `deny` job says so.
-- For a new check of this kind, test the bypass: put a head `bunfig.toml` with a `preload` that replaces `process.exit`, and confirm that the check still fails.
+- When a CI step runs base code against PR files, make the base checkout the working directory, and pass the base configuration explicitly to each tool that reads configuration from its working directory (npm, cargo). When a tool cannot ignore its project configuration, as npm cannot ignore `.npmrc`, run it in a new folder that holds only the PR data and the base configuration.
+- Know the remaining limit. On a `pull_request` event, GitHub runs the workflow file from the PR merge ref. The PR can change `ci.yml` itself, for example the `if:` of a check step, and a `.cargo/config.toml` that the PR adds (the repository has none today) still applies to `cargo deny` in the head checkout. Review of those files is the control, and the comment above the `deny` job says so.
+- For a new check of this kind, test the bypass: put a head configuration file that changes the tool (for example a head `.npmrc` with another `registry`), and confirm that the check does not use it.
 
 ## Related
 
