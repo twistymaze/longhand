@@ -748,7 +748,7 @@ fn a_job_retries_until_the_storage_folder_is_back_and_reports_the_placed_folder(
     std::fs::create_dir(&storage).unwrap();
     homes.wake();
 
-    let placed = placed_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let placed = placed_rx.recv().unwrap();
     assert_eq!(placed, "retry-s");
     homes.wait("retry-s");
     assert_eq!(folders(&storage).len(), 1);
@@ -1512,7 +1512,7 @@ fn the_launch_finishes_the_removal_of_the_old_folder_after_a_stop() {
         Box::new(move |id| done_tx.send(id.to_string()).unwrap()),
     );
     homes.resume();
-    assert_eq!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    assert_eq!(done_rx.recv().unwrap(), "s");
     homes.wait("s");
 
     assert!(!first.exists(), "{}", first.display());
@@ -1532,6 +1532,10 @@ fn set_early(store: &SharedStore, id: &str, state: &EarlyState) {
 
 /// The jobs of a launch whose storage folder is `dest`. Returns the jobs
 /// and the receiver of each run that succeeded.
+// The receiver gets the id after each job run that succeeded. Wait for
+// it with `recv`, not with a time limit: the jobs of the other tests take
+// the same process-wide note guard of "s", so under load a run can start
+// many seconds late.
 fn launch_jobs(
     store: &SharedStore,
     dest: &Path,
@@ -1575,7 +1579,7 @@ fn a_stop_between_the_two_records_of_the_rehome_puts_the_note_in_the_new_folder_
     );
     let (homes, done) = launch_jobs(&store, new.path());
     homes.resume();
-    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    assert_eq!(done.recv().unwrap(), "s");
     homes.wait("s");
 
     let path = home(&store, "s").unwrap();
@@ -1602,7 +1606,7 @@ fn a_stop_after_the_settings_change_and_before_any_rehome_is_completed_at_launch
     assert_eq!(rehomed, vec!["s".to_string()]);
     let (homes, done) = launch_jobs(&store, new.path());
     homes.resume();
-    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    assert_eq!(done.recv().unwrap(), "s");
     homes.wait("s");
 
     let path = home(&store, "s").unwrap();
@@ -1738,7 +1742,7 @@ fn a_fresh_marker_of_another_run_keeps_the_old_home_folder_for_a_later_run() {
     std::fs::remove_file(first.join(marker_name("other-computer"))).unwrap();
     let (homes, done) = launch_jobs(&store, new.path());
     homes.resume();
-    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    assert_eq!(done.recv().unwrap(), "s");
     homes.wait("s");
     assert!(!first.exists(), "{}", first.display());
     assert_eq!(old_home_key(&store, "s"), None);
@@ -1764,7 +1768,7 @@ fn an_old_storage_folder_that_is_not_available_keeps_the_entry_and_a_later_run_r
     assert!(first.exists());
     let (homes, done) = launch_jobs(&store, new.path());
     homes.resume();
-    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    assert_eq!(done.recv().unwrap(), "s");
     homes.wait("s");
     assert!(!first.exists(), "{}", first.display());
     assert_eq!(old_home_key(&store, "s"), None);
@@ -1844,7 +1848,7 @@ fn a_filled_write_in_an_old_storage_folder_that_is_not_available_is_written_agai
     assert!(old.join(staging_name("s")).exists());
     let (homes, done) = launch_jobs(&store, new.path());
     homes.resume();
-    assert_eq!(done.recv_timeout(Duration::from_secs(5)).unwrap(), "s");
+    assert_eq!(done.recv().unwrap(), "s");
     homes.wait("s");
     assert!(!old.join(staging_name("s")).exists());
     assert_eq!(old_home_key(&store, "s"), None);
