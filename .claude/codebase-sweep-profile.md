@@ -119,7 +119,7 @@ Check each against the current code before you use it; add seams that you find.
 ## Tests
 
 - Rust tests are in `#[cfg(test)]` modules at the end of each file and in `crates/*/tests/`. Hardware tests (`tests/hardware.rs`) and real-audio tests are opt-in and need `LONGHAND_*` variables; CI does not run them.
-- TypeScript tests use `bun test` with happy-dom (`src/test/setup.ts`). Run them as `bun test ./src/`.
+- Frontend tests use Vitest with happy-dom (`src/test/setup.ts`). Run them with `npm test`. Script tests use `node --test`. Run them with `npm run test:scripts`.
 - `crates/audio-mock` is the fake audio device. Compare its behaviour with `cpal` for the `test-fidelity` lens.
 - CI runs at UTC on macOS and Windows. A test that depends on the time zone can pass in CI and fail on a computer in another zone, or the reverse.
 - `testdata/storage-folder/` is a checked-in storage folder that the real writers make; `crates/library/tests/test_storage_folder.rs` checks it.
