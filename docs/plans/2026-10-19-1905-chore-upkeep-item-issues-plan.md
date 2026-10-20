@@ -404,7 +404,7 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 
 **Result:** upkeep 6591076; b895d7a adds the `covered` rule for code-fix alerts.
 
-### U11. Fresh start
+### U11. Fresh start (done)
 
 **Goal:** The 70 per-package issues are gone, one grouped run made the new item issues, and the run found the urgent fixes from scratch.
 
@@ -424,7 +424,7 @@ U1–U7 are done (2026-10-19 and 2026-10-20). Their text records what was built.
 
 **Verification:** `items.ts read` lists no issue with a per-package key; the run's `sync.json` has `complete: true`; the maintainer accepts the groups.
 
-**Result:** The maintainer deleted #1–#70 on 2026-10-20. The run of 2026-10-20 opened 32 grouped issues (#71–#102) and Longhand PR #58. It found the held security fixes from scratch (#71–#75). Its first sync reported 26 needed findings that no item held (young `@rollup/*` packages and `@tauri-apps/plugin-opener`); the run added them and the second sync was complete. The maintainer kept R9 as written.
+**Result:** The maintainer deleted #1–#70 on 2026-10-20. The run of 2026-10-20 opened 32 grouped issues (#71–#102) and Longhand PR #58. It found the held security fixes from scratch (#71–#75). Its first sync reported 26 needed findings that no item held (young `@rollup/*` packages and `@tauri-apps/plugin-opener`); the run added them and the second sync was complete. The maintainer kept R9 as written and accepted the groups, with two changes to the grouping rules of ROUTINE step 12 (upkeep 0a21ac1): all minor and patch updates with no breaking change go into one item per run, and an update that waits for another dependency goes into the item of the change that permits it, or into `covered` when no item makes that change.
 
 ---
 
