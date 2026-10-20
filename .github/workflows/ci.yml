@@ -1,8 +1,8 @@
 name: CI
 
-# The macOS and Windows jobs run on self-hosted runners when the repository
-# variables MACOS_RUNNER and WINDOWS_RUNNER name them, and
-# on GitHub's runners otherwise. Local checks gate
+# The macOS job runs on GitHub's runner. The Windows job runs on a
+# self-hosted runner when the repository variable WINDOWS_RUNNER names it,
+# and on GitHub's runner otherwise. Local checks gate
 # day-to-day work (scripts/check-windows.sh included); CI runs when a branch
 # asks to merge, when a change that is not only docs is pushed to main, and
 # on demand: `gh workflow run ci.yml --ref <branch>`.
@@ -56,13 +56,16 @@ jobs:
         os: [macos-latest, windows-latest]
         # `os` names the job, and the job names are required checks in the
         # main ruleset, so `os` never changes. `runner` chooses where the job
-        # runs: the self-hosted runner that a repository variable names, or GitHub's
-        # runner when the variable is not set or the `hosted` input is true.
-        # On GitHub, Windows runs on the standard runner, which is free for a
-        # public repository and is the runner of the Windows release build.
+        # runs. macOS runs on GitHub's runner: the CodeQL Rust analysis takes
+        # longer than this job, so a self-hosted runner does not make a pull
+        # request finish sooner. Windows runs on the self-hosted runner that a
+        # repository variable names, or on GitHub's runner when the variable
+        # is not set or the `hosted` input is true. On GitHub, Windows runs on
+        # the standard runner, which is free for a public repository and is
+        # the runner of the Windows release build.
         include:
           - os: macos-latest
-            runner: ${{ !inputs.hosted && vars.MACOS_RUNNER || 'macos-latest' }}
+            runner: macos-latest
           - os: windows-latest
             runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
