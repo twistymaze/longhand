@@ -7,7 +7,7 @@ Each push to `main` that changes the shipped app goes out in a numbered release 
 One CI run on `main` does the checks, the build and the publication. `.github/workflows/ci.yml` runs these jobs in sequence:
 
 1. **The checks** (`checks` and `cargo deny`). When a check fails, no later job runs.
-2. **`release-build`** runs on `macos-latest` in the `release` environment. It can only read the repository.
+2. **`release-build`** runs in the `release` environment. It can only read the repository. The repository variable `MACOS_RELEASE_RUNNER` selects its runner; with no variable, it runs on `macos-latest`. Set the variable only to an ephemeral self-hosted runner, which gets a new VM for each job and deletes the VM after the job. The build uses the GitHub Actions cache on both types of runner.
    1. `scripts/release-version.ts` uses git-cliff and `cliff.toml` to decide whether a release is due, to get the next patch version and to write the release notes. The script then raises the version when a commit subject has a `+` or `!` marker (see [When a release is due](#when-a-release-is-due)).
    2. When a release is due, the job builds the app with that version, and signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature.
    3. The job uploads the DMG, the archive, the signature and the notes as a workflow artifact.

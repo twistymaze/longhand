@@ -1,8 +1,9 @@
 name: sccache setup
 description: >-
   Installs sccache and makes the Rust, C and C++ compiles of the job go
-  through it. On GitHub's runners the store is the GitHub Actions cache. On
-  a self-hosted runner the store is a folder on the runner. The caller runs
+  through it. On GitHub's runners and on an ephemeral self-hosted runner
+  (LONGHAND_RUNNER_EPHEMERAL set), the store is the GitHub Actions cache. On
+  a persistent self-hosted runner, the store is a folder on the runner. The caller runs
   this action after the steps that set up the compilers, and before the
   first compile. On Windows, the caller runs it after the Windows build
   setup, so that its post step runs before the Dev Drive is removed.
@@ -25,9 +26,12 @@ runs:
     # configures a build folder for the first time. The server stays up for
     # the full job, so that the stats at the end count every compile.
     #
-    # On GitHub's runners, the cache entries are scoped by branch: a run on
-    # main reads only the entries of main, and a pull request also reads
-    # the entries of main. A self-hosted runner keeps its folder between
+    # In the GitHub Actions cache, the entries are scoped by branch: a run
+    # on main reads only the entries of main, and a pull request also reads
+    # the entries of main. An ephemeral runner gets a new VM for each job,
+    # so a folder on it is empty at the start of each job. The runner's
+    # environment file sets LONGHAND_RUNNER_EPHEMERAL, and the job uses the
+    # GitHub Actions cache. A persistent runner keeps its folder between
     # jobs (the runner's environment file can set SCCACHE_DIR); a VM reset
     # empties it. The local cache supports one server for each folder, and
     # each runner has its own folder.
@@ -37,7 +41,7 @@ runs:
         HOSTED: ${{ runner.environment == 'github-hosted' }}
       run: |
         {
-          if [ "$HOSTED" = true ]; then
+          if [ "$HOSTED" = true ] || [ -n "${LONGHAND_RUNNER_EPHEMERAL:-}" ]; then
             echo "SCCACHE_GHA_ENABLED=true"
           else
             dir="${SCCACHE_DIR:-$RUNNER_TOOL_CACHE/sccache}"
