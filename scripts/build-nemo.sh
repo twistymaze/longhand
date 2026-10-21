@@ -11,18 +11,24 @@ helper_build="${LONGHAND_NEMO_HELPER_BUILD:-$cache/helper-$backend}"
 tokenizer_source="${LONGHAND_SENTENCEPIECE_SOURCE:-$cache/sentencepiece}"
 tokenizer_build="${LONGHAND_SENTENCEPIECE_BUILD:-$cache/sentencepiece-build}"
 mkdir -p "$cache"
+# Gets one pinned commit with no history. A full clone of llama.cpp takes
+# about 85 s on a runner far from GitHub, and an ephemeral runner clones in
+# each job. GitHub serves a commit by its hash.
+fetch_pinned() {
+  git init -q "$2"
+  git -C "$2" fetch -q --depth 1 "$1" "$3"
+  git -C "$2" checkout -q --detach FETCH_HEAD
+}
 if [[ ! -e "$source_dir/.git" ]]; then
-  git clone --no-checkout https://github.com/NVIDIA/NeMo-Speech.cpp.git "$source_dir"
-  git -C "$source_dir" checkout --detach 97a15afa5caa9bce5baaa86c1184103877af4101
-  git -C "$source_dir" submodule update --init ggml llama.cpp
+  fetch_pinned https://github.com/NVIDIA/NeMo-Speech.cpp.git "$source_dir" 97a15afa5caa9bce5baaa86c1184103877af4101
+  git -C "$source_dir" submodule update --init --depth 1 ggml llama.cpp
 fi
 [[ "$(git -C "$source_dir" rev-parse HEAD)" == 97a15afa5caa9bce5baaa86c1184103877af4101 ]] || { echo 'NeMo revision mismatch' >&2; exit 2; }
 [[ "$(git -C "$source_dir/ggml" rev-parse HEAD)" == c03b4e2bcece5134827881af90242086daf75be5 ]] || { echo 'ggml revision mismatch' >&2; exit 2; }
 [[ "$(git -C "$source_dir/llama.cpp" rev-parse HEAD)" == 560445bf34c87356ad0f8d80fb03ec5488850b65 ]] || { echo 'llama.cpp revision mismatch' >&2; exit 2; }
 node "$root/scripts/patch-nemo.ts" "$source_dir"
 if [[ ! -e "$tokenizer_source/.git" ]]; then
-  git clone --no-checkout https://github.com/google/sentencepiece.git "$tokenizer_source"
-  git -C "$tokenizer_source" checkout --detach 17d7580d6407802f85855d2cc9190634e2c95624
+  fetch_pinned https://github.com/google/sentencepiece.git "$tokenizer_source" 17d7580d6407802f85855d2cc9190634e2c95624
 fi
 [[ "$(git -C "$tokenizer_source" rev-parse HEAD)" == 17d7580d6407802f85855d2cc9190634e2c95624 ]] || { echo 'SentencePiece revision mismatch' >&2; exit 2; }
 cmake -S "$tokenizer_source" -B "$tokenizer_build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DSPM_BUILD_TEST=OFF -DSPM_ENABLE_SHARED=OFF -DSPM_ENABLE_TCMALLOC=OFF
