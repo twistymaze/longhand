@@ -1,9 +1,13 @@
 name: CI
 
 # The repository variables MACOS_RUNNER and WINDOWS_RUNNER choose the runner
-# of the macOS and Windows jobs: a self-hosted runner or a GitHub label (for
+# of the macOS and Windows checks, and MACOS_RELEASE_RUNNER chooses the
+# runner of the release build: a self-hosted runner or a GitHub label (for
 # example a larger runner). With no variable, a job runs on GitHub's standard
-# runner. Local checks gate
+# runner. A self-hosted macOS runner is ephemeral: each job gets a new VM,
+# and the runner's environment file sets LONGHAND_RUNNER_EPHEMERAL. The
+# self-hosted Windows runner is persistent: it keeps target/ between jobs.
+# Local checks gate
 # day-to-day work (scripts/check-windows.sh included); CI runs when a branch
 # asks to merge, when a change that is not only docs is pushed to main, and
 # on demand: `gh workflow run ci.yml --ref <branch>`.
@@ -75,9 +79,9 @@ jobs:
     # A self-hosted runner runs one job at a time, so a hung job must not hold it
     # for GitHub's default of 6 hours.
     timeout-minutes: 60
-    # A self-hosted runner keeps target/ between jobs. Incremental compilation is
-    # off on every runner, as rust-cache sets it on GitHub's runners, so
-    # target/ stays smaller and both runners build the same way.
+    # The persistent runner keeps target/ between jobs. Incremental compilation is
+    # off on every runner, as rust-cache sets it when it runs, so target/
+    # stays smaller and all runners build the same way.
     env:
       CARGO_INCREMENTAL: 0
     defaults:
@@ -95,9 +99,10 @@ jobs:
             -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
           git config --system core.longpaths true
 
-      # On a self-hosted runner the checkout keeps the ignored build output
+      # On the persistent runner the checkout keeps the ignored build output
       # (target/, node_modules/, src-tauri/nemo-runtime/) from the last job,
-      # so the build starts warm. Tracked files still match the commit.
+      # so the build starts warm. Tracked files still match the commit. An
+      # ephemeral runner starts with no checkout, so the setting has no effect.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           clean: ${{ runner.environment == 'github-hosted' }}
@@ -125,11 +130,22 @@ jobs:
       # and SQLite from scratch. The key follows Cargo.lock only, and an exact
       # hit is never saved again, so a change to how CI builds (flags,
       # profiles, which cargo commands run) needs `prefix-key` bumped or its
-      # new artifacts are never cached. A self-hosted runner skips this: its target/
-      # stays from the last job, and a cache save would prune it. On Windows,
-      # the Windows build setup has the same step with the same prefix key.
+      # new artifacts are never cached. GitHub's runners and an ephemeral
+      # runner use this cache (LONGHAND_GHA_CACHE). The persistent runner
+      # skips it: its target/ stays from the last job, and a cache save would
+      # prune it. On Windows, the Windows build setup has the same step with
+      # the same prefix key.
+      - name: Select the GitHub Actions cache
+        if: runner.os == 'macOS'
+        env:
+          HOSTED: ${{ runner.environment == 'github-hosted' }}
+        run: |
+          if [ "$HOSTED" = true ] || [ -n "${LONGHAND_RUNNER_EPHEMERAL:-}" ]; then
+            echo "LONGHAND_GHA_CACHE=true" >> "$GITHUB_ENV"
+          fi
+
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        if: runner.os == 'macOS' && runner.environment == 'github-hosted'
+        if: runner.os == 'macOS' && env.LONGHAND_GHA_CACHE == 'true'
         with:
           prefix-key: v4-rust
           cache-on-failure: true
@@ -209,9 +225,9 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: "-"
           # rust-cache removes non-Cargo files from target during cache save,
-          # so on GitHub's runners the NeMo cache goes in the temp folder. A
-          # self-hosted runner sets LONGHAND_NEMO_CACHE in its environment file to a
-          # folder that stays between jobs.
+          # so where rust-cache runs, the NeMo cache goes in the temp folder.
+          # The persistent runner sets LONGHAND_NEMO_CACHE in its environment
+          # file to a folder that stays between jobs.
           NEMO_CACHE_IN_TEMP: ${{ runner.temp }}/longhand-nemo
         run: |
           export LONGHAND_NEMO_CACHE="${LONGHAND_NEMO_CACHE:-$NEMO_CACHE_IN_TEMP}"
@@ -336,7 +352,7 @@ jobs:
       # These builds prove the app bundles, not how fast it runs, so they
       # use the debug profile the tests just built: a release build compiles
       # every dependency a second time (412 crates) and doubles the cache.
-      # Each build first deletes its bundle folder: on a self-hosted runner the
+      # Each build first deletes its bundle folder: on the persistent runner the
       # folder keeps the bundles of earlier versions, and a later step must
       # find only this build's bundle.
       - name: Tauri build (macOS, ad-hoc signed)
@@ -386,7 +402,7 @@ jobs:
         run: |
           $installer = Get-ChildItem target/debug/bundle/nsis/*.exe | Select-Object -First 1
           Remove-Item -Recurse -Force target/recognition-installer -ErrorAction SilentlyContinue
-          # A self-hosted runner keeps target/. An old helper left here would pass
+          # The persistent runner keeps target/. An old helper left here would pass
           # the test for an installer that lacks the helper.
           if (Test-Path target/recognition-installer) { throw "target/recognition-installer is still present" }
           & 7z x $installer.FullName "-otarget/recognition-installer" -y
@@ -511,7 +527,10 @@ jobs:
     # A release builds only when every check passes, the licence gate too.
     needs: [checks, deny]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: macos-latest
+    # Use only GitHub's runners or an ephemeral self-hosted runner: it gets
+    # a new VM for each job, so the keychain and key files of this job do
+    # not stay on it.
+    runs-on: ${{ vars.MACOS_RELEASE_RUNNER || 'macos-latest' }}
     environment: release
     permissions:
       contents: read
