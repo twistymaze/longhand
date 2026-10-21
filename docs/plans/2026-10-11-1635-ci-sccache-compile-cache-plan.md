@@ -86,9 +86,9 @@ The first Windows release build (run 38176960753) failed after 2.5 min and saved
 ### Scope Boundaries
 
 - The hosted `checks` matrix (`hosted=true`) is not measured. A keep still applies to it (R17), because those jobs use the same setup action.
-- Clean VMs for each job (`docs/ideas/someday/ephemeral-ci-runner-vms.md`) are out of scope. R15 only reports what the result means for them.
+- Clean VMs for each job (`docs/ideas/done/ephemeral-ci-runner-vms.md`) are out of scope. R15 only reports what the result means for them.
 - A local cache that survives the weekly VM reset is out of scope. It needs a separate disk in the private runner setup. R15 reports the effect.
-- Moving the release build to a home runner (`docs/ideas/someday/home-signing-runner.md`) is out of scope.
+- Moving the release build to a home runner (`docs/ideas/done/home-signing-runner.md`) is out of scope.
 - Link time is out of scope, except for the LTO setting of the release profile (R18). The choice of linker is out of scope. sccache does not cache linking, and crates that the linker produces (bin, cdylib, proc-macro) are not cached. The Vulkan shader compiles (`glslc`) are not cached either.
 - Test run time is out of scope. sccache does not change it.
 - Turborepo is out of scope (rejected in `docs/ideas/done/sccache-for-hosted-builds.md`).

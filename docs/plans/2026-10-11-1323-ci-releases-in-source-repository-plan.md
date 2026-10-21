@@ -402,8 +402,8 @@ flowchart TB
   - `CONCEPTS.md`
   - `README.md`
   - `docs/ideas/someday/windows-preview-builds-and-updates.md`
-  - `docs/ideas/someday/home-signing-runner.md`
-  - `docs/ideas/someday/signing-runner-on-mac-mini.md`
+  - `docs/ideas/done/home-signing-runner.md`
+  - `docs/ideas/done/signing-runner-on-mac-mini.md`
 - **Approach:**
   1. `docs/releases.md` covers:
      - the release flow and the version table (R9);

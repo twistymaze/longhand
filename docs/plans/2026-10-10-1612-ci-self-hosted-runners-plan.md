@@ -25,7 +25,7 @@ execution: code
 
 ## Scope change (2026-10-10, during ce-work)
 
-The user removed the signing VM from this plan. The preview build stays on GitHub's `macos-latest` runner, and the work goes to the PR checks first. These parts are deferred to `docs/ideas/someday/home-signing-runner.md` and are not part of this plan's Definition of Done: R3, R11 (the preview build keeps today's behaviour on `macos-latest`), R14, KTD7, KTD8, U8, the `PREVIEW_RUNNER` steps of U2, the `longhand-preview` group in U9, and the signing rows of the Verification Contract. The text below keeps them for the future work. (session-settled: user-directed)
+The user removed the signing VM from this plan. The preview build stays on GitHub's `macos-latest` runner, and the work goes to the PR checks first. These parts are deferred to `docs/ideas/done/home-signing-runner.md` and are not part of this plan's Definition of Done: R3, R11 (the preview build keeps today's behaviour on `macos-latest`), R14, KTD7, KTD8, U8, the `PREVIEW_RUNNER` steps of U2, the `longhand-preview` group in U9, and the signing rows of the Verification Contract. The text below keeps them for the future work. (session-settled: user-directed)
 
 The checks VM is now the only macOS VM, so it can use both Apple VM slots later (a second checks VM).
 
@@ -122,8 +122,8 @@ The repository will become public in about one month, with pull requests limited
 ### Scope Boundaries
 
 - The Windows preview build itself (code signing, updates, publishing) is not in scope. It stays in `docs/ideas/someday/windows-preview-builds-and-updates.md`.
-- A new VM for each job is deferred: `docs/ideas/someday/ephemeral-ci-runner-vms.md`.
-- Moving the signing runner to the Mac mini is deferred: `docs/ideas/someday/signing-runner-on-mac-mini.md`.
+- A new VM for each job is deferred: `docs/ideas/done/ephemeral-ci-runner-vms.md`.
+- Moving the signing runner to the Mac mini is deferred: `docs/ideas/done/signing-runner-on-mac-mini.md`.
 - The audit before the repository goes public (history scan for secrets, private files, logs, docs) is not in scope: `docs/ideas/done/pre-public-repo-audit.md`.
 - Making the repository public is not in scope.
 - A Windows licence purchase is not in scope.

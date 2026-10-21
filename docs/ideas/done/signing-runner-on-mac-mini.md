@@ -14,3 +14,6 @@ The Mac mini M6 runs the signing and release runner (the `release-build` job), a
 
 ## Why
 Apple allows 2 macOS VMs at the same time on one Mac. The first setup uses one slot for checks and one for signing, so macOS check jobs run one at a time. Separate hardware also keeps the signing keys further from PR code. The Mac mini is not set up yet.
+
+## Outcome
+Not needed in this form. PR #60 moved all macOS jobs, the release build too, to ephemeral VMs on the Mac mini (see `ephemeral-ci-runner-vms.md`). Each job gets a new VM, so a release build never shares a VM with PR code, and the two VM slots serve checks and releases.
