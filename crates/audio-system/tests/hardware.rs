@@ -14,6 +14,7 @@ use futures_util::StreamExt;
 const FLOOR: f32 = 0.01;
 
 /// Read system audio for `seconds` and return the highest peak.
+#[cfg(target_os = "macos")]
 async fn peak_for(seconds: f64) -> f32 {
     let capture = audio_system::open(48_000, 960).expect("system audio opens");
     let mut stream = capture.stream;
@@ -187,16 +188,6 @@ async fn an_app_that_starts_after_the_tap_opens_is_recorded() {
         peak = frame.raw_speaker.iter().fold(peak, |p, s| p.max(s.abs()));
     }
     println!("peak from {app}: {peak}");
-}
-
-#[cfg(target_os = "windows")]
-#[tokio::test]
-#[ignore = "needs a real output device and audio that plays during the test"]
-async fn loopback_delivers_audio_while_the_output_plays() {
-    println!("Play audio on the default output while this test runs");
-    let peak = peak_for(3.0).await;
-    println!("peak: {peak}");
-    assert!(peak > FLOOR, "the loopback is silent, peak {peak}");
 }
 
 /// Read app audio of `apps` for `seconds` and return the highest peak.

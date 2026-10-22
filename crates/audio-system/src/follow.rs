@@ -1,60 +1,11 @@
-//! The Windows output-device rules, kept free of WASAPI so that they are
-//! tested on every platform.
-//!
-//! [`EndpointFollower`] is anarlog's rule (see PROVENANCE.md): capture the
-//! default output device, unless another process plays to a different
-//! device while the default has no active session, and switch only after
-//! two polls agree. The user kept this rule (KTD4). [`TeamsMode`] chooses between per-process capture and device capture
-//! for app audio while Teams plays (KTD5).
+//! The Windows Teams mode rule, kept free of WASAPI so that it is tested on
+//! every platform. [`TeamsMode`] chooses between per-process capture and
+//! device capture for app audio while Teams plays (KTD5).
 
 use std::time::{Duration, Instant};
 
-/// Time between two polls of the output devices.
+/// Time between two scans of the processes and output devices.
 pub const ENDPOINT_POLL_INTERVAL: Duration = Duration::from_secs(2);
-
-// A meeting app can start rendering to a non-default endpoint after capture began. Requiring two
-// consecutive polls keeps a one-off system sound from bouncing the stream.
-const ENDPOINT_SWITCH_CONFIRMATIONS: u8 = 2;
-
-// Tracks which render endpoint `open_render_device` would pick and reports a switch once the pick
-// has stayed away from the captured endpoint for `ENDPOINT_SWITCH_CONFIRMATIONS` polls.
-pub struct EndpointFollower {
-    current: String,
-    pending: Option<(String, u8)>,
-}
-
-impl EndpointFollower {
-    pub fn new(current: String) -> Self {
-        Self {
-            current,
-            pending: None,
-        }
-    }
-
-    pub fn observe(&mut self, observed: String) -> Option<String> {
-        if observed == self.current {
-            self.pending = None;
-            return None;
-        }
-
-        let count = match &self.pending {
-            Some((id, count)) if *id == observed => count.saturating_add(1),
-            _ => 1,
-        };
-
-        if count >= ENDPOINT_SWITCH_CONFIRMATIONS {
-            self.pending = None;
-            Some(observed)
-        } else {
-            self.pending = Some((observed, count));
-            None
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.pending = None;
-    }
-}
 
 /// Time between two reads of the Teams session meters (KTD5).
 pub const TEAMS_METER_INTERVAL: Duration = Duration::from_millis(200);
@@ -265,58 +216,6 @@ mod tests {
         assert_eq!(
             teams.observe(true, &[reading("headset", 0.3)], at(start, 200)),
             &device("headset")
-        );
-    }
-
-    #[test]
-    fn endpoint_follower_ignores_unchanged_endpoint() {
-        let mut follower = EndpointFollower::new("speakers".into());
-        assert_eq!(follower.observe("speakers".into()), None);
-        assert_eq!(follower.observe("speakers".into()), None);
-    }
-
-    #[test]
-    fn endpoint_follower_switches_after_consecutive_confirmations() {
-        let mut follower = EndpointFollower::new("speakers".into());
-        assert_eq!(follower.observe("headset".into()), None);
-        assert_eq!(
-            follower.observe("headset".into()),
-            Some("headset".to_string())
-        );
-    }
-
-    #[test]
-    fn endpoint_follower_resets_on_one_off_change() {
-        let mut follower = EndpointFollower::new("speakers".into());
-        assert_eq!(follower.observe("headset".into()), None);
-        assert_eq!(follower.observe("speakers".into()), None);
-        assert_eq!(follower.observe("headset".into()), None);
-        assert_eq!(
-            follower.observe("headset".into()),
-            Some("headset".to_string())
-        );
-    }
-
-    #[test]
-    fn endpoint_follower_restarts_count_when_candidate_changes() {
-        let mut follower = EndpointFollower::new("speakers".into());
-        assert_eq!(follower.observe("headset".into()), None);
-        assert_eq!(follower.observe("monitor".into()), None);
-        assert_eq!(
-            follower.observe("monitor".into()),
-            Some("monitor".to_string())
-        );
-    }
-
-    #[test]
-    fn endpoint_follower_reset_clears_partial_confirmation() {
-        let mut follower = EndpointFollower::new("speakers".into());
-        assert_eq!(follower.observe("headset".into()), None);
-        follower.reset();
-        assert_eq!(follower.observe("headset".into()), None);
-        assert_eq!(
-            follower.observe("headset".into()),
-            Some("headset".to_string())
         );
     }
 }

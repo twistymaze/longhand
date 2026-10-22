@@ -18,16 +18,16 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/windows.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — every channel is downmixed to mono in place of the first channel only; the thread resamples to fixed-size frames and starts the resampler again on an endpoint switch; a read error opens the device that the rule picks now, and ends the stream when none opens
+- Status: modified — only the loopback client of one output device is kept (the Teams mode of app audio uses it); the capture format holds every channel, so the caller downmixes all channels in place of the first channel only
 
 ## `src/follow.rs`
 
 - Repository: https://github.com/fastrepl/anarlog
 - Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
-- Source paths: `crates/audio-actual/src/speaker/windows.rs` (`EndpointFollower`, `ENDPOINT_POLL_INTERVAL`, `ENDPOINT_SWITCH_CONFIRMATIONS` and their tests)
+- Source paths: `crates/audio-actual/src/speaker/windows.rs` (`ENDPOINT_POLL_INTERVAL`)
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — moved out of the WASAPI file so that the rule is tested on every platform; `TeamsMode` (the Teams mode rule of app audio) is new
+- Status: modified — only the poll interval is kept, as the scan interval of app audio; `TeamsMode` (the Teams mode rule of app audio) is new
 
 ## `src/convert.rs`
 

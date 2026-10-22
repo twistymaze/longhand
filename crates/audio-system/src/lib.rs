@@ -4,12 +4,11 @@
 //! - On macOS, a Core Audio process tap through `cidre`: a tap of the app
 //!   set's processes, or a global tap that excludes Longhand's own process,
 //!   so the alert sound is not in the note.
-//! - On Windows, one process loopback client for each app in the set, or
-//!   WASAPI loopback on the output device that anarlog's `EndpointFollower`
-//!   picks.
+//! - On Windows, one process loopback client for each app in the set. Only
+//!   [`open_apps`] is available.
 //!
 //! Both backends are borrowed from anarlog (see PROVENANCE.md). Each one
-//! runs on its own thread, and [`open`] returns a [`CaptureStream`] of
+//! runs on its own thread, and [`open_apps`] returns a [`CaptureStream`] of
 //! [`CaptureFrame`]s whose `raw_speaker` holds `chunk_size` mono samples at
 //! the rate that the caller asks for. `raw_mic` is empty. A backend error
 //! ends this stream with [`Error::SpeakerStreamEnded`]. The microphone
@@ -77,7 +76,8 @@ impl AppSet {
     }
 }
 
-/// Start capture of all computer sound except Longhand's own. Frames hold
+/// Start capture of all computer sound except Longhand's own (macOS only;
+/// on other platforms it returns [`Error::SpeakerStreamSetupFailed`]). Frames hold
 /// `chunk_size` mono samples at `sample_rate`; a `sample_rate` of 0 means
 /// the backend's own rate. The permission request uses it (KTD11).
 pub fn open(sample_rate: u32, chunk_size: usize) -> Result<SystemAudioCapture, Error> {
@@ -86,15 +86,7 @@ pub fn open(sample_rate: u32, chunk_size: usize) -> Result<SystemAudioCapture, E
     {
         open_macos(sample_rate, chunk_size, macos::Target::Global)
     }
-    #[cfg(target_os = "windows")]
-    {
-        let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
-        windows::open(sample_rate, chunk_size, tx)?;
-        Ok(SystemAudioCapture {
-            stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
-        })
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = (sample_rate, chunk_size);
         Err(Error::SpeakerStreamSetupFailed)

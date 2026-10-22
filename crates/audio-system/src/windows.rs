@@ -1,41 +1,23 @@
-//! The Windows backend: WASAPI loopback on the output device that
-//! [`EndpointFollower`] picks (KTD4, KD12).
+//! WASAPI loopback of one output device. The Teams mode of the Windows app
+//! capture records the output device of the Teams session with it (KTD5).
 //!
 //! From anarlog's `speaker/windows.rs` (see PROVENANCE.md), with these
-//! changes:
-//!
-//! - The capture thread downmixes every channel to mono. anarlog keeps only
-//!   the first channel.
-//! - The thread resamples with [`Converter`] and sends fixed-size frames. On
-//!   a switch to another output device, it takes the new format and starts
-//!   the resampler again, with no segment boundary.
-//! - A read error on the followed device opens the device that the rule
-//!   picks now. When no device opens, the stream ends with
-//!   [`Error::SpeakerStreamEnded`].
+//! changes: the capture format holds every channel, so the caller can
+//! downmix all channels to mono (anarlog keeps only the first channel).
 
 use std::collections::VecDeque;
-use std::sync::mpsc as std_mpsc;
-use std::time::{Duration, Instant};
 
-use tokio::sync::mpsc;
 use wasapi::{
     AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction, Handle, SampleType,
-    SessionState, StreamMode, WaveFormat, initialize_mta,
+    StreamMode, WaveFormat, initialize_mta,
 };
 
-use crate::convert::{Converter, PcmFormat, SampleKind};
-use crate::follow::{ENDPOINT_POLL_INTERVAL, EndpointFollower};
-use crate::{CaptureFrame, Error, speaker_frame};
+use crate::Error;
+use crate::convert::{PcmFormat, SampleKind};
 
 /// Every endpoint opens at this rate with WASAPI's conversion, so the rate
 /// stays the same across endpoint switches.
 const DEFAULT_SAMPLE_RATE: u32 = 44_100;
-
-/// How long the thread waits for the first packet event, in milliseconds.
-const EVENT_WAIT_MS: u32 = 250;
-
-/// How long [`open`] waits for the capture thread to start.
-const INIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy)]
 struct WasapiCaptureFormat {
@@ -67,10 +49,10 @@ impl WasapiCaptureFormat {
 
 pub(crate) struct LoopbackCapture {
     pub(crate) audio_client: AudioClient,
-    event: Handle,
+    /// The client signals this event. It must stay open while the client runs.
+    _event: Handle,
     pub(crate) capture_client: AudioCaptureClient,
     pub(crate) format: PcmFormat,
-    device_id: String,
     pub(crate) device_name: Option<String>,
 }
 
@@ -89,182 +71,7 @@ pub(crate) fn probe() -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn open(
-    sample_rate: u32,
-    chunk_size: usize,
-    tx: mpsc::Sender<Result<CaptureFrame, Error>>,
-) -> Result<(), Error> {
-    let (init_tx, init_rx) = std_mpsc::sync_channel::<Result<(), Error>>(1);
-    std::thread::Builder::new()
-        .name("longhand-system-audio".into())
-        .spawn(move || run(sample_rate, chunk_size, tx, init_tx))
-        .map_err(|e| Error::SpeakerStreamInitializationFailed(e.to_string()))?;
-    match init_rx.recv_timeout(INIT_TIMEOUT) {
-        Ok(result) => result,
-        Err(_) => Err(Error::SpeakerStreamInitializationFailed(
-            "WASAPI loopback did not start in time".into(),
-        )),
-    }
-}
-
-fn run(
-    sample_rate: u32,
-    chunk_size: usize,
-    tx: mpsc::Sender<Result<CaptureFrame, Error>>,
-    init_tx: std_mpsc::SyncSender<Result<(), Error>>,
-) {
-    let opened = (|| {
-        initialize_mta()
-            .ok()
-            .map_err(|e| failed("COM apartment", e))?;
-        let enumerator = DeviceEnumerator::new().map_err(|e| failed("device enumerator", e))?;
-        let device = open_render_device(&enumerator)?;
-        let capture = open_loopback_capture(device)?;
-        Ok((enumerator, capture))
-    })();
-    let (enumerator, capture) = match opened {
-        Ok(opened) => {
-            let _ = init_tx.send(Ok(()));
-            opened
-        }
-        Err(e) => {
-            let _ = init_tx.send(Err(e));
-            return;
-        }
-    };
-    log::info!(
-        "WASAPI loopback started on {:?} at {} Hz, {} channel(s)",
-        capture.device_name,
-        capture.format.sample_rate,
-        capture.format.channels
-    );
-    let out_rate = if sample_rate == 0 {
-        capture.format.sample_rate
-    } else {
-        sample_rate
-    };
-    let end = capture_loop(&enumerator, capture, out_rate, chunk_size, &tx);
-    if let Some(error) = end {
-        let _ = tx.blocking_send(Err(error));
-    }
-    log::info!("WASAPI loopback stopped");
-}
-
-/// Returns the error that ends the stream, or `None` when the consumer
-/// closed it.
-fn capture_loop(
-    enumerator: &DeviceEnumerator,
-    mut capture: LoopbackCapture,
-    out_rate: u32,
-    chunk_size: usize,
-    tx: &mpsc::Sender<Result<CaptureFrame, Error>>,
-) -> Option<Error> {
-    let mut converter = Converter::new(capture.format, out_rate, chunk_size);
-    let mut follower = EndpointFollower::new(capture.device_id.clone());
-    let mut next_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
-    let mut queue = VecDeque::new();
-
-    loop {
-        if tx.is_closed() {
-            let _ = capture.audio_client.stop_stream();
-            return None;
-        }
-        if Instant::now() >= next_poll {
-            next_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
-            if let Some(device) = poll_render_endpoint_switch(enumerator, &mut follower) {
-                match open_loopback_capture(device) {
-                    Ok(next) => switch(&mut capture, next, &mut converter, &mut follower),
-                    Err(e) => {
-                        log::warn!(
-                            "WASAPI loopback could not switch; it keeps the current output: {e}"
-                        );
-                    }
-                }
-            }
-        }
-
-        if capture.event.wait_for_event(EVENT_WAIT_MS).is_err() {
-            continue;
-        }
-
-        queue.clear();
-        if let Err(e) = drain_packets(&capture.capture_client, &mut queue) {
-            log::warn!(
-                "WASAPI loopback read failed on {:?}: {e}",
-                capture.device_name
-            );
-            let reopened = open_render_device(enumerator).and_then(open_loopback_capture);
-            match reopened {
-                Ok(next) => {
-                    switch(&mut capture, next, &mut converter, &mut follower);
-                    continue;
-                }
-                Err(e) => {
-                    log::warn!("no output device opens for WASAPI loopback: {e}");
-                    let _ = capture.audio_client.stop_stream();
-                    return Some(Error::SpeakerStreamEnded);
-                }
-            }
-        }
-        if queue.is_empty() {
-            continue;
-        }
-
-        let mut closed = false;
-        converter.push(queue.make_contiguous(), |frame| {
-            if !closed {
-                closed = tx.blocking_send(Ok(speaker_frame(frame))).is_err();
-            }
-        });
-        if closed {
-            let _ = capture.audio_client.stop_stream();
-            return None;
-        }
-    }
-}
-
-/// Stop the old capture and continue on `next`, with no segment boundary.
-fn switch(
-    capture: &mut LoopbackCapture,
-    next: LoopbackCapture,
-    converter: &mut Converter,
-    follower: &mut EndpointFollower,
-) {
-    let _ = capture.audio_client.stop_stream();
-    *capture = next;
-    converter.switch(capture.format);
-    *follower = EndpointFollower::new(capture.device_id.clone());
-    log::info!(
-        "WASAPI loopback switched to {:?} at {} Hz, {} channel(s)",
-        capture.device_name,
-        capture.format.sample_rate,
-        capture.format.channels
-    );
-}
-
-fn poll_render_endpoint_switch(
-    enumerator: &DeviceEnumerator,
-    follower: &mut EndpointFollower,
-) -> Option<Device> {
-    let device = match open_render_device(enumerator) {
-        Ok(device) => device,
-        Err(_) => {
-            follower.reset();
-            return None;
-        }
-    };
-    let device_id = match device.get_id() {
-        Ok(device_id) => device_id,
-        Err(_) => {
-            follower.reset();
-            return None;
-        }
-    };
-    follower.observe(device_id).map(|_| device)
-}
-
 pub(crate) fn open_loopback_capture(device: Device) -> Result<LoopbackCapture, Error> {
-    let device_id = device.get_id().map_err(|e| failed("render device id", e))?;
     let device_name = device.get_friendlyname().ok();
     let (mut audio_client, accepted_format, buffer_duration_hns) =
         open_endpoint_loopback_client(&device)?;
@@ -305,10 +112,9 @@ pub(crate) fn open_loopback_capture(device: Device) -> Result<LoopbackCapture, E
 
     Ok(LoopbackCapture {
         audio_client,
-        event,
+        _event: event,
         capture_client,
         format: format.pcm()?,
-        device_id,
         device_name,
     })
 }
@@ -352,50 +158,4 @@ pub(crate) fn drain_packets(
             Err(e) => return Err(failed("WASAPI packet size", e)),
         }
     }
-}
-
-fn open_render_device(enumerator: &DeviceEnumerator) -> Result<Device, Error> {
-    let default = enumerator
-        .get_default_device(&Direction::Render)
-        .map_err(|e| failed("default render device", e))?;
-
-    Ok(render_device_in_use(enumerator, &default).unwrap_or(default))
-}
-
-// Meeting apps often play through an endpoint that is not the system default. When another process
-// is actively rendering somewhere, follow it; the default wins ties so unrelated playback on a
-// secondary device does not pull us away from a meeting on the default one.
-fn render_device_in_use(enumerator: &DeviceEnumerator, default: &Device) -> Option<Device> {
-    if has_foreign_active_session(default) {
-        return None;
-    }
-
-    let collection = enumerator.get_device_collection(&Direction::Render).ok()?;
-    collection
-        .into_iter()
-        .filter_map(|device| device.ok())
-        .find(has_foreign_active_session)
-}
-
-fn has_foreign_active_session(device: &Device) -> bool {
-    let self_pid = std::process::id();
-    let Ok(manager) = device.get_iaudiosessionmanager() else {
-        return false;
-    };
-    let Ok(sessions) = manager.get_audiosessionenumerator() else {
-        return false;
-    };
-    let Ok(count) = sessions.get_count() else {
-        return false;
-    };
-
-    (0..count).any(|index| {
-        sessions.get_session(index).ok().is_some_and(|session| {
-            session.get_state().ok() == Some(SessionState::Active)
-                && session
-                    .get_process_id()
-                    .ok()
-                    .is_some_and(|pid| pid != 0 && pid != self_pid)
-        })
-    })
 }
