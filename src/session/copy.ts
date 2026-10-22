@@ -57,24 +57,3 @@ export function tabHtml(tab: CopyTab, text: string): string {
   if (tab === "summary") return parseMarkdown(text).map((block) => `${blockHtml(block)}\n`).join("");
   return markdown.render(text);
 }
-
-/// Write `text` and `html` to the clipboard as one item. When the clipboard
-/// refuses the item, write `text` only. False when the clipboard refuses both.
-export async function copyText(text: string, html: string): Promise<boolean> {
-  try {
-    // The first format is the one that a native app takes first.
-    const item = new ClipboardItem({
-      "text/html": new Blob([html], { type: "text/html" }),
-      "text/plain": new Blob([text], { type: "text/plain" }),
-    });
-    await navigator.clipboard.write([item]);
-    return true;
-  } catch {
-    try {
-      await navigator.clipboard.writeText(text);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-}

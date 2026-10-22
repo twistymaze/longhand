@@ -26,6 +26,7 @@ import {
   type WaitingPart,
 } from "../bindings";
 import { rowTitle } from "../home/group";
+import { copySelection, copyText } from "../lib/clipboard";
 import { sameType } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
@@ -39,7 +40,7 @@ import { NotesTab } from "./NotesTab";
 import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { PauseButton, RecordingBar, StopButton } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
-import { copyText, tabHtml, tabMarkdown } from "./copy";
+import { tabHtml, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
 import { type Notice, TitleField, type TitleFieldHandle } from "./TitleField";
@@ -939,6 +940,7 @@ export function SessionPage({
         className="min-h-0 flex-1 overflow-y-auto bg-pane select-text"
         // The header shows its bottom line only while content is under it.
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
+        onCopy={(e) => copySelection(e.nativeEvent)}
       >
         <div className="note-column pt-6 pb-1">
           <TitleField

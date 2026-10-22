@@ -1309,6 +1309,14 @@ async licenceText() : Promise<string> {
     return await TAURI_INVOKE("licence_text");
 },
 /**
+ * Write `text` and `html` to the clipboard as one item, and nothing else.
+ * False when the platform has no native write; the webview then writes
+ * the clipboard itself.
+ */
+async writeClipboard(text: string, html: string) : Promise<boolean> {
+    return await TAURI_INVOKE("write_clipboard", { text, html });
+},
+/**
  * Write one line from the webview to the app log. Async, so that the line
  * does not wait for the main thread.
  */
