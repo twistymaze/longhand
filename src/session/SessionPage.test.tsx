@@ -698,6 +698,45 @@ describe("SessionPage", () => {
       ]);
     });
 
+    test("Covers R10. A second choice while the first change is pending keeps the first choice", async () => {
+      let release: () => void = () => {};
+      const first = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let sent = 0;
+      const tauri = mockPage(rec, {}, {
+        list_microphones: () => microphones,
+        list_running_apps: () => [
+          { ...discord, call_app: true },
+          { ...zoom, call_app: true },
+        ],
+        set_note_apps: async () => {
+          sent += 1;
+          if (sent === 1) await first;
+          return { ...idle, session_id: "rec", recording: true };
+        },
+      });
+      renderPage({ id: "rec", capture: withStatus({ note_apps: [zoom, teams] }), sessions: sessionsOf([rec]) });
+      const user = userEvent.setup();
+      const openApps = async () => {
+        await user.click(screen.getByRole("button", { name: "Actions" }));
+        await user.click(await screen.findByRole("menuitem", { name: "App Audio" }));
+      };
+      await openApps();
+      await user.click(await screen.findByRole("menuitemcheckbox", { name: "Discord" }));
+      await openApps();
+      const discordItem = await screen.findByRole("menuitemcheckbox", { name: "Discord" });
+      expect(discordItem.getAttribute("aria-checked")).toBe("true");
+      await user.click(screen.getByRole("menuitemcheckbox", { name: "Microsoft Teams (not running)" }));
+      release();
+      await waitFor(() =>
+        expect(tauri.calls.filter((c) => c.cmd === "set_note_apps").map((c) => c.args)).toEqual([
+          { sessionId: "rec", apps: [zoom, teams, discord] },
+          { sessionId: "rec", apps: [zoom, discord] },
+        ]),
+      );
+    });
+
     test("Covers R17. On older Windows, the note menu has no App Audio submenu", async () => {
       const tauri = mockPage(rec, {}, { list_microphones: () => microphones, app_audio_available: () => false });
       renderPage({ id: "rec", capture: withStatus({}), sessions: sessionsOf([rec]) });

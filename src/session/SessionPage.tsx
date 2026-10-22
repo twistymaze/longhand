@@ -634,6 +634,22 @@ export function SessionPage({
     await capture.refresh();
   };
 
+  // A choice in the App Audio submenu builds the next set from the set
+  // that the menu shows. Until the status shows a change, the menu shows
+  // the set that was sent, and the changes go out one at a time in order,
+  // so two quick choices do not replace each other.
+  const [pendingApps, setPendingApps] = useState<ListedApp[] | null>(null);
+  const appsChange = useRef({ count: 0, queue: Promise.resolve() });
+  const changeApps = (next: ListedApp[]) => {
+    const change = appsChange.current;
+    const count = ++change.count;
+    setPendingApps(next);
+    change.queue = change.queue.then(async () => {
+      await changeInput(() => commands.setNoteApps(id, next));
+      if (change.count === count) setPendingApps(null);
+    });
+  };
+
   const items: MenuItem[] = [];
   if (phase === "recording" && capture.status?.recording) {
     items.push({ label: "Number of Speakers…", onSelect: () => setSpeakers(true) });
@@ -651,9 +667,7 @@ export function SessionPage({
       items.push({
         label: "App Audio",
         onSelect: () => {},
-        submenu: appItems(running.apps, capture.status.note_apps, (next) =>
-          void changeInput(() => commands.setNoteApps(id, next)),
-        ),
+        submenu: appItems(running.apps, pendingApps ?? capture.status.note_apps, changeApps),
       });
     }
   }
