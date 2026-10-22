@@ -105,6 +105,25 @@ async fn a_tone_from_this_process_is_not_in_the_tap() {
     assert!(peak < FLOOR, "the tap excludes this process, peak {peak}");
 }
 
+/// U1: print each audio process and the app that owns its sound. Run it
+/// during a call to see which processes play the call.
+#[cfg(target_os = "macos")]
+#[test]
+#[ignore = "prints the audio processes of this Mac"]
+fn list_the_audio_processes_and_their_apps() {
+    let processes = audio_system::apps::audio_processes();
+    assert!(!processes.is_empty(), "the audio system lists processes");
+    for p in &processes {
+        println!(
+            "object {:>5} pid {:>6} bundle {:<50} app {}",
+            p.object,
+            p.pid,
+            p.bundle_id.as_deref().unwrap_or("-"),
+            audio_system::apps::app_of(p).as_deref().unwrap_or("-"),
+        );
+    }
+}
+
 /// AE2: an app that starts to play after the app tap opens is recorded.
 /// Set `LONGHAND_TEST_APP` to the app's bundle ID (for example
 /// `us.zoom.xos`), start the test, then start audio in that app within
