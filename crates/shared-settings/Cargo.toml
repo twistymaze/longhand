@@ -21,6 +21,11 @@ summarize = { path = "../summarize" }
 thiserror.workspace = true
 uuid.workspace = true
 
+# `openat` with `O_NOFOLLOW`, so that a read does not follow a link that
+# a sync puts in place after the check.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 # The name of the hidden Longhand folder must match the library scan.
 library = { path = "../library" }
