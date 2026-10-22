@@ -19,7 +19,7 @@ export async function copyText(text: string, html: string): Promise<boolean> {
   try {
     if (await commands.writeClipboard(text, html)) return true;
   } catch {
-    // No native write (outside the app). The webview writes the clipboard.
+    // Outside the app there is no native write.
   }
   try {
     // The first format is the one that a native app takes first.
@@ -53,13 +53,10 @@ export function writeCopyEvent(event: ClipboardEvent, text: string, html: string
 
 // The elements that a copy keeps, with no attributes other than a link
 // address. Each other element gives only its content.
-const KEPT = new Set([
-  "h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "blockquote", "pre",
-  "strong", "b", "em", "i", "code", "a", "s", "del", "mark", "br",
-]);
 const BLOCKS = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "li", "blockquote", "pre"]);
 // The kept elements that style a part of a line.
 const RUNS = new Set(["strong", "b", "em", "i", "code", "a", "s", "del", "mark"]);
+const KEPT = new Set([...BLOCKS, ...RUNS, "br"]);
 // The containers that the page uses for layout. One that holds only text
 // and runs becomes a paragraph, so that each line of the page stays a line.
 const BOXES = new Set(["div", "section", "article", "header", "footer", "main"]);
@@ -120,12 +117,15 @@ export function rangeHtml(range: Range): string {
   if (parent.nodeType !== Node.ELEMENT_NODE) parent = parent.parentNode;
   for (; parent !== null && parent.nodeType === Node.ELEMENT_NODE; parent = parent.parentNode) {
     const tag = (parent as Element).tagName.toLowerCase();
-    if (BLOCKS.has(tag) && !(listItems && (tag === "ul" || tag === "ol"))) break;
-    if (!RUNS.has(tag) && tag !== "ul" && tag !== "ol") continue;
+    const list = listItems && (tag === "ul" || tag === "ol");
+    if (!list && !RUNS.has(tag)) {
+      if (BLOCKS.has(tag)) break;
+      continue;
+    }
     const wrap = keptCopy(parent as Element);
     wrap.append(...Array.from(out.childNodes));
     out.appendChild(wrap);
-    if (tag === "ul" || tag === "ol") break;
+    if (list) break;
   }
   return out.innerHTML;
 }

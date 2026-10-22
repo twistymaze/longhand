@@ -875,7 +875,6 @@ export function SessionPage({
         className="min-h-0 flex-1 overflow-y-auto bg-pane select-text"
         // The header shows its bottom line only while content is under it.
         onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
-        // A copy of the summary or the transcript keeps its structure, not its colours.
         onCopy={(e) => copySelection(e.nativeEvent)}
       >
         <div className="note-column pt-6 pb-1">
