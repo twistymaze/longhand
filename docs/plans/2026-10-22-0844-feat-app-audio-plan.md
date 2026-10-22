@@ -153,13 +153,13 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
   The resolver takes an injected process lookup and is unit-tested like `is_mixer`. U1 confirms the mapping on real calls. Covers R8.
 - KTD3. **macOS uses one include tap (`TapDesc::with_mono_mixdown_of_processes`) and changes its process list in place.** The existing `drain` loop already calls `tap.set_desc` every 500 ms without a restart (`crates/audio-system/src/macos.rs`). The include list is resolved again at each check, so apps that start or quit (R7) and checks in the note menu (R10) change the tap with no new segment. When the note's app set has no running process, the thread keeps no tap and delivers silence; U1 decides whether a tap can start with an empty list. Longhand's own process is never in an include list (R9). Covers R6, R7, R9, R10.
 - KTD4. **Windows uses one per-process loopback client for each running listed app, mixed in the capture thread.** The client is `AudioClient::new_application_loopback_client(root_pid, true)` (`wasapi` 0.23). The flag must be `true`: `false` means "all sound except this tree". One client is opened per root process of each listed app, at f32 48 kHz with autoconvert. A client sends no packets while its app is silent, and the joiner already fills an empty queue with silence (KTD5 of the earlier plan). A version check (`RtlGetVersion`, build 20348 or later) gates the whole feature (R17). Covers R6, R7, R17.
-- KTD5. **The Windows Teams fallback is device loopback, active while a Teams audio session is active.** While a session of `ms-teams` is in the Active state, the thread stops the per-process clients and captures the render endpoint of that session, using the parked `EndpointFollower` loopback restricted to Teams' sessions. When no Teams session is active for two polls, it returns to per-process clients. Process loopback in exclude mode is not used, because anarlog found it also gives Teams silence. If U1 shows that per-process loopback now records Teams, this KTD and R19–R20 are removed before U4 is built. (session-settled: user-directed — chosen over "Teams unsupported", a silence detector and "Windows later"; see KD12.) Governs R19.
-- KTD6. **The note turns two-channel when the first app frame is above a low level.** While the note records at least one app and is still one channel, the app stream is open as a watch stream. Its first frame with a peak above a fixed threshold (the value is set in U1 from idle-app recordings) starts the existing mono-to-stereo switch. The watch stream becomes the attached stream (`EarlySpeaker`), so the gap at the split stays a few milliseconds. The joiner keeps 60 ms of app audio, so most of the first second of app sound is lost; R12 accepts this. Covers R12.
+- KTD5. **The Windows Teams fallback is device loopback, active while Teams' own output meter shows sound.** The thread reads the peak meter (`IAudioMeterInformation`) of each render session that belongs to Teams, every 200 ms. A session belongs to Teams when its process, or a parent in its process chain, is `ms-teams`; U1 records which process owns the call session. At the first reading above the threshold, the thread stops the per-process clients and captures all sound of that session's render endpoint, with the parked endpoint loopback. The Teams session only selects the mode and the device. After 2 s with no Teams sound, it returns to per-process clients. A session that is open but silent does not start the mode, so R19's "while Teams plays" holds. Process loopback in exclude mode is not used, because anarlog found it also gives Teams silence. If U1 shows that per-process loopback now records Teams, stop and ask the user before KTD5, R19–R20 and KD12 are removed. (session-settled: user-directed — chosen over "Teams unsupported", a silence detector and "Windows later"; see KD12.) Governs R19.
+- KTD6. **The note turns two-channel when the first app frame is above a low level.** While the note records at least one app and is still one channel, the app stream is open as a watch stream. Its first frame with a peak above a fixed threshold (the value is set in U1 from idle-app recordings) starts the existing mono-to-stereo switch. The watch stream becomes the attached stream (`EarlySpeaker`), so the gap at the split stays a few milliseconds. App sound from the trigger frame until the stereo segment is attached is lost, because the joiner keeps only 60 ms of queued app audio. U8 measures this loss; it must stay within R12's half second. If it does not, U8 writes the queued frames from the trigger into the start of the stereo segment. Covers R12.
 - KTD7. **The note's app set is stored in the session store.** A new migration (the next free number, `0021` today) adds an app set column with the IDs, names and paths of the note's apps. It replaces the parked `system_audio` flag as the source of the per-note choice. Covers R10, R21.
 - KTD8. **The Settings list is a per-computer setting.** `LocalSettings` gets the list with `#[serde(default)]`, so no settings migration is needed. App IDs differ by platform, so the list is not a shared setting. `system_audio_default` is removed. Covers R1, R11.
 - KTD9. **One shared function makes the plain mix: the sum of both channels, clamped to the sample range.** The live mix (`crates/pipeline/src/live/archive.rs`) and processing after Stop (`crates/pipeline/src/assemble.rs`) call the same function, so the live text and the final text hear the same audio. The clamp is the overflow rule. Covers R13, R14.
 - KTD10. **Echo processing is deleted, and the echo row stays as a "done" record.** Assemble saves the existing echo row of a stereo segment with no spans and gains of 1.0. The Assemble checkpoint (`assemble.rs`, `echo::saved`) and the Transcribe merge (`without_echo`) then stay unchanged. The echo probe, the canceller (`crates/aec` and its model), the live echo gate, `mic_copy.rs` and the silence check are deleted. If per-channel processing returns, git has the code. Covers R14, R16, R18.
-- KTD11. **The permission prompt keeps the parked whole-computer tap of about 0.5 s.** It records nothing that is kept, and it triggers the same `kTCCServiceAudioCapture` prompt. The status still comes from the preflight with the child-process re-check (`docs/solutions/integration-issues/tcc-preflight-stale-after-tap-prompt-grant.md`), never from the audio. Covers R15.
+- KTD11. **The permission prompt keeps the parked whole-computer tap of about 0.5 s.** It is not a capture under R18: no audio is read or kept. It excludes only Longhand's own process, and it triggers the same `kTCCServiceAudioCapture` prompt. The status still comes from the preflight with the child-process re-check (`docs/solutions/integration-issues/tcc-preflight-stale-after-tap-prompt-grant.md`), never from the audio. Covers R15.
 - KTD12. **The add list reads running apps with a window.** macOS: `NSWorkspace` running applications with the regular activation policy. Windows: processes that own a visible top-level window, deduplicated by app ID. Longhand is left out; mixer apps are not. Each read is numbered so a stale reply is dropped (`docs/solutions/performance-issues/sync-tauri-commands-froze-the-app-on-a-slow-folder-or-microphone.md`). Covers R2, R3, R10.
 - KTD13. **The common call apps are a fixed table of dedicated call apps, with no browsers.** macOS: Teams (`com.microsoft.teams2`), Zoom (`us.zoom.xos`), Discord (`com.hnc.Discord`), Slack (`com.tinyspeck.slackmacgap`), Webex and FaceTime (`com.apple.FaceTime`). Windows: the same apps by executable name. U2 verifies each ID on a real install. Covers R3.
 
@@ -194,6 +194,7 @@ stateDiagram-v2
   [*] --> Watching: app set not empty
   Watching --> TwoChannel: first app frame above the level
   Watching --> MicOnly: last app unchecked
+  MicOnly --> Watching: app checked (macOS, Windows 11)
   TwoChannel --> TwoChannel: apps start, quit, or are checked (no new segment)
   TwoChannel --> Failed: app stream ends and the reopen fails
   Failed --> TwoChannel: reopen succeeds
@@ -210,7 +211,7 @@ After the first stereo segment, every reopen (restart, Continue, wake, Resume) o
 
 ### Sequencing
 
-U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on capture work and can run in parallel with U2–U4. The frontend (U9) comes after the commands (U6, U8).
+U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on capture work and can run in parallel with U2–U4. The frontend (U9) comes after the commands (U6, U8). Each unit's commit compiles the workspace: a unit deletes only code with no caller outside its own crate, and U8 deletes the parked items that `capture.rs` still uses (`is_mixer` callers, `mic_copy.rs`, `silence.rs`, the other-output status, `system_audio_default` and `CaptureChoice.system_audio`).
 
 ### System-Wide Impact
 
@@ -227,11 +228,11 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 | An app plays its sound through a process that the resolver does not map (for example a new Teams helper). | U1 measures each call app before the resolver is fixed; a failed mapping stops the work (Goal Capsule). |
 | The Safari mapping uses a private function (`responsibility_get_pid_responsible_for_pid`). | Loaded at run time like the TCC preflight; when it is missing, WebKit processes map to nothing and Safari records silence, with no crash. |
 | An idle app crosses the level threshold and turns a room note two-channel. | The threshold comes from U1's idle measurements. The cost of a wrong switch is only file size. |
-| Windows Teams changes again, so the fallback records the wrong device or per-app capture starts to work. | U1 checks both on the current Teams; KTD5 is removed if per-app capture works. |
+| Windows Teams changes again, so the fallback records the wrong device or per-app capture starts to work. | U1 checks both on the current Teams; if per-app capture works, the user decides whether KTD5 is removed. |
 
 ### Considered and Not Built
 
-- **A buffer that keeps the first app sound at the change to two channels.** It needs a new path past the joiner's 60 ms limit. A call starts with a join sound, so the loss rarely costs words. Build it if test notes lose the first words of calls.
+- **A buffer that keeps the first app sound at the change to two channels, when the measured loss is within half a second.** It needs a new path past the joiner's 60 ms limit. U8 builds it only when its measurement exceeds R12's bound (KTD6).
 - **A detector for silent per-app capture on Windows.** OpenWhispr built one; Longhand avoids the need by choosing the Teams mode from Teams' session state (KTD5). Build it if another app shows the Teams problem.
 - **A refusal to add mixer apps.** The user chooses the list; adding a mixer app is a deliberate choice.
 - **The macOS 26 tap restore by bundle ID (`set_bundle_ids`).** The minimum macOS is 15.0, so the polling include list is needed anyway.
@@ -262,13 +263,13 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 - **Approach:**
   1. Add `#[ignore]` hardware tests that list the Core Audio process objects with bundle ID, PID, responsible PID and `is_running_output`, and print their outermost app.
   2. Add a test that opens an include tap for one app's processes, reports the peak level for 10 s, and changes the list from empty to one app with `set_desc`.
-  3. On Windows 11, add a test that opens a per-process loopback client for a named executable and reports its peak, and the same for device loopback.
+  3. On Windows 11, add a test that opens a per-process loopback client for a named executable and reports its peak, and the same for device loopback. The test also lists every render session with its state, peak meter, process ID, executable and parent chain. Run it while Teams is idle, during a Teams call, and after the call.
   4. Run them during real calls in Teams, Zoom, Discord, FaceTime, Chrome (Google Meet) and Safari on macOS, and in Teams and Zoom on Windows 11. Also record the peak of each app while it is idle.
   5. Record the results in the PR description and in a new `docs/solutions/` entry. Change KTD2, KTD3, KTD5 or KTD6 in this plan when a result contradicts them.
 - **Execution note:** This is a manual hardware step. Build the signed bundle identity before the macOS run (TCC attributes the tap to it), and give the user the exact steps for each call.
 - **Patterns to follow:** the existing `crates/audio-system/tests/hardware.rs` tests and their run command.
 - **Test scenarios:** Test expectation: none -- these are measurement tests that print results; they assert only that the APIs open.
-- **Verification:** Each listed call app has a recorded process mapping and peak result on each platform, and the plan's KTDs match the results.
+- **Verification:** Each listed call app has a recorded process mapping and peak result on each platform, the executable that owns the Teams call session on Windows is recorded, and the plan's KTDs match the results.
 
 ### U2. App identity, resolver and running apps
 
@@ -281,7 +282,8 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
   2. Add the system aliases of KTD2 and the call-app table of KTD13.
   3. Add `running_apps()` for each platform (KTD12) and an icon read from the app path that returns PNG bytes, or nothing when it fails (the UI then shows a generic icon).
   4. Add the Windows build check of KTD4. macOS always reports supported.
-  5. Remove the mixer constants and `is_mixer` (KD1). Record the borrowed anarlog mapping in `PROVENANCE.md`.
+  5. Add an ignored hardware test that reads the bundle ID or executable name of each installed call app in the KTD13 table and reports a mismatch.
+  6. Record the borrowed anarlog mapping in `PROVENANCE.md`.
 - **Patterns to follow:** `reference-source/anarlog/crates/detect/src/list/macos.rs` (`find_outermost_app`, `APPLE_CALL_DAEMON_IDS`) and `list/windows.rs`; `crates/power` for the `objc2-app-kit` `NSWorkspace` use.
 - **Test scenarios:**
   - A Chrome Helper process inside `Google Chrome.app` resolves to `com.google.Chrome`.
@@ -292,23 +294,25 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
   - The call-app table adds only running apps that are not on the list, and returns an empty result when none runs.
   - Windows: an executable name `MS-Teams.exe` gives the ID `ms-teams`.
   - The version check accepts build 20348 and later, and refuses 19045.
-- **Verification:** The resolver tests pass, and the U1 hardware test prints the same mapping as the resolver.
+- **Verification:** The resolver tests pass, the U1 hardware test prints the same mapping as the resolver, and the call-app ID test reports no mismatch on the installed apps.
 
 ### U3. macOS include tap
 
 - **Goal:** The macOS backend records the note's app set, and the set can change while the tap runs.
 - **Requirements:** R6, R7, R8, R9, R10; KTD3.
 - **Dependencies:** U2.
-- **Files:** `crates/audio-system/src/macos.rs`, `crates/audio-system/src/lib.rs`, `crates/audio-system/tests/hardware.rs`.
+- **Files:** `crates/audio-system/src/macos.rs`, `crates/audio-system/src/lib.rs`, `crates/audio-system/src/permission.rs`, `crates/audio-system/tests/hardware.rs`.
 - **Approach:**
   1. `open` takes the app set. The thread resolves it with U2 at each 500 ms check and calls `set_desc` with the include list when the process set changed.
   2. Add a command to replace the app set while the stream runs, for R10.
   3. With no running process in the set, deliver silence and keep or create no tap, as U1 decided.
-  4. Delete the exclusion path (`Exclusion`, `mixers()`), `silence.rs` and the other-output status.
+  4. Keep a private function that opens the whole-computer tap with only Longhand's own process excluded, and make `permission::request_unless` call it in place of `open` (KTD11).
+  5. Delete the mixer exclusion (`Exclusion`, `mixers()`). The mixer constants, `is_mixer`, `silence.rs` and the other-output status go in U8, with their callers.
 - **Patterns to follow:** the current `drain` loop and its `Exclusion::now()` comparison.
 - **Test scenarios:**
   - The process-set comparison reports a change when an app's process appears and when it quits, and no change when the order differs.
   - Replacing the app set with an empty set gives a silence-only stream with no error.
+  - The permission request opens a tap also when the app set is empty.
   - Hardware (ignored): Zoom started after the tap opens is recorded within one check (AE2).
 - **Verification:** The hardware test records a call app that starts after the tap opens, and the unit tests pass.
 
@@ -319,13 +323,16 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 - **Dependencies:** U2.
 - **Files:** `crates/audio-system/src/windows.rs`, `crates/audio-system/src/follow.rs`, `crates/audio-system/tests/hardware.rs`.
 - **Approach:**
-  1. Open one include-tree client for each root process of each running listed app, and mix them in the capture thread before the resampler.
-  2. Find new and ended processes on the existing 2 s poll, and open or close clients.
-  3. Add the Teams mode of KTD5: watch the state of Teams' audio sessions and switch between device loopback and per-process clients after two agreeing polls.
+  1. Open one include-tree client for each root process of each running listed app. The thread waits on all client events, buffers each client, and emits the sum in fixed 10 ms blocks timed by the wall clock. A client with no samples for a block adds silence; samples older than one block are dropped.
+  2. Open clients for new processes from audio-session notifications (`IAudioSessionNotification`), and keep the existing 2 s poll to find ended processes and missed events.
+  3. Add the Teams mode of KTD5: read the Teams sessions' peak meters every 200 ms, enter device loopback at the first reading above the threshold, and return to per-process clients after 2 s with no Teams sound.
   4. Refuse to open on a build before 20348, with a status the UI reads (R17).
 - **Patterns to follow:** `EndpointFollower` and `has_foreign_active_session` in `windows.rs` and `follow.rs`.
 - **Test scenarios:**
-  - The mode decision returns device loopback only after two polls with an active Teams session, and returns per-process after two polls without one.
+  - The mode decision returns device loopback at the first Teams meter reading above the threshold, and returns per-process only after 2 s of readings below it.
+  - An open Teams session whose meter stays below the threshold never starts device loopback.
+  - A session owned by a helper process whose parent chain includes `ms-teams` counts as a Teams session.
+  - Two clients whose packets arrive 5 ms apart give one stream with real-time length, not twice the length.
   - The mode decision never uses device loopback when Teams is not in the app set, also when Teams plays.
   - Two clients with frames at the same time give their sum; a client with no packets adds nothing.
   - Hardware (ignored, Windows 11): a Teams call gives a non-zero peak in Teams mode (AE8); a Zoom call gives a non-zero peak through per-process capture.
@@ -336,11 +343,11 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 - **Goal:** The live transcript and processing use the same plain mix, and the echo code is gone.
 - **Requirements:** R13, R14, R16; KTD9, KTD10.
 - **Dependencies:** None.
-- **Files:** `crates/audio/src/live_mix.rs`, `crates/audio/src/mic_copy.rs` (delete), `crates/audio/tests/live_mix.rs`, `crates/pipeline/src/live/archive.rs`, `crates/pipeline/src/echo.rs`, `crates/pipeline/src/assemble.rs`, `crates/pipeline/tests/assemble.rs`, `crates/pipeline/tests/live.rs`, `crates/pipeline/tests/runner.rs`, `crates/aec` (delete), `crates/audio-sync` (delete if unused), `Cargo.toml`, `licences/generated/`.
+- **Files:** `crates/audio/src/live_mix.rs`, `crates/audio/tests/live_mix.rs`, `crates/pipeline/src/live/archive.rs`, `crates/pipeline/src/echo.rs`, `crates/pipeline/src/assemble.rs`, `crates/pipeline/tests/assemble.rs`, `crates/pipeline/tests/live.rs`, `crates/pipeline/tests/runner.rs`, `crates/aec` (delete), `crates/audio-sync` (delete if unused), `Cargo.toml`, `licences/generated/`.
 - **Approach:**
   1. Replace `LiveMix` with the shared plain mix of KTD9 and use it in the live archive and in Assemble.
   2. Make Assemble save the echo row with no spans and gains of 1.0 (KTD10).
-  3. Delete the probe, the canceller, the echo gate, `mic_copy.rs`, the `aec` crate and its model, and any crate that is no longer used. Run `scripts/check-licences.sh` and commit its output.
+  3. Delete the probe, the canceller, the echo gate, the `aec` crate and its model, and any crate that is no longer used. `mic_copy.rs` goes in U8, with its callers in `capture.rs`. Run `scripts/check-licences.sh` and commit its output.
   4. Rewrite the stereo tests in `assemble.rs`, `live.rs` and `runner.rs` to expect the plain mix.
 - **Execution note:** Write the new plain-mix tests first, with sample-exact expected values, so they fail on the old gain-matched mix (`docs/solutions/test-failures/tests-passed-while-the-behaviour-in-their-names-was-broken.md`).
 - **Test scenarios:**
@@ -359,9 +366,9 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 - **Dependencies:** U2.
 - **Files:** `src-tauri/src/managers/settings.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/commands/readiness.rs`, `src-tauri/src/lib.rs`, `src/bindings.ts`.
 - **Approach:**
-  1. Add the list to `LocalSettings` and `Settings`; remove `system_audio_default`.
+  1. Add the list to `LocalSettings` and `Settings`. `system_audio_default` goes in U8, with its callers.
   2. Add async commands that run through `commands::blocking`: running apps, add one app, add call apps, remove an app, app icon, and app audio availability (R17).
-  3. When an add makes the list non-empty on macOS and the permission is "not asked", start the existing request (KTD11). One add of several call apps asks once.
+  3. On macOS, any add while the permission is "not asked" starts the existing request (KTD11). U8 calls the same function for an add in the note menu. One add of several call apps asks once.
   4. Remove `set_system_audio_default`; regenerate the bindings.
 - **Patterns to follow:** `set_microphone` and its validation; the settings tests for missing keys, round trip and a malformed value.
 - **Test scenarios:**
@@ -379,7 +386,7 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 - **Requirements:** R10, R21; KTD7.
 - **Dependencies:** None.
 - **Files:** `crates/session-core/migrations/0021_note_app_set.sql` (new; take the next free number at merge), `crates/session-core/src/schema.rs`, `crates/session-core/src/jobs.rs`, `crates/session-core/tests/` (the store tests).
-- **Approach:** Add the column, read and write it with the capture choice (`CaptureChoice`), and stop using the `system_audio` flag.
+- **Approach:** Add the column and read and write it with the capture choice (`CaptureChoice`). The `system_audio` field stays until U8 removes its callers.
 - **Patterns to follow:** `0006_capture_choice_and_channels.sql` and `capture_choice` / `set_capture_choice`.
 - **Test scenarios:**
   - A database at the previous schema with rows migrates, and old notes read an empty app set.
@@ -397,9 +404,10 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
   1. At note start, copy the Settings list into the note's app set (R21). Continue, Resume and every reopen use the stored set. Re-resolve processes at each reopen, also after wake.
   2. Replace the `system_audio` flag with the app set in `capture_choice_at_start`, `ActiveSegment` and `segment_channels`. Remove `SYSTEM_AUDIO_AVAILABLE` and `held_system_audio`.
   3. While the note is one channel and the set is not empty, open the app stream as a watch stream on its own thread. On its first frame above the threshold, run the existing `ToStereo` switch with the stream as `EarlySpeaker` (KTD6).
-  4. Replace `set_note_system_audio` with `set_note_apps`. It stores the set, sends the new set to the running stream, opens a watch stream when the set was empty, and closes it when the set becomes empty before the note is two-channel. On macOS, the first app of a note asks for the permission when it is "not asked".
-  5. Trim `RecordingStatus` to the app audio state: recording, not allowed, failed. Show "failed" only after the capture watcher's reopen fails (R16). Remove the silence, other-output and microphone-copy fields.
-  6. Return no app set and open no app stream on Windows before build 20348.
+  4. Replace `set_note_system_audio` with `set_note_apps`. It stores the set, sends the new set to the running stream, opens a watch stream when the set was empty, and closes it when the set becomes empty before the note is two-channel. On macOS, an add while the permission is "not asked" starts the request of U6.
+  5. Trim `RecordingStatus` to the app audio state: recording, not allowed, failed. Show "failed" only after the capture watcher's reopen fails (R16). Remove the silence, other-output and microphone-copy fields, and delete the code that only they used: `mic_copy.rs`, `silence.rs`, the other-output status, the mixer constants and `is_mixer`, `system_audio_default` and `CaptureChoice.system_audio`.
+  6. Measure the app sound lost at the switch (KTD6) in a test with a fake stream; if it exceeds half a second, write the queued frames from the trigger into the start of the stereo segment.
+  7. Return no app set and open no app stream on Windows before build 20348.
 - **Patterns to follow:** `set_note_system_audio`, `open_speaker_later`, `EarlySpeaker`, the capture watcher (`run_capture_watch`, `speaker_reopens`) and the `stereo(id, on)` test helpers.
 - **Test scenarios:**
   - A note with an empty set opens a one-channel segment and no app stream (AE6).
@@ -479,6 +487,7 @@ Every test run that a worker starts has a time limit. Time tests compare parsed 
 - AE4: Elgato Wave Link running and not on the list during a call.
 - AE5: the permission denied (`tccutil reset AudioCapture net.ewal.longhand`, then deny), with Teams on the list.
 - AE6: a room meeting with an empty list.
+- AE7: Chrome on the list and a video playing in a Chrome tab during a room meeting.
 - AE8: on Windows 11, a Teams call and then a Zoom call, from the release installer of the PR's merge or a CI build.
 
 ---
@@ -486,7 +495,7 @@ Every test run that a worker starts has a time limit. Time tests compare parsed 
 ## Definition of Done
 
 - Every unit's verification holds, and all gates in the Verification Contract pass.
-- The manual tests AE1–AE6 pass on macOS in the signed bundle, and AE8 passes on Windows 11.
+- The manual tests AE1–AE7 pass on macOS in the signed bundle, and AE8 passes on Windows 11.
 - No code refers to `SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`, `system_audio_default`, `mic_copy` or `crates/aec`.
 - Code from abandoned attempts, for example a U1 approach that did not work, is removed from the diff.
 - The PR title is a `feat` Conventional Commit; ask the user "patch or minor?" before the PR opens.
