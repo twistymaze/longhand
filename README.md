@@ -25,7 +25,7 @@ Longhand has no built-in sync. If you want your notes on more than one computer,
 
 ## How it works
 
-- **It records from your microphone.** That works in a room, and on a call when your microphone can hear the other people. Direct recording of system audio is coming soon.
+- **It records your microphone and your call apps.** Add apps such as Teams, Zoom or a browser in Settings, and each note also records their sound, so the other people on a call are clear. App audio needs Windows 11 on Windows.
 - **Long sessions work.** Longhand supports sessions of four hours and more.
 - **Organization stays small.** Each note has a note type and any number of tags.
 

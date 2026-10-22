@@ -21,6 +21,10 @@ The capture works, but processing a stereo note is not reliable. The mono mix ma
 **2026-10-22:** [App audio](../next/app-audio.md) replaces the whole-computer capture with the audio of the apps on a list and a plain mix, from the user's Loopback setup. Per-channel processing below stays parked.
 
 ## Current state
+- **App audio removed the whole-computer feature:** the Computer audio switch and menu item, `SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`, the global tap with the mixer exclusion, the Windows other-output warning, the silence warning, the copy check (`mic_copy.rs`), the echo gate, echo removal (`crates/aec`) and the delay probe (`crates/audio-sync`). The sections below describe what archived PR 12 built. The macOS global tap stays only for the permission request.
+- Only [per-channel processing](#process-each-channel-on-its-own) is still parked here.
+
+### History
 - Planned in `docs/plans/2026-09-26-0827-feat-system-audio-and-microphone-choice-plan.md` and built in archived PR 12:
   - a Computer audio switch for each note;
   - a stereo recording of the raw microphone and the raw system audio;
