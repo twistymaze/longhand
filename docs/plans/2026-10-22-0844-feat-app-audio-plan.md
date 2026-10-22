@@ -48,6 +48,7 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 - KD8. **A change to the Settings list during a recording applies from the next note.** (session-settled: user-approved — confirmed in the scope summary: the note menu changes the current note.) Governs R11.
 - KD9. **App audio replaces the parked Computer audio feature.** (session-settled: user-approved — confirmed in the scope summary.) Governs R18.
 - KD10. **Windows is in scope.** (session-settled: user-approved — confirmed in the scope summary, from "cross-platform correctness from day one" in `STRATEGY.md`.) Governs R17.
+- KD11. **On Windows, app audio needs Windows 11.** (session-settled: user-directed — chosen over a whole-device capture on Windows 10: per-process capture needs build 20348 or later, Windows 10 support ended in October 2025, and a whole-device capture brings back the mixer-app problem.) Governs R17.
 
 ---
 
@@ -56,8 +57,8 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 **The app list**
 
 - R1. The Recording pane in Settings holds a list of apps whose audio Longhand records. The list is empty on a new install.
-- R2. The user adds an app from a list of the apps that are running at that moment.
-- R3. One action adds the common call apps that are running at that moment and are not on the list yet.
+- R2. The user adds an app from a list of the running apps that are not on the list yet. Longhand reads the running apps each time this list opens. When there is no app to add, the control is disabled with a short reason.
+- R3. One action adds the common call apps that are running at that moment and are not on the list yet. When there is no such app, the action is disabled with a short reason.
 - R4. The user can remove an app from the list.
 - R5. Each app on the list shows its name and icon, also when the app is not running.
 
@@ -70,23 +71,23 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 
 **Changes during a recording**
 
-- R10. During a recording, the note menu has an app audio submenu next to Microphone. It lists the running apps, with a check mark next to each app that the note records. Choosing an app starts or stops its recording at once, for this note only. The Settings list does not change.
+- R10. During a recording, the note menu has an app audio submenu next to Microphone. It lists the running apps and also the apps that the note records but that are not running, with a check mark next to each app that the note records. Choosing an app starts or stops its recording at once, for this note only. Only running apps can be added. The Settings list does not change.
 - R11. A change to the Settings list during a recording applies from the next note.
 
 **Saved audio and processing**
 
-- R12. From the first moment that a recorded app plays, the note saves the microphone on the left channel and the app audio on the right channel. The part before it stays one channel. A note in which no recorded app plays saves its audio as today.
+- R12. From the first moment that a recorded app plays, the note saves the microphone on the left channel and the app audio on the right channel. Before that moment, the note saves only the microphone. From that moment, the right channel holds silence while no recorded app plays. A note in which no recorded app plays saves its audio as today.
 - R13. With a streaming model and the Live transcript switch on, the live transcript reads a plain mix of the microphone and the app audio.
 - R14. Processing after Stop and Transcribe Again use the same plain mix as R13. They do not remove echo, balance levels or check for copies of the microphone.
 
 **Permission and failures**
 
 - R15. On macOS, Longhand requests the "Screen & System Audio Recording" permission when the user adds the first app, in Settings or in the note menu. The General pane shows this permission next to the microphone permission.
-- R16. When the permission is denied or app audio fails during a note, the microphone recording continues. The recording page says that app audio is not recorded and, for a denied permission, how to allow it. When the note records no app, there is no message.
+- R16. When the permission is denied or app audio fails during a note, the microphone recording continues. The recording page says that app audio is not recorded and, for a denied permission, how to allow it. This includes a denial when the user adds the first app in the note menu. There is no message when no app is on the list or checked, or when a recorded app is not running or makes no sound. The messages of the parked Computer audio feature for silence, another output device and a copy of the microphone are removed.
 
 **Platforms and the parked feature**
 
-- R17. App audio works on macOS and Windows.
+- R17. App audio works on macOS and on Windows 11. On older Windows, the app list in Settings is disabled with a short reason, and notes record the microphone only.
 - R18. The parked Computer audio feature is removed: the Computer audio default in Settings, the "Record Computer Audio" item in the note menu, and the whole-computer capture.
 
 ---
@@ -96,7 +97,7 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 - AE1. **Covers R6, R13, R14.** Given Teams on the list and a Teams call on the laptop speakers, when the user stops the note, the transcript holds the remote people and the user, and its quality is equal to a note recorded through the user's Loopback device.
 - AE2. **Covers R7.** Given Zoom on the list and not running when the note starts, when the user joins a Zoom call 10 minutes later, the note records Zoom from that time, and the recording page shows no message.
 - AE3. **Covers R10, R11.** Given a note that records with Discord not on the list, when the meeting moves to Discord and the user checks Discord in the note menu, the note records Discord from that time. The next note does not record Discord.
-- AE4. **Covers R1, R6.** Given Elgato Wave Link running and not on the list, when a call on a listed app is recorded, the note holds no extra copies of the call and no late copy of the microphone.
+- AE4. **Covers R1, R6.** Given Elgato Wave Link running and not on the list, when a call on a listed app is recorded, the app audio channel holds no sound that Wave Link plays again and no late copy of the microphone. Call sound that the microphone hears from the speakers is expected in the microphone channel and in the mix.
 - AE5. **Covers R16.** Given the permission is denied and Teams on the list, when a note starts, the microphone records, and the recording page says that app audio is not recorded and how to allow it.
 - AE6. **Covers R12, R16.** Given an empty list, when the user records a room meeting, the note is the same as today: one channel and no message.
 - AE7. **Covers R8.** Given Chrome on the list and a video playing in a Chrome tab during a room meeting, the note records the video audio. This is expected.
@@ -109,7 +110,7 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 
 ### Scope Boundaries
 
-- Per-app volume, mute and on/off switches, as in Loopback. To stop recording an app, the user removes it.
+- Per-app volume, mute and on/off switches, as in Loopback. To stop recording an app during a note, the user unchecks it in the note menu (R10). A removal from the Settings list applies from the next note (R11).
 - Apps that are installed but not running in the add list.
 - Recording of all computer audio, and the exclusion of mixer apps.
 - Echo removal, level balancing and the microphone-copy check.
@@ -120,6 +121,7 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 ### Dependencies / Assumptions
 
 - The existing Core Audio process tap (macOS 15.0 or later, KD15 of the earlier plan) can record a chosen set of processes.
+- On Windows, app audio uses per-process loopback, which needs Windows 11 (build 20348 or later).
 - The parked capture code can be used again: the permission check, the two-channel recording and the capture restarts. Planning decides what to keep.
 
 ### Outstanding Questions
@@ -127,7 +129,7 @@ The parked fix was a new processing design for each channel. The Loopback weeks 
 **Deferred to Planning**
 
 - Which apps does "add the common call apps" add? Assumption: dedicated call apps (for example Teams, Zoom, Discord, Slack, Webex, FaceTime), and no browsers, because a browser records every tab.
-- How does Longhand find the helper processes of an app, also for an app that plays sound through a separate helper app outside its own bundle? Check Chrome, Teams and Zoom.
+- How does Longhand find the helper processes of an app, also for an app that plays sound through a separate helper app outside its own bundle? Check Chrome, Teams, Zoom, FaceTime (call audio comes from the avconferenced system service) and Safari (web audio comes from a WebKit helper process).
 - Earlier research found that new Teams gives silence to per-app capture on Windows. Does this still apply, and what is the fix?
 - Which running apps does the add list show: all running apps, or only apps that have an audio process?
 - How are the microphone and the app audio aligned in time, for the live mix and the saved channels alike?
