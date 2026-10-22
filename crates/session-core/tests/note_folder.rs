@@ -1,8 +1,8 @@
 use chrono::{DateTime, FixedOffset};
-use session_core::folder::{FrontmatterPatch, PendingType, SessionDoc};
+use session_core::folder::{FolderError, FrontmatterPatch, PendingType, SessionDoc};
 use session_core::note_folder::{Layout, NoteFiles, NoteFilesError, written_fingerprint};
 use session_core::note_record::NoteRecord;
-use session_core::{Title, TitleSource};
+use session_core::{Segment, Title, TitleSource};
 
 fn started() -> DateTime<FixedOffset> {
     DateTime::parse_from_rfc3339("2026-09-22T09:00:00-05:00").unwrap()
@@ -121,6 +121,44 @@ fn the_written_fingerprint_covers_both_files() {
         written_fingerprint(b"a", b"b"),
         written_fingerprint(b"x", b"b")
     );
+}
+
+/// An old-layout `session.md` with one segment whose audio name is
+/// `audio`.
+fn old_session_md(audio: &str) -> String {
+    let segment = Segment {
+        index: 0,
+        offset_ms: 0,
+        duration_ms: 60_000,
+        wall_start: started(),
+        wall_end: started() + chrono::TimeDelta::minutes(1),
+        audio_file: audio.into(),
+        channels: 1,
+        ends_in_pause: false,
+    };
+    SessionDoc::new("01j8z", None, &[segment]).unwrap().render()
+}
+
+#[test]
+fn an_old_layout_session_md_whose_segment_audio_is_not_a_path_in_the_note_folder_is_invalid() {
+    for audio in [
+        "/etc/passwd",
+        "../segment-01.opus",
+        "audio/../../segment-01.opus",
+        "\\\\server\\share\\segment-01.opus",
+        "//server/share/segment-01.opus",
+        "C:\\Windows\\segment-01.opus",
+    ] {
+        match NoteFiles::parse(Some(&old_session_md(audio)), None) {
+            Err(NoteFilesError::Invalid(FolderError::Yaml { file, .. })) => {
+                assert_eq!(file, "session.md", "{audio:?}")
+            }
+            other => panic!("{audio:?} gave {other:?}"),
+        }
+    }
+    let files = NoteFiles::parse(Some(&old_session_md("audio/segment-01.opus")), None).unwrap();
+    assert_eq!(files.layout, Layout::Old);
+    assert_eq!(files.doc.segments[0].audio, "audio/segment-01.opus");
 }
 
 #[test]

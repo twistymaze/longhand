@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use crate::folder::{FolderError, SessionDoc, SessionMd, fingerprint};
 use crate::jobs::{Title, TitleSource};
-use crate::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, check_session_id};
+use crate::note_record::{
+    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, check_audio_names, check_session_id,
+};
 
 /// The name of the user file of a note folder.
 pub const SESSION_FILE: &str = "session.md";
@@ -74,6 +76,7 @@ impl NoteFiles {
             let doc = SessionDoc::parse(text)
                 .map_err(|e| NoteFilesError::Invalid(SessionMd::parse(text).err().unwrap_or(e)))?;
             check_session_id(SESSION_FILE, &doc.session_id).map_err(NoteFilesError::Invalid)?;
+            check_audio_names(SESSION_FILE, &doc.segments).map_err(NoteFilesError::Invalid)?;
             return Ok(Self::old(doc));
         }
         let Some(record) = record else {
