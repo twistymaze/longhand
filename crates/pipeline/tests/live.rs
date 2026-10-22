@@ -1202,8 +1202,9 @@ fn the_merge_keeps_gap_words_and_drops_repeats_and_words_outside_the_gaps() {
 // ------------------------------------------ echo spans as gaps (U10, KTD10)
 
 impl Gaps {
-    /// Save the echo spans checkpoint that Assemble saves for a stereo
-    /// segment (KTD8 step 7).
+    /// Save the echo spans checkpoint of a stereo segment. Assemble saves
+    /// it with no spans (KTD10 of the app audio plan); the merge in
+    /// Transcribe still reads spans.
     fn echo(&self, spans: &[Span]) {
         let echo = pipeline::echo::EchoSpans {
             segment: 0,
@@ -1253,7 +1254,8 @@ fn live_words_inside_an_echo_span_give_way_to_words_from_the_cleaned_file() {
 
 #[test]
 fn a_segment_with_no_echo_spans_keeps_its_live_text_and_runs_no_batch_window() {
-    // Covers AE1: a call on headphones.
+    // The row that Assemble saves for each stereo segment (KTD10 of the app
+    // audio plan): Transcribe keeps every live word.
     let g = Gaps::new(&[(0, 60_000, live_words(0, 60))]);
     g.echo(&[]);
     g.transcribe();

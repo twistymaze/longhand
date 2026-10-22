@@ -36,7 +36,7 @@ Borrowed material in this crate, one record per file (R27).
 
 - Repository: https://github.com/fastrepl/anarlog
 - Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
-- Source paths: `crates/owhisper-client/src/local_soniqo_live.rs` (`suppress_echo_dominant_mic`, `best_echo_score`, `echo_score_at_lag` and the `ECHO_GATE_*` constants)
+- Source paths: `crates/owhisper-client/src/local_soniqo_live.rs` (`echo_score_at_lag` and the `ECHO_GATE_MIN_SAMPLES` and `ECHO_GATE_LAG_STEP_SAMPLES` constants)
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — the gate tests the last 120 ms of the microphone every 20 ms against a history of the system channel, on a 16 kHz copy, and searches delays up to 400 ms late and 60 ms early in place of a search inside one chunk. The mix around the gate (the 16 kHz copy, the balance gain of each channel and the mono mix) is new (KTD11 of the system audio plan).
+- Status: modified — `score` keeps only the correlation of `echo_score_at_lag`; the microphone copy check (`src/mic_copy.rs`) uses it. The plain mix in the same file is new (KTD9 of the app audio plan).

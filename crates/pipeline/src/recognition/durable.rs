@@ -208,8 +208,7 @@ fn live_source_matches(
     let (Some(proof), Some(recorded)) = (proof, recorded) else {
         return Ok(false);
     };
-    // Assemble uses final level estimates and echo removal on stereo input.
-    // All live stereo samples can differ, including samples outside echo spans.
+    // Only a mono segment reuses its live results here.
     if segment.channels != 1 || recorded != *spec {
         return Ok(false);
     }

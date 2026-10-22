@@ -4292,8 +4292,6 @@ Code copied from Handy
     Copyright (c) 2025 CJ Pais
 Code copied from anarlog
     Copyright (c) 2023-present Fastrepl, Inc.
-DTLN-aec echo cancellation model 128-unit (compiled into the app)
-    Copyright (c) 2020 Nils L. Westhausen
 ONNX Runtime 1.22.0 (linked through ort-sys)
     Copyright (c) Microsoft Corporation
 ggml (NeMo runtime) c03b4e2bcece5134827881af90242086daf75be5
