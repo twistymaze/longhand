@@ -29,7 +29,6 @@ async fn peak_for(seconds: f64) -> f32 {
         assert!(frame.raw_mic.is_empty());
         peak = frame.raw_speaker.iter().fold(peak, |p, s| p.max(s.abs()));
     }
-    assert!(!capture.status.other_output_playing());
     peak
 }
 

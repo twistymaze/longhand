@@ -9,9 +9,6 @@
 //! - The thread resamples with [`Converter`] and sends fixed-size frames. On
 //!   a switch to another output device, it takes the new format and starts
 //!   the resampler again, with no segment boundary.
-//! - At each follower poll, the thread reads the peak meter of each active
-//!   output and applies the other-output rule ([`OtherOutputWatch`], U4
-//!   step 6). The result goes to [`SystemAudioStatus`].
 //! - A read error on the followed device opens the device that the rule
 //!   picks now. When no device opens, the stream ends with
 //!   [`Error::SpeakerStreamEnded`].
@@ -20,11 +17,6 @@ use std::collections::VecDeque;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
 
-use ::windows::Win32::Media::Audio::Endpoints::IAudioMeterInformation;
-use ::windows::Win32::Media::Audio::{
-    DEVICE_STATE_ACTIVE, IMMDeviceEnumerator, MMDeviceEnumerator, eRender,
-};
-use ::windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
 use tokio::sync::mpsc;
 use wasapi::{
     AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction, Handle, SampleType,
@@ -32,8 +24,8 @@ use wasapi::{
 };
 
 use crate::convert::{Converter, PcmFormat, SampleKind};
-use crate::follow::{ENDPOINT_POLL_INTERVAL, EndpointFollower, OtherOutputWatch};
-use crate::{CaptureFrame, Error, SystemAudioStatus, speaker_frame};
+use crate::follow::{ENDPOINT_POLL_INTERVAL, EndpointFollower};
+use crate::{CaptureFrame, Error, speaker_frame};
 
 /// Every endpoint opens at this rate with WASAPI's conversion, so the rate
 /// stays the same across endpoint switches.
@@ -101,12 +93,11 @@ pub(crate) fn open(
     sample_rate: u32,
     chunk_size: usize,
     tx: mpsc::Sender<Result<CaptureFrame, Error>>,
-    status: SystemAudioStatus,
 ) -> Result<(), Error> {
     let (init_tx, init_rx) = std_mpsc::sync_channel::<Result<(), Error>>(1);
     std::thread::Builder::new()
         .name("longhand-system-audio".into())
-        .spawn(move || run(sample_rate, chunk_size, tx, status, init_tx))
+        .spawn(move || run(sample_rate, chunk_size, tx, init_tx))
         .map_err(|e| Error::SpeakerStreamInitializationFailed(e.to_string()))?;
     match init_rx.recv_timeout(INIT_TIMEOUT) {
         Ok(result) => result,
@@ -120,7 +111,6 @@ fn run(
     sample_rate: u32,
     chunk_size: usize,
     tx: mpsc::Sender<Result<CaptureFrame, Error>>,
-    status: SystemAudioStatus,
     init_tx: std_mpsc::SyncSender<Result<(), Error>>,
 ) {
     let opened = (|| {
@@ -153,8 +143,7 @@ fn run(
     } else {
         sample_rate
     };
-    let end = capture_loop(&enumerator, capture, out_rate, chunk_size, &tx, &status);
-    status.set_other_output(false);
+    let end = capture_loop(&enumerator, capture, out_rate, chunk_size, &tx);
     if let Some(error) = end {
         let _ = tx.blocking_send(Err(error));
     }
@@ -169,11 +158,9 @@ fn capture_loop(
     out_rate: u32,
     chunk_size: usize,
     tx: &mpsc::Sender<Result<CaptureFrame, Error>>,
-    status: &SystemAudioStatus,
 ) -> Option<Error> {
     let mut converter = Converter::new(capture.format, out_rate, chunk_size);
     let mut follower = EndpointFollower::new(capture.device_id.clone());
-    let mut watch = OtherOutputWatch::new();
     let mut next_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
     let mut queue = VecDeque::new();
 
@@ -186,16 +173,7 @@ fn capture_loop(
             next_poll = Instant::now() + ENDPOINT_POLL_INTERVAL;
             if let Some(device) = poll_render_endpoint_switch(enumerator, &mut follower) {
                 match open_loopback_capture(device) {
-                    Ok(next) => {
-                        switch(
-                            &mut capture,
-                            next,
-                            &mut converter,
-                            &mut follower,
-                            &mut watch,
-                        );
-                        status.set_other_output(false);
-                    }
+                    Ok(next) => switch(&mut capture, next, &mut converter, &mut follower),
                     Err(e) => {
                         log::warn!(
                             "WASAPI loopback could not switch; it keeps the current output: {e}"
@@ -203,8 +181,6 @@ fn capture_loop(
                     }
                 }
             }
-            let (followed, other) = output_peaks(&capture.device_id);
-            status.set_other_output(watch.observe(followed, other, Instant::now()));
         }
 
         if capture.event.wait_for_event(EVENT_WAIT_MS).is_err() {
@@ -220,14 +196,7 @@ fn capture_loop(
             let reopened = open_render_device(enumerator).and_then(open_loopback_capture);
             match reopened {
                 Ok(next) => {
-                    switch(
-                        &mut capture,
-                        next,
-                        &mut converter,
-                        &mut follower,
-                        &mut watch,
-                    );
-                    status.set_other_output(false);
+                    switch(&mut capture, next, &mut converter, &mut follower);
                     continue;
                 }
                 Err(e) => {
@@ -260,13 +229,11 @@ fn switch(
     next: LoopbackCapture,
     converter: &mut Converter,
     follower: &mut EndpointFollower,
-    watch: &mut OtherOutputWatch,
 ) {
     let _ = capture.audio_client.stop_stream();
     *capture = next;
     converter.switch(capture.format);
     *follower = EndpointFollower::new(capture.device_id.clone());
-    watch.reset();
     log::info!(
         "WASAPI loopback switched to {:?} at {} Hz, {} channel(s)",
         capture.device_name,
@@ -431,56 +398,4 @@ fn has_foreign_active_session(device: &Device) -> bool {
                     .is_some_and(|pid| pid != 0 && pid != self_pid)
         })
     })
-}
-
-/// The peak meter of the followed output, and the highest peak of the
-/// other active outputs. A meter that cannot be read counts as silent.
-fn output_peaks(followed_id: &str) -> (f32, f32) {
-    let mut followed = 0.0_f32;
-    let mut other = 0.0_f32;
-    for (id, peak) in active_output_peaks() {
-        if id == followed_id {
-            followed = followed.max(peak);
-        } else {
-            other = other.max(peak);
-        }
-    }
-    (followed, other)
-}
-
-/// The ID and the peak meter value of each active output device.
-fn active_output_peaks() -> Vec<(String, f32)> {
-    // SAFETY: the thread is in the COM multithreaded apartment
-    // (`initialize_mta` in `run`), and every interface is used on it only.
-    unsafe {
-        let Ok(enumerator) =
-            CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
-        else {
-            return Vec::new();
-        };
-        let Ok(collection) = enumerator.EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE) else {
-            return Vec::new();
-        };
-        let count = collection.GetCount().unwrap_or(0);
-        let mut peaks = Vec::with_capacity(count as usize);
-        for index in 0..count {
-            let Ok(device) = collection.Item(index) else {
-                continue;
-            };
-            let Ok(raw_id) = device.GetId() else {
-                continue;
-            };
-            let id = raw_id.to_string();
-            CoTaskMemFree(Some(raw_id.0 as *const _));
-            let Ok(id) = id else {
-                continue;
-            };
-            let peak = device
-                .Activate::<IAudioMeterInformation>(CLSCTX_ALL, None)
-                .and_then(|meter| meter.GetPeakValue())
-                .unwrap_or(0.0);
-            peaks.push((id, peak));
-        }
-        peaks
-    }
 }

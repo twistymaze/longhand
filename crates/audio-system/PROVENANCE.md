@@ -1,6 +1,6 @@
 # Provenance
 
-Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent system audio flag, U5 step 6) is new. `src/windows_apps.rs` (the Windows running-app list, process table and build number) is new. `src/windows_app_audio.rs` (the Windows per-process capture and the Teams mode), `src/windows_mix.rs` (the block mixer) and `src/windows_tree.rs` (the process tree) are new.
+Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the app set and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/windows_apps.rs` (the Windows running-app list, process table and build number) is new. `src/windows_app_audio.rs` (the Windows per-process capture and the Teams mode), `src/windows_mix.rs` (the block mixer) and `src/windows_tree.rs` (the process tree) are new.
 
 ## `src/macos.rs`
 
@@ -18,7 +18,7 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/windows.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — every channel is downmixed to mono in place of the first channel only; the thread resamples to fixed-size frames and starts the resampler again on an endpoint switch; each follower poll reads the peak meter of each active output for the other-output rule; a read error opens the device that the rule picks now, and ends the stream when none opens
+- Status: modified — every channel is downmixed to mono in place of the first channel only; the thread resamples to fixed-size frames and starts the resampler again on an endpoint switch; a read error opens the device that the rule picks now, and ends the stream when none opens
 
 ## `src/follow.rs`
 
@@ -27,7 +27,7 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/windows.rs` (`EndpointFollower`, `ENDPOINT_POLL_INTERVAL`, `ENDPOINT_SWITCH_CONFIRMATIONS` and their tests)
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — moved out of the WASAPI file so that the rule is tested on every platform; `OtherOutputWatch` (the other-output rule, U4 step 6) and `TeamsMode` (the Teams mode rule of app audio) are new
+- Status: modified — moved out of the WASAPI file so that the rule is tested on every platform; `TeamsMode` (the Teams mode rule of app audio) is new
 
 ## `src/convert.rs`
 
