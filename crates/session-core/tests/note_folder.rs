@@ -149,12 +149,14 @@ fn an_old_layout_session_md_whose_segment_audio_is_not_a_path_in_the_note_folder
         "//server/share/segment-01.opus",
         "C:\\Windows\\segment-01.opus",
     ] {
-        match NoteFiles::parse(Some(&old_session_md(audio)), None) {
-            Err(NoteFilesError::Invalid(FolderError::Yaml { file, .. })) => {
-                assert_eq!(file, "session.md", "{audio:?}")
-            }
-            other => panic!("{audio:?} gave {other:?}"),
-        }
+        // The assert does not print the result: its text holds the session id.
+        assert!(
+            matches!(
+                NoteFiles::parse(Some(&old_session_md(audio)), None),
+                Err(NoteFilesError::Invalid(FolderError::Yaml { file, .. })) if file == "session.md"
+            ),
+            "{audio:?}"
+        );
     }
     let files = NoteFiles::parse(Some(&old_session_md("audio/segment-01.opus")), None).unwrap();
     assert_eq!(files.layout, Layout::Old);

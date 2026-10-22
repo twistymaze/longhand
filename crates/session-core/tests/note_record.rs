@@ -266,10 +266,14 @@ fn a_record_whose_segment_audio_is_not_a_path_in_the_note_folder_does_not_parse(
         let mut record = full_record();
         record.segments[1].audio = audio.into();
         let text = record.render();
-        match NoteRecord::parse(&text) {
-            Err(FolderError::Yaml { file, .. }) => assert_eq!(file, NOTE_RECORD_FILE),
-            other => panic!("{audio:?} gave {other:?}"),
-        }
+        // The assert does not print the result: its text holds the session id.
+        assert!(
+            matches!(
+                NoteRecord::parse(&text),
+                Err(FolderError::Yaml { file, .. }) if file == NOTE_RECORD_FILE
+            ),
+            "{audio:?}"
+        );
         assert_eq!(session_id_of(&text), None, "{audio:?}");
     }
 }
