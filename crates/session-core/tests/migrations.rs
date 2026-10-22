@@ -647,3 +647,35 @@ fn migration_eighteen_keeps_existing_rows_and_gives_them_no_type_tags_or_pending
     assert!(record.tags.is_empty());
     assert_eq!(record.pending_type, None);
 }
+
+#[test]
+fn migration_twenty_one_gives_existing_notes_an_empty_app_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, 20)
+            .unwrap();
+        add_session(&conn, "s1");
+        conn.execute(
+            "UPDATE sessions SET mic_id = 'usb-uid', mic_label = 'USB Audio', system_audio = 1
+             WHERE id = 's1'",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert!(store.note_apps("s1").unwrap().is_empty());
+    // The migration keeps the capture choice of the note.
+    assert_eq!(
+        store.capture_choice("s1").unwrap(),
+        session_core::CaptureChoice {
+            microphone: Some(session_core::Microphone {
+                id: "usb-uid".into(),
+                label: "USB Audio".into(),
+            }),
+            system_audio: true,
+        }
+    );
+}

@@ -122,6 +122,18 @@ pub struct CaptureChoice {
     pub system_audio: bool,
 }
 
+/// An app whose audio a note records (KTD7 of the app audio plan).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RecordedApp {
+    /// On macOS, the bundle ID of the outermost `.app`. On Windows, the
+    /// lowercase executable name without `.exe`.
+    pub id: String,
+    /// The display name of the app.
+    pub name: String,
+    /// The path of the app bundle or the executable.
+    pub path: String,
+}
+
 /// The marks of Transcribe Again on a session (KTD14).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TranscribeAgainMarks {
@@ -735,6 +747,35 @@ impl Store {
                 capture.microphone.as_ref().map(|m| m.label.as_str()),
                 capture.system_audio,
             ],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NoSuchSession(id.to_string()));
+        }
+        Ok(())
+    }
+
+    /// The app set of the session (R21, KTD7). A session with no stored set,
+    /// from an older build, has an empty set.
+    pub fn note_apps(&self, id: &str) -> Result<Vec<RecordedApp>> {
+        let text: Option<String> = self
+            .conn
+            .query_row("SELECT note_apps FROM sessions WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))?;
+        match text {
+            Some(text) => Ok(serde_json::from_str(&text)?),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// Replace the app set of the session: the copy of Settings at the start
+    /// of a note, or a change in the note menu (R10, R21).
+    pub fn set_note_apps(&self, id: &str, apps: &[RecordedApp]) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE sessions SET note_apps = ?2 WHERE id = ?1",
+            params![id, serde_json::to_string(apps)?],
         )?;
         if changed == 0 {
             return Err(StoreError::NoSuchSession(id.to_string()));
