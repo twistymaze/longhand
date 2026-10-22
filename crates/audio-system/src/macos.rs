@@ -350,7 +350,6 @@ fn drain(
 ) {
     let mut rate = RateFollower::new(in_rate, out_rate, chunk_size);
     let mut objects: Vec<u32> = Vec::new();
-    let mut failed_objects: Vec<u32> = Vec::new();
     let mut next_check = Instant::now();
     let mut first = true;
     let mut last_dropped = 0;
@@ -408,15 +407,14 @@ fn drain(
                             tap = Some(t);
                             first = true;
                             objects = found;
-                            failed_objects.clear();
                         }
-                        // A process can quit between the list and the tap.
-                        // The next check tries again; log each list once.
+                        // The stream ends, so the capture manager opens it
+                        // again and reports the failure when that fails too
+                        // (R16).
                         Err(e) => {
-                            if failed_objects != found {
-                                log::warn!("the app audio tap did not start: {e}");
-                                failed_objects = found;
-                            }
+                            log::warn!("the app audio tap did not start: {e}; app audio ends");
+                            let _ = tx.blocking_send(Err(Error::SpeakerStreamEnded));
+                            return;
                         }
                     },
                     Step::Update => {

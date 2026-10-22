@@ -250,8 +250,10 @@ impl AppCapture {
             if new_session || now >= next_scan {
                 next_scan = now + SCAN_INTERVAL;
                 self.table = process_table();
-                if self.device.is_none() {
-                    self.sync_clients();
+                if self.device.is_none()
+                    && let Err(e) = self.sync_clients()
+                {
+                    return Some(e);
                 }
             }
 
@@ -270,7 +272,9 @@ impl AppCapture {
 
     /// Open a client for each new root process of the app set, and stop
     /// the clients of processes that ended or of apps that left the set.
-    fn sync_clients(&mut self) {
+    /// When apps of the set run and no client opens, the stream ends, so
+    /// the capture manager opens it again and reports the failure (R16).
+    fn sync_clients(&mut self) -> Result<(), Error> {
         let roots = self.table.roots(&self.ids, std::process::id());
         let wanted: HashSet<u32> = roots.iter().map(|(pid, _)| *pid).collect();
         let ended: Vec<u32> = self
@@ -305,6 +309,11 @@ impl AppCapture {
                 }
             }
         }
+        if !wanted.is_empty() && self.clients.is_empty() {
+            log::warn!("no client of the app set opened; app audio ends");
+            return Err(Error::SpeakerStreamEnded);
+        }
+        Ok(())
     }
 
     fn stop_clients(&mut self) {
@@ -340,8 +349,7 @@ impl AppCapture {
                     let _ = device.capture.audio_client.stop_stream();
                 }
                 log::info!("Teams stopped playing; app audio uses per-process clients again");
-                self.sync_clients();
-                Ok(())
+                self.sync_clients()
             }
             (CaptureMode::Device(endpoint), current) if current == Some(endpoint.as_str()) => {
                 Ok(())
