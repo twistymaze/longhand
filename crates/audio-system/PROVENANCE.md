@@ -1,6 +1,6 @@
 # Provenance
 
-Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent system audio flag, U5 step 6) is new.
+Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent system audio flag, U5 step 6) is new. `src/windows_apps.rs` (the Windows running-app list and build number) is new.
 
 ## `src/macos.rs`
 
@@ -56,3 +56,12 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: modified — Rust in place of Swift: `dlopen` and `dlsym` load `TCCAccessPreflight` directly, so no Swift build step is needed (KTD12); the function returns a C `int`; a missing function or an unknown result gives "unknown"; the loader is a test seam; `request` (a short tap) and the Windows result are new; a result other than "allowed" is read again in a new process of the app binary (`CHILD_FLAG`), in place of anarlog's `check-permissions` helper
+
+## `src/apps.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: afb3565040e69e72b11d785533f9b965d203904a
+- Source paths: `crates/detect/src/list/macos.rs` (`find_outermost_app`, `APPLE_CALL_DAEMON_IDS`)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — the outermost `.app` rule works on the executable path text, and the FaceTime processes map to the FaceTime app ID in place of a display label; the WebKit rule (the responsible app), the call-app table, the Windows app ID, the running-app list and the icon read are new

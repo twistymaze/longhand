@@ -19,12 +19,15 @@ mod follow;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod rate;
 
+pub mod apps;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod permission;
 pub mod silence;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+mod windows_apps;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
