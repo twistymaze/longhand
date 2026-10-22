@@ -8,14 +8,20 @@ import type { EditorView } from "prosemirror-view";
 import { cleanHtml, writeCopyEvent } from "../../lib/clipboard";
 
 function copy(view: EditorView, event: ClipboardEvent): boolean {
-  const { selection } = view.state;
+  const { selection, doc } = view.state;
   if (selection.empty) return false;
   const slice = selection.content();
   const dom = DOMSerializer.fromSchema(view.state.schema).serializeFragment(slice.content);
   // The text is the one that ProseMirror writes: blocks apart by an empty line.
-  writeCopyEvent(event, slice.content.textBetween(0, slice.content.size, "\n\n"), cleanHtml(dom));
+  const text = slice.content.textBetween(0, slice.content.size, "\n\n");
+  const written = writeCopyEvent(event, text, cleanHtml(dom));
   if (event.type === "cut" && view.editable) {
-    view.dispatch(view.state.tr.deleteSelection().scrollIntoView().setMeta("uiEvent", "cut"));
+    // The cut removes the text only when the clipboard holds it, and only
+    // when the note did not change before the write ended.
+    void written.then((done) => {
+      if (!done || view.isDestroyed || view.state.doc !== doc) return;
+      view.dispatch(view.state.tr.setSelection(selection).deleteSelection().scrollIntoView().setMeta("uiEvent", "cut"));
+    });
   }
   return true;
 }

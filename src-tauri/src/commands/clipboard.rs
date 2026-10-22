@@ -16,6 +16,13 @@ pub fn write_clipboard(text: String, html: String) -> bool {
     write(&text, &html)
 }
 
+/// The HTML for the pasteboard. AppKit reads HTML with no charset as
+/// Windows-1252, so `é` pastes as `Ã©`; the meta element sets UTF-8.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn pasteboard_html(html: &str) -> String {
+    format!("<meta charset=\"utf-8\">{html}")
+}
+
 #[cfg(target_os = "macos")]
 fn write(text: &str, html: &str) -> bool {
     use objc2_app_kit::{NSPasteboard, NSPasteboardTypeHTML, NSPasteboardTypeString};
@@ -25,11 +32,24 @@ fn write(text: &str, html: &str) -> bool {
     pasteboard.clearContents();
     // SAFETY: the type constants are static strings that AppKit defines.
     let (html_type, text_type) = unsafe { (NSPasteboardTypeHTML, NSPasteboardTypeString) };
-    pasteboard.setString_forType(&NSString::from_str(html), html_type)
+    pasteboard.setString_forType(&NSString::from_str(&pasteboard_html(html)), html_type)
         && pasteboard.setString_forType(&NSString::from_str(text), text_type)
 }
 
 #[cfg(not(target_os = "macos"))]
 fn write(_text: &str, _html: &str) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pasteboard_html;
+
+    #[test]
+    fn pasteboard_html_declares_utf8() {
+        assert_eq!(
+            pasteboard_html("<p>Café</p>"),
+            "<meta charset=\"utf-8\"><p>Café</p>"
+        );
+    }
 }

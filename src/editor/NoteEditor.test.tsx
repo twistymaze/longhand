@@ -3,6 +3,13 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { mockTauri } from "../test/tauri";
+import { writeCopyEvent } from "../lib/clipboard";
+
+// The real clipboard write, which a cut test can replace for one call.
+vi.mock("../lib/clipboard", async (actual) => {
+  const real = await actual<typeof import("../lib/clipboard")>();
+  return { ...real, writeCopyEvent: vi.fn(real.writeCopyEvent) };
+});
 
 import { NoteEditor, type NoteEditorProps, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS } from "./NoteEditor";
 
@@ -262,15 +269,16 @@ describe("NoteEditor copy and cut", () => {
     act(() => void box.dispatchEvent(event));
     expect(event.defaultPrevented).toBe(true);
     expect(data.get("text/html")).toBe(
-      "<h1>Plan</h1><ul><li><p><strong>first</strong></p></li><li><p>task</p></li></ul>",
+      '<h1>Plan</h1><ul data-type="taskList"><li data-type="taskItem" data-checked="false"><p><strong>first</strong></p></li>' +
+        '<li data-type="taskItem" data-checked="false"><p>task</p></li></ul>',
     );
     expect(data.get("text/plain")).toBe("Plan\n\nfirst\n\ntask");
   });
 
-  test("on macOS, a cut writes through the native command and removes the selection", async () => {
+  test("on macOS, a cut writes through the native command", async () => {
     setPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
     const tauri = mockTauri({ write_clipboard: () => true });
-    const { box, user, changes } = setup("**gone**");
+    const { box, user } = setup("**gone**");
     await user.keyboard(selectAll);
     const { event, data } = clipboardEvent("cut");
     act(() => void box.dispatchEvent(event));
@@ -278,7 +286,46 @@ describe("NoteEditor copy and cut", () => {
     expect(tauri.calls).toEqual([
       { cmd: "write_clipboard", args: { text: "gone", html: "<p><strong>gone</strong></p>" } },
     ]);
-    advance(SAVE_DEBOUNCE_MS);
+  });
+
+  // The write ends when the test settles `written`. The plugin's callback on
+  // that promise runs before the test's own await of it continues.
+  async function cut(markdown: string, done: boolean, editable = true) {
+    let settle: (done: boolean) => void = () => {};
+    const written = new Promise<boolean>((resolve) => (settle = resolve));
+    vi.mocked(writeCopyEvent).mockImplementationOnce((event) => {
+      event.preventDefault();
+      return written;
+    });
+    const changes: string[] = [];
+    render(<NoteEditor markdown={markdown} onChange={(m) => changes.push(m)} editable={editable} immediate />);
+    const box = screen.getByRole("textbox");
+    act(() => box.focus());
+    await userEvent.setup({ delay: null }).keyboard(selectAll);
+    act(() => void box.dispatchEvent(clipboardEvent("cut").event));
+    expect(box.textContent).toBe(markdown);
+    await act(async () => {
+      settle(done);
+      await written;
+    });
+    return { box, changes };
+  }
+
+  test("a cut removes the selection after the clipboard holds it", async () => {
+    const { box, changes } = await cut("gone", true);
+    expect(box.textContent).toBe("");
     expect(changes).toEqual([""]);
+  });
+
+  test("a cut keeps the selection when the clipboard refuses it", async () => {
+    const { box, changes } = await cut("kept", false);
+    expect(box.textContent).toBe("kept");
+    expect(changes).toEqual([]);
+  });
+
+  test("a cut in an editor that is not editable keeps the text", async () => {
+    const { box, changes } = await cut("kept", true, false);
+    expect(box.textContent).toBe("kept");
+    expect(changes).toEqual([]);
   });
 });
