@@ -29,7 +29,13 @@ pub mod silence;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
+pub mod windows_app_audio;
+#[cfg(target_os = "windows")]
 mod windows_apps;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod windows_mix;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod windows_tree;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -135,7 +141,9 @@ pub fn open(sample_rate: u32, chunk_size: usize) -> Result<SystemAudioCapture, E
 
 /// Start capture of the audio of the apps in `apps` (R6-R10). Frames are as
 /// in [`open`]. While no app in the set plays, the stream sends no frames
-/// and no error. Change the set with [`AppSet::set`].
+/// and no error. Change the set with [`AppSet::set`]. On a Windows build
+/// before 20348 ([`apps::supported`] is false), it returns
+/// [`Error::SpeakerStreamSetupFailed`] (R17).
 pub fn open_apps(
     sample_rate: u32,
     chunk_size: usize,
@@ -146,7 +154,24 @@ pub fn open_apps(
     {
         open_macos(sample_rate, chunk_size, macos::Target::Apps(apps))
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // R17: per-process loopback needs Windows build 20348 or later.
+        if !apps::supported() {
+            log::warn!(
+                "app audio needs Windows build {} or later",
+                apps::FIRST_WINDOWS_BUILD
+            );
+            return Err(Error::SpeakerStreamSetupFailed);
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
+        windows_app_audio::open(sample_rate, chunk_size, apps, tx)?;
+        Ok(SystemAudioCapture {
+            stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            status: SystemAudioStatus::default(),
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = (sample_rate, chunk_size, apps);
         Err(Error::SpeakerStreamSetupFailed)

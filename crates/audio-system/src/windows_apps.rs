@@ -1,8 +1,11 @@
-//! Windows: the running apps with a window, and the Windows build number
-//! (R2, R17, KTD4, KTD12).
+//! Windows: the running apps with a window, the process table, and the
+//! Windows build number (R2, R17, KTD4, KTD12).
 
 use ::windows::Wdk::System::SystemServices::RtlGetVersion;
 use ::windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+use ::windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use ::windows::Win32::System::SystemInformation::OSVERSIONINFOW;
 use ::windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -13,6 +16,7 @@ use ::windows::Win32::UI::WindowsAndMessaging::{
 use ::windows::core::{BOOL, PWSTR};
 
 use crate::apps::{App, windows_app_id};
+use crate::windows_tree::{ProcessEntry, ProcessTable};
 
 /// The Windows build number, or `None` when it cannot be read.
 pub(crate) fn build_number() -> Option<u32> {
@@ -49,6 +53,43 @@ pub(crate) fn exe_path(pid: u32) -> Option<String> {
     let _ = unsafe { CloseHandle(handle) };
     result.ok()?;
     Some(String::from_utf16_lossy(&buf[..len as usize]))
+}
+
+/// All running processes, with their parents and app IDs (KTD4, KTD5).
+/// An empty table when the snapshot fails.
+pub(crate) fn process_table() -> ProcessTable {
+    // SAFETY: a process snapshot; the handle is closed below.
+    let snapshot = match unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) } {
+        Ok(snapshot) => snapshot,
+        Err(e) => {
+            log::warn!("the process snapshot failed: {e}");
+            return ProcessTable::default();
+        }
+    };
+    let mut entries = Vec::new();
+    let mut entry = PROCESSENTRY32W {
+        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `entry` is a valid PROCESSENTRY32W with its size set.
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) }.is_ok();
+    while more {
+        let len = entry
+            .szExeFile
+            .iter()
+            .position(|c| *c == 0)
+            .unwrap_or(entry.szExeFile.len());
+        entries.push(ProcessEntry {
+            pid: entry.th32ProcessID,
+            parent: entry.th32ParentProcessID,
+            app_id: windows_app_id(&String::from_utf16_lossy(&entry.szExeFile[..len])),
+        });
+        // SAFETY: as above.
+        more = unsafe { Process32NextW(snapshot, &mut entry) }.is_ok();
+    }
+    // SAFETY: the handle came from CreateToolhelp32Snapshot.
+    let _ = unsafe { CloseHandle(snapshot) };
+    ProcessTable::new(entries)
 }
 
 unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {

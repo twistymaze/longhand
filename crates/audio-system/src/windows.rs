@@ -73,16 +73,16 @@ impl WasapiCaptureFormat {
     }
 }
 
-struct LoopbackCapture {
-    audio_client: AudioClient,
+pub(crate) struct LoopbackCapture {
+    pub(crate) audio_client: AudioClient,
     event: Handle,
-    capture_client: AudioCaptureClient,
-    format: PcmFormat,
+    pub(crate) capture_client: AudioCaptureClient,
+    pub(crate) format: PcmFormat,
     device_id: String,
-    device_name: Option<String>,
+    pub(crate) device_name: Option<String>,
 }
 
-fn failed(what: &str, e: impl std::fmt::Display) -> Error {
+pub(crate) fn failed(what: &str, e: impl std::fmt::Display) -> Error {
     Error::SpeakerStreamInitializationFailed(format!("{what}: {e}"))
 }
 
@@ -296,7 +296,7 @@ fn poll_render_endpoint_switch(
     follower.observe(device_id).map(|_| device)
 }
 
-fn open_loopback_capture(device: Device) -> Result<LoopbackCapture, Error> {
+pub(crate) fn open_loopback_capture(device: Device) -> Result<LoopbackCapture, Error> {
     let device_id = device.get_id().map_err(|e| failed("render device id", e))?;
     let device_name = device.get_friendlyname().ok();
     let (mut audio_client, accepted_format, buffer_duration_hns) =
@@ -370,7 +370,7 @@ fn open_endpoint_loopback_client(device: &Device) -> Result<(AudioClient, WaveFo
     Ok((audio_client, desired_format, min_period))
 }
 
-fn drain_packets(
+pub(crate) fn drain_packets(
     capture_client: &AudioCaptureClient,
     queue: &mut VecDeque<u8>,
 ) -> Result<(), Error> {
