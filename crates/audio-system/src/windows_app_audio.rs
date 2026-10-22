@@ -187,8 +187,8 @@ struct AppCapture {
     chunk_size: usize,
     table: ProcessTable,
     clients: HashMap<u32, ProcessClient>,
-    /// Root processes whose client did not open. The thread does not try
-    /// them again while they run.
+    /// Root processes whose client did not open. The thread tries them
+    /// again at each scan and logs only the first failure.
     failed: HashSet<u32>,
     mixer: BlockMixer,
     rate: RateFollower,
@@ -295,17 +295,22 @@ impl AppCapture {
         }
         self.failed.retain(|pid| wanted.contains(pid));
         for (pid, app_id) in roots {
-            if self.clients.contains_key(&pid) || self.failed.contains(&pid) {
+            if self.clients.contains_key(&pid) {
                 continue;
             }
             match open_process_client(pid, &app_id) {
                 Ok(client) => {
                     log::info!("app audio opened a client of {app_id} (PID {pid})");
+                    self.failed.remove(&pid);
                     self.clients.insert(pid, client);
                 }
                 Err(e) => {
-                    log::warn!("app audio could not open a client of {app_id} (PID {pid}): {e}");
-                    self.failed.insert(pid);
+                    if self.failed.insert(pid) {
+                        log::warn!(
+                            "app audio could not open a client of {app_id} (PID {pid}): {e}; \
+                             it tries again at each scan"
+                        );
+                    }
                 }
             }
         }

@@ -608,9 +608,15 @@ struct WatchStream {
 struct SpeakerShared {
     /// The stream ended or did not open. The capture watcher opens it again.
     lost: AtomicBool,
-    /// The reopen of the capture watcher failed (R16). It clears when a
-    /// stream opens.
+    /// The reopen of the capture watcher failed (R16): the stream did not
+    /// open, or it ended before its first frame. The backends open with no
+    /// tap or client and end the stream later when none starts, so an end
+    /// before the first frame is a failed reopen too. It clears at the
+    /// first frame, or when a stream opens that is not a reopen.
     failed: AtomicBool,
+    /// The capture watcher opened the stream after a loss, and the stream
+    /// has sent no frame yet.
+    reopened: AtomicBool,
     /// The generation of the stream now. Each attach, loss and new watch
     /// stream increments it, so a report of an older stream does not
     /// match.
@@ -631,16 +637,32 @@ impl SpeakerShared {
         loss_is_current(reported, self.generation.load(Ordering::Relaxed))
     }
 
-    /// A stream opened.
-    fn opened(&self) {
+    /// A stream opened. `reopen`: the capture watcher opened it after a
+    /// loss, so "failed" stays until its first frame.
+    fn opened(&self, reopen: bool) {
         self.lost.store(false, Ordering::Relaxed);
-        self.failed.store(false, Ordering::Relaxed);
+        self.reopened.store(reopen, Ordering::Relaxed);
+        if !reopen {
+            self.failed.store(false, Ordering::Relaxed);
+        }
+    }
+
+    /// The stream sent a frame.
+    fn frame(&self) {
+        if self.reopened.load(Ordering::Relaxed) || self.failed.load(Ordering::Relaxed) {
+            self.reopened.store(false, Ordering::Relaxed);
+            self.failed.store(false, Ordering::Relaxed);
+        }
     }
 
     /// The stream ended or did not open. The capture watcher opens it again.
+    /// A reopened stream that ends before its first frame failed (R16).
     fn lose(&self) {
         self.next_generation();
         self.lost.store(true, Ordering::Relaxed);
+        if self.reopened.swap(false, Ordering::Relaxed) {
+            self.failed.store(true, Ordering::Relaxed);
+        }
     }
 
     /// The reopen of the capture watcher did not open a stream (R16).
@@ -674,8 +696,34 @@ impl futures_util::Stream for Generation {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         let next = std::pin::Pin::new(&mut self.stream).poll_next(cx);
-        if let std::task::Poll::Ready(None | Some(Err(_))) = &next {
-            self.shared.ended.store(self.generation, Ordering::Relaxed);
+        match &next {
+            std::task::Poll::Ready(None | Some(Err(_))) => {
+                self.shared.ended.store(self.generation, Ordering::Relaxed);
+            }
+            std::task::Poll::Ready(Some(Ok(_))) => self.shared.frame(),
+            std::task::Poll::Pending => {}
+        }
+        next
+    }
+}
+
+/// A watch stream that tells `shared` about each frame, so a reopened
+/// stream that sends a frame is no longer "failed".
+struct FrameSeen {
+    stream: CaptureStream,
+    shared: Arc<SpeakerShared>,
+}
+
+impl futures_util::Stream for FrameSeen {
+    type Item = Result<audio::CaptureFrame, audio::Error>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let next = std::pin::Pin::new(&mut self.stream).poll_next(cx);
+        if let std::task::Poll::Ready(Some(Ok(_))) = &next {
+            self.shared.frame();
         }
         next
     }
@@ -694,10 +742,11 @@ impl SpeakerLink {
         self.shared.is_current(reported)
     }
 
-    /// Attach a new app stream. It replaces an attached stream.
-    fn attach(&self, stream: CaptureStream) {
+    /// Attach a new app stream. It replaces an attached stream. `reopen`:
+    /// the capture watcher opened it after a loss.
+    fn attach(&self, stream: CaptureStream, reopen: bool) {
         let generation = self.shared.next_generation();
-        self.shared.opened();
+        self.shared.opened(reopen);
         let stream = CaptureStream::new(Generation {
             stream,
             generation,
@@ -3171,8 +3220,11 @@ impl CaptureManager {
             inner.permission = Some(permission);
             let opened = match opened {
                 Ok(stream) => {
-                    shared.opened();
-                    Some(stream)
+                    shared.opened(reopen);
+                    Some(CaptureStream::new(FrameSeen {
+                        stream,
+                        shared: Arc::clone(&shared),
+                    }))
                 }
                 Err(e) => {
                     log::warn!("the app watch stream of {id} did not open: {e}");
@@ -3997,7 +4049,7 @@ impl CaptureManager {
         };
         if let (AppStreamAtOpen::AttachEarly, Some(link), Some(stream)) = (at_open, &link, speaker)
         {
-            link.attach(stream);
+            link.attach(stream, false);
         }
         let snapshot = opening_recognition(&self.store, session_id, recognition)?;
         let selected = snapshot
@@ -4445,7 +4497,7 @@ fn attach_opened(inner: &mut Inner, opened: Result<CaptureStream, audio::Error>,
         return;
     };
     match opened {
-        Ok(stream) => link.attach(stream),
+        Ok(stream) => link.attach(stream, reopen),
         Err(e) => {
             log::warn!("app audio did not open: {e}; the right channel records silence");
             if reopen {
@@ -5311,7 +5363,11 @@ mod tests {
             AppStreamAtOpen::AttachEarly
         );
         let (segment, mut commands) = stereo("s1", &["us.zoom.xos"]);
-        segment.speaker.as_ref().unwrap().attach(stream.unwrap());
+        segment
+            .speaker
+            .as_ref()
+            .unwrap()
+            .attach(stream.unwrap(), false);
         let Ok(SpeakerCommand::Attach(attached)) = commands.try_recv() else {
             panic!("no stream attached");
         };
@@ -5350,7 +5406,7 @@ mod tests {
             .speaker
             .as_ref()
             .unwrap()
-            .attach(app_stream(vec![app_frame(0.4, 960)]));
+            .attach(app_stream(vec![app_frame(0.4, 960)]), false);
         let inner = Inner {
             active: Some(segment),
             permission: Some(Permission::Allowed),
@@ -5492,7 +5548,7 @@ mod tests {
         inner.permission = Some(Permission::NotAsked);
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::NotAllowed));
         inner.permission = Some(Permission::Allowed);
-        shared.opened();
+        shared.opened(false);
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
         // The stream ends: no message while the capture watcher opens it
         // again.
@@ -5512,10 +5568,45 @@ mod tests {
         // The reopen fails: now the page shows the failure.
         shared.fail();
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Failed));
-        // A later reopen opens the stream: the failure clears.
-        shared.opened();
+        // A later reopen opens the stream: the failure clears at its first
+        // frame.
+        shared.opened(true);
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Failed));
+        shared.frame();
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
         assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+    }
+
+    #[test]
+    fn a_reopened_stream_that_ends_before_a_frame_failed() {
+        // R16: the backends open with no tap or client and end the stream
+        // when none starts. A reopen that ends that way is a failure.
+        let shared = SpeakerShared::default();
+        let state = |s: &SpeakerShared| (s.lost(), s.failed());
+        shared.opened(false);
+        shared.lose();
+        assert_eq!(
+            state(&shared),
+            (true, false),
+            "a first loss is not a failure"
+        );
+        shared.opened(true);
+        shared.lose();
+        assert_eq!(
+            state(&shared),
+            (true, true),
+            "the reopen ended before a frame"
+        );
+        shared.opened(true);
+        assert!(shared.failed(), "the failure stays until a frame");
+        shared.frame();
+        assert_eq!(state(&shared), (false, false));
+        shared.lose();
+        assert_eq!(
+            state(&shared),
+            (true, false),
+            "a reopen that sent a frame and then ended is a new loss"
+        );
     }
 
     #[test]
@@ -5544,7 +5635,18 @@ mod tests {
             true,
         );
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Failed));
+        // A reopen that opens clears the failure only at its first frame.
         attach_opened(&mut inner, Ok(app_stream(Vec::new())), true);
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Failed));
+        let shared = &inner
+            .active
+            .as_ref()
+            .unwrap()
+            .speaker
+            .as_ref()
+            .unwrap()
+            .shared;
+        shared.frame();
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
     }
 
@@ -5569,7 +5671,7 @@ mod tests {
     #[test]
     fn a_loss_report_of_an_older_app_stream_does_not_mark_the_stream_now() {
         let (segment, mut commands) = stereo("s1", &["us.zoom.xos"]);
-        segment.speaker.as_ref().unwrap().attach(ending());
+        segment.speaker.as_ref().unwrap().attach(ending(), false);
         let inner = Inner {
             active: Some(segment),
             permission: Some(Permission::Allowed),
@@ -5579,7 +5681,7 @@ mod tests {
         let old = end_attached(link, &mut commands);
         // A note menu change attaches a new stream before the report of the
         // old one arrives.
-        link.attach(ending());
+        link.attach(ending(), false);
         assert!(!lose_if_current(&inner, "s1", 0, old));
         assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
         assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
@@ -5637,7 +5739,7 @@ mod tests {
             .speaker
             .as_ref()
             .unwrap()
-            .attach(app_stream(Vec::new()));
+            .attach(app_stream(Vec::new()), false);
         inner.active = Some(segment);
         inner.permission = Some(Permission::NotAsked);
         assert_eq!(
@@ -5731,7 +5833,7 @@ mod tests {
             commands: tx,
             shared: Arc::default(),
         };
-        link.attach(stream);
+        link.attach(stream, false);
         // One second of microphone in the stereo segment.
         let mic = CaptureStream::new(futures_util::stream::iter((0..50).map(|_| {
             Ok(audio::CaptureFrame {
