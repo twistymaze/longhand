@@ -44,7 +44,6 @@ const baseSettings: Settings = {
   chosen_recognition: { asr_model: "a", live_transcript: true, speaker_source: "pyannote", speaker_processing_mode: "after_stop", recognition_language: null, default_speaker_count: null },
   recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
   microphone: null,
-  system_audio_default: false,
   apps: [],
   new_note_records: true,
   alert_sound: true,
@@ -112,7 +111,7 @@ test("the General pane shows no setting that belongs to another pane", () => {
     render(
       <Harness
         readiness={{ ...readiness, microphone_authorized: false, armed: false, system_audio: "denied" }}
-        initial={{ ...baseSettings, system_audio_default: false }}
+        initial={{ ...baseSettings, apps: [] }}
       />,
     );
     const text = document.body.textContent ?? "";
@@ -203,7 +202,7 @@ describe("the setup group", () => {
     const first = renderSetup(denied);
     expect(first.group().textContent).not.toContain("Computer audio access");
     cleanup();
-    const second = renderSetup(denied, { ...baseSettings, system_audio_default: true });
+    const second = renderSetup(denied, { ...baseSettings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] });
     expect(second.group().textContent).toContain("Computer audio access");
     expect(within(second.group()).getByRole("button", { name: "Open System Settings" })).toBeTruthy();
   });

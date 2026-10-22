@@ -31,12 +31,3 @@ Borrowed material in this crate, one record per file (R27).
 - Licence: MIT, licences/sources/Handy-MIT.txt
 - Status: copied — moved here from `crates/audio-cpal` so that the microphone and the system audio backends both use it
 
-
-## `src/live_mix.rs`
-
-- Repository: https://github.com/fastrepl/anarlog
-- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
-- Source paths: `crates/owhisper-client/src/local_soniqo_live.rs` (`echo_score_at_lag` and the `ECHO_GATE_MIN_SAMPLES` and `ECHO_GATE_LAG_STEP_SAMPLES` constants)
-- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
-- Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — `score` keeps only the correlation of `echo_score_at_lag`; the microphone copy check (`src/mic_copy.rs`) uses it. The plain mix in the same file is new (KTD9 of the app audio plan).

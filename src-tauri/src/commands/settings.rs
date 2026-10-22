@@ -275,17 +275,16 @@ pub fn set_microphone(
     Ok(updated)
 }
 
-/// Choose whether a new note starts with system audio on (R6).
+/// The parked Computer audio default (R18). It changes nothing and refuses
+/// to turn the default on. The Settings UI still calls it until U9 of the
+/// app audio plan replaces that UI and this command.
 #[tauri::command]
 #[specta::specta]
 pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
-        return Err(crate::commands::capture::SYSTEM_AUDIO_UNAVAILABLE.to_string());
+    if enabled {
+        return Err("Computer audio is not available.".to_string());
     }
-    settings::update_settings(&app, |s| {
-        s.system_audio_default = enabled;
-        Ok(())
-    })
+    Ok(settings::get_settings(&app))
 }
 
 /// Why the app list cannot change on this computer (R17).

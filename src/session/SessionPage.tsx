@@ -24,7 +24,6 @@ import {
   type WaitingPart,
 } from "../bindings";
 import { rowTitle } from "../home/group";
-import { features } from "../lib/features";
 import { sameType } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
@@ -597,14 +596,6 @@ export function SessionPage({
         void changeInput(() => commands.setNoteMicrophone(id, next)),
       ),
     });
-    if (features.systemAudio) {
-      const on = capture.status.system_audio;
-      items.push({
-        label: "Record Computer Audio",
-        checked: on,
-        onSelect: () => void changeInput(() => commands.setNoteSystemAudio(id, !on)),
-      });
-    }
   }
   if (phase === "saved" && !noAudio) {
     items.push({

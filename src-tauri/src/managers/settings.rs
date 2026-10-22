@@ -424,7 +424,6 @@ pub struct LocalSettings {
     pub recognition_language: Option<String>,
     pub default_speaker_count: Option<SpeakerCountSetting>,
     pub microphone: Option<MicrophoneChoice>,
-    pub system_audio_default: bool,
     /// The apps whose audio each new note records (R1, KTD8). App IDs
     /// differ by platform, so the list stays on this computer.
     #[serde(deserialize_with = "valid_apps")]
@@ -676,8 +675,6 @@ pub struct Settings {
     /// The microphone a new note records from. `None` is "System default"
     /// (R1, KTD17).
     pub microphone: Option<MicrophoneChoice>,
-    /// Whether a new note starts with system audio on (R6, KD13).
-    pub system_audio_default: bool,
     /// The app list: the apps whose audio each new note records (R1). Empty
     /// on a new install (KD3).
     pub apps: Vec<ListedApp>,
@@ -904,7 +901,6 @@ impl Default for Settings {
             chosen_recognition: RecognitionChoice::default(),
             recognition: RecognitionState::default(),
             microphone: None,
-            system_audio_default: false,
             apps: Vec::new(),
             new_note_records: true,
             alert_sound: true,
@@ -960,7 +956,6 @@ impl Settings {
             },
             chosen_recognition,
             microphone: local.microphone,
-            system_audio_default: local.system_audio_default,
             apps: local.apps,
             new_note_records: known_or(&fields.new_note_records, defaults.new_note_records),
             alert_sound: local.alert_sound,
@@ -1026,7 +1021,6 @@ impl Settings {
             recognition_language: self.recognition_language.clone(),
             default_speaker_count: self.default_speaker_count,
             microphone: self.microphone.clone(),
-            system_audio_default: self.system_audio_default,
             apps: self.apps.clone(),
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
@@ -2545,7 +2539,7 @@ mod tests {
     }
 
     #[test]
-    fn a_store_without_the_recording_keys_reads_as_system_default_and_no_system_audio() {
+    fn a_store_without_the_recording_keys_reads_as_system_default() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "shortcut": "kept",
@@ -2553,10 +2547,8 @@ mod tests {
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated, "the new keys need no migration (KTD17)");
         assert_eq!(settings.microphone, None);
-        assert!(!settings.system_audio_default);
         assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         assert_eq!(Settings::default().microphone, None);
-        assert!(!Settings::default().system_audio_default);
     }
 
     // Covers R9: a store from before the setting plays the alert sound, as
@@ -2772,12 +2764,12 @@ mod tests {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "microphone": "USB Audio",
-            "system_audio_default": true,
+            "hide_from_dock": true,
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
         assert_eq!(settings.microphone, None);
-        assert!(settings.system_audio_default);
+        assert!(settings.hide_from_dock);
     }
 
     fn zoom() -> ListedApp {
@@ -2838,11 +2830,11 @@ mod tests {
                 { "id": "us.zoom.xos", "name": "zoom.us", "path": "/Applications/zoom.us.app" },
                 { "id": "us.zoom.xos", "name": "Second copy", "path": "" },
             ],
-            "system_audio_default": true,
+            "hide_from_dock": true,
         });
         let (settings, _) = settings_from_value(&stored);
         assert_eq!(settings.apps, vec![zoom()]);
-        assert!(settings.system_audio_default);
+        assert!(settings.hide_from_dock);
 
         let (settings, _) = settings_from_value(&json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
@@ -4386,7 +4378,6 @@ mod stale_recognition_tests {
             "speaker_source": "integrated",
             "speaker_processing_mode": "after_stop",
             "recognition_language": "de",
-            "system_audio_default": true,
             "destination_roots": ["/vault/a"],
             "current_destination": "/vault/a",
         }));
@@ -4412,7 +4403,6 @@ mod stale_recognition_tests {
                 ..ProviderEntries::default()
             },
             legacy_key_provider: Some(Provider::Custom),
-            system_audio_default: true,
             storage_folder: "/vault/a".into(),
             chosen_recognition: recognition.clone(),
             ..Settings::default()

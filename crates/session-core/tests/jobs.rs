@@ -1418,7 +1418,6 @@ fn usb_mic() -> CaptureChoice {
             id: "usb-uid".into(),
             label: "USB Audio".into(),
         }),
-        system_audio: true,
     }
 }
 

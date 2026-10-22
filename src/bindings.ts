@@ -186,7 +186,9 @@ async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settin
 }
 },
 /**
- * Choose whether a new note starts with system audio on (R6).
+ * The parked Computer audio default (R18). It changes nothing and refuses
+ * to turn the default on. The Settings UI still calls it until U9 of the
+ * app audio plan replaces that UI and this command.
  */
 async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
     try {
@@ -896,13 +898,14 @@ async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice |
 }
 },
 /**
- * Turn system audio on or off for one note from the recording page (R8).
- * With no `session_id`, the next note starts with it. Settings does not
- * change. Returns the status after the change.
+ * Change the app set of one note from the note menu (R10). The app list
+ * in Settings does not change (KD7). On macOS, an add while the permission
+ * is "not asked" starts the permission request (R15). Returns the status
+ * after the change.
  */
-async setNoteSystemAudio(sessionId: string | null, enabled: boolean) : Promise<Result<RecordingStatus, string>> {
+async setNoteApps(sessionId: string, apps: ListedApp[]) : Promise<Result<RecordingStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_system_audio", { sessionId, enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_apps", { sessionId, apps }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1419,6 +1422,26 @@ export type AgentBlockStatus =
  * fixes the file.
  */
 { kind: "damaged"; file: string }
+/**
+ * The app audio state of the segment that records (R16).
+ */
+export type AppAudioState = 
+/**
+ * The note records its apps. An app that does not run or makes no
+ * sound is normal.
+ */
+"recording" | 
+/**
+ * The macOS permission is denied, or its prompt waits for an answer:
+ * the app audio is silence. The microphone records.
+ */
+"not_allowed" | 
+/**
+ * The app stream ended or did not open, and the reopen of the capture
+ * watcher also failed. The microphone records, and the watcher tries
+ * again.
+ */
+"failed"
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
 /**
@@ -1483,7 +1506,7 @@ export type CaptureTick = { session_id: string;
  */
 peak: number; 
 /**
- * The system audio peak of a stereo segment, 0.0 to 1.0. `None` while
+ * The app audio peak of a stereo segment, 0.0 to 1.0. `None` while
  * the segment is mono.
  */
 speaker_peak: number | null; 
@@ -2362,46 +2385,14 @@ microphone_fallback: boolean;
  */
 microphone_choice: MicrophoneChoice | null; 
 /**
- * The system audio permission is unknown, the output plays, and the
- * system audio channel has been digital silence for 10 s: system
- * audio can be missing (U5 step 6). It clears when audio appears.
+ * The app set of the open note (R10, R21). Empty with no note open.
  */
-system_audio_silent: boolean; 
+note_apps: ListedApp[]; 
 /**
- * The Computer audio switch of the open note (R8). With no note open,
- * the switch that the next note starts with (R6).
+ * The app audio state of the segment that records (R16). `None` when
+ * no segment records or the note's app set is empty.
  */
-system_audio: boolean; 
-/**
- * A speaker stream is attached to the recording segment: the note
- * records system audio on the right now.
- */
-system_audio_recording: boolean; 
-/**
- * System audio is on, but the speaker stream failed or did not open.
- * The microphone records, the right channel holds silence, and the
- * capture watcher tries the speaker stream again (R10).
- */
-system_audio_failed: boolean; 
-/**
- * The last system audio permission check while system audio is on
- * and a segment records (KTD12). The page uses it to say why system
- * audio is not recorded: denied, not asked (the prompt can wait for an
- * answer), or unknown. `None` while system audio is off.
- */
-system_audio_permission: SystemAudioPermission | null; 
-/**
- * The output that Longhand follows has been silent for 30 s while
- * another output plays sound (Windows only, U4 step 6): the call can
- * play on a device that the note does not record.
- */
-system_audio_other_output: boolean; 
-/**
- * The system audio of the last 30 s held a late copy of the
- * microphone: an audio mixer app plays the microphone to an output, so
- * the note hears the user twice.
- */
-system_audio_mic_copy: boolean }
+app_audio: AppAudioState | null }
 /**
  * Work on a note on another computer (KTD5). Record, Resume, Transcribe
  * Again, Regenerate Summary, Remove Audio and Delete wait for it (R21),
@@ -2671,10 +2662,6 @@ recognition: RecognitionState;
  * (R1, KTD17).
  */
 microphone: MicrophoneChoice | null; 
-/**
- * Whether a new note starts with system audio on (R6, KD13).
- */
-system_audio_default: boolean; 
 /**
  * The app list: the apps whose audio each new note records (R1). Empty
  * on a new install (KD3).

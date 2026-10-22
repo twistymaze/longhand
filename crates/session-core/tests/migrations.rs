@@ -659,7 +659,7 @@ fn migration_twenty_one_gives_existing_notes_an_empty_app_set() {
             .unwrap();
         add_session(&conn, "s1");
         conn.execute(
-            "UPDATE sessions SET mic_id = 'usb-uid', mic_label = 'USB Audio', system_audio = 1
+            "UPDATE sessions SET mic_id = 'usb-uid', mic_label = 'USB Audio'
              WHERE id = 's1'",
             [],
         )
@@ -675,7 +675,6 @@ fn migration_twenty_one_gives_existing_notes_an_empty_app_set() {
                 id: "usb-uid".into(),
                 label: "USB Audio".into(),
             }),
-            system_audio: true,
         }
     );
 }

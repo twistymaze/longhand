@@ -30,8 +30,8 @@ export function outstandingItems(
     items.push({ id: "storage", blocksRecording: false });
   }
   // The microphone alone is enough to record. Computer audio access is
-  // needed only when new notes start with Computer audio on.
-  if (systemAudio && settings.system_audio_default && readiness.system_audio !== "allowed") {
+  // needed only when the app list is not empty.
+  if (systemAudio && settings.apps.length > 0 && readiness.system_audio !== "allowed") {
     items.push({ id: "system_audio", blocksRecording: false });
   }
   if (readiness.missing_models.length > 0) items.push({ id: "models", blocksRecording: false });

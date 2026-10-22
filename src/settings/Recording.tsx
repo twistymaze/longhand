@@ -159,7 +159,7 @@ function MicrophoneGroup({ settings, onSettings, readiness, onRefresh }: PanePro
   );
 }
 
-function SystemAudio({ settings, onSettings, readiness, onRefresh }: PaneProps) {
+function SystemAudio({ onSettings, readiness, onRefresh }: PaneProps) {
   const [error, setError] = useState<string | null>(null);
   const change = async (enabled: boolean) => {
     const result = await commands.setSystemAudioDefault(enabled);
@@ -174,7 +174,7 @@ function SystemAudio({ settings, onSettings, readiness, onRefresh }: PaneProps) 
       <Row label="Computer audio" detail="Start each new note with Computer audio on">
         <Switch
           label="Computer audio"
-          checked={settings.system_audio_default}
+          checked={false}
           onChange={(v) => void change(v)}
         />
       </Row>

@@ -16,7 +16,7 @@ const ready: Readiness = {
 
 // Only the fields that the function reads.
 const settings = {
-  system_audio_default: false,
+  apps: [],
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 
@@ -64,8 +64,8 @@ describe("the outstanding setup items", () => {
   test("Covers AE4. Computer audio access is outstanding only when new notes start with Computer audio on", () => {
     const notAllowed = { ...ready, system_audio: "denied" as const };
     expect(ids(notAllowed, settings, true)).toEqual([]);
-    expect(ids(notAllowed, { ...settings, system_audio_default: true }, true)).toEqual(["system_audio"]);
-    expect(ids(notAllowed, { ...settings, system_audio_default: true }, false)).toEqual([]);
+    expect(ids(notAllowed, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] }, true)).toEqual(["system_audio"]);
+    expect(ids(notAllowed, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] }, false)).toEqual([]);
   });
 
   test("all items come in the order microphone, shortcut, storage, Computer audio, models, endpoint", () => {
@@ -79,7 +79,7 @@ describe("the outstanding setup items", () => {
       missing_models: ["a"],
       endpoint_configured: false,
     };
-    expect(ids(all, { ...settings, system_audio_default: true }, true)).toEqual([
+    expect(ids(all, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] }, true)).toEqual([
       "microphone",
       "shortcut",
       "storage",

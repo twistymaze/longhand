@@ -19,14 +19,18 @@
 //! chosen microphone is present in two polls in a row. Each input change
 //! is a segment boundary through `reopen`.
 //!
-//! With system audio on, a note records a stereo segment: the microphone
-//! on the left and system audio on the right (R11, KTD2–KTD6, KTD18). The
-//! first turn-on opens the speaker stream, and then `reopen` starts a stereo
-//! segment with it attached. After that the note's stereo mark is set, and
-//! every segment of the note is stereo. Turning system audio off or on
-//! inside a stereo segment detaches or attaches the speaker stream and does
-//! not split the segment. A speaker stream that ends leaves silence on the
-//! right, and the capture watcher opens a new one.
+//! A note records the audio of the apps in its app set (R6, R21 of the app
+//! audio plan). A new note takes a copy of the Settings list; Continue,
+//! Resume and every reopen use the set that the store holds. While the note
+//! is one channel and its set is not empty, a watch stream reads the app
+//! audio on a thread of its own. Its first frame above
+//! [`FIRST_SOUND_PEAK`] starts the change to two channels (KTD6): `reopen`
+//! starts a stereo segment with the watch stream attached, the microphone
+//! on the left and the app audio on the right. After that the note's stereo
+//! mark is set, and every segment of the note is stereo. An app that starts
+//! or quits, and a change of the set in the note menu, do not split the
+//! segment. An app stream that ends leaves silence on the right, and the
+//! capture watcher opens a new one.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -37,7 +41,7 @@ use std::time::{Duration, Instant};
 
 use audio::CaptureStream;
 use audio_cpal::{CpalAudio, Input, Inputs, MicChoice};
-use audio_system::{Permission, SilenceRun, SilentCheck, SystemAudioCapture, SystemAudioStatus};
+use audio_system::{AppSet, Permission};
 use chrono::{DateTime, FixedOffset, Local};
 use pipeline::live::LiveEnd;
 use pipeline::recover::segment_audio_file;
@@ -48,8 +52,8 @@ use recorder::{
 use serde::Serialize;
 use session_core::jobs::{Claims, RECORDED_INTO};
 use session_core::{
-    CaptureChoice, Closed, Event, InterruptReason, Microphone, RecordingModel, SessionState,
-    SpeakerCount, Store, Timeline,
+    CaptureChoice, Closed, Event, InterruptReason, Microphone, RecordedApp, RecordingModel,
+    SessionState, SpeakerCount, Store, Timeline,
 };
 use specta::Type;
 use supervisor::{RestartTracker, SOURCE_RESTART_BUDGET};
@@ -58,16 +62,22 @@ use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
 
 use crate::audio::AppAudio;
-use crate::commands::readiness::SystemAudioPermission;
 use crate::managers::alerts::{self, AlertsManager};
 use crate::managers::live::{DeferredLive, LiveManager};
 use crate::managers::models::ModelsManager;
 use crate::managers::processing::ProcessingManager;
-use crate::managers::settings::{self, MicrophoneChoice, Settings};
+use crate::managers::settings::{self, ListedApp, MicrophoneChoice, Settings};
 
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
 /// enough to keep per-frame overhead negligible.
 const FRAMES_PER_SECOND: u32 = 50;
+
+/// The peak above which an app frame is app sound: the first such frame of
+/// the watch stream turns the note two-channel (R12, KTD6). An open audio
+/// stream alone sends silence or a very low level. This value is
+/// provisional: U1 measures the peak of idle apps on real hardware, and
+/// sets the value from that measurement. 0.001 is -60 dBFS.
+const FIRST_SOUND_PEAK: f32 = 0.001;
 
 /// How often the inputs are compared while waiting for a lost microphone.
 const DEVICE_POLL: Duration = Duration::from_secs(2);
@@ -111,7 +121,7 @@ pub struct CaptureTick {
     pub session_id: String,
     /// The microphone's peak, 0.0 to 1.0.
     pub peak: f32,
-    /// The system audio peak of a stereo segment, 0.0 to 1.0. `None` while
+    /// The app audio peak of a stereo segment, 0.0 to 1.0. `None` while
     /// the segment is mono.
     pub speaker_peak: Option<f32>,
     /// On the session timeline, gaps between segments included: where a
@@ -172,33 +182,27 @@ pub struct RecordingStatus {
     /// The microphone that the open note chose. With no note open, the
     /// microphone that the next note uses. `None` is "System default".
     pub microphone_choice: Option<MicrophoneChoice>,
-    /// The system audio permission is unknown, the output plays, and the
-    /// system audio channel has been digital silence for 10 s: system
-    /// audio can be missing (U5 step 6). It clears when audio appears.
-    pub system_audio_silent: bool,
-    /// The Computer audio switch of the open note (R8). With no note open,
-    /// the switch that the next note starts with (R6).
-    pub system_audio: bool,
-    /// A speaker stream is attached to the recording segment: the note
-    /// records system audio on the right now.
-    pub system_audio_recording: bool,
-    /// System audio is on, but the speaker stream failed or did not open.
-    /// The microphone records, the right channel holds silence, and the
-    /// capture watcher tries the speaker stream again (R10).
-    pub system_audio_failed: bool,
-    /// The last system audio permission check while system audio is on
-    /// and a segment records (KTD12). The page uses it to say why system
-    /// audio is not recorded: denied, not asked (the prompt can wait for an
-    /// answer), or unknown. `None` while system audio is off.
-    pub system_audio_permission: Option<SystemAudioPermission>,
-    /// The output that Longhand follows has been silent for 30 s while
-    /// another output plays sound (Windows only, U4 step 6): the call can
-    /// play on a device that the note does not record.
-    pub system_audio_other_output: bool,
-    /// The system audio of the last 30 s held a late copy of the
-    /// microphone: an audio mixer app plays the microphone to an output, so
-    /// the note hears the user twice.
-    pub system_audio_mic_copy: bool,
+    /// The app set of the open note (R10, R21). Empty with no note open.
+    pub note_apps: Vec<ListedApp>,
+    /// The app audio state of the segment that records (R16). `None` when
+    /// no segment records or the note's app set is empty.
+    pub app_audio: Option<AppAudioState>,
+}
+
+/// The app audio state of the segment that records (R16).
+#[derive(Serialize, Clone, Copy, Type, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AppAudioState {
+    /// The note records its apps. An app that does not run or makes no
+    /// sound is normal.
+    Recording,
+    /// The macOS permission is denied, or its prompt waits for an answer:
+    /// the app audio is silence. The microphone records.
+    NotAllowed,
+    /// The app stream ended or did not open, and the reopen of the capture
+    /// watcher also failed. The microphone records, and the watcher tries
+    /// again.
+    Failed,
 }
 
 #[derive(Serialize, Clone, Type, Debug)]
@@ -533,10 +537,33 @@ struct ActiveSegment {
     /// The native rate of the microphone, which the speaker stream is
     /// resampled to (KTD5).
     rate: u32,
-    /// The note's Computer audio switch, as the capture manager knows it.
-    system_audio: bool,
-    /// The speaker side of a stereo segment. `None` for a mono segment.
+    /// The note's app set, as the capture manager knows it (R10). The app
+    /// stream of the segment reads it, so a change reaches the stream with
+    /// no new segment.
+    apps: AppSet,
+    /// The speaker side of a stereo segment: the app stream. `None` for a
+    /// mono segment.
     speaker: Option<SpeakerLink>,
+    /// The watch stream of a mono segment whose app set is not empty
+    /// (KTD6). `None` for a stereo segment and for an empty set.
+    watch: Option<AppWatch>,
+}
+
+impl ActiveSegment {
+    /// The segment records the audio of at least one app.
+    fn records_apps(&self) -> bool {
+        !self.apps.get().is_empty()
+    }
+
+    /// The state of the app stream: of the speaker side, or of the watch
+    /// stream.
+    fn app_shared(&self) -> Option<&Arc<SpeakerShared>> {
+        match (&self.speaker, &self.watch) {
+            (Some(link), _) => Some(&link.shared),
+            (None, Some(watch)) => Some(&watch.shared),
+            (None, None) => None,
+        }
+    }
 }
 
 /// The speaker side of a stereo segment, shared with its segment thread
@@ -546,28 +573,89 @@ struct SpeakerLink {
     shared: Arc<SpeakerShared>,
 }
 
-/// What the segment thread and the capture manager both know about the
-/// speaker stream.
+/// The watch stream of a mono segment (KTD6). Its thread reads the app
+/// stream until the first app sound. Drop cancels the thread, so a closed
+/// segment leaves no watch stream open.
+struct AppWatch {
+    cancel: CancellationToken,
+    shared: Arc<SpeakerShared>,
+}
+
+impl Drop for AppWatch {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+/// What the thread of a watch stream reads (KTD6).
+struct WatchStream {
+    id: String,
+    segment: u32,
+    rate: u32,
+    apps: AppSet,
+    shared: Arc<SpeakerShared>,
+    /// The generation of `shared` that this watch stream has. A newer
+    /// generation means that a newer watch stream replaced it.
+    generation: u64,
+    cancel: CancellationToken,
+    /// The capture watcher opens the watch stream again after a loss.
+    reopen: bool,
+}
+
+/// What the stream thread and the capture manager both know about the app
+/// stream: the attached stream of a stereo segment, or the watch stream.
 #[derive(Default)]
 struct SpeakerShared {
-    /// A speaker stream is attached and has not ended.
-    attached: AtomicBool,
-    /// System audio is on, but the speaker stream ended or did not open.
+    /// The stream ended or did not open. The capture watcher opens it again.
+    lost: AtomicBool,
+    /// The reopen of the capture watcher failed (R16). It clears when a
+    /// stream opens.
     failed: AtomicBool,
-    /// The digital silence at the end of the right channel (U5 step 6).
-    silence: SilenceRun,
-    /// The right channel holds a late copy of the microphone.
-    mic_copy: audio::mic_copy::MicCopyFlag,
-    /// The status of the attached stream, for the Windows other-output
-    /// flag (U4 step 6).
-    status: Mutex<Option<SystemAudioStatus>>,
-    /// The generation of the speaker side now. Each attach, detach and
-    /// failure increments it, so a loss report of an older stream does not
+    /// The generation of the stream now. Each attach, loss and new watch
+    /// stream increments it, so a report of an older stream does not
     /// match.
     generation: AtomicU64,
     /// The generation of the last speaker stream that ended. The segment
     /// thread sets it just before it reports the loss.
     ended: AtomicU64,
+}
+
+impl SpeakerShared {
+    /// Start a new generation, and return it.
+    fn next_generation(&self) -> u64 {
+        self.generation.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// A report of generation `reported` is about the stream now.
+    fn is_current(&self, reported: u64) -> bool {
+        loss_is_current(reported, self.generation.load(Ordering::Relaxed))
+    }
+
+    /// A stream opened.
+    fn opened(&self) {
+        self.lost.store(false, Ordering::Relaxed);
+        self.failed.store(false, Ordering::Relaxed);
+    }
+
+    /// The stream ended or did not open. The capture watcher opens it again.
+    fn lose(&self) {
+        self.next_generation();
+        self.lost.store(true, Ordering::Relaxed);
+    }
+
+    /// The reopen of the capture watcher did not open a stream (R16).
+    fn fail(&self) {
+        self.lose();
+        self.failed.store(true, Ordering::Relaxed);
+    }
+
+    fn lost(&self) -> bool {
+        self.lost.load(Ordering::Relaxed)
+    }
+
+    fn failed(&self) -> bool {
+        self.failed.load(Ordering::Relaxed)
+    }
 }
 
 /// A speaker stream that records its generation in `shared.ended` when it
@@ -594,78 +682,66 @@ impl futures_util::Stream for Generation {
 }
 
 /// A loss report of generation `reported` is about the speaker stream of
-/// generation `current`: only then does it mark the speaker side as failed.
+/// generation `current`: only then does it mark the speaker side as lost.
 fn loss_is_current(reported: u64, current: u64) -> bool {
     reported == current
 }
 
 impl SpeakerLink {
-    /// Start a new generation of the speaker side, and return it.
-    fn next_generation(&self) -> u64 {
-        self.shared.generation.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
     /// A loss report of generation `reported` is about the stream attached
     /// now.
     fn loss_is_current(&self, reported: u64) -> bool {
-        loss_is_current(reported, self.shared.generation.load(Ordering::Relaxed))
+        self.shared.is_current(reported)
     }
 
-    /// Attach a new speaker stream. It replaces an attached stream.
-    fn attach(&self, capture: SystemAudioCapture) {
-        let generation = self.next_generation();
-        self.shared.silence.reset();
-        *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = Some(capture.status);
-        self.shared.failed.store(false, Ordering::Relaxed);
-        self.shared.attached.store(true, Ordering::Relaxed);
+    /// Attach a new app stream. It replaces an attached stream.
+    fn attach(&self, stream: CaptureStream) {
+        let generation = self.shared.next_generation();
+        self.shared.opened();
         let stream = CaptureStream::new(Generation {
-            stream: capture.stream,
+            stream,
             generation,
             shared: Arc::clone(&self.shared),
         });
         if self.commands.send(SpeakerCommand::Attach(stream)).is_err() {
-            log::warn!("the segment thread ended before the speaker stream attached");
-            self.shared.attached.store(false, Ordering::Relaxed);
+            log::warn!("the segment thread ended before the app stream attached");
         }
     }
+}
 
-    /// Detach the speaker stream: system audio turned off. The right
-    /// channel gets silence.
-    fn detach(&self) {
-        self.next_generation();
-        self.shared.attached.store(false, Ordering::Relaxed);
-        self.shared.failed.store(false, Ordering::Relaxed);
-        *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let _ = self.commands.send(SpeakerCommand::Detach);
+/// The result of the watch stream (KTD6).
+enum FirstSound {
+    /// A frame above [`FIRST_SOUND_PEAK`] arrived. The stream holds the
+    /// frames after it.
+    Heard,
+    /// The stream ended or failed before the first app sound.
+    Ended(audio::Error),
+    /// The watch stream was cancelled.
+    Cancelled,
+}
+
+/// True when a frame of app audio holds sound above [`FIRST_SOUND_PEAK`].
+fn is_app_sound(samples: &[f32]) -> bool {
+    samples.iter().any(|s| s.abs() > FIRST_SOUND_PEAK)
+}
+
+/// Read `stream` until its first frame above [`FIRST_SOUND_PEAK`] (KTD6).
+/// A frame below it changes nothing. `cancel` ends the read: a stream with
+/// no app that plays sends no frames.
+async fn first_sound(stream: &mut CaptureStream, cancel: &CancellationToken) -> FirstSound {
+    use futures_util::StreamExt as _;
+    let mut frames = std::pin::pin!(stream.take_until(cancel.cancelled()));
+    while let Some(next) = frames.next().await {
+        match next {
+            Ok(frame) if is_app_sound(&frame.raw_speaker) => return FirstSound::Heard,
+            Ok(_) => {}
+            Err(e) => return FirstSound::Ended(e),
+        }
     }
-
-    /// The speaker stream failed or did not open, while system audio is on.
-    fn fail(&self) {
-        self.next_generation();
-        self.shared.attached.store(false, Ordering::Relaxed);
-        self.shared.failed.store(true, Ordering::Relaxed);
-        *self.shared.status.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    fn attached(&self) -> bool {
-        self.shared.attached.load(Ordering::Relaxed)
-    }
-
-    fn failed(&self) -> bool {
-        self.shared.failed.load(Ordering::Relaxed)
-    }
-
-    fn mic_copy(&self) -> bool {
-        self.shared.mic_copy.get()
-    }
-
-    fn other_output_playing(&self) -> bool {
-        self.shared
-            .status
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(SystemAudioStatus::other_output_playing)
+    if cancel.is_cancelled() {
+        FirstSound::Cancelled
+    } else {
+        FirstSound::Ended(audio::Error::SpeakerStreamEnded)
     }
 }
 
@@ -682,14 +758,15 @@ struct Opening<'a> {
     choice: Option<&'a MicChoice>,
     /// An input change opens the segment (KTD3).
     at_switch: bool,
-    /// The note's Computer audio switch.
-    system_audio: bool,
-    /// The note's stereo mark is set: the segment is stereo also with
-    /// system audio off (KTD3).
+    /// The note's app set (R21).
+    apps: AppSet,
+    /// The note's stereo mark is set: the segment is stereo also with an
+    /// empty app set (KTD3).
     stereo_mark: bool,
-    /// A speaker stream opened before the segment, at the first turn-on of
-    /// system audio (KTD18). With system audio on and no stream here,
-    /// the speaker stream opens on a thread of its own after the segment.
+    /// The watch stream that heard the first app sound (KTD6). The segment
+    /// is stereo and attaches it. With a stereo segment, a set that is not
+    /// empty and no stream here, the app stream opens on a thread of its
+    /// own after the segment.
     speaker: Option<EarlySpeaker>,
 }
 
@@ -705,32 +782,32 @@ fn opening_recognition(
         .map_err(|error| CaptureError::Other(error.to_string()))
 }
 
-/// A speaker stream that opened before its segment, at the first turn-on of
-/// system audio (KTD18).
+/// The watch stream of a mono segment that heard the first app sound
+/// (KTD6). The stereo segment attaches it, so the gap at the change stays
+/// short.
 struct EarlySpeaker {
     /// The rate the stream opened at: the rate of the mono segment that
     /// closed.
     rate: u32,
-    opened: Result<SystemAudioCapture, audio::Error>,
+    /// The app set that the stream reads. The stereo segment keeps it.
+    apps: AppSet,
+    stream: CaptureStream,
 }
 
-/// The early speaker stream that a segment at `rate` can attach. The segment
-/// thread takes a stream only at the microphone's rate. A stream at another
-/// rate is dropped, and `None` tells the segment to open a new stream at
-/// its rate.
-fn early_speaker_at(
-    early: Option<EarlySpeaker>,
-    rate: u32,
-) -> Option<Result<SystemAudioCapture, audio::Error>> {
+/// The early stream that a segment at `rate` can attach. The segment thread
+/// takes a stream only at the microphone's rate. A stream at another rate
+/// is dropped, and `None` tells the segment to open a new stream at its
+/// rate.
+fn early_speaker_at(early: Option<EarlySpeaker>, rate: u32) -> Option<CaptureStream> {
     let early = early?;
     if early.rate != rate {
         log::info!(
-            "the speaker stream opened at {} Hz, but the new segment records at {rate} Hz; it opens again",
+            "the app stream opened at {} Hz, but the new segment records at {rate} Hz; it opens again",
             early.rate
         );
         return None;
     }
-    Some(early.opened)
+    Some(early.stream)
 }
 
 /// An input resolved ahead of the open (R1b, R3), or the input that opened:
@@ -1056,16 +1133,8 @@ struct Inner {
     /// exists (KTD2). The next start writes it with the row. The inner
     /// `None` is "System default".
     held_microphone: Option<Option<MicrophoneChoice>>,
-    /// A Computer audio switch set on the recording page before the note's
-    /// row exists (KTD2). The next start writes it with the row.
-    held_system_audio: Option<bool>,
-    /// The silent system audio flag (U5 step 6). While system audio is
-    /// on and the permission is unknown, the capture watcher polls it with
-    /// the permission, `audio_system::output_running()` and the right
-    /// channel's `SilenceRun`. `status` reports it.
-    silent_check: SilentCheck,
-    /// The last system audio permission check while system audio is on
-    /// (KTD12). `None` while it is off.
+    /// The last permission check while the recording segment records apps
+    /// (R15, R16). `None` while it records no app.
     permission: Option<Permission>,
     /// True after the update manager claimed a restart. No recording
     /// starts after that, because the app restarts (KD6).
@@ -1089,19 +1158,13 @@ struct StatusSnapshot {
     /// The input name and the fallback flag of the recording segment.
     input: Option<(String, bool)>,
     held: Option<Option<MicrophoneChoice>>,
-    held_system_audio: Option<bool>,
-    silent: bool,
-    permission: Option<Permission>,
-    /// For a stereo segment: the switch, attached, failed, the
-    /// other-output flag, and the microphone copy flag.
-    speaker: Option<(bool, bool, bool, bool, bool)>,
+    app_audio: Option<AppAudioState>,
 }
 
 impl Inner {
-    /// Forget the system audio checks: system audio turns off, or the
+    /// Forget the permission check: the note's app set becomes empty, or the
     /// note stops, is superseded or is new.
-    fn reset_system_audio_checks(&mut self) {
-        self.silent_check = SilentCheck::default();
+    fn reset_app_audio_checks(&mut self) {
         self.permission = None;
     }
 
@@ -1112,7 +1175,7 @@ impl Inner {
             watch.cancel.cancel();
         }
         self.stop_capture_watch();
-        self.reset_system_audio_checks();
+        self.reset_app_audio_checks();
         self.recovering.take().map(|p| {
             p.cancel.cancel();
             p.session_id
@@ -1146,17 +1209,6 @@ impl Inner {
     /// The part of the status that [`CaptureManager::status`] reads under
     /// the inner lock.
     fn snapshot(&self) -> StatusSnapshot {
-        let speaker = self.active.as_ref().and_then(|a| {
-            a.speaker.as_ref().map(|link| {
-                (
-                    a.system_audio,
-                    link.attached(),
-                    link.failed(),
-                    link.other_output_playing(),
-                    link.mic_copy(),
-                )
-            })
-        });
         StatusSnapshot {
             recording: self.note_open(),
             paused: self.paused.is_some(),
@@ -1164,12 +1216,30 @@ impl Inner {
             sample_rate: self.prepared.as_ref().map(|p| p.rate),
             input: self.active.as_ref().map(|a| (a.input.clone(), a.fallback)),
             held: self.held_microphone.clone(),
-            held_system_audio: self.held_system_audio,
-            silent: self.silent_check.flagged(),
-            permission: self.permission,
-            speaker,
+            app_audio: self
+                .active
+                .as_ref()
+                .and_then(|a| app_audio_state(a, self.permission)),
         }
     }
+}
+
+/// The app audio state of the segment `active` (R16). A permission problem
+/// shows at once. A failure shows only after the reopen of the capture
+/// watcher failed. `None` when the segment records no app.
+fn app_audio_state(
+    active: &ActiveSegment,
+    permission: Option<Permission>,
+) -> Option<AppAudioState> {
+    if !active.records_apps() {
+        return None;
+    }
+    let shared = active.app_shared()?;
+    Some(match permission {
+        Some(Permission::Denied | Permission::NotAsked) => AppAudioState::NotAllowed,
+        _ if shared.failed() => AppAudioState::Failed,
+        _ => AppAudioState::Recording,
+    })
 }
 
 /// What a Pause does (R1, R5).
@@ -1366,87 +1436,172 @@ pub fn check_microphone(choice: Option<&MicrophoneChoice>) -> Result<(), String>
     }
 }
 
-/// Computer audio is available to users. It is false until the
-/// processing of a stereo note is designed again: the mono mix fails when
-/// the system audio holds a copy of the microphone or the channels do not
-/// match. While it is false, no note records system audio, whatever the
-/// settings or a stored note choice say, and the commands refuse to turn
-/// it on. The capture and processing code stays, so that the tests keep
-/// it working.
-pub const SYSTEM_AUDIO_AVAILABLE: bool = false;
-
-/// `choice` with system audio off while [`SYSTEM_AUDIO_AVAILABLE`] is
-/// false.
-fn available(mut choice: CaptureChoice) -> CaptureChoice {
-    choice.system_audio &= SYSTEM_AUDIO_AVAILABLE;
-    choice
-}
-
 /// The capture choice of a note, from the store (KTD2). A note with no
 /// stored choice, or a store that cannot be read, records from the system
-/// default with system audio off.
+/// default.
 fn stored_capture(store: &Store, id: &str) -> CaptureChoice {
-    available(store.capture_choice(id).unwrap_or_else(|e| {
+    store.capture_choice(id).unwrap_or_else(|e| {
         log::warn!("could not read the capture choice of {id}: {e}");
         CaptureChoice::default()
-    }))
+    })
 }
 
 /// The capture choice that a note records when it starts (KTD2): the
-/// microphone held from the recording page, else the one from Settings,
-/// and the system audio default.
+/// microphone held from the recording page, else the one from Settings.
 pub fn capture_choice_at_start(
     held: Option<Option<MicrophoneChoice>>,
-    held_system_audio: Option<bool>,
     settings: &Settings,
 ) -> CaptureChoice {
     let microphone = held.unwrap_or_else(|| settings.microphone.clone());
     CaptureChoice {
         microphone: microphone.as_ref().map(Microphone::from),
-        system_audio: held_system_audio.unwrap_or(settings.system_audio_default),
     }
 }
 
-/// The channel count of a new segment (KTD3): stereo when the note's
-/// stereo mark is set or system audio is on at the open.
-fn segment_channels(stereo_mark: bool, system_audio: bool) -> u16 {
-    if stereo_mark || system_audio { 2 } else { 1 }
+/// The app set that a new note takes (R21): a copy of the Settings list.
+/// Where app audio is not `supported` (Windows before build 20348, R17),
+/// the set is empty.
+fn apps_at_start(settings: &Settings, supported: bool) -> Vec<RecordedApp> {
+    if !supported {
+        return Vec::new();
+    }
+    settings.apps.iter().map(recorded).collect()
 }
 
-/// What a change of the Computer audio switch does to the segment that
-/// records (KTD3, KTD18).
+/// The app set of a note, from the store (R21). A note from an older
+/// build, a store that cannot be read, and a computer where app audio is
+/// not `supported` give an empty set.
+fn stored_apps(store: &Store, id: &str, supported: bool) -> Vec<RecordedApp> {
+    if !supported {
+        return Vec::new();
+    }
+    store.note_apps(id).unwrap_or_else(|e| {
+        log::warn!("could not read the app set of {id}: {e}");
+        Vec::new()
+    })
+}
+
+/// The app IDs that the app stream reads.
+fn app_ids(apps: &[RecordedApp]) -> Vec<String> {
+    apps.iter().map(|app| app.id.clone()).collect()
+}
+
+fn recorded(app: &ListedApp) -> RecordedApp {
+    RecordedApp {
+        id: app.id.clone(),
+        name: app.name.clone(),
+        path: app.path.clone(),
+    }
+}
+
+fn listed(app: RecordedApp) -> ListedApp {
+    ListedApp {
+        id: app.id,
+        name: app.name,
+        path: app.path,
+    }
+}
+
+/// The channel count of a new segment (KTD3, KTD6): stereo when the note's
+/// stereo mark is set, or when the segment opens at the first app sound.
+fn segment_channels(stereo_mark: bool, first_sound: bool) -> u16 {
+    if stereo_mark || first_sound { 2 } else { 1 }
+}
+
+/// How the app stream of a new segment opens (KTD6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SwitchChange {
-    /// The switch keeps its state, or nothing records: only the store
-    /// changes.
+enum AppStreamAtOpen {
+    /// The app set is empty: no app stream opens. A stereo segment records
+    /// silence on the right.
     Nothing,
-    /// The first turn-on in a mono segment: open the speaker stream, then
-    /// close the mono segment and open a stereo one with it attached.
-    ToStereo,
-    /// On in a stereo segment: open a speaker stream and attach it.
-    Attach,
-    /// Off in a stereo segment: detach the speaker stream. The right
-    /// channel gets silence, and the segment does not split.
-    Detach,
+    /// A mono segment opens its watch stream on a thread of its own.
+    Watch,
+    /// A stereo segment attaches the watch stream that heard the first app
+    /// sound.
+    AttachEarly,
+    /// A stereo segment opens its app stream on a thread of its own, so the
+    /// microphone does not wait for it (R3).
+    OpenLater,
 }
 
-fn switch_change(recording_channels: Option<u16>, was_on: bool, on: bool) -> SwitchChange {
-    match (recording_channels, was_on == on, on) {
-        (None, _, _) | (_, true, _) => SwitchChange::Nothing,
-        (Some(2), false, true) => SwitchChange::Attach,
-        (Some(_), false, true) => SwitchChange::ToStereo,
-        (Some(2), false, false) => SwitchChange::Detach,
-        // Off in a mono segment: no speaker stream is attached.
-        (Some(_), false, false) => SwitchChange::Nothing,
+/// How the app stream of a segment with `channels` opens. `records_apps`:
+/// the app set is not empty. `early`: the watch stream that heard the
+/// first app sound is at the rate of the segment.
+fn app_stream_at_open(channels: u16, records_apps: bool, early: bool) -> AppStreamAtOpen {
+    match (records_apps, channels, early) {
+        (false, _, _) => AppStreamAtOpen::Nothing,
+        (true, 1, _) => AppStreamAtOpen::Watch,
+        (true, _, true) => AppStreamAtOpen::AttachEarly,
+        (true, _, false) => AppStreamAtOpen::OpenLater,
     }
 }
 
-/// What the capture watcher does with the speaker stream at a poll
-/// (KTD12). `previous` is the check before this poll.
-fn speaker_reopens(previous: Option<Permission>, now: Permission, failed: bool) -> bool {
+/// What a change of the note's app set does to the segment that records
+/// (R10, KTD6). No change splits a segment: only the first app sound does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppsChange {
+    /// Nothing records, or the stream that runs reads the new set: only the
+    /// store and the [`AppSet`] change.
+    Nothing,
+    /// The set of a mono segment was empty and is not now: open the watch
+    /// stream.
+    Watch,
+    /// The set of a mono segment is empty now: close the watch stream. The
+    /// note stays one channel.
+    StopWatch,
+    /// The set of a stereo segment was empty and is not now: open an app
+    /// stream and attach it.
+    Attach,
+}
+
+fn apps_change(recording_channels: Option<u16>, was_empty: bool, empty: bool) -> AppsChange {
+    match (recording_channels, was_empty, empty) {
+        (Some(2), true, false) => AppsChange::Attach,
+        (Some(1), true, false) => AppsChange::Watch,
+        (Some(1), false, true) => AppsChange::StopWatch,
+        // A stereo segment keeps its stream when the set is empty: the
+        // stream sends no frames, and the right channel holds silence.
+        _ => AppsChange::Nothing,
+    }
+}
+
+/// Store `apps` as the app set of the note `id`, and give the IDs to the
+/// app stream of the segment that records (R10). Settings does not change
+/// (KD7). Returns what the segment must do, and whether the change added
+/// an app.
+fn apply_note_apps(
+    inner: &mut Inner,
+    store: &Store,
+    id: &str,
+    apps: &[RecordedApp],
+) -> Result<(AppsChange, bool), CaptureError> {
+    let before = store.note_apps(id)?;
+    store.set_note_apps(id, apps)?;
+    let added = apps
+        .iter()
+        .any(|app| !before.iter().any(|old| old.id == app.id));
+    if !change_reopens(inner, id) {
+        return Ok((AppsChange::Nothing, added));
+    }
+    let Some(active) = inner.active.as_mut() else {
+        return Ok((AppsChange::Nothing, added));
+    };
+    let was_empty = !active.records_apps();
+    active.apps.set(app_ids(apps));
+    let change = apps_change(Some(active.channels), was_empty, apps.is_empty());
+    if change == AppsChange::StopWatch {
+        active.watch = None;
+        inner.reset_app_audio_checks();
+    }
+    Ok((change, added))
+}
+
+/// What the capture watcher does with the app stream at a poll (KTD12 of
+/// the system audio plan). `previous` is the check before this poll.
+fn speaker_reopens(previous: Option<Permission>, now: Permission, lost: bool) -> bool {
     // A tap made before the grant records silence: open a new one.
     let granted = now == Permission::Allowed && previous != Some(Permission::Allowed);
-    granted || failed
+    granted || lost
 }
 
 /// Open `choice` with `open`. When a chosen microphone is missing, open the
@@ -1520,20 +1675,20 @@ enum WatchStep {
     /// A restart runs: do nothing at this poll.
     Wait,
     /// Watch the note. `move_back`: the note records on a fallback, so look
-    /// for the chosen microphone. `speaker`: system audio is on, and the
-    /// speaker stream failed or the permission is not "allowed", so check
-    /// the permission and open the speaker stream again when it helps
-    /// (KTD12).
+    /// for the chosen microphone. `speaker`: the note records apps, and the
+    /// app stream was lost or the permission is not "allowed", so check
+    /// the permission and open the app stream again when it helps (KTD12
+    /// of the system audio plan).
     Watch { move_back: bool, speaker: bool },
     /// Nothing to watch: the watcher ends.
     End,
 }
 
-/// Whether the speaker side of `active` needs the watcher.
+/// Whether the app stream of `active` needs the watcher.
 fn speaker_needs_watch(active: &ActiveSegment, permission: Option<Permission>) -> bool {
-    active.system_audio
-        && active.speaker.as_ref().is_some_and(|link| {
-            link.failed() || permission.is_some_and(|p| p != Permission::Allowed)
+    active.records_apps()
+        && active.app_shared().is_some_and(|shared| {
+            shared.lost() || permission.is_some_and(|p| p != Permission::Allowed)
         })
 }
 
@@ -1763,17 +1918,18 @@ enum Reopen {
 }
 
 /// Take the note `id` with no audio from Saved to Capturing in the store
-/// (KTD2), with the recognition of `recognition` and the capture choice
-/// `capture`, as a new note gets them now. The note keeps the time it
-/// opened (R16), and is marked as a note that existed before its
-/// recording (R19). The caller holds the store lock. Refused while a
-/// delete of the note holds its claim in `claims`.
+/// (KTD2), with the recognition of `recognition`, the capture choice
+/// `capture` and the app set `apps`, as a new note gets them now (R21). The
+/// note keeps the time it opened (R16), and is marked as a note that
+/// existed before its recording (R19). The caller holds the store lock.
+/// Refused while a delete of the note holds its claim in `claims`.
 fn record_in_store(
     store: &mut Store,
     id: &str,
     claims: &Claims,
     recognition: &NoteRecognition,
     capture: &CaptureChoice,
+    apps: &[RecordedApp],
 ) -> Result<(), CaptureError> {
     refuse_while_deleting(claims, id)?;
     let has_segments = !store.segments(id)?.is_empty();
@@ -1787,6 +1943,7 @@ fn record_in_store(
     store.set_recording_model(id, &recognition.model)?;
     store.set_speaker_count(id, recognition.speaker_count)?;
     store.set_capture_choice(id, capture)?;
+    store.set_note_apps(id, apps)?;
     store.set_result_state(id, RECORDED_INTO, &serde_json::Value::Bool(true))?;
     Ok(())
 }
@@ -2075,11 +2232,8 @@ impl CaptureManager {
         let started = now();
         let mut timeline = Timeline::new();
         let index = timeline.open(0, started)?;
-        let capture = available(capture_choice_at_start(
-            inner.held_microphone.clone(),
-            inner.held_system_audio,
-            &settings,
-        ));
+        let capture = capture_choice_at_start(inner.held_microphone.clone(), &settings);
+        let apps = apps_at_start(&settings, audio_system::apps::supported());
         let live = model.live_transcript.then_some(model.asr_model.as_str());
         let choice = mic_of(&capture);
         let opening = Opening {
@@ -2090,7 +2244,7 @@ impl CaptureManager {
             recognition: Some(&spec),
             choice: choice.as_ref(),
             at_switch: false,
-            system_audio: capture.system_audio,
+            apps: AppSet::new(app_ids(&apps)),
             stereo_mark: false,
             speaker: None,
         };
@@ -2147,6 +2301,11 @@ impl CaptureManager {
             if let Err(e) = begin_home(&store, &id, note_type) {
                 log::error!("could not begin the folder write of {id}: {e}");
             }
+            // The segment records the copy already. A reopen reads the
+            // stored set (R21).
+            if let Err(e) = store.set_note_apps(&id, &apps) {
+                log::error!("could not store the app set of {id}: {e}");
+            }
             stopped
         };
         // The folder is written on the thread of its job: the recording
@@ -2162,14 +2321,13 @@ impl CaptureManager {
             log::info!("session {other} stopped by a new session");
         }
         inner.held_microphone = None;
-        inner.held_system_audio = None;
         inner.active = Some(active);
         inner.clock = Some(Clock::new(&id, timeline, Instant::now()));
         log::info!(
-            "session {id} recording with {} (live transcript: {}, system audio: {})",
+            "session {id} recording with {} (live transcript: {}, apps: {})",
             model.asr_model,
             model.live_transcript,
-            capture.system_audio
+            apps.len()
         );
         self.watch_capture(app, &mut inner, &id);
         opened(app, &id);
@@ -2231,7 +2389,7 @@ impl CaptureManager {
     }
 
     /// Pause the note that records (R1, R2, KTD2). The segment closes as
-    /// for sleep, with no alert, and the microphone and Computer audio
+    /// for sleep, with no alert, and the microphone and the app stream
     /// close. The clock stays, so Continue puts the paused time into the
     /// timeline gap. The last kept segment gets the pause flag (KTD4). The
     /// stored state stays Capturing (KTD1). A note that is already paused,
@@ -2517,7 +2675,7 @@ impl CaptureManager {
     /// Record into the note `id` that has no audio (R11, KTD2): the store
     /// takes it from Saved to Capturing with [`Event::UserRecord`], and the
     /// note records its first segment with the recognition, the microphone
-    /// and Computer audio that a new note gets now. The note keeps the
+    /// and the app set that a new note gets now (R21). The note keeps the
     /// time it opened (R16). The caller does the checks of the note page
     /// (R12) first.
     pub fn record_session(self: &Arc<Self>, app: &AppHandle, id: &str) -> Result<(), CaptureError> {
@@ -2530,11 +2688,8 @@ impl CaptureManager {
         let count = crate::shortcut::speaker_count(settings.default_speaker_count);
         let recognition =
             note_recognition(&settings, count, None, |spec| models.missing_spec(spec))?;
-        let capture = available(capture_choice_at_start(
-            inner.held_microphone.clone(),
-            inner.held_system_audio,
-            &settings,
-        ));
+        let capture = capture_choice_at_start(inner.held_microphone.clone(), &settings);
+        let apps = apps_at_start(&settings, audio_system::apps::supported());
         let recorded_at = now();
         {
             let mut store = self.store();
@@ -2542,7 +2697,7 @@ impl CaptureManager {
             // The row follows its folder first (KTD3): the recording keeps
             // the title and notes that another computer wrote.
             pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
-            record_in_store(&mut store, id, &claims, &recognition, &capture)?;
+            record_in_store(&mut store, id, &claims, &recognition, &capture, &apps)?;
         }
         // This run's in-use marker, then the flag "recording not saved"
         // (KTD4). Neither write holds up the recording.
@@ -2551,7 +2706,6 @@ impl CaptureManager {
             processing.in_use_changed();
         }
         inner.held_microphone = None;
-        inner.held_system_audio = None;
         self.open_next_segment(app, inner, id, recorded_at, Reopen::Record)
     }
 
@@ -2600,7 +2754,8 @@ impl CaptureManager {
             }
         };
         let live = self.live_model(id);
-        // A user resume and a crash resume keep the note's choice (KTD2).
+        // A user resume and a crash resume keep the note's choice and its
+        // app set (KTD2, R21).
         let capture = self.note_capture(id);
         let choice = mic_of(&capture);
         let opening = Opening {
@@ -2611,7 +2766,7 @@ impl CaptureManager {
             recognition: None,
             choice: choice.as_ref(),
             at_switch: false,
-            system_audio: capture.system_audio,
+            apps: AppSet::new(self.note_app_ids(id)),
             stereo_mark: self.note_stereo(id),
             speaker: None,
         };
@@ -2754,46 +2909,37 @@ impl CaptureManager {
             sample_rate,
             input,
             held,
-            held_system_audio,
-            silent: system_audio_silent,
-            permission,
-            speaker,
+            app_audio,
         } = snapshot;
         let open = self.open_session()?;
-        let (microphone_choice, system_audio, stereo_mark, kept_ms) = match open.as_ref() {
+        let (microphone_choice, note_apps, stereo_mark, kept_ms, next_apps) = match open.as_ref() {
             Some((id, _)) => {
                 let store = self.store();
                 let choice = store.capture_choice(id)?;
                 (
                     choice.microphone.as_ref().map(MicrophoneChoice::from),
-                    choice.system_audio && SYSTEM_AUDIO_AVAILABLE,
+                    store.note_apps(id)?.into_iter().map(listed).collect(),
                     store.stereo_from(id)?.is_some(),
                     recorded_ms(&store.segments(id)?),
+                    false,
                 )
             }
             None => {
                 let settings = settings::get_settings(app);
+                let next_apps =
+                    !apps_at_start(&settings, audio_system::apps::supported()).is_empty();
                 (
                     held.unwrap_or(settings.microphone),
-                    held_system_audio.unwrap_or(settings.system_audio_default)
-                        && SYSTEM_AUDIO_AVAILABLE,
+                    Vec::new(),
                     false,
                     0,
+                    next_apps,
                 )
             }
         };
-        let channels = segment_channels(stereo_mark, system_audio);
-        let (
-            system_audio_recording,
-            system_audio_failed,
-            system_audio_other_output,
-            system_audio_mic_copy,
-        ) = match speaker {
-            Some((true, attached, failed, other_output, mic_copy)) => {
-                (attached, failed, other_output, attached && mic_copy)
-            }
-            _ => (false, false, false, false),
-        };
+        // A note that records apps can turn two-channel (KTD6): the demand
+        // counts two channels.
+        let channels = segment_channels(stereo_mark, !note_apps.is_empty() || next_apps);
         let interruption = match open.as_ref().map(|(_, state)| state) {
             Some(SessionState::Interrupted { reason, .. }) => Some(Interruption {
                 headline: alerts::headline(*reason).to_string(),
@@ -2824,21 +2970,23 @@ impl CaptureManager {
             microphone_fallback: input.as_ref().is_some_and(|(_, fallback)| *fallback),
             microphone: input.map(|(name, _)| name),
             microphone_choice,
-            system_audio_silent,
-            system_audio,
-            system_audio_recording,
-            system_audio_failed,
-            system_audio_permission: permission
-                .filter(|_| system_audio && recording)
-                .map(SystemAudioPermission::from),
-            system_audio_other_output,
-            system_audio_mic_copy,
+            note_apps,
+            app_audio,
         })
     }
 
     /// The capture choice of a note, from the store: see [`stored_capture`].
     fn note_capture(&self, id: &str) -> CaptureChoice {
         stored_capture(&self.store(), id)
+    }
+
+    /// The app IDs of a note, from the store: see [`stored_apps`].
+    fn note_app_ids(&self, id: &str) -> Vec<String> {
+        app_ids(&stored_apps(
+            &self.store(),
+            id,
+            audio_system::apps::supported(),
+        ))
     }
 
     /// Whether the note's stereo mark is set (KTD2). A store that cannot be
@@ -2853,123 +3001,49 @@ impl CaptureManager {
         }
     }
 
-    /// Turn system audio on or off for one note from the recording page
-    /// (R8, KTD2). Settings does not change. With no `session_id`, the
-    /// switch is held for the next note and written with its row. For a
-    /// note, the stored choice changes, and the segment that records now
-    /// follows it (KTD3, KTD18):
+    /// Change the app set of one note from the note menu (R10, AE3).
+    /// Settings does not change (KD7). The stored set changes, and the
+    /// segment that records now follows it with no new segment:
     ///
-    /// - The first turn-on opens the speaker stream, and then the mono
-    ///   segment closes and a stereo segment opens with the stream attached.
-    /// - On in a stereo segment: a new speaker stream attaches.
-    /// - Off in a stereo segment: the speaker stream detaches, and the right
-    ///   channel gets silence. The segment does not split.
+    /// - The app stream of the segment reads the new set.
+    /// - A mono segment whose set was empty opens its watch stream (KTD6).
+    /// - A mono segment whose set becomes empty closes its watch stream.
+    ///   The note stays one channel.
+    /// - A stereo segment whose set was empty opens an app stream.
     ///
     /// During Interrupted, restart backoff or a sleep pause, the next
-    /// segment reads the stored choice.
-    pub fn set_note_system_audio(
+    /// segment reads the stored set. Returns true when the change added an
+    /// app.
+    pub fn set_note_apps(
         self: &Arc<Self>,
         app: &AppHandle,
-        session_id: Option<&str>,
-        enabled: bool,
-    ) -> Result<(), CaptureError> {
-        let Some(id) = session_id else {
-            log::info!("the next note starts with system audio {enabled}");
-            self.inner().held_system_audio = Some(enabled);
-            return Ok(());
-        };
-        let change = {
-            let mut inner = self.inner();
-            let mut choice = self.store().capture_choice(id)?;
-            let was_on = choice.system_audio;
-            if was_on == enabled {
-                return Ok(());
-            }
-            choice.system_audio = enabled;
-            self.store().set_capture_choice(id, &choice)?;
-            log::info!("session {id} turns system audio {enabled}");
-            if !enabled {
-                inner.reset_system_audio_checks();
-            }
-            let reopens = change_reopens(&inner, id);
-            let recording = inner.active.as_mut().filter(|_| reopens);
-            let channels = recording.as_ref().map(|a| a.channels);
-            if let Some(active) = recording {
-                active.system_audio = enabled;
-            }
-            let change = switch_change(channels, was_on, enabled);
-            let active = inner.active.as_ref();
-            match change {
-                SwitchChange::Detach => {
-                    if let Some(link) = active.and_then(|a| a.speaker.as_ref()) {
-                        link.detach();
-                    }
-                    None
-                }
-                SwitchChange::ToStereo | SwitchChange::Attach => {
-                    active.map(|a| (a.segment, a.rate, change))
-                }
-                SwitchChange::Nothing => None,
-            }
-        };
-        let Some((segment, rate, change)) = change else {
-            changed(app, Some(id));
-            return Ok(());
-        };
-        // The speaker stream opens away from the inner lock and the segment
-        // thread (KTD18). At the first turn-on it opens before the mono
-        // segment closes, so the gap stays a few milliseconds (KTD3).
-        let permission = audio_system::permission::preflight();
-        let opened = self
-            .audio
-            .open_system_audio(rate, (rate / FRAMES_PER_SECOND) as usize);
+        id: &str,
+        apps: Vec<ListedApp>,
+    ) -> Result<bool, CaptureError> {
+        let mut apps: Vec<RecordedApp> = apps.iter().map(recorded).collect();
+        let mut seen = std::collections::HashSet::new();
+        apps.retain(|app| seen.insert(app.id.clone()));
         let mut inner = self.inner();
-        let still = inner.recovering.is_none()
-            && inner
-                .active
-                .as_ref()
-                .is_some_and(|a| a.session_id == id && a.segment == segment && a.system_audio);
-        if !still {
-            // Stop, a restart or another change came first: the next segment
-            // reads the stored choice.
-            return Ok(());
-        }
-        inner.permission = Some(permission);
+        let (change, added) = apply_note_apps(&mut inner, &self.store(), id, &apps)?;
+        log::info!("session {id} records {} apps", apps.len());
         match change {
-            SwitchChange::ToStereo => {
-                log::info!("session {id} records system audio from now on; the note turns stereo");
-                self.switch_to(app, &mut inner, id, Some(EarlySpeaker { rate, opened }));
+            AppsChange::Watch => self.start_watch(app, &mut inner, id, false),
+            AppsChange::Attach => {
+                if let Some(active) = inner.active.as_ref() {
+                    self.open_speaker_later(app, id, active.segment, active.rate);
+                }
             }
-            SwitchChange::Attach => {
-                self.attach_opened(&mut inner, opened);
-                self.watch_capture(app, &mut inner, id);
-            }
-            SwitchChange::Detach | SwitchChange::Nothing => {}
+            AppsChange::StopWatch | AppsChange::Nothing => {}
         }
         drop(inner);
         changed(app, Some(id));
-        Ok(())
+        Ok(added)
     }
 
-    /// Attach a speaker stream that opened to the recording segment, or mark
-    /// the speaker side as failed.
-    fn attach_opened(&self, inner: &mut Inner, opened: Result<SystemAudioCapture, audio::Error>) {
-        let Some(link) = inner.active.as_ref().and_then(|a| a.speaker.as_ref()) else {
-            return;
-        };
-        match opened {
-            Ok(capture) => link.attach(capture),
-            Err(e) => {
-                log::warn!("system audio did not open: {e}; the right channel records silence");
-                link.fail();
-            }
-        }
-    }
-
-    /// Open the speaker stream of `segment` of `id` on a thread of its own,
-    /// then attach it (KTD18). A segment that opens with system audio on
-    /// does this, so the microphone does not wait for the speaker stream
-    /// (R3).
+    /// Open the app stream of the stereo `segment` of `id` on a thread of
+    /// its own, then attach it (KTD18 of the system audio plan). A stereo
+    /// segment that opens with apps does this, so the microphone does not
+    /// wait for the app stream (R3).
     fn open_speaker_later(&self, app: &AppHandle, id: &str, segment: u32, rate: u32) {
         let manager = Arc::clone(&app.state::<Arc<CaptureManager>>());
         let app = app.clone();
@@ -2977,41 +3051,185 @@ impl CaptureManager {
         let spawned = std::thread::Builder::new()
             .name("longhand-speaker-open".into())
             .spawn(move || {
-                let opened = manager
-                    .audio
-                    .open_system_audio(rate, (rate / FRAMES_PER_SECOND) as usize);
+                let permission = audio_system::permission::preflight();
+                let apps = {
+                    let inner = manager.inner();
+                    match inner.active.as_ref() {
+                        Some(a) if a.session_id == id && a.segment == segment => a.apps.clone(),
+                        _ => return,
+                    }
+                };
+                let opened =
+                    manager
+                        .audio
+                        .open_apps(rate, (rate / FRAMES_PER_SECOND) as usize, apps);
                 let mut inner = manager.inner();
-                let ours = inner
-                    .active
-                    .as_ref()
-                    .is_some_and(|a| a.session_id == id && a.segment == segment && a.system_audio);
+                let ours = inner.active.as_ref().is_some_and(|a| {
+                    a.session_id == id && a.segment == segment && a.records_apps()
+                });
                 if !ours {
                     return;
                 }
-                manager.attach_opened(&mut inner, opened);
+                inner.permission = Some(permission);
+                attach_opened(&mut inner, opened, false);
                 manager.watch_capture(&app, &mut inner, &id);
+                drop(inner);
+                changed(&app, Some(&id));
             });
         if let Err(e) = spawned {
-            log::error!("could not start the speaker stream open: {e}");
+            log::error!("could not start the app stream open: {e}");
         }
     }
 
-    /// The speaker stream of `segment` of `id` ended (KTD3). The microphone
-    /// records on, the status shows the failure, and the capture watcher
-    /// opens a new speaker stream. A report of an older stream (a detach or
-    /// a new attach came after it) changes nothing.
+    /// Open the watch stream of the mono segment of `id` (KTD6): a new
+    /// [`AppWatch`] replaces the one that runs, and its thread opens the app
+    /// stream away from the inner lock. A reopen of the capture watcher
+    /// (`reopen`) that fails marks the app stream as failed (R16).
+    fn start_watch(&self, app: &AppHandle, inner: &mut Inner, id: &str, reopen: bool) {
+        if let Some(active) = inner
+            .active
+            .as_mut()
+            .filter(|a| a.session_id == id && a.channels == 1 && a.records_apps())
+        {
+            self.start_watch_of(app, active, reopen);
+        }
+    }
+
+    /// [`Self::start_watch`] for the segment `active`. The thread finds the
+    /// segment in `inner`, so a segment that is not active yet must be
+    /// active before the caller lets go of the inner lock.
+    fn start_watch_of(&self, app: &AppHandle, active: &mut ActiveSegment, reopen: bool) {
+        let shared = active
+            .watch
+            .as_ref()
+            .map_or_else(Arc::default, |watch| Arc::clone(&watch.shared));
+        let generation = shared.next_generation();
+        let cancel = CancellationToken::new();
+        active.watch = Some(AppWatch {
+            cancel: cancel.clone(),
+            shared: Arc::clone(&shared),
+        });
+        let watch = WatchStream {
+            id: active.session_id.clone(),
+            segment: active.segment,
+            rate: active.rate,
+            apps: active.apps.clone(),
+            shared,
+            generation,
+            cancel,
+            reopen,
+        };
+        let manager = Arc::clone(&app.state::<Arc<CaptureManager>>());
+        let app = app.clone();
+        let spawned = std::thread::Builder::new()
+            .name("longhand-app-watch".into())
+            .spawn(move || manager.run_app_watch(&app, watch));
+        if let Err(e) = spawned {
+            log::error!("could not start the app watch stream: {e}");
+            active.watch = None;
+        }
+    }
+
+    /// The thread of a watch stream (KTD6). It opens the app stream, reads
+    /// it until the first frame above [`FIRST_SOUND_PEAK`], and then starts
+    /// the change to two channels with the stream as [`EarlySpeaker`]. A
+    /// stream that ends or does not open is lost, and the capture watcher
+    /// opens it again. A watch stream that a newer one replaced, or that
+    /// the close of its segment cancelled, changes nothing.
+    fn run_app_watch(self: Arc<Self>, app: &AppHandle, watch: WatchStream) {
+        let WatchStream {
+            id,
+            segment,
+            rate,
+            apps,
+            shared,
+            generation,
+            cancel,
+            reopen,
+        } = watch;
+        let current = |inner: &Inner| {
+            !cancel.is_cancelled()
+                && inner.recovering.is_none()
+                && inner.active.as_ref().is_some_and(|a| {
+                    a.session_id == id
+                        && a.segment == segment
+                        && a.watch
+                            .as_ref()
+                            .is_some_and(|w| Arc::ptr_eq(&w.shared, &shared))
+                })
+                && shared.is_current(generation)
+        };
+        let permission = audio_system::permission::preflight();
+        let opened = self
+            .audio
+            .open_apps(rate, (rate / FRAMES_PER_SECOND) as usize, apps.clone());
+        let mut stream = {
+            let mut inner = self.inner();
+            if !current(&inner) {
+                return;
+            }
+            inner.permission = Some(permission);
+            let opened = match opened {
+                Ok(stream) => {
+                    shared.opened();
+                    Some(stream)
+                }
+                Err(e) => {
+                    log::warn!("the app watch stream of {id} did not open: {e}");
+                    if reopen {
+                        shared.fail();
+                    } else {
+                        shared.lose();
+                    }
+                    None
+                }
+            };
+            // A permission that is not "allowed", or a lost stream: the
+            // capture watcher checks it.
+            self.watch_capture(app, &mut inner, &id);
+            drop(inner);
+            changed(app, Some(&id));
+            match opened {
+                Some(stream) => stream,
+                None => return,
+            }
+        };
+        let heard = match tokio::runtime::Builder::new_current_thread().build() {
+            Ok(runtime) => runtime.block_on(first_sound(&mut stream, &cancel)),
+            Err(e) => {
+                log::error!("the app watch runtime did not start: {e}");
+                FirstSound::Ended(audio::Error::SpeakerStreamEnded)
+            }
+        };
+        let mut inner = self.inner();
+        if !current(&inner) {
+            return;
+        }
+        match heard {
+            FirstSound::Heard => {
+                log::info!("session {id} hears app audio; the note turns two-channel");
+                let early = EarlySpeaker { rate, apps, stream };
+                self.switch_to(app, &mut inner, &id, Some(early));
+            }
+            FirstSound::Ended(e) => {
+                log::warn!("the app watch stream of {id} ended: {e}");
+                shared.lose();
+                self.watch_capture(app, &mut inner, &id);
+                drop(inner);
+                changed(app, Some(&id));
+            }
+            FirstSound::Cancelled => {}
+        }
+    }
+
+    /// The app stream of `segment` of `id` ended (KTD3). The microphone
+    /// records on, and the capture watcher opens a new app stream. A report
+    /// of an older stream (a new attach came after it) changes nothing.
     fn speaker_lost(&self, app: &AppHandle, id: &str, segment: u32, generation: u64) {
         let mut inner = self.inner();
-        let Some(link) = inner
-            .active
-            .as_ref()
-            .filter(|a| a.session_id == id && a.segment == segment && a.system_audio)
-            .and_then(|a| a.speaker.as_ref())
-            .filter(|link| link.loss_is_current(generation))
-        else {
+        if !lose_if_current(&inner, id, segment, generation) {
             return;
-        };
-        link.fail();
+        }
         self.watch_capture(app, &mut inner, id);
         drop(inner);
         changed(app, Some(id));
@@ -3075,8 +3293,8 @@ impl CaptureManager {
         self.switch_to(app, inner, id, None);
     }
 
-    /// [`Self::switch_input`] with a speaker stream that opened before the
-    /// close: the first turn-on of system audio (KTD18).
+    /// [`Self::switch_input`] with the watch stream that heard the first app
+    /// sound (KTD6): the new segment is stereo and attaches it.
     fn switch_to(
         &self,
         app: &AppHandle,
@@ -3113,8 +3331,8 @@ impl CaptureManager {
     }
 
     /// Start the capture watcher of `id` when its segment records on a
-    /// fallback and no watcher runs (KTD3). U6 adds the speaker stream and
-    /// the permission to what it watches.
+    /// fallback, or its app stream needs a check, and no watcher runs
+    /// (KTD3).
     fn watch_capture(&self, app: &AppHandle, inner: &mut Inner, id: &str) {
         if !matches!(watch_step(inner, id), WatchStep::Watch { .. }) {
             return;
@@ -3142,17 +3360,19 @@ impl CaptureManager {
         }
     }
 
-    /// The capture watcher (KTD3, KTD12). Every [`DEVICE_POLL`]:
+    /// The capture watcher (KTD3, KTD12 of the system audio plan). Every
+    /// [`DEVICE_POLL`]:
     ///
     /// - While the note records on a fallback, it looks for the note's
     ///   chosen microphone, and after two polls in a row it moves back, in a
     ///   new segment.
-    /// - While system audio is on and the speaker stream failed or the
-    ///   permission is not "allowed", it checks the permission and polls the
-    ///   silent system audio flag (U5 step 6). When the permission changes
-    ///   to "allowed", or the speaker stream failed, it opens only a new
-    ///   speaker stream and attaches it: a tap made before the grant records
-    ///   silence.
+    /// - While the note records apps and the app stream was lost or the
+    ///   permission is not "allowed", it checks the permission. When the
+    ///   permission changes to "allowed", or the app stream was lost, it
+    ///   opens only a new app stream: a tap made before the grant records
+    ///   silence. A stereo segment attaches the new stream, and a mono
+    ///   segment starts a new watch stream. When this reopen fails, the
+    ///   status shows the failure (R16).
     ///
     /// It takes the inner lock like `reopen`, and it does nothing while a
     /// restart runs. Stop, sleep, supersede and restart cancel it.
@@ -3180,12 +3400,7 @@ impl CaptureManager {
             };
             // Read without the lock: each asks the audio system.
             let inputs = need_inputs.then(CpalAudio::inputs);
-            let speaker_state = need_speaker.then(|| {
-                (
-                    audio_system::permission::preflight(),
-                    audio_system::output_running().unwrap_or(false),
-                )
-            });
+            let permission = need_speaker.then(audio_system::permission::preflight);
             let mut inner = self.inner();
             let (watch_move_back, watch_speaker) = match next_watch(&mut inner, id, cancel) {
                 NextWatch::Stop => return,
@@ -3203,7 +3418,7 @@ impl CaptureManager {
                 };
                 if move_back.poll(chosen_present(choice.as_ref(), inputs)) {
                     log::info!("the chosen microphone of {id} is back; moving back to it");
-                    // The new segment opens its own speaker stream.
+                    // The new segment opens its own app stream.
                     self.switch_input(app, &mut inner, id);
                     continue;
                 }
@@ -3215,30 +3430,42 @@ impl CaptureManager {
             }
             // The step changed after the first read: the next poll reads the
             // permission.
-            let Some((permission, output_running)) = speaker_state else {
+            let Some(permission) = permission else {
                 continue;
             };
-            let Some(reopen) = poll_speaker(&mut inner, permission, output_running) else {
+            let Some(reopen) = poll_speaker(&mut inner, permission) else {
                 continue;
             };
-            drop(inner);
-            if let Some((segment, rate)) = reopen {
-                log::info!("session {id} opens its speaker stream again");
-                let opened = self
-                    .audio
-                    .open_system_audio(rate, (rate / FRAMES_PER_SECOND) as usize);
-                let mut inner = self.inner();
-                if cancel.is_cancelled() {
-                    return;
-                }
-                let ours = inner.recovering.is_none()
-                    && inner.active.as_ref().is_some_and(|a| {
-                        a.session_id == id && a.segment == segment && a.system_audio
-                    });
-                if ours {
-                    self.attach_opened(&mut inner, opened);
-                }
+            let Some(reopen) = reopen else {
+                drop(inner);
+                changed(app, Some(id));
+                continue;
+            };
+            log::info!("session {id} opens its app stream again");
+            if reopen.channels == 1 {
+                self.start_watch(app, &mut inner, id, true);
+                drop(inner);
+                changed(app, Some(id));
+                continue;
             }
+            drop(inner);
+            let opened = self.audio.open_apps(
+                reopen.rate,
+                (reopen.rate / FRAMES_PER_SECOND) as usize,
+                reopen.apps,
+            );
+            let mut inner = self.inner();
+            if cancel.is_cancelled() {
+                return;
+            }
+            let ours = inner.recovering.is_none()
+                && inner.active.as_ref().is_some_and(|a| {
+                    a.session_id == id && a.segment == reopen.segment && a.records_apps()
+                });
+            if ours {
+                attach_opened(&mut inner, opened, true);
+            }
+            drop(inner);
             changed(app, Some(id));
         }
     }
@@ -3597,9 +3824,10 @@ impl CaptureManager {
     /// Open the held session's next segment where its clock stands now, on
     /// the note's choice as the inputs are by then (KTD3), and at that
     /// input's rate. `at_switch` marks an input change: the new segment is
-    /// kept when it closes, even when it is short. `speaker` is a speaker
-    /// stream that opened before the close, at the first turn-on of
-    /// system audio (KTD18).
+    /// kept when it closes, even when it is short. `speaker` is the watch
+    /// stream that heard the first app sound (KTD6): the new segment is
+    /// stereo, attaches it and keeps its app set. Every other reopen reads
+    /// the stored app set (R21).
     fn reopen(
         &self,
         app: &AppHandle,
@@ -3628,6 +3856,10 @@ impl CaptureManager {
         let live = self.live_model(id);
         let capture = self.note_capture(id);
         let choice = mic_of(&capture);
+        let apps = match &speaker {
+            Some(early) => early.apps.clone(),
+            None => AppSet::new(self.note_app_ids(id)),
+        };
         let opening = Opening {
             session_id: id,
             segment: index,
@@ -3636,7 +3868,7 @@ impl CaptureManager {
             recognition: None,
             choice: choice.as_ref(),
             at_switch,
-            system_audio: capture.system_audio,
+            apps,
             stereo_mark: self.note_stereo(id),
             speaker,
         };
@@ -3725,14 +3957,17 @@ impl CaptureManager {
             recognition,
             choice,
             at_switch,
-            system_audio,
+            apps,
             stereo_mark,
             speaker,
         } = opening;
         let (prepared, stream) = self.open_microphone(inner, choice)?;
         let rate = prepared.rate;
+        // The first app sound makes the segment stereo, also when its stream
+        // is at another rate and opens again.
+        let channels = segment_channels(stereo_mark, speaker.is_some());
         let speaker = early_speaker_at(speaker, rate);
-        let channels = segment_channels(stereo_mark, system_audio);
+        let at_open = app_stream_at_open(channels, !apps.get().is_empty(), speaker.is_some());
         log::info!(
             "segment {segment} of {session_id} records from '{}' (fallback: {}, channels: {channels})",
             prepared.input.name,
@@ -3760,19 +3995,9 @@ impl CaptureManager {
         } else {
             (None, None)
         };
-        let mut open_later = false;
-        if system_audio && let Some(link) = &link {
-            if speaker.is_none() {
-                inner.permission = Some(audio_system::permission::preflight());
-            }
-            match speaker {
-                Some(Ok(capture)) => link.attach(capture),
-                Some(Err(e)) => {
-                    log::warn!("system audio did not open: {e}; the right channel records silence");
-                    link.fail();
-                }
-                None => open_later = true,
-            }
+        if let (AppStreamAtOpen::AttachEarly, Some(link), Some(stream)) = (at_open, &link, speaker)
+        {
+            link.attach(stream);
         }
         let snapshot = opening_recognition(&self.store, session_id, recognition)?;
         let selected = snapshot
@@ -3805,12 +4030,6 @@ impl CaptureManager {
         let thread_stop = stop.clone();
         let thread_app = app.clone();
         let thread_session = session_id.to_string();
-        let silence = link.as_ref().map(|l| l.shared.silence.clone());
-        // Each stereo segment checks for a copy of the microphone in the
-        // right channel, with or without a live transcript.
-        let mut mic_copy = link
-            .as_ref()
-            .map(|l| audio::mic_copy::MicCopyCheck::new(rate, l.shared.mic_copy.clone()));
         // The loss report reads the generation of the stream that ended.
         let lost_shared = link.as_ref().map(|l| Arc::clone(&l.shared));
         let spawned = std::thread::Builder::new()
@@ -3858,19 +4077,13 @@ impl CaptureManager {
                         if let Some(tap) = tap.as_ref().and_then(|tap| tap.get()) {
                             tap.notify(frame.index);
                         }
-                        if let (Some(silence), Some(right)) = (&silence, frame.speaker) {
-                            silence.push(right, rate);
-                        }
-                        if let (Some(check), Some(right)) = (&mut mic_copy, frame.speaker) {
-                            check.push(frame.mic, right);
-                        }
                     },
                     // Runs on this thread: the manager's lock is taken on a
                     // thread of its own, because a close holds it while it
                     // waits for this thread.
                     move |e| {
                         log::warn!(
-                            "the speaker stream of segment {segment} of {lost_session} ended: {e}"
+                            "the app stream of segment {segment} of {lost_session} ended: {e}"
                         );
                         let manager = Arc::clone(&lost_app.state::<Arc<CaptureManager>>());
                         let app = lost_app.clone();
@@ -3918,12 +4131,12 @@ impl CaptureManager {
                 return Err(e);
             }
         };
-        if open_later {
+        if at_open == AppStreamAtOpen::OpenLater {
             // The caller holds the inner lock and records the segment as
             // active before it lets go, so the open finds it.
             self.open_speaker_later(app, session_id, segment, rate);
         }
-        Ok(ActiveSegment {
+        let mut active = ActiveSegment {
             session_id: session_id.to_string(),
             segment,
             stop,
@@ -3935,9 +4148,16 @@ impl CaptureManager {
             opened_at_switch: at_switch,
             channels,
             rate,
-            system_audio,
+            apps,
             speaker: link,
-        })
+            watch: None,
+        };
+        if at_open == AppStreamAtOpen::Watch {
+            // As above: the thread finds the segment when the caller lets
+            // go of the inner lock.
+            self.start_watch_of(app, &mut active, false);
+        }
+        Ok(active)
     }
 
     /// See [`close_segment_in`].
@@ -4217,29 +4437,72 @@ fn recovered_end(dir: &Path, segment: u32) -> Result<u64, CaptureError> {
         .unwrap_or(0))
 }
 
-/// The speaker part of one watcher poll (KTD12, U5 step 6). It records the
-/// permission and polls the silent flag. Returns `None` when nothing
-/// changed, and `Some(reopen)` when the page must know. `reopen` holds the
-/// segment and the rate of a speaker stream to open again.
-fn poll_speaker(
-    inner: &mut Inner,
-    permission: Permission,
-    output_running: bool,
-) -> Option<Option<(u32, u32)>> {
+/// Attach an app stream that opened to the recording segment, or mark the
+/// app stream as lost. A failed reopen of the capture watcher (`reopen`)
+/// marks it as failed (R16).
+fn attach_opened(inner: &mut Inner, opened: Result<CaptureStream, audio::Error>, reopen: bool) {
+    let Some(link) = inner.active.as_ref().and_then(|a| a.speaker.as_ref()) else {
+        return;
+    };
+    match opened {
+        Ok(stream) => link.attach(stream),
+        Err(e) => {
+            log::warn!("app audio did not open: {e}; the right channel records silence");
+            if reopen {
+                link.shared.fail();
+            } else {
+                link.shared.lose();
+            }
+        }
+    }
+}
+
+/// The loss report of the app stream of generation `generation` of
+/// `segment` of `id` (KTD3). It marks the stream as lost only when the
+/// report is about the stream attached now: a report of an older stream (a
+/// new attach came after it) changes nothing. True when it marked the loss.
+fn lose_if_current(inner: &Inner, id: &str, segment: u32, generation: u64) -> bool {
+    let Some(link) = inner
+        .active
+        .as_ref()
+        .filter(|a| a.session_id == id && a.segment == segment && a.records_apps())
+        .and_then(|a| a.speaker.as_ref())
+        .filter(|link| link.loss_is_current(generation))
+    else {
+        return false;
+    };
+    link.shared.lose();
+    true
+}
+
+/// An app stream that the capture watcher opens again.
+#[derive(Debug, Clone)]
+struct AppReopen {
+    segment: u32,
+    rate: u32,
+    /// 1: start a new watch stream. 2: attach a new app stream.
+    channels: u16,
+    apps: AppSet,
+}
+
+/// The app stream part of one watcher poll (KTD12 of the system audio
+/// plan). It records the permission. Returns `None` when nothing changed,
+/// and `Some(reopen)` when the page must know. `reopen` is an app stream to
+/// open again.
+fn poll_speaker(inner: &mut Inner, permission: Permission) -> Option<Option<AppReopen>> {
     let previous = inner.permission.replace(permission);
     let active = inner.active.as_ref()?;
-    let link = active.speaker.as_ref()?;
-    let flagged = inner.silent_check.flagged();
-    let now_flagged =
-        inner
-            .silent_check
-            .poll(permission, output_running, link.shared.silence.silent_for());
-    let reopen = speaker_reopens(previous, permission, link.failed())
-        .then_some((active.segment, active.rate));
+    let shared = active.app_shared()?;
+    let reopen = speaker_reopens(previous, permission, shared.lost()).then(|| AppReopen {
+        segment: active.segment,
+        rate: active.rate,
+        channels: active.channels,
+        apps: active.apps.clone(),
+    });
     if previous != Some(permission) {
         log::info!("the system audio permission is now {permission:?}");
     }
-    (reopen.is_some() || previous != Some(permission) || flagged != now_flagged).then_some(reopen)
+    (reopen.is_some() || previous != Some(permission)).then_some(reopen)
 }
 
 /// Where a reopened segment starts on the session timeline: the time since
@@ -4680,36 +4943,34 @@ mod tests {
         MicChoice::from(choice)
     }
 
-    fn with_microphone(microphone: Option<MicrophoneChoice>, system_audio: bool) -> Settings {
+    fn with_microphone(microphone: Option<MicrophoneChoice>) -> Settings {
         Settings {
             microphone,
-            system_audio_default: system_audio,
             ..Settings::default()
         }
     }
 
     #[test]
     fn a_note_starts_with_the_capture_choice_from_settings() {
-        let choice = capture_choice_at_start(None, None, &with_microphone(Some(usb()), true));
+        let choice = capture_choice_at_start(None, &with_microphone(Some(usb())));
         assert_eq!(
             choice,
             CaptureChoice {
                 microphone: Some(Microphone::from(&usb())),
-                system_audio: true,
             }
         );
-        let default = capture_choice_at_start(None, None, &Settings::default());
+        let default = capture_choice_at_start(None, &Settings::default());
         assert_eq!(default, CaptureChoice::default());
     }
 
     #[test]
     fn a_microphone_chosen_before_the_row_exists_is_in_the_row() {
         // KTD2: held in the capture manager and written with the row.
-        let settings = with_microphone(Some(usb()), false);
-        let held = capture_choice_at_start(Some(Some(headset())), None, &settings);
+        let settings = with_microphone(Some(usb()));
+        let held = capture_choice_at_start(Some(Some(headset())), &settings);
         assert_eq!(held.microphone, Some(Microphone::from(&headset())));
         // "System default" held on the recording page wins over Settings.
-        let default = capture_choice_at_start(Some(None), None, &settings);
+        let default = capture_choice_at_start(Some(None), &settings);
         assert_eq!(default.microphone, None);
         // Settings does not change.
         assert_eq!(settings.microphone, Some(usb()));
@@ -4850,16 +5111,33 @@ mod tests {
             opened_at_switch: false,
             channels: 1,
             rate: 48_000,
-            system_audio: false,
+            apps: AppSet::default(),
             speaker: None,
+            watch: None,
         }
     }
 
-    /// A stereo segment with system audio `on`, and the receiving end of
-    /// its speaker commands.
+    fn ids(apps: &[&str]) -> Vec<String> {
+        apps.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// A mono segment that records `apps`, with its watch stream.
+    fn watching(id: &str, apps: &[&str]) -> ActiveSegment {
+        ActiveSegment {
+            apps: AppSet::new(ids(apps)),
+            watch: Some(AppWatch {
+                cancel: CancellationToken::new(),
+                shared: Arc::default(),
+            }),
+            ..active(id, false)
+        }
+    }
+
+    /// A stereo segment that records `apps`, and the receiving end of its
+    /// speaker commands.
     fn stereo(
         id: &str,
-        on: bool,
+        apps: &[&str],
     ) -> (
         ActiveSegment,
         tokio::sync::mpsc::UnboundedReceiver<SpeakerCommand>,
@@ -4867,56 +5145,632 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let segment = ActiveSegment {
             channels: 2,
-            system_audio: on,
+            apps: AppSet::new(ids(apps)),
             speaker: Some(SpeakerLink {
                 commands: tx,
-                shared: Arc::new(SpeakerShared::default()),
+                shared: Arc::default(),
             }),
             ..active(id, false)
         };
         (segment, rx)
     }
 
-    fn capture() -> SystemAudioCapture {
-        SystemAudioCapture {
-            stream: CaptureStream::new(futures_util::stream::empty()),
-            status: SystemAudioStatus::default(),
+    fn zoom() -> ListedApp {
+        ListedApp {
+            id: "us.zoom.xos".into(),
+            name: "zoom.us".into(),
+            path: "/Applications/zoom.us.app".into(),
+        }
+    }
+
+    fn discord() -> ListedApp {
+        ListedApp {
+            id: "com.hnc.Discord".into(),
+            name: "Discord".into(),
+            path: "/Applications/Discord.app".into(),
+        }
+    }
+
+    fn with_apps(apps: Vec<ListedApp>) -> Settings {
+        Settings {
+            apps,
+            ..Settings::default()
+        }
+    }
+
+    /// Start the note `id` in `store` with the app set that a new note
+    /// takes from `settings` (R21).
+    fn start_note(store: &mut Store, id: &str, settings: &Settings) {
+        let model = recording_model(&Settings::default());
+        store
+            .start_session(id, at(0), None, &model, &CaptureChoice::default())
+            .unwrap();
+        store
+            .set_note_apps(id, &apps_at_start(settings, true))
+            .unwrap();
+    }
+
+    /// A frame of app audio: `len` samples at `level`.
+    fn app_frame(level: f32, len: usize) -> Result<audio::CaptureFrame, audio::Error> {
+        Ok(audio::CaptureFrame {
+            raw_mic: Arc::from(Vec::new()),
+            raw_speaker: Arc::from(vec![level; len]),
+            aec_mic: None,
+        })
+    }
+
+    /// An app stream that sends `frames` and then stays open with no
+    /// frames, as the stream of an app that does not play.
+    fn app_stream(frames: Vec<Result<audio::CaptureFrame, audio::Error>>) -> CaptureStream {
+        use futures_util::StreamExt as _;
+        CaptureStream::new(
+            futures_util::stream::iter(frames).chain(futures_util::stream::pending()),
+        )
+    }
+
+    /// The level of each frame that `stream` has ready now.
+    fn levels(mut stream: CaptureStream) -> Vec<f32> {
+        use futures_util::{FutureExt as _, StreamExt as _};
+        let mut levels = Vec::new();
+        while let Some(Some(Ok(frame))) = stream.next().now_or_never() {
+            levels.push(frame.raw_speaker[0]);
+        }
+        levels
+    }
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    #[test]
+    fn a_note_with_an_empty_app_set_records_mono_and_opens_no_app_stream() {
+        // AE6: the note is as today, and the page shows no message.
+        let apps = apps_at_start(&Settings::default(), true);
+        assert!(apps.is_empty());
+        let channels = segment_channels(false, false);
+        assert_eq!(channels, 1);
+        assert_eq!(
+            app_stream_at_open(channels, !apps.is_empty(), false),
+            AppStreamAtOpen::Nothing
+        );
+        let inner = Inner {
+            active: Some(active("s1", false)),
+            permission: Some(Permission::Denied),
+            ..Inner::default()
+        };
+        assert_eq!(inner.snapshot().app_audio, None);
+        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+    }
+
+    #[test]
+    fn a_note_with_apps_opens_a_mono_segment_with_a_watch_stream() {
+        let apps = apps_at_start(&with_apps(vec![zoom()]), true);
+        assert_eq!(app_ids(&apps), ["us.zoom.xos"]);
+        let channels = segment_channels(false, false);
+        assert_eq!(channels, 1);
+        assert_eq!(
+            app_stream_at_open(channels, !apps.is_empty(), false),
+            AppStreamAtOpen::Watch
+        );
+    }
+
+    #[test]
+    fn a_frame_below_the_level_changes_nothing_and_the_first_frame_above_it_is_heard() {
+        // R12: an open stream of an idle app sends silence or a very low
+        // level.
+        let cancel = CancellationToken::new();
+        let mut stream = app_stream(vec![
+            app_frame(0.0, 960),
+            app_frame(FIRST_SOUND_PEAK / 2.0, 960),
+            app_frame(0.2, 960),
+            app_frame(0.3, 960),
+        ]);
+        assert!(matches!(
+            block_on(first_sound(&mut stream, &cancel)),
+            FirstSound::Heard
+        ));
+        // The stream keeps the frames after the first sound for the stereo
+        // segment.
+        assert_eq!(levels(stream), [0.3]);
+        // Frames at the level or below it, then the end of the stream: no
+        // change to two channels.
+        let mut quiet = CaptureStream::new(futures_util::stream::iter(vec![
+            app_frame(0.0, 960),
+            app_frame(FIRST_SOUND_PEAK, 960),
+        ]));
+        assert!(matches!(
+            block_on(first_sound(&mut quiet, &cancel)),
+            FirstSound::Ended(audio::Error::SpeakerStreamEnded)
+        ));
+        // An app that does not play sends no frames: the cancel at the close
+        // of the segment ends the read.
+        let mut idle = app_stream(Vec::new());
+        cancel.cancel();
+        assert!(matches!(
+            block_on(first_sound(&mut idle, &cancel)),
+            FirstSound::Cancelled
+        ));
+    }
+
+    #[test]
+    fn the_first_app_sound_opens_a_stereo_segment_with_the_watch_stream_attached() {
+        // R12, KTD6.
+        let channels = segment_channels(false, true);
+        assert_eq!(channels, 2);
+        let early = EarlySpeaker {
+            rate: 48_000,
+            apps: AppSet::new(ids(&["us.zoom.xos"])),
+            stream: app_stream(vec![app_frame(0.4, 960)]),
+        };
+        let stream = early_speaker_at(Some(early), 48_000);
+        assert_eq!(
+            app_stream_at_open(channels, true, stream.is_some()),
+            AppStreamAtOpen::AttachEarly
+        );
+        let (segment, mut commands) = stereo("s1", &["us.zoom.xos"]);
+        segment.speaker.as_ref().unwrap().attach(stream.unwrap());
+        let Ok(SpeakerCommand::Attach(attached)) = commands.try_recv() else {
+            panic!("no stream attached");
+        };
+        // The attached stream is the watch stream: it sends the frame after
+        // the first sound.
+        assert_eq!(levels(attached), [0.4]);
+    }
+
+    #[test]
+    fn a_watch_stream_at_another_rate_is_dropped_and_the_segment_stays_stereo() {
+        let early = |rate| {
+            Some(EarlySpeaker {
+                rate,
+                apps: AppSet::default(),
+                stream: app_stream(Vec::new()),
+            })
+        };
+        assert!(early_speaker_at(early(48_000), 48_000).is_some());
+        // The new microphone runs at another rate: the stereo segment opens
+        // a new app stream at its rate.
+        assert!(early_speaker_at(early(44_100), 48_000).is_none());
+        assert_eq!(
+            app_stream_at_open(2, true, false),
+            AppStreamAtOpen::OpenLater
+        );
+        assert!(early_speaker_at(None, 48_000).is_none());
+    }
+
+    #[test]
+    fn an_app_that_quits_and_starts_again_after_the_switch_makes_no_new_segment() {
+        // R7: while the app does not run, the attached stream sends no
+        // frames and does not end. Nothing opens again, and the page shows
+        // no message.
+        let (segment, _commands) = stereo("s1", &["us.zoom.xos"]);
+        segment
+            .speaker
+            .as_ref()
+            .unwrap()
+            .attach(app_stream(vec![app_frame(0.4, 960)]));
+        let inner = Inner {
+            active: Some(segment),
+            permission: Some(Permission::Allowed),
+            ..Inner::default()
+        };
+        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+        // No change of the set splits a stereo segment.
+        for (was_empty, empty) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert!(matches!(
+                apps_change(Some(2), was_empty, empty),
+                AppsChange::Nothing | AppsChange::Attach
+            ));
         }
     }
 
     #[test]
-    fn a_note_with_system_audio_off_from_start_to_stop_records_mono() {
-        // AE7: its saved audio is as today.
-        assert_eq!(segment_channels(false, false), 1);
+    fn discord_checked_during_a_stereo_segment_reaches_the_stream_and_not_settings() {
+        // AE3.
+        let mut store = Store::open_in_memory().unwrap();
+        let settings = with_apps(vec![zoom()]);
+        start_note(&mut store, "s1", &settings);
+        let (segment, _commands) = stereo("s1", &["us.zoom.xos"]);
+        // The app stream reads this set.
+        let stream_set = segment.apps.clone();
+        let mut inner = Inner {
+            active: Some(segment),
+            ..Inner::default()
+        };
+        let both = [recorded(&zoom()), recorded(&discord())];
+        let (change, added) = apply_note_apps(&mut inner, &store, "s1", &both).unwrap();
+        assert_eq!(change, AppsChange::Nothing, "no new segment");
+        assert!(added);
+        assert_eq!(stream_set.get(), ["us.zoom.xos", "com.hnc.Discord"]);
+        assert_eq!(store.note_apps("s1").unwrap(), both);
+        // The next note takes the Settings list, which has no Discord.
+        assert_eq!(apps_at_start(&settings, true), [recorded(&zoom())]);
     }
 
     #[test]
-    fn system_audio_on_or_the_stereo_mark_opens_a_stereo_segment() {
-        assert_eq!(segment_channels(false, true), 2);
-        // System audio on, then off, then a microphone loss: the next
-        // segment is stereo, and no speaker stream opens for it, so the
-        // right channel holds silence.
-        assert_eq!(segment_channels(true, false), 2);
-        assert_eq!(segment_channels(true, true), 2);
+    fn unchecking_the_last_app_before_the_switch_closes_the_watch_stream() {
+        let mut store = Store::open_in_memory().unwrap();
+        start_note(&mut store, "s1", &with_apps(vec![zoom()]));
+        let segment = watching("s1", &["us.zoom.xos"]);
+        let cancel = segment.watch.as_ref().unwrap().cancel.clone();
+        let mut inner = Inner {
+            active: Some(segment),
+            permission: Some(Permission::NotAsked),
+            ..Inner::default()
+        };
+        let (change, added) = apply_note_apps(&mut inner, &store, "s1", &[]).unwrap();
+        assert_eq!(change, AppsChange::StopWatch);
+        assert!(!added);
+        assert!(cancel.is_cancelled(), "the watch stream closes");
+        let active = inner.active.as_ref().unwrap();
+        assert!(active.watch.is_none());
+        assert_eq!(active.channels, 1, "the note stays one channel");
+        assert!(store.note_apps("s1").unwrap().is_empty());
+        // No message for an empty set (R16).
+        assert_eq!(inner.snapshot().app_audio, None);
+        // Checked again: the watch stream opens again.
+        let (change, added) =
+            apply_note_apps(&mut inner, &store, "s1", &[recorded(&zoom())]).unwrap();
+        assert_eq!(change, AppsChange::Watch);
+        assert!(added);
     }
 
     #[test]
-    fn the_switch_splits_only_a_mono_segment() {
-        // The first turn-on closes the mono segment and opens a stereo one.
-        assert_eq!(switch_change(Some(1), false, true), SwitchChange::ToStereo);
-        // In a stereo segment the switch attaches or detaches the speaker
-        // stream and keeps one segment.
-        assert_eq!(switch_change(Some(2), false, true), SwitchChange::Attach);
-        assert_eq!(switch_change(Some(2), true, false), SwitchChange::Detach);
-        // No change, or nothing records: only the store changes.
-        assert_eq!(switch_change(Some(2), true, true), SwitchChange::Nothing);
-        assert_eq!(switch_change(None, false, true), SwitchChange::Nothing);
-        assert_eq!(switch_change(Some(1), true, false), SwitchChange::Nothing);
+    fn a_change_while_nothing_records_changes_only_the_store() {
+        // Interrupted, restart backoff or a pause: the next segment reads
+        // the stored set.
+        let mut store = Store::open_in_memory().unwrap();
+        start_note(&mut store, "s1", &with_apps(vec![zoom()]));
+        let mut inner = Inner {
+            recovering: Some(Pending::new("s1")),
+            ..Inner::default()
+        };
+        let (change, _) =
+            apply_note_apps(&mut inner, &store, "s1", &[recorded(&discord())]).unwrap();
+        assert_eq!(change, AppsChange::Nothing);
+        assert_eq!(stored_apps(&store, "s1", true), [recorded(&discord())]);
     }
 
     #[test]
-    fn a_turn_on_at_minute_20_gives_a_mono_then_a_stereo_segment_with_a_short_gap() {
-        // AE3: the mono segment closes at the switch, and the stereo one
+    fn a_resume_of_a_two_channel_note_opens_stereo_with_its_stored_set() {
+        // R21: not the Settings list of now.
+        let mut store = Store::open_in_memory().unwrap();
+        start_note(&mut store, "s1", &with_apps(vec![zoom()]));
+        store.mark_stereo_from("s1", 1).unwrap();
+        let settings = with_apps(vec![discord()]);
+        let apps = stored_apps(&store, "s1", true);
+        assert_eq!(apps, [recorded(&zoom())]);
+        assert_ne!(apps, apps_at_start(&settings, true));
+        let channels = segment_channels(store.stereo_from("s1").unwrap().is_some(), false);
+        assert_eq!(channels, 2);
+        assert_eq!(
+            app_stream_at_open(channels, !apps.is_empty(), false),
+            AppStreamAtOpen::OpenLater
+        );
+    }
+
+    #[test]
+    fn a_settings_change_during_a_recording_leaves_the_note_set() {
+        // R11.
+        let mut store = Store::open_in_memory().unwrap();
+        let mut settings = with_apps(vec![zoom()]);
+        start_note(&mut store, "s1", &settings);
+        settings.remove_app(&zoom().id);
+        settings.add_app(discord()).unwrap();
+        assert_eq!(stored_apps(&store, "s1", true), [recorded(&zoom())]);
+    }
+
+    #[test]
+    fn no_app_set_is_recorded_where_app_audio_is_not_supported() {
+        // R17: Windows before build 20348.
+        assert!(apps_at_start(&with_apps(vec![zoom()]), false).is_empty());
+        let mut store = Store::open_in_memory().unwrap();
+        start_note(&mut store, "s1", &with_apps(vec![zoom()]));
+        let apps = stored_apps(&store, "s1", false);
+        assert!(apps.is_empty());
+        assert_eq!(
+            app_stream_at_open(1, !apps.is_empty(), false),
+            AppStreamAtOpen::Nothing
+        );
+    }
+
+    #[test]
+    fn not_allowed_shows_at_once_and_failed_only_after_the_reopen_fails() {
+        // R16.
+        let segment = watching("s1", &["us.zoom.xos"]);
+        let shared = Arc::clone(&segment.watch.as_ref().unwrap().shared);
+        let mut inner = Inner {
+            active: Some(segment),
+            ..Inner::default()
+        };
+        // The permission check of the watch stream: a problem shows at once.
+        inner.permission = Some(Permission::Denied);
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::NotAllowed));
+        inner.permission = Some(Permission::NotAsked);
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::NotAllowed));
+        inner.permission = Some(Permission::Allowed);
+        shared.opened();
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+        // The stream ends: no message while the capture watcher opens it
+        // again.
+        shared.lose();
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+        assert_eq!(
+            watch_step(&inner, "s1"),
+            WatchStep::Watch {
+                move_back: false,
+                speaker: true
+            }
+        );
+        let reopen = poll_speaker(&mut inner, Permission::Allowed)
+            .flatten()
+            .expect("a reopen");
+        assert_eq!((reopen.segment, reopen.channels), (0, 1));
+        // The reopen fails: now the page shows the failure.
+        shared.fail();
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Failed));
+        // A later reopen opens the stream: the failure clears.
+        shared.opened();
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+    }
+
+    #[test]
+    fn a_stereo_app_stream_that_does_not_open_fails_only_at_the_reopen() {
+        // R16: the first open goes to the capture watcher; its reopen shows
+        // the failure.
+        let (segment, _commands) = stereo("s1", &["us.zoom.xos"]);
+        let mut inner = Inner {
+            active: Some(segment),
+            permission: Some(Permission::Allowed),
+            ..Inner::default()
+        };
+        attach_opened(
+            &mut inner,
+            Err(audio::Error::SpeakerStreamSetupFailed),
+            false,
+        );
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+        assert!(matches!(
+            watch_step(&inner, "s1"),
+            WatchStep::Watch { speaker: true, .. }
+        ));
+        attach_opened(
+            &mut inner,
+            Err(audio::Error::SpeakerStreamSetupFailed),
+            true,
+        );
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Failed));
+        attach_opened(&mut inner, Ok(app_stream(Vec::new())), true);
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+    }
+
+    /// Read the attached stream to its end, as the segment thread does, and
+    /// return the generation that its loss report carries.
+    fn end_attached(
+        link: &SpeakerLink,
+        commands: &mut tokio::sync::mpsc::UnboundedReceiver<SpeakerCommand>,
+    ) -> u64 {
+        use futures_util::StreamExt as _;
+        let Ok(SpeakerCommand::Attach(stream)) = commands.try_recv() else {
+            panic!("no stream attached");
+        };
+        block_on(stream.collect::<Vec<_>>());
+        link.shared.ended.load(Ordering::Relaxed)
+    }
+
+    fn ending() -> CaptureStream {
+        CaptureStream::new(futures_util::stream::empty())
+    }
+
+    #[test]
+    fn a_loss_report_of_an_older_app_stream_does_not_mark_the_stream_now() {
+        let (segment, mut commands) = stereo("s1", &["us.zoom.xos"]);
+        segment.speaker.as_ref().unwrap().attach(ending());
+        let inner = Inner {
+            active: Some(segment),
+            permission: Some(Permission::Allowed),
+            ..Inner::default()
+        };
+        let link = inner.active.as_ref().unwrap().speaker.as_ref().unwrap();
+        let old = end_attached(link, &mut commands);
+        // A note menu change attaches a new stream before the report of the
+        // old one arrives.
+        link.attach(ending());
+        assert!(!lose_if_current(&inner, "s1", 0, old));
+        assert_eq!(inner.snapshot().app_audio, Some(AppAudioState::Recording));
+        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+        // The report of the stream now marks it as lost.
+        let link = inner.active.as_ref().unwrap().speaker.as_ref().unwrap();
+        let new = end_attached(link, &mut commands);
+        assert!(lose_if_current(&inner, "s1", 0, new));
+        assert!(matches!(
+            watch_step(&inner, "s1"),
+            WatchStep::Watch { speaker: true, .. }
+        ));
+        // A report of another segment changes nothing.
+        assert!(!lose_if_current(&inner, "s1", 1, new + 1));
+        assert!(loss_is_current(3, 3) && !loss_is_current(2, 3));
+    }
+
+    #[test]
+    fn a_pending_permission_that_becomes_allowed_reopens_the_app_stream() {
+        // A tap made before the grant records silence.
+        assert!(!speaker_reopens(None, Permission::NotAsked, false));
+        assert!(!speaker_reopens(
+            Some(Permission::NotAsked),
+            Permission::NotAsked,
+            false
+        ));
+        assert!(speaker_reopens(
+            Some(Permission::NotAsked),
+            Permission::Allowed,
+            false
+        ));
+        assert!(speaker_reopens(
+            Some(Permission::Denied),
+            Permission::Allowed,
+            false
+        ));
+        assert!(!speaker_reopens(
+            Some(Permission::Allowed),
+            Permission::Allowed,
+            false
+        ));
+        // A lost app stream opens again at each poll.
+        assert!(speaker_reopens(
+            Some(Permission::Allowed),
+            Permission::Allowed,
+            true
+        ));
+    }
+
+    #[test]
+    fn the_watcher_polls_the_permission_until_it_is_allowed_and_then_reopens() {
+        let mut inner = Inner::default();
+        let (mut segment, _commands) = stereo("s1", &["us.zoom.xos"]);
+        segment.segment = 3;
+        segment
+            .speaker
+            .as_ref()
+            .unwrap()
+            .attach(app_stream(Vec::new()));
+        inner.active = Some(segment);
+        inner.permission = Some(Permission::NotAsked);
+        assert_eq!(
+            watch_step(&inner, "s1"),
+            WatchStep::Watch {
+                move_back: false,
+                speaker: true
+            }
+        );
+        // The prompt still waits: nothing changes.
+        assert!(poll_speaker(&mut inner, Permission::NotAsked).is_none());
+        // The user allows it: the app stream of segment 3 opens again.
+        let reopen = poll_speaker(&mut inner, Permission::Allowed)
+            .flatten()
+            .expect("a reopen");
+        assert_eq!(
+            (reopen.segment, reopen.rate, reopen.channels),
+            (3, 48_000, 2)
+        );
+        assert_eq!(reopen.apps.get(), ["us.zoom.xos"]);
+        attach_opened(&mut inner, Ok(app_stream(Vec::new())), true);
+        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+    }
+
+    #[test]
+    fn the_watcher_follows_a_lost_app_stream_and_not_an_empty_set() {
+        let mut inner = Inner::default();
+        let (segment, _commands) = stereo("s1", &["us.zoom.xos"]);
+        segment.speaker.as_ref().unwrap().shared.lose();
+        inner.active = Some(segment);
+        inner.permission = Some(Permission::Allowed);
+        assert_eq!(
+            watch_step(&inner, "s1"),
+            WatchStep::Watch {
+                move_back: false,
+                speaker: true
+            }
+        );
+        let reopen = poll_speaker(&mut inner, Permission::Allowed).flatten();
+        assert!(reopen.is_some_and(|r| r.segment == 0 && r.channels == 2));
+        // An empty set: the right channel holds silence and nothing is
+        // watched.
+        let (empty, _commands) = stereo("s1", &[]);
+        inner.active = Some(empty);
+        inner.permission = Some(Permission::Denied);
+        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
+    }
+
+    #[test]
+    fn supersede_resets_the_app_audio_checks() {
+        let mut inner = Inner {
+            permission: Some(Permission::Denied),
+            ..Inner::default()
+        };
+        inner.supersede();
+        assert_eq!(inner.permission, None);
+    }
+
+    /// The app sound lost at the change to two channels (KTD6, U8 step 6),
+    /// in ms. The watch stream hears the first sound, the app plays on for
+    /// the `switch_ms` that the switch takes, and a stereo segment of the
+    /// recorder attaches the watch stream. Each app frame has its own
+    /// level, so the right channel shows which frames from the first sound
+    /// on the stereo segment holds.
+    async fn lost_at_the_switch(switch_ms: u32) -> u32 {
+        const RATE: u32 = 48_000;
+        const FRAME: usize = (RATE / FRAMES_PER_SECOND) as usize;
+        let level = |n: u32| 0.1 + n as f32 * 0.001;
+        let during = switch_ms / (1000 / FRAMES_PER_SECOND);
+        let mut frames = vec![app_frame(0.0, FRAME), app_frame(0.0, FRAME)];
+        frames.extend((0..=during).map(|n| app_frame(level(n), FRAME)));
+        let mut stream = app_stream(frames);
+        let cancel = CancellationToken::new();
+        assert!(matches!(
+            first_sound(&mut stream, &cancel).await,
+            FirstSound::Heard
+        ));
+        let dir = tempfile::tempdir().unwrap();
+        let writer = ChunkedWriter::create(SegmentArgs {
+            dir: dir.path().to_path_buf(),
+            segment: 1,
+            capture_started_at: 0,
+            offset_ms: 0,
+            sample_rate: RATE,
+            channels: 2,
+            floor_bytes: 0,
+        })
+        .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let link = SpeakerLink {
+            commands: tx,
+            shared: Arc::default(),
+        };
+        link.attach(stream);
+        // One second of microphone in the stereo segment.
+        let mic = CaptureStream::new(futures_util::stream::iter((0..50).map(|_| {
+            Ok(audio::CaptureFrame {
+                raw_mic: Arc::from(vec![0.0; FRAME]),
+                raw_speaker: Arc::from(Vec::new()),
+                aec_mic: None,
+            })
+        })));
+        let mut right: Vec<f32> = Vec::new();
+        recorder::run_joined_segment(
+            SegmentInput {
+                mic,
+                speaker: Some(rx),
+            },
+            writer,
+            CancellationToken::new(),
+            |_| {},
+            |frame: Frame<'_>| right.extend_from_slice(frame.speaker.unwrap_or_default()),
+            |_| {},
+        )
+        .await;
+        let kept = (0..=during).filter(|&n| right.contains(&level(n))).count() as u32;
+        (during + 1 - kept) * (1000 / FRAMES_PER_SECOND)
+    }
+
+    #[tokio::test]
+    async fn the_app_sound_lost_at_the_switch_stays_within_half_a_second() {
+        // R12, KTD6. The joiner keeps the last 60 ms of the app sound that
+        // waited during the switch. The loss is the frame of the first
+        // sound plus the switch time above 60 ms, so it stays within half a
+        // second while the switch takes 540 ms or less.
+        assert_eq!(lost_at_the_switch(0).await, 20);
+        assert_eq!(lost_at_the_switch(100).await, 60);
+        assert_eq!(lost_at_the_switch(540).await, 500);
+    }
+
+    #[test]
+    fn a_first_app_sound_at_minute_20_gives_a_mono_then_a_stereo_segment_with_a_short_gap() {
+        // KTD6: the mono segment closes at the switch, and the stereo one
         // opens where the clock stands a few milliseconds later.
         let mut timeline = Timeline::new();
         timeline.open(0, at(0)).unwrap();
@@ -4940,231 +5794,13 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_within_a_second_of_the_first_turn_on_keeps_the_stereo_segment() {
+    fn a_stop_within_a_second_of_the_first_app_sound_keeps_the_stereo_segment() {
         let mut timeline = Timeline::new();
         timeline.open(60_000, at(60)).unwrap();
         timeline.set_open_channels(2).unwrap();
         // The segment opened at a switch, so its close keeps it.
         let closed = close_timeline(&mut timeline, 60_700, at(60), "a".into(), true).unwrap();
         assert!(matches!(closed, Closed::Kept(ref s) if s.channels == 2 && s.duration_ms == 700));
-    }
-
-    #[test]
-    fn system_audio_set_before_the_row_exists_is_in_the_row() {
-        let settings = with_microphone(None, false);
-        assert!(capture_choice_at_start(None, Some(true), &settings).system_audio);
-        let on = with_microphone(None, true);
-        assert!(!capture_choice_at_start(None, Some(false), &on).system_audio);
-        assert!(capture_choice_at_start(None, None, &on).system_audio);
-    }
-
-    /// A default or a stored choice with system audio on records the
-    /// microphone alone while Computer audio is not available.
-    #[test]
-    fn computer_audio_stays_off_while_it_is_not_available() {
-        let on = with_microphone(None, true);
-        let choice = available(capture_choice_at_start(None, Some(true), &on));
-        assert_eq!(choice.system_audio, SYSTEM_AUDIO_AVAILABLE);
-        assert!(!available(CaptureChoice::default()).system_audio);
-    }
-
-    #[test]
-    fn an_early_speaker_stream_at_another_rate_is_dropped() {
-        let early = |rate| {
-            Some(EarlySpeaker {
-                rate,
-                opened: Ok(capture()),
-            })
-        };
-        assert!(matches!(
-            early_speaker_at(early(48_000), 48_000),
-            Some(Ok(_))
-        ));
-        // The new microphone runs at another rate: the segment opens a new
-        // speaker stream at its rate.
-        assert!(early_speaker_at(early(44_100), 48_000).is_none());
-        assert!(early_speaker_at(None, 48_000).is_none());
-    }
-
-    /// Read the attached stream to its end, as the segment thread does, and
-    /// return the generation that its loss report carries.
-    fn end_attached(
-        link: &SpeakerLink,
-        commands: &mut tokio::sync::mpsc::UnboundedReceiver<SpeakerCommand>,
-    ) -> u64 {
-        use futures_util::StreamExt as _;
-        let Ok(SpeakerCommand::Attach(stream)) = commands.try_recv() else {
-            panic!("no stream attached");
-        };
-        tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap()
-            .block_on(stream.collect::<Vec<_>>());
-        link.shared.ended.load(Ordering::Relaxed)
-    }
-
-    #[test]
-    fn a_loss_report_of_an_older_speaker_stream_is_ignored() {
-        let (segment, mut commands) = stereo("s1", true);
-        let link = segment.speaker.as_ref().unwrap();
-        link.attach(capture());
-        let old = end_attached(link, &mut commands);
-        // A quick off-then-on attaches a new stream before the report of
-        // the old one arrives.
-        link.detach();
-        assert!(matches!(commands.try_recv(), Ok(SpeakerCommand::Detach)));
-        link.attach(capture());
-        assert!(!link.loss_is_current(old), "the new stream stays attached");
-        let new = end_attached(link, &mut commands);
-        assert!(link.loss_is_current(new));
-        // After a detach, no loss report is current.
-        link.detach();
-        assert!(!link.loss_is_current(new));
-        assert!(loss_is_current(3, 3) && !loss_is_current(2, 3));
-    }
-
-    #[test]
-    fn attach_detach_and_fail_track_the_speaker_side() {
-        let (segment, mut commands) = stereo("s1", true);
-        let link = segment.speaker.as_ref().unwrap();
-        link.shared.silence.push(&[0.0; 48_000], 48_000);
-        link.attach(capture());
-        assert!(link.attached() && !link.failed());
-        assert!(matches!(commands.try_recv(), Ok(SpeakerCommand::Attach(_))));
-        // A new stream starts the silence count again.
-        assert_eq!(link.shared.silence.silent_for(), Duration::ZERO);
-        link.fail();
-        assert!(!link.attached() && link.failed());
-        link.detach();
-        assert!(!link.attached() && !link.failed());
-        assert!(matches!(commands.try_recv(), Ok(SpeakerCommand::Detach)));
-        assert!(!link.other_output_playing());
-    }
-
-    #[test]
-    fn a_pending_permission_that_becomes_allowed_reopens_the_speaker_stream() {
-        // KTD12: a tap made before the grant records silence.
-        assert!(!speaker_reopens(None, Permission::NotAsked, false));
-        assert!(!speaker_reopens(
-            Some(Permission::NotAsked),
-            Permission::NotAsked,
-            false
-        ));
-        assert!(speaker_reopens(
-            Some(Permission::NotAsked),
-            Permission::Allowed,
-            false
-        ));
-        assert!(speaker_reopens(
-            Some(Permission::Denied),
-            Permission::Allowed,
-            false
-        ));
-        assert!(!speaker_reopens(
-            Some(Permission::Allowed),
-            Permission::Allowed,
-            false
-        ));
-        // A failed speaker stream opens again at each poll.
-        assert!(speaker_reopens(
-            Some(Permission::Allowed),
-            Permission::Allowed,
-            true
-        ));
-    }
-
-    #[test]
-    fn the_watcher_polls_the_permission_until_it_is_allowed_and_then_reopens() {
-        let mut inner = Inner::default();
-        let (mut segment, _commands) = stereo("s1", true);
-        segment.segment = 3;
-        inner.active = Some(segment);
-        inner.permission = Some(Permission::NotAsked);
-        assert_eq!(
-            watch_step(&inner, "s1"),
-            WatchStep::Watch {
-                move_back: false,
-                speaker: true
-            }
-        );
-        // The prompt still waits: nothing changes.
-        assert_eq!(poll_speaker(&mut inner, Permission::NotAsked, true), None);
-        // The user allows it: the speaker stream of segment 3 opens again.
-        assert_eq!(
-            poll_speaker(&mut inner, Permission::Allowed, true),
-            Some(Some((3, 48_000)))
-        );
-        inner
-            .active
-            .as_ref()
-            .unwrap()
-            .speaker
-            .as_ref()
-            .unwrap()
-            .attach(capture());
-        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
-    }
-
-    #[test]
-    fn the_watcher_follows_a_failed_speaker_stream_and_not_a_switch_that_is_off() {
-        let mut inner = Inner::default();
-        let (segment, _commands) = stereo("s1", true);
-        segment.speaker.as_ref().unwrap().fail();
-        inner.active = Some(segment);
-        inner.permission = Some(Permission::Allowed);
-        assert_eq!(
-            watch_step(&inner, "s1"),
-            WatchStep::Watch {
-                move_back: false,
-                speaker: true
-            }
-        );
-        assert_eq!(
-            poll_speaker(&mut inner, Permission::Allowed, false),
-            Some(Some((0, 48_000)))
-        );
-        // System audio off: the right channel holds silence and nothing
-        // is watched.
-        let (off, _commands) = stereo("s1", false);
-        inner.active = Some(off);
-        inner.permission = Some(Permission::Denied);
-        assert_eq!(watch_step(&inner, "s1"), WatchStep::End);
-    }
-
-    #[test]
-    fn an_unknown_permission_sets_the_silent_flag_through_the_watcher() {
-        // U5 step 6: the output plays, and the right channel has held
-        // digital silence for 10 s.
-        let mut inner = Inner::default();
-        let (segment, _commands) = stereo("s1", true);
-        segment
-            .speaker
-            .as_ref()
-            .unwrap()
-            .shared
-            .silence
-            .push(&[0.0; 480_000], 48_000);
-        inner.active = Some(segment);
-        inner.permission = Some(Permission::Unknown);
-        assert_eq!(
-            poll_speaker(&mut inner, Permission::Unknown, true),
-            Some(None)
-        );
-        assert!(inner.silent_check.flagged());
-        // System audio off resets the flag.
-        inner.reset_system_audio_checks();
-        assert!(!inner.silent_check.flagged());
-        assert_eq!(inner.permission, None);
-    }
-
-    #[test]
-    fn supersede_resets_the_system_audio_checks() {
-        let mut inner = Inner {
-            permission: Some(Permission::Denied),
-            ..Inner::default()
-        };
-        inner.supersede();
-        assert_eq!(inner.permission, None);
     }
 
     #[test]
@@ -5275,7 +5911,6 @@ mod tests {
         let mut store = Store::open_in_memory().unwrap();
         let stored = CaptureChoice {
             microphone: Some(Microphone::from(&usb())),
-            system_audio: false,
         };
         let model = recording_model(&Settings::default());
         store
@@ -5301,7 +5936,6 @@ mod tests {
         assert_eq!(
             mic_of(&CaptureChoice {
                 microphone: Some(stored),
-                system_audio: false,
             }),
             Some(MicChoice {
                 id: "id-USB mic".into(),
@@ -5438,6 +6072,7 @@ mod tests {
             &Claims::default(),
             &recognition(),
             &CaptureChoice::default(),
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -5458,9 +6093,9 @@ mod tests {
         assert_eq!(record.title.map(|t| t.text).as_deref(), Some("Planning"));
     }
 
-    // Covers R11, R16, R17 (KTD2): Record takes the note to Capturing with
-    // the recognition that a new note gets, and the note keeps the time it
-    // opened.
+    // Covers R11, R16, R17 (KTD2) and R21 of the app audio plan: Record takes
+    // the note to Capturing with the recognition and the copy of the app
+    // list that a new note gets, and the note keeps the time it opened.
     #[test]
     fn record_into_a_notes_only_note_captures_with_the_recognition_of_a_new_note() {
         let mut store = Store::open_in_memory().unwrap();
@@ -5470,9 +6105,9 @@ mod tests {
         let r = recognition();
         let capture = CaptureChoice {
             microphone: Some(Microphone::from(&usb())),
-            system_audio: false,
         };
-        record_in_store(&mut store, "n", &Claims::default(), &r, &capture).unwrap();
+        let apps = apps_at_start(&with_apps(vec![zoom()]), true);
+        record_in_store(&mut store, "n", &Claims::default(), &r, &capture, &apps).unwrap();
 
         let record = store.session("n").unwrap().unwrap();
         assert_eq!(record.state, SessionState::Capturing);
@@ -5485,6 +6120,7 @@ mod tests {
             Some(r.snapshot.clone())
         );
         assert_eq!(store.capture_choice("n").unwrap(), capture);
+        assert_eq!(store.note_apps("n").unwrap(), [recorded(&zoom())]);
         store.put_segment("n", &one_segment(3_600)).unwrap();
         let record = store.session("n").unwrap().unwrap();
         assert_eq!(record.start(&store.segments("n").unwrap()), at(0));
@@ -5506,6 +6142,7 @@ mod tests {
             &claims,
             &recognition(),
             &CaptureChoice::default(),
+            &[],
         )
         .unwrap_err();
         assert_eq!(e.to_string(), NOTE_DELETING);
@@ -5520,6 +6157,7 @@ mod tests {
             &claims,
             &recognition(),
             &CaptureChoice::default(),
+            &[],
         )
         .unwrap();
         assert_eq!(
@@ -5570,6 +6208,7 @@ mod tests {
                 &claims,
                 &recognition(),
                 &CaptureChoice::default(),
+                &[],
             );
             assert_eq!(refused.unwrap_err().to_string(), NOTE_DELETING);
             std::fs::remove_dir_all(path).map_err(|e| e.to_string())
@@ -5590,6 +6229,7 @@ mod tests {
             &Claims::default(),
             &recognition(),
             &CaptureChoice::default(),
+            &[],
         )
         .unwrap_err();
         assert!(e.to_string().contains("Resume"), "{e}");

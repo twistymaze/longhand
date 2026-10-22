@@ -113,13 +113,13 @@ pub struct Microphone {
 /// The capture choice of a note (KTD2 of the system audio plan). The note
 /// records it at its start, and a change on the recording page updates it.
 /// Restart, resume and the capture watcher read it, not the current
-/// Settings. The default, "System default" with system audio off, is also
-/// the choice of a note from an older build.
+/// Settings. The default, "System default", is also the choice of a note
+/// from an older build. The app set of the note is stored apart from it
+/// ([`Store::note_apps`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CaptureChoice {
     /// `None` is "System default".
     pub microphone: Option<Microphone>,
-    pub system_audio: bool,
 }
 
 /// An app whose audio a note records (KTD7 of the app audio plan).
@@ -525,8 +525,8 @@ impl Store {
         // keeps it as its start time (R16).
         self.conn.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
-               mic_id, mic_label, system_audio, recognition_snapshot, started_here, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 1, CASE WHEN ?11 THEN ?2 END)",
+               mic_id, mic_label, recognition_snapshot, started_here, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, CASE WHEN ?10 THEN ?2 END)",
             params![
                 id,
                 created_at.to_rfc3339(),
@@ -538,7 +538,6 @@ impl Store {
                 model.map(|m| m.live_transcript),
                 capture.microphone.as_ref().map(|m| m.id.as_str()),
                 capture.microphone.as_ref().map(|m| m.label.as_str()),
-                capture.system_audio,
                 snapshot.map(serde_json::to_string).transpose()?,
                 opened,
             ],
@@ -717,18 +716,16 @@ impl Store {
     pub fn capture_choice(&self, id: &str) -> Result<CaptureChoice> {
         self.conn
             .query_row(
-                "SELECT mic_id, mic_label, system_audio FROM sessions WHERE id = ?1",
+                "SELECT mic_id, mic_label FROM sessions WHERE id = ?1",
                 [id],
                 |r| {
                     let mic_id: Option<String> = r.get(0)?;
                     let mic_label: Option<String> = r.get(1)?;
-                    let system_audio: Option<bool> = r.get(2)?;
                     Ok(CaptureChoice {
                         microphone: mic_id.map(|id| Microphone {
                             id,
                             label: mic_label.unwrap_or_default(),
                         }),
-                        system_audio: system_audio.unwrap_or(false),
                     })
                 },
             )
@@ -740,12 +737,11 @@ impl Store {
     /// recording page (KTD2).
     pub fn set_capture_choice(&self, id: &str, capture: &CaptureChoice) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE sessions SET mic_id = ?2, mic_label = ?3, system_audio = ?4 WHERE id = ?1",
+            "UPDATE sessions SET mic_id = ?2, mic_label = ?3 WHERE id = ?1",
             params![
                 id,
                 capture.microphone.as_ref().map(|m| m.id.as_str()),
                 capture.microphone.as_ref().map(|m| m.label.as_str()),
-                capture.system_audio,
             ],
         )?;
         if changed == 0 {

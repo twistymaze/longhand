@@ -34,7 +34,6 @@ function settings(extra: Partial<Settings> = {}): Settings {
     chosen_recognition: { asr_model: "parakeet-unified-en-0.6b-q80", live_transcript: true, speaker_source: "pyannote", speaker_processing_mode: "after_stop", recognition_language: null, default_speaker_count: null },
     recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
     microphone: null,
-    system_audio_default: false,
     apps: [],
     new_note_records: true,
     alert_sound: true,
@@ -95,10 +94,6 @@ async function open({
     list_microphones: () => state.microphones,
     set_microphone: ({ microphone }) => {
       state.settings = { ...state.settings, microphone: microphone as Settings["microphone"] };
-      return state.settings;
-    },
-    set_system_audio_default: ({ enabled }) => {
-      state.settings = { ...state.settings, system_audio_default: enabled as boolean };
       return state.settings;
     },
     set_new_note_records: ({ enabled }) => {
@@ -218,21 +213,6 @@ describe("Recording pane", () => {
   test("while Computer audio is hidden, the pane has no Computer audio switch", async () => {
     await open();
     expect(screen.queryByRole("switch", { name: "Computer audio" })).toBeNull();
-  });
-
-  test("turning the Computer audio switch on calls the command and shows it on", async () => {
-    features.systemAudio = true;
-    try {
-      const { mock, user } = await open();
-      const toggle = screen.getByRole("switch", { name: "Computer audio" });
-      expect(toggle.getAttribute("aria-checked")).toBe("false");
-      await user.click(toggle);
-      expect(calls(mock, "set_system_audio_default")).toEqual([{ enabled: true }]);
-      await waitFor(() => expect(screen.getByRole("switch", { name: "Computer audio" }).getAttribute("aria-checked")).toBe("true"));
-      expect(screen.getByText(/all sound that the computer plays/)).toBeTruthy();
-    } finally {
-      features.systemAudio = false;
-    }
   });
 
   // Covers R8.
