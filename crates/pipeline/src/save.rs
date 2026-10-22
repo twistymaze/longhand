@@ -162,10 +162,18 @@ pub fn audio_state(store: &Store, session_id: &str) -> Result<AudioState, StageE
     if segments.is_empty() {
         return Ok(AudioState::Waiting);
     }
-    Ok(folder::audio_state(
-        &home,
-        segments.iter().map(|s| s.audio_file.as_str()),
-    ))
+    // A name that can point outside the folder is not read. It counts as a
+    // missing file with no removal marker.
+    let (inside, outside): (Vec<_>, Vec<_>) = segments
+        .iter()
+        .map(|s| s.audio_file.as_str())
+        .partition(|audio| crate::audio_path(&home, audio).is_some());
+    let state = folder::audio_state(&home, inside);
+    Ok(if state == AudioState::Present && !outside.is_empty() {
+        AudioState::Waiting
+    } else {
+        state
+    })
 }
 
 /// Record why summarization failed; the session is saved with a stub.
@@ -737,7 +745,12 @@ fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<bool, 
     let old = crate::old_audio::old_segments(working)?.unwrap_or_default();
     let mut copied = false;
     for segment in segments {
-        let target = home.join(&segment.audio_file);
+        let Some(target) = crate::audio_path(home, &segment.audio_file) else {
+            return Err(StageError::Failed(format!(
+                "bad audio name {}",
+                segment.audio_file
+            )));
+        };
         if target.exists()
             || old.iter().any(|o| o.audio_file == segment.audio_file)
             || folder::audio_removed(home, &segment.audio_file)
@@ -963,16 +976,16 @@ pub fn session_doc(
         doc.recognition_artifact = Some(reference);
         let mut audio = std::collections::BTreeMap::new();
         for segment in segments {
-            let source = if folder.join(&segment.audio_file).is_file() {
-                folder.join(&segment.audio_file)
-            } else {
-                record
-                    .home_path
-                    .as_deref()
-                    .map(Path::new)
-                    .unwrap_or(folder)
-                    .join(&segment.audio_file)
+            let home = record.home_path.as_deref().map(Path::new).unwrap_or(folder);
+            // A name that can point outside the folder counts as a missing
+            // file: it gets no digest.
+            let (Some(local), Some(home_file)) = (
+                crate::audio_path(folder, &segment.audio_file),
+                crate::audio_path(home, &segment.audio_file),
+            ) else {
+                continue;
             };
+            let source = if local.is_file() { local } else { home_file };
             if source.is_file() {
                 audio.insert(
                     segment.audio_file.clone(),
