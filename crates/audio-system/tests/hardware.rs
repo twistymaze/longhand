@@ -105,6 +105,33 @@ async fn a_tone_from_this_process_is_not_in_the_tap() {
     assert!(peak < FLOOR, "the tap excludes this process, peak {peak}");
 }
 
+/// AE2: an app that starts to play after the app tap opens is recorded.
+/// Set `LONGHAND_TEST_APP` to the app's bundle ID (for example
+/// `us.zoom.xos`), start the test, then start audio in that app within
+/// 10 s.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "needs a real output device, the system audio permission and an app that plays"]
+async fn an_app_that_starts_after_the_tap_opens_is_recorded() {
+    let app = std::env::var("LONGHAND_TEST_APP").expect("LONGHAND_TEST_APP holds a bundle ID");
+    let apps = audio_system::AppSet::new(vec![app.clone()]);
+    let capture = audio_system::open_apps(48_000, 960, apps).expect("app audio opens");
+    let mut stream = capture.stream;
+    println!("Start audio in {app} now");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let mut peak = 0.0_f32;
+    while peak <= FLOOR {
+        let frame = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .expect("app audio within 10 s")
+            .expect("stream still open")
+            .expect("frame, not error");
+        assert_eq!(frame.raw_speaker.len(), 960);
+        peak = frame.raw_speaker.iter().fold(peak, |p, s| p.max(s.abs()));
+    }
+    println!("peak from {app}: {peak}");
+}
+
 #[cfg(target_os = "windows")]
 #[tokio::test]
 #[ignore = "needs a real output device and audio that plays during the test"]

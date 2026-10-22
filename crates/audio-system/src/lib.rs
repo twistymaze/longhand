@@ -1,7 +1,9 @@
-//! System audio capture: all audio that the computer plays (R7, KTD4).
+//! System audio capture: the audio of the apps in the note's app set
+//! ([`open_apps`]), or all audio that the computer plays ([`open`]).
 //!
-//! - On macOS, a global Core Audio process tap through `cidre`. The tap
-//!   excludes Longhand's own process, so the alert sound is not in the note.
+//! - On macOS, a Core Audio process tap through `cidre`: a tap of the app
+//!   set's processes, or a global tap that excludes Longhand's own process,
+//!   so the alert sound is not in the note.
 //! - On Windows, WASAPI loopback on the output device that anarlog's
 //!   `EndpointFollower` picks.
 //!
@@ -29,8 +31,8 @@ mod windows;
 #[cfg(target_os = "windows")]
 mod windows_apps;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub use audio::{CaptureFrame, CaptureStream, Error};
 pub use permission::Permission;
@@ -84,18 +86,35 @@ pub struct SystemAudioCapture {
     pub status: SystemAudioStatus,
 }
 
-/// Start system audio capture. Frames hold `chunk_size` mono samples at
-/// `sample_rate`; a `sample_rate` of 0 means the backend's own rate.
+/// The IDs of the apps whose audio a capture records: the note's app set.
+/// Clones share one set, so the capture manager can change it while the
+/// stream runs (R10).
+#[derive(Debug, Clone, Default)]
+pub struct AppSet(Arc<Mutex<Vec<String>>>);
+
+impl AppSet {
+    pub fn new(ids: Vec<String>) -> Self {
+        Self(Arc::new(Mutex::new(ids)))
+    }
+
+    /// Replace the set. The backend reads it at its next check.
+    pub fn set(&self, ids: Vec<String>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = ids;
+    }
+
+    pub fn get(&self) -> Vec<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Start capture of all computer sound except Longhand's own. Frames hold
+/// `chunk_size` mono samples at `sample_rate`; a `sample_rate` of 0 means
+/// the backend's own rate. The permission request uses it (KTD11).
 pub fn open(sample_rate: u32, chunk_size: usize) -> Result<SystemAudioCapture, Error> {
     let chunk_size = chunk_size.max(1);
     #[cfg(target_os = "macos")]
     {
-        let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
-        macos::open(sample_rate, chunk_size, tx)?;
-        Ok(SystemAudioCapture {
-            stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
-            status: SystemAudioStatus::default(),
-        })
+        open_macos(sample_rate, chunk_size, macos::Target::Global)
     }
     #[cfg(target_os = "windows")]
     {
@@ -112,6 +131,40 @@ pub fn open(sample_rate: u32, chunk_size: usize) -> Result<SystemAudioCapture, E
         let _ = (sample_rate, chunk_size);
         Err(Error::SpeakerStreamSetupFailed)
     }
+}
+
+/// Start capture of the audio of the apps in `apps` (R6-R10). Frames are as
+/// in [`open`]. While no app in the set plays, the stream sends no frames
+/// and no error. Change the set with [`AppSet::set`].
+pub fn open_apps(
+    sample_rate: u32,
+    chunk_size: usize,
+    apps: AppSet,
+) -> Result<SystemAudioCapture, Error> {
+    let chunk_size = chunk_size.max(1);
+    #[cfg(target_os = "macos")]
+    {
+        open_macos(sample_rate, chunk_size, macos::Target::Apps(apps))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (sample_rate, chunk_size, apps);
+        Err(Error::SpeakerStreamSetupFailed)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos(
+    sample_rate: u32,
+    chunk_size: usize,
+    target: macos::Target,
+) -> Result<SystemAudioCapture, Error> {
+    let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
+    macos::open(sample_rate, chunk_size, target, tx)?;
+    Ok(SystemAudioCapture {
+        stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        status: SystemAudioStatus::default(),
+    })
 }
 
 /// Check that the platform can capture system audio: a backend exists and
@@ -188,8 +241,7 @@ fn own_process_exclusion<T>(
 /// Apps that play the audio of other apps again: audio mixers and routing
 /// tools. A global tap records each app's own output, so the audio that a
 /// mixer plays again is a second copy, often late, and a mixer can also
-/// play the microphone to a virtual device. The macOS tap excludes these
-/// apps. Bundle IDs that start with an entry of [`MIXER_BUNDLE_PREFIXES`]
+/// play the microphone to a virtual device. Bundle IDs that start with an entry of [`MIXER_BUNDLE_PREFIXES`]
 /// match too.
 pub const MIXER_BUNDLE_IDS: &[&str] = &[
     // Elgato Wave Link 3 (verified on a Mac with Wave Link 3) and earlier.

@@ -9,7 +9,7 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/macos.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — the tap excludes Longhand's own process and the running mixer apps (`is_mixer`), and takes a new exclusion list when one starts or quits; a dedicated thread owns the tap and the device and reads an `rtrb` ring in place of anarlog's async ring reader; the thread reads the rate that the device measures and resamples to fixed-size frames; a device that is no longer alive ends the stream
+- Status: modified — an app tap records only the processes of the note's app set and takes a new process list when an app starts or quits, and a global tap excludes Longhand's own process; a dedicated thread owns the tap and the device and reads an `rtrb` ring in place of anarlog's async ring reader; the thread reads the rate that the device measures and resamples to fixed-size frames; a device that is no longer alive ends the stream
 
 ## `src/windows.rs`
 

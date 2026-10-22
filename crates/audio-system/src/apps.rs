@@ -93,6 +93,18 @@ pub fn processes_of<'a>(
         .collect()
 }
 
+/// The macOS process objects of [`processes_of`], sorted and without
+/// duplicates, so two lists of the same processes are equal.
+pub fn process_objects(apps: &[String], processes: &[ProcessInfo], own_pid: u32) -> Vec<u32> {
+    let mut objects: Vec<u32> = processes_of(apps, processes, own_pid)
+        .iter()
+        .map(|p| p.object)
+        .collect();
+    objects.sort_unstable();
+    objects.dedup();
+    objects
+}
+
 /// The outermost `.app` bundle in `path`, for example
 /// `/Applications/Google Chrome.app` for a Chrome Helper executable.
 pub fn outermost_app(path: &str) -> Option<&str> {
@@ -457,6 +469,21 @@ mod tests {
             .map(|p| p.pid)
             .collect();
         assert_eq!(pids, vec![20, 21]);
+    }
+
+    #[test]
+    fn process_objects_change_when_a_process_starts_or_quits_but_not_with_order() {
+        let apps = ["us.zoom.xos".to_owned(), "com.hnc.Discord".to_owned()];
+        let zoom = process(21, "us.zoom.xos", Some("us.zoom.xos"));
+        let discord = process(22, "com.hnc.Discord", Some("com.hnc.Discord"));
+        let one = process_objects(&apps, std::slice::from_ref(&zoom), 99);
+        let both = process_objects(&apps, &[zoom.clone(), discord.clone()], 99);
+        let reversed = process_objects(&apps, &[discord, zoom], 99);
+        assert_eq!(one, vec![1021]);
+        assert_eq!(both, vec![1021, 1022]);
+        assert_ne!(one, both, "a process that starts is a change");
+        assert_eq!(both, reversed, "the order of the processes is not a change");
+        assert!(process_objects(&apps, &[], 99).is_empty());
     }
 
     #[test]
