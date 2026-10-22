@@ -197,6 +197,78 @@ async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>
 }
 },
 /**
+ * Whether this computer can record app audio (R17): macOS, or Windows 11.
+ */
+async appAudioAvailable() : Promise<Result<boolean, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("app_audio_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The running apps with a window that are not on the app list, by name
+ * (R2, KTD12). The list is read again at each call.
+ */
+async listRunningApps() : Promise<Result<ListedApp[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_running_apps") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add one app to the app list (R2). On macOS, the first add asks for the
+ * system audio permission (R15, KTD11).
+ */
+async addApp(entry: ListedApp) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_app", { entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add the common call apps that run now and are not on the app list (R3,
+ * KTD13). It adds nothing when none runs, and asks for the permission
+ * once.
+ */
+async addCallApps() : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_call_apps") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove an app from the app list (R4). The app set of an open note does
+ * not change (R11).
+ */
+async removeApp(id: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_app", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The icon of the app at `path` as a PNG data URL, or `None` when it
+ * cannot be read. The UI then shows a generic icon (R5).
+ */
+async appIcon(path: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("app_icon", { path }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose what New Note and the recording shortcut do (R8): start a note
  * that records, or open a note that does not record. The value goes into
  * the shared settings file.
@@ -1612,6 +1684,12 @@ export type LicenceInfo = { name: string; url: string; attribution: string }
  */
 export type ListNotRequested = "no-provider" | "no-address" | "not-chosen" | "keychain-locked" | "keychain-failed" | "key-needed"
 /**
+ * An app on the app list (R1, R5, KTD1): the app ID, the name that
+ * Settings shows, and the path that the icon comes from when the app does
+ * not run.
+ */
+export type ListedApp = { id: string; name: string; path: string }
+/**
  * The text of the part that is open now.
  */
 export type LiveCurrent = { segment: number; part: number; 
@@ -2597,6 +2675,11 @@ microphone: MicrophoneChoice | null;
  * Whether a new note starts with system audio on (R6, KD13).
  */
 system_audio_default: boolean; 
+/**
+ * The app list: the apps whose audio each new note records (R1). Empty
+ * on a new install (KD3).
+ */
+apps: ListedApp[]; 
 /**
  * A shared setting. What New Note and the recording shortcut do (R8,
  * R10): start a note that records, or open a note that does not
