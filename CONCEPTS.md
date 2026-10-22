@@ -102,6 +102,9 @@ The input that a note records from. The user chooses the usual microphone in Set
 ### System audio
 All audio that the computer plays, from any app. A note records it only while its Computer audio switch is on. The UI calls it "Computer audio"; "system audio" is the term in code and docs only. A note with system audio saves the raw microphone on the left channel and the raw system audio on the right. The microphone is the clock: the system audio is padded or trimmed to match it. On macOS the capture is a global process tap that leaves out Longhand's own sounds and the known mixer apps (apps that play the audio of other apps again, often with the microphone in it), and needs the Screen & System Audio Recording permission. On Windows it is a loopback of one output device, which follows the device where another app plays.
 
+### App audio
+The audio of the apps on the user's list in Settings, recorded with the microphone in every note. The list is empty on a new install, and the user adds only running apps. An app records while it plays and is ignored at other times. The note menu can add or remove an app for one note. A note with app audio saves the microphone on the left channel and the app audio on the right, and processing uses a plain mix of the two. App audio replaces system audio (planned in `docs/plans/2026-10-22-0844-feat-app-audio-plan.md`).
+
 ### Pause
 The state of a recording note that captures nothing for a time, by the user's choice. The microphone and the system audio are closed, and no audio, not even recovery data, goes to disk. Continue records into the same note; the UI does not call it Resume, because Resume records into a stopped note. A paused note is still open: processing starts only at Stop. The transcript and the summary input mark each pause with its duration. A pause is not a gap: gap fill does not transcribe it.
 *Avoid:* "pause" for a silence in speech (say silence)

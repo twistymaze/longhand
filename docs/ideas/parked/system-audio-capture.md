@@ -18,6 +18,8 @@ Needed for meetings held on calls. Irrelevant to an in-person room, which is why
 ## Why parked
 The capture works, but processing a stereo note is not reliable. The mono mix makes a fault in one channel a fault in the whole note, and two Teams test calls failed Verify. It waits for a new processing design ([per-channel processing](#process-each-channel-on-its-own)). Faster diarization, which that design needed first, shipped in archived PR 18.
 
+**2026-10-22:** [App audio](../next/app-audio.md) replaces the whole-computer capture with the audio of the apps on a list and a plain mix, from the user's Loopback setup. Per-channel processing below stays parked.
+
 ## Current state
 - Planned in `docs/plans/2026-09-26-0827-feat-system-audio-and-microphone-choice-plan.md` and built in archived PR 12:
   - a Computer audio switch for each note;
