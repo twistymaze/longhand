@@ -35,6 +35,7 @@ import { buildInputRules, buildKeymap } from "./note/keymap";
 import { schema } from "./note/schema";
 import { autolinkPlugin } from "./plugins/autolink";
 import { clearMarksOnEnterPlugin } from "./plugins/clear-marks-on-enter";
+import { clipboardPlugin } from "./plugins/clipboard";
 import { docChangeListenerPlugin } from "./plugins/doc-change-listener";
 import { linkBoundaryGuardPlugin } from "./plugins/link-boundary-guard";
 import { placeholderPlugin } from "./plugins/placeholder";
@@ -183,6 +184,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
         clearMarksOnEnterPlugin(),
         autolinkPlugin(),
         linkBoundaryGuardPlugin(),
+        clipboardPlugin(),
         flushOnBlur,
       ],
     });

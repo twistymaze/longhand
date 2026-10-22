@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { clearMocks } from "@tauri-apps/api/mocks";
+import { mockTauri } from "../test/tauri";
 
 import { NoteEditor, type NoteEditorProps, SAVE_DEBOUNCE_MS, SAVE_MAX_WAIT_MS } from "./NoteEditor";
 
@@ -229,5 +231,54 @@ describe("NoteEditor in Settings", () => {
     advance(5000);
     view.unmount();
     expect(changes).toEqual([]);
+  });
+});
+
+// WebKit adds the page's text colour to HTML that the page writes, so the
+// editor's copy goes through src/lib/clipboard.ts with no styles.
+describe("NoteEditor copy and cut", () => {
+  const selectAll = /Mac/.test(navigator.platform) ? "{Meta>}a{/Meta}" : "{Control>}a{/Control}";
+  const userAgent = navigator.userAgent;
+  const setPlatform = (value: string) => Object.defineProperty(navigator, "userAgent", { value, configurable: true });
+  afterEach(() => {
+    setPlatform(userAgent);
+    clearMocks();
+  });
+
+  function clipboardEvent(type: "copy" | "cut") {
+    const data = new Map<string, string>();
+    const event = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { setData: (t: string, v: string) => data.set(t, v), clearData: () => data.clear() },
+    });
+    return { event, data };
+  }
+
+  test("a copy writes the selection's structure with no class or style", async () => {
+    setPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Edg/130.0");
+    const { box, user } = setup("# Plan\n\n- **first**\n- [ ] task");
+    await user.keyboard(selectAll);
+    const { event, data } = clipboardEvent("copy");
+    act(() => void box.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    expect(data.get("text/html")).toBe(
+      "<h1>Plan</h1><ul><li><p><strong>first</strong></p></li><li><p>task</p></li></ul>",
+    );
+    expect(data.get("text/plain")).toBe("Plan\n\nfirst\n\ntask");
+  });
+
+  test("on macOS, a cut writes through the native command and removes the selection", async () => {
+    setPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15");
+    const tauri = mockTauri({ write_clipboard: () => true });
+    const { box, user, changes } = setup("**gone**");
+    await user.keyboard(selectAll);
+    const { event, data } = clipboardEvent("cut");
+    act(() => void box.dispatchEvent(event));
+    expect(data.size).toBe(0);
+    expect(tauri.calls).toEqual([
+      { cmd: "write_clipboard", args: { text: "gone", html: "<p><strong>gone</strong></p>" } },
+    ]);
+    advance(SAVE_DEBOUNCE_MS);
+    expect(changes).toEqual([""]);
   });
 });
