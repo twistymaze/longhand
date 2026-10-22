@@ -60,13 +60,14 @@ function mockApp(
   return mockTauri({
     set_shown_note: () => null,
     leave_note: () => leave(),
-    get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
+    get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available, apps: [] }) as Partial<Settings>,
     readiness: () => readiness,
     shortcut_status: () => shortcutStatuses,
     login_item_status: () => "disabled",
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     recording_status: () => status.current,
+    app_audio_available: () => true,
     list_sessions: () => entries.current,
     load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
     session_detail: ({ sessionId }) => ({ entry: entries.current.find((e) => e.id === sessionId) ?? recordingEntry, done: [], current: null, resumable: false }),
@@ -101,6 +102,7 @@ describe("App", () => {
           ({
             shortcut: "Alt+Shift+L",
             shared: available,
+            apps: [],
             active_provider: null,
             providers: { openai: empty, anthropic: empty, gemini: empty, openrouter: empty, ollama: empty, lm_studio: empty, custom: empty },
           }) as Partial<Settings>,
@@ -235,12 +237,13 @@ describe("App", () => {
     const tauri = mockTauri({
       set_shown_note: () => null,
       leave_note: () => ({ kind: "kept" }),
-      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available, apps: [] }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       login_item_status: () => "disabled",
       model_statuses: () => [],
       recording_status: () => idle,
+      app_audio_available: () => true,
       list_sessions: () => entries,
         load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
       session_detail: ({ sessionId }) => ({
@@ -291,7 +294,7 @@ describe("App", () => {
     setURL("http://localhost/?window=settings");
     let fail = false;
     mockTauri({
-      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available, apps: [] }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       login_item_status: () => "disabled",
@@ -421,13 +424,14 @@ describe("a leave that waits (R18)", () => {
         new Promise((resolve) => {
           waiting.push(() => resolve({ kind: shown === sessionId ? "kept" : "removed" }));
         }),
-      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available }) as Partial<Settings>,
+      get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available, apps: [] }) as Partial<Settings>,
       readiness: () => readiness,
       shortcut_status: () => shortcutStatuses,
       login_item_status: () => "disabled",
       model_statuses: () => [],
       speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
       recording_status: () => idle,
+      app_audio_available: () => true,
       list_sessions: () => [saved("a", "Alpha")],
       load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
       session_detail: () => ({ entry: saved("a", "Alpha"), done: [], current: null, resumable: false }),

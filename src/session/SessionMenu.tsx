@@ -17,8 +17,8 @@ export type MenuItem = {
   disabled?: boolean;
   /// Why the item is disabled, as a tooltip.
   reason?: string;
-  /// A check mark. `true` or `false` makes the item a check box, as
-  /// "Record Computer Audio" is.
+  /// A check mark. `true` or `false` makes the item a check box, as each
+  /// app in the App Audio submenu is.
   checked?: boolean;
   /// With `checked`, the item is one choice of a group: a radio item.
   radio?: boolean;

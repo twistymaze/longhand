@@ -20,8 +20,8 @@ const settings = {
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 
-const ids = (r: Readiness, s: Settings = settings, systemAudio = false) =>
-  outstandingItems(r, s, { systemAudio }).map((i) => i.id);
+const ids = (r: Readiness, s: Settings = settings) =>
+  outstandingItems(r, s).map((i) => i.id);
 
 describe("the outstanding setup items", () => {
   test("Covers AE1. Nothing is outstanding when everything is ready", () => {
@@ -29,17 +29,13 @@ describe("the outstanding setup items", () => {
   });
 
   test("Covers AE2. Models and endpoint are outstanding and do not stop a recording", () => {
-    const items = outstandingItems({ ...ready, missing_models: ["a", "b"], endpoint_configured: false }, settings, {
-      systemAudio: false,
-    });
+    const items = outstandingItems({ ...ready, missing_models: ["a", "b"], endpoint_configured: false }, settings);
     expect(items.map((i) => i.id)).toEqual(["models", "provider"]);
     expect(items.every((i) => !i.blocksRecording)).toBe(true);
   });
 
   test("Covers AE3. A microphone that is not allowed comes first and stops a recording", () => {
-    const items = outstandingItems({ ...ready, microphone_authorized: false, armed: false, endpoint_configured: false }, settings, {
-      systemAudio: false,
-    });
+    const items = outstandingItems({ ...ready, microphone_authorized: false, armed: false, endpoint_configured: false }, settings);
     expect(items.map((i) => i.id)).toEqual(["microphone", "provider"]);
     expect(items[0].blocksRecording).toBe(true);
   });
@@ -61,14 +57,15 @@ describe("the outstanding setup items", () => {
     expect(ids(ready, readOnly)).toEqual(["storage"]);
   });
 
-  test("Covers AE4. Computer audio access is outstanding only when new notes start with Computer audio on", () => {
-    const notAllowed = { ...ready, system_audio: "denied" as const };
-    expect(ids(notAllowed, settings, true)).toEqual([]);
-    expect(ids(notAllowed, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] }, true)).toEqual(["system_audio"]);
-    expect(ids(notAllowed, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] }, false)).toEqual([]);
+  test("app audio access is outstanding only when the app list is not empty and access is not allowed", () => {
+    const zoom = { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] };
+    expect(ids({ ...ready, system_audio: "denied" }, settings)).toEqual([]);
+    expect(ids({ ...ready, system_audio: "denied" }, zoom)).toEqual(["system_audio"]);
+    expect(ids({ ...ready, system_audio: "not_asked" }, zoom)).toEqual(["system_audio"]);
+    expect(ids(ready, zoom)).toEqual([]);
   });
 
-  test("all items come in the order microphone, shortcut, storage, Computer audio, models, endpoint", () => {
+  test("all items come in the order microphone, shortcut, storage, app audio, models, endpoint", () => {
     const all: Readiness = {
       ...ready,
       microphone_authorized: false,
@@ -79,7 +76,7 @@ describe("the outstanding setup items", () => {
       missing_models: ["a"],
       endpoint_configured: false,
     };
-    expect(ids(all, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] }, true)).toEqual([
+    expect(ids(all, { ...settings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] })).toEqual([
       "microphone",
       "shortcut",
       "storage",

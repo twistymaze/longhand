@@ -1,6 +1,6 @@
-// The microphone and Computer audio permissions (R4, R6, R7, KTD5). The
-// General setup list and the Recording pane use the same rows and buttons,
-// so each permission request has one implementation.
+// The microphone and app audio permissions (R4, R6, R7, KTD5, R15 of the
+// app audio plan). The General setup list and the Recording pane use the
+// same rows and buttons, so each permission request has one implementation.
 
 import { useState } from "react";
 import { checkMicrophonePermission, requestMicrophonePermission } from "tauri-plugin-macos-permissions-api";
@@ -9,6 +9,7 @@ import { Button, Row, Status as StatusText } from "./ui";
 
 /// Read the platform on each render, so that tests can set the user agent.
 export const isMac = () => navigator.userAgent.includes("Mac");
+export const isWindows = () => navigator.userAgent.includes("Windows");
 
 /// The microphone Allow button. It shows on macOS only: on other platforms
 /// Longhand cannot show the system prompt (R4).
@@ -54,7 +55,7 @@ export function MicrophoneAccessRow({
   );
 }
 
-/// The one button for a Computer audio permission that is not allowed:
+/// The one button for an app audio permission that is not allowed:
 /// Allow when the user was not asked yet, else Open System Settings.
 export function SystemAudioButton({
   permission,
@@ -89,10 +90,10 @@ export function SystemAudioButton({
   return <Button onClick={() => void commands.openSystemAudioSettings()}>Open System Settings</Button>;
 }
 
-/// The status text for a Computer audio permission.
+/// The status text for an app audio permission.
 export function systemAudioDetail(permission: SystemAudioPermission) {
   return permission === "allowed" ? (
-    "Records what this computer plays while Computer audio is on"
+    "Access granted"
   ) : permission === "not_asked" ? (
     <StatusText tone="neutral">Not allowed yet</StatusText>
   ) : permission === "denied" ? (
@@ -102,7 +103,7 @@ export function systemAudioDetail(permission: SystemAudioPermission) {
   );
 }
 
-/// The Computer audio access row (R9, KTD12, KTD15): a status and at most
+/// The App audio access row (R9, KTD12, KTD15): a status and at most
 /// one button.
 export function SystemAudioAccessRow({
   permission,
@@ -112,7 +113,7 @@ export function SystemAudioAccessRow({
   onRefresh: () => Promise<void>;
 }) {
   return (
-    <Row label="Computer audio access" detail={systemAudioDetail(permission)}>
+    <Row label="App audio access" detail={systemAudioDetail(permission)}>
       {permission === "allowed" ? (
         <StatusText tone="positive">Allowed</StatusText>
       ) : (

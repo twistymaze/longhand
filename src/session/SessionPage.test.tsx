@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
@@ -15,7 +15,6 @@ import type { Capture } from "../recording/useCapture";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { SessionPage } from "./SessionPage";
 import { type Sessions, useSessions } from "./useSessions";
-import { features } from "../lib/features";
 
 const readiness: Readiness = {
   microphone_authorized: true,
@@ -140,6 +139,8 @@ function mockPage(e: SessionEntry, over: Partial<SessionDetail> = {}, extra: Rec
       default_type: null,
     }),
     list_tags: () => [],
+    app_audio_available: () => true,
+    list_running_apps: () => [],
     ...extra,
   });
 }
@@ -523,7 +524,7 @@ describe("SessionPage", () => {
     expect(bar.textContent).not.toMatch(/If recording fails|output is muted/i);
   });
 
-  test("while Computer audio is hidden, the bar and the menu have no Computer audio control", async () => {
+  test("Covers R18. The bar and the menu have no Computer audio control", async () => {
     const rec = entry("rec", { state: "capturing" });
     mockPage(rec, {}, { list_microphones: () => ({ default_id: null, inputs: [] }) });
     renderPage({
@@ -540,13 +541,7 @@ describe("SessionPage", () => {
     expect(screen.queryByRole("menuitemcheckbox", { name: "Record Computer Audio" })).toBeNull();
   });
 
-  describe("microphone and Computer audio", () => {
-    beforeEach(() => {
-      features.systemAudio = true;
-    });
-    afterEach(() => {
-      features.systemAudio = false;
-    });
+  describe("microphone and app audio", () => {
     const rec = entry("rec", { state: "capturing" });
     const withStatus = (over: Partial<RecordingStatus>) =>
       recordingCapture("rec", {
@@ -644,13 +639,72 @@ describe("SessionPage", () => {
       expect(document.activeElement).toBe(item);
     });
 
-    test("a saved note's menu has no microphone or Computer audio item", async () => {
+    test("a saved note's menu has no Microphone or App Audio item", async () => {
       const e = entry("s");
       mockPage(e);
       renderPage({ id: "s", sessions: sessionsOf([e]) });
       await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
       expect(screen.queryByRole("menuitem", { name: "Microphone" })).toBeNull();
-      expect(screen.queryByRole("menuitemcheckbox", { name: "Record Computer Audio" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "App Audio" })).toBeNull();
+    });
+
+    const zoom = { id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" };
+    const discord = { id: "com.hnc.Discord", name: "Discord", path: "/Applications/Discord.app" };
+    const teams = { id: "com.microsoft.teams2", name: "Microsoft Teams", path: "/Applications/Microsoft Teams.app" };
+
+    test("Covers R10, AE3. The App Audio submenu shows the running apps and the checked apps that do not run, and a choice changes the note's set", async () => {
+      const tauri = mockPage(rec, {}, {
+        list_microphones: () => microphones,
+        // Zoom is on the Settings list; the note menu lists it too.
+        list_running_apps: () => [
+          { ...discord, call_app: true },
+          { ...zoom, call_app: true },
+        ],
+        set_note_apps: () => ({ ...idle, session_id: "rec", recording: true }),
+      });
+      renderPage({ id: "rec", capture: withStatus({ note_apps: [zoom, teams] }), sessions: sessionsOf([rec]) });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(await screen.findByRole("menuitem", { name: "App Audio" }));
+      expect(tauri.calls.find((c) => c.cmd === "list_running_apps")?.args).toEqual({ all: true });
+      await screen.findByRole("menuitemcheckbox", { name: "Discord" });
+      const items = screen.getAllByRole("menuitemcheckbox").map((i) => [i.textContent, i.getAttribute("aria-checked")]);
+      expect(items).toEqual([
+        ["Discord", "false"],
+        ["zoom.us", "true"],
+        ["Microsoft Teams (not running)", "true"],
+      ]);
+      await user.click(screen.getByRole("menuitemcheckbox", { name: "Discord" }));
+      expect(tauri.calls.filter((c) => c.cmd === "set_note_apps").map((c) => c.args)).toEqual([
+        { sessionId: "rec", apps: [zoom, teams, discord] },
+      ]);
+      // The Settings list does not change.
+      expect(tauri.calls.some((c) => c.cmd === "add_app")).toBe(false);
+    });
+
+    test("Covers R10. Unchecking an app that does not run removes it from the note's set", async () => {
+      const tauri = mockPage(rec, {}, {
+        list_microphones: () => microphones,
+        list_running_apps: () => [],
+        set_note_apps: () => ({ ...idle, session_id: "rec", recording: true }),
+      });
+      renderPage({ id: "rec", capture: withStatus({ note_apps: [zoom, teams] }), sessions: sessionsOf([rec]) });
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(await screen.findByRole("menuitem", { name: "App Audio" }));
+      await user.click(await screen.findByRole("menuitemcheckbox", { name: "Microsoft Teams (not running)" }));
+      expect(tauri.calls.filter((c) => c.cmd === "set_note_apps").map((c) => c.args)).toEqual([
+        { sessionId: "rec", apps: [zoom] },
+      ]);
+    });
+
+    test("Covers R17. On older Windows, the note menu has no App Audio submenu", async () => {
+      const tauri = mockPage(rec, {}, { list_microphones: () => microphones, app_audio_available: () => false });
+      renderPage({ id: "rec", capture: withStatus({}), sessions: sessionsOf([rec]) });
+      await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "app_audio_available")).toBe(true));
+      await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+      expect(screen.getByRole("menuitem", { name: "Microphone" })).toBeTruthy();
+      expect(screen.queryByRole("menuitem", { name: "App Audio" })).toBeNull();
     });
   });
 

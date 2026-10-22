@@ -1,18 +1,26 @@
-// The Recording pane (R1, R6, KTD15): the usual microphone and the default of
-// the Computer audio switch. A new note starts with both. The pane also holds
-// the recording and Pause shortcuts, the two permissions and the alert sound
-// (R6–R9, R16).
+// The Recording pane (R1, R6, KTD15): the usual microphone and the app list.
+// A new note starts with both. The pane also holds the recording and Pause
+// shortcuts, the two permissions and the alert sound (R6–R9, R16).
 
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_SHORTCUT, commands, type MicrophoneChoice, type MicrophoneList, type Readiness, type Settings, type ShortcutStatus } from "../bindings";
+import {
+  DEFAULT_SHORTCUT,
+  commands,
+  type MicrophoneChoice,
+  type MicrophoneList,
+  type Readiness,
+  type RunningApp,
+  type Settings,
+  type ShortcutStatus,
+} from "../bindings";
 import { sentence } from "../processing/describe";
-import { CheckIcon } from "./icons";
-import { MicrophoneAccessRow, SystemAudioAccessRow } from "./Permissions";
+import { Menu, type MenuEntry } from "../session/SessionMenu";
+import { CheckIcon, ChevronIcon } from "./icons";
+import { isMac, isWindows, MicrophoneAccessRow, SystemAudioAccessRow } from "./Permissions";
 import { ShortcutField } from "./ShortcutField";
 import { readOnlyReason } from "./shared";
 import { SettingSwitch } from "./Status";
-import { Button, ErrorText, Group, Pane, Row, Status as StatusText, Switch } from "./ui";
-import { features } from "../lib/features";
+import { Button, ErrorText, Group, Pane, Row, Status as StatusText } from "./ui";
 
 /// One row of the Microphone group. `choice` is null for "System default".
 export type MicrophoneOption = {
@@ -159,26 +167,169 @@ function MicrophoneGroup({ settings, onSettings, readiness, onRefresh }: PanePro
   );
 }
 
-function SystemAudio({ onSettings, readiness, onRefresh }: PaneProps) {
+/// Why the app list cannot change on Windows before Windows 11 (R17).
+export const APP_AUDIO_UNAVAILABLE = "App audio needs Windows 11";
+
+/// The secondary line of the Teams row on Windows (R20, KD12).
+export const WINDOWS_TEAMS_NOTE =
+  "Windows can’t record Teams by itself, so Longhand records all computer sound while Teams plays.";
+
+/// The app ID of Teams on Windows (`WINDOWS_TEAMS_ID` in the backend).
+const WINDOWS_TEAMS_ID = "ms-teams";
+
+/// The running apps, read again at each call of `read`. A reply that
+/// arrives after the reply of a newer read is dropped, so an old list
+/// does not replace a newer one.
+export function useRunningApps(all: boolean) {
+  const [apps, setApps] = useState<RunningApp[] | null>(null);
+  const reads = useRef(0);
+  const read = useCallback(async () => {
+    const n = ++reads.current;
+    const result = await commands.listRunningApps(all);
+    if (n !== reads.current) return;
+    if (result.status === "ok") setApps(result.data);
+  }, [all]);
+  return { apps, read };
+}
+
+/// The icon of an app on the list, or a generic icon when the app has no
+/// icon that Longhand can read (R5). The icon comes from the app's path,
+/// so it shows also when the app does not run.
+function ListedAppIcon({ path }: { path: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    void commands.appIcon(path).then((result) => {
+      if (current) setSrc(result.status === "ok" ? result.data : null);
+    });
+    return () => {
+      current = false;
+    };
+  }, [path]);
+  if (src) return <img src={src} alt="" className="size-6 shrink-0" />;
+  return (
+    <svg aria-hidden data-generic-icon viewBox="0 0 24 24" className="size-6 shrink-0 text-label-tertiary">
+      <rect x="3" y="3" width="18" height="18" rx="5" fill="none" stroke="currentColor" strokeWidth={1.5} />
+      <path d="M8 9.5h8M8 14.5h5" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/// The app list (R1–R5, R15, R17, R20): the apps whose sound each new note
+/// records with the microphone. The running apps are read when the pane
+/// opens, when the window gets the focus, after each change, and each time
+/// the add menu opens (R2).
+function AppsGroup({ settings, onSettings, readiness, onRefresh }: PaneProps) {
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const change = async (enabled: boolean) => {
-    const result = await commands.setSystemAudioDefault(enabled);
+  const addButton = useRef<HTMLButtonElement>(null);
+  const running = useRunningApps(false);
+  const { read } = running;
+  const listed = settings.apps;
+
+  useEffect(() => {
+    void commands.appAudioAvailable().then((result) => setAvailable(result.status === "ok" && result.data));
+  }, []);
+
+  // The list of apps to add changes when the app list changes.
+  const listedIds = listed.map((a) => a.id).join("\n");
+  useEffect(() => {
+    void read();
+  }, [read, listedIds]);
+  useEffect(() => {
+    window.addEventListener("focus", read);
+    return () => window.removeEventListener("focus", read);
+  }, [read]);
+
+  const change = async (action: () => ReturnType<typeof commands.removeApp>) => {
+    setBusy(true);
+    const result = await action();
+    setBusy(false);
     if (result.status === "error") setError(sentence(result.error));
     else {
       setError(null);
       onSettings(result.data);
     }
+    // On macOS, the first add starts the permission request.
+    await onRefresh();
   };
+
+  const toAdd = running.apps ?? [];
+  const unavailable = available === false;
+  const addReason = unavailable ? APP_AUDIO_UNAVAILABLE : toAdd.length === 0 ? "No other apps are running" : null;
+  const callReason = addReason ?? (toAdd.some((a) => a.call_app) ? null : "No other call apps are running");
+
+  const closeMenu = () => {
+    setMenuOpen(false);
+    addButton.current?.focus();
+  };
+  const menuItems: MenuEntry[] =
+    toAdd.length > 0
+      ? toAdd.map((app) => ({
+          key: app.id,
+          label: app.name,
+          onSelect: () => {
+            setMenuOpen(false);
+            void change(() => commands.addApp({ id: app.id, name: app.name, path: app.path }));
+          },
+        }))
+      : [{ key: "none", label: "No other apps are running", disabled: true, onSelect: () => {} }];
+
   return (
-    <Group footer="Computer audio records all sound that the computer plays, from any app, such as the other people on a call. You can turn it on or off in each note.">
-      <Row label="Computer audio" detail="Start each new note with Computer audio on">
-        <Switch
-          label="Computer audio"
-          checked={false}
-          onChange={(v) => void change(v)}
-        />
+    <Group
+      header="App Audio"
+      footer="Each new note records the sound of these apps with the microphone, such as the other people on a call. A change applies from the next note."
+    >
+      {listed.map((app) => (
+        <div key={app.id} className="settings-row px-4">
+          <div className="settings-row-content flex min-h-[2.75rem] items-center gap-3 py-2">
+            <ListedAppIcon path={app.path} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium">{app.name}</div>
+              {isWindows() && app.id === WINDOWS_TEAMS_ID && (
+                <div className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">{WINDOWS_TEAMS_NOTE}</div>
+              )}
+            </div>
+            <Button label={`Remove ${app.name}`} disabled={busy || unavailable} onClick={() => void change(() => commands.removeApp(app.id))}>
+              Remove
+            </Button>
+          </div>
+        </div>
+      ))}
+      <Row label="Add apps" detail={addReason ?? callReason ?? "Choose from the apps that are running now"}>
+        <span className="relative inline-flex" title={addReason ?? undefined}>
+          <Button
+            ref={addButton}
+            expanded={menuOpen}
+            disabled={busy || addReason !== null}
+            onClick={(e) => {
+              // WKWebView does not focus a clicked button. The focus must be
+              // here, so that Escape in the menu gives it back.
+              e.currentTarget.focus();
+              if (!menuOpen) void read();
+              setMenuOpen((o) => !o);
+            }}
+          >
+            <span className="inline-flex items-center gap-1">
+              Add App
+              <ChevronIcon className="size-3 rotate-90" />
+            </span>
+          </Button>
+          {menuOpen && (
+            <Menu onClose={closeMenu} items={menuItems} floating={addButton} width="w-max min-w-52 max-w-80" />
+          )}
+        </span>
+        <span className="inline-flex" title={callReason ?? undefined}>
+          <Button disabled={busy || callReason !== null} onClick={() => void change(() => commands.addCallApps())}>
+            Add Call Apps
+          </Button>
+        </span>
       </Row>
-      <SystemAudioAccessRow permission={readiness.system_audio} onRefresh={onRefresh} />
+      {isMac() && listed.length > 0 && (
+        <SystemAudioAccessRow permission={readiness.system_audio} onRefresh={onRefresh} />
+      )}
       {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );
@@ -353,7 +504,7 @@ export function RecordingPane(props: PaneProps) {
       <NewNote {...props} />
       <WidgetGroup {...props} />
       <MicrophoneGroup {...props} />
-      {features.systemAudio && <SystemAudio {...props} />}
+      <AppsGroup {...props} />
       <AlertGroup settings={props.settings} onSettings={props.onSettings} />
     </Pane>
   );

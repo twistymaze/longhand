@@ -1,8 +1,8 @@
 // The bar at the bottom of the session page while it records (R12, KD2).
 // It keeps the two tiers of walking-skeleton U7, because a glance is all a
 // participant at the table should spend:
-// - always: the live dot, the elapsed time, the microphone as secondary
-//   text, and the Computer audio toggle (KTD14). Pause and Stop are in the
+// - always: the live dot, the elapsed time and the microphone as secondary
+//   text (KTD14). Pause and Stop are in the
 //   page's toolbar, in the place of Record and Resume. While paused, the
 //   bar says "Paused", the time stops, and the dot is grey;
 // - only while a condition exists: the level meter and the warnings.
@@ -152,8 +152,15 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   return items;
 }
 
-/// Why the note records from another microphone (R4, R5). The microphone
-/// continues to record.
+/// The text of the app audio warnings (R16 of the app audio plan).
+export const APP_AUDIO_NOT_ALLOWED =
+  "App audio is not recorded. Allow Longhand under Screen & System Audio Recording in System Settings.";
+export const APP_AUDIO_FAILED = "App audio is not recorded: it stopped and could not start again.";
+
+/// Why the note records from another microphone (R4, R5), and why it does
+/// not record its apps (R16 of the app audio plan). The microphone
+/// continues to record. An app that does not run or makes no sound is
+/// normal and gives no warning.
 function inputWarnings(status: RecordingStatus): Warning[] {
   const items: Warning[] = [];
   const choice = status.microphone_choice;
@@ -162,6 +169,15 @@ function inputWarnings(status: RecordingStatus): Warning[] {
       tone: "caution",
       text: `Using ${status.microphone ?? "the system default"}: ${choice.label} is not connected.`,
     });
+  }
+  if (status.app_audio === "not_allowed") {
+    items.push({
+      tone: "caution",
+      text: APP_AUDIO_NOT_ALLOWED,
+      action: <Button onClick={() => void commands.openSystemAudioSettings()}>Open System Settings</Button>,
+    });
+  } else if (status.app_audio === "failed") {
+    items.push({ tone: "negative", text: APP_AUDIO_FAILED });
   }
   return items;
 }

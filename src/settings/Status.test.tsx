@@ -5,7 +5,6 @@ import { useState } from "react";
 import type { Readiness, Settings } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { type PaneId, StatusPane } from "./Status";
-import { features } from "../lib/features";
 
 const readiness: Readiness = {
   microphone_authorized: true,
@@ -103,31 +102,25 @@ test("the General pane shows its groups in the order Setup, Window", () => {
 });
 
 test("the General pane shows no setting that belongs to another pane", () => {
-  features.systemAudio = true;
-  try {
-    mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
-    // Not ready, with Computer audio not allowed: only the setup items can
-    // name these topics, and each item has one row.
-    render(
-      <Harness
-        readiness={{ ...readiness, microphone_authorized: false, armed: false, system_audio: "denied" }}
-        initial={{ ...baseSettings, apps: [] }}
-      />,
-    );
-    const text = document.body.textContent ?? "";
-    expect(screen.getAllByText("Microphone access")).toHaveLength(1);
-    for (const moved of ["Recording shortcut", "Computer audio", "Models", "Summaries", "Alert sound", "Play Sound", "Test Sound"]) {
-      expect(text).not.toContain(moved);
-    }
-    expect(screen.queryByRole("radiogroup", { name: "Microphone" })).toBeNull();
-  } finally {
-    features.systemAudio = false;
+  mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+  // Not ready, with app audio not allowed and no app on the list: only the
+  // setup items can name these topics, and each item has one row.
+  render(
+    <Harness
+      readiness={{ ...readiness, microphone_authorized: false, armed: false, system_audio: "denied" }}
+      initial={{ ...baseSettings, apps: [] }}
+    />,
+  );
+  const text = document.body.textContent ?? "";
+  expect(screen.getAllByText("Microphone access")).toHaveLength(1);
+  for (const moved of ["Recording shortcut", "App audio", "Models", "Summaries", "Alert sound", "Play Sound", "Test Sound"]) {
+    expect(text).not.toContain(moved);
   }
+  expect(screen.queryByRole("radiogroup", { name: "Microphone" })).toBeNull();
 });
 
 describe("the setup group", () => {
   afterEach(() => {
-    features.systemAudio = false;
     delete (navigator as { userAgent?: string }).userAgent;
   });
 
@@ -196,14 +189,13 @@ describe("the setup group", () => {
     expect(opened).toEqual(["recording"]);
   });
 
-  test("Covers AE4. Computer audio access is listed only while new notes start with Computer audio on", () => {
-    features.systemAudio = true;
+  test("app audio access is listed only while the app list is not empty", () => {
     const denied = { ...readiness, system_audio: "denied" as const };
     const first = renderSetup(denied);
-    expect(first.group().textContent).not.toContain("Computer audio access");
+    expect(first.group().textContent).not.toContain("App audio access");
     cleanup();
     const second = renderSetup(denied, { ...baseSettings, apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }] });
-    expect(second.group().textContent).toContain("Computer audio access");
+    expect(second.group().textContent).toContain("App audio access");
     expect(within(second.group()).getByRole("button", { name: "Open System Settings" })).toBeTruthy();
   });
 });

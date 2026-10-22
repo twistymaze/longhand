@@ -60,7 +60,6 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::retry_recognition_downloads,
             commands::settings::list_microphones,
             commands::settings::set_microphone,
-            commands::settings::set_system_audio_default,
             commands::settings::app_audio_available,
             commands::settings::list_running_apps,
             commands::settings::add_app,

@@ -186,19 +186,6 @@ async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settin
 }
 },
 /**
- * The parked Computer audio default (R18). It changes nothing and refuses
- * to turn the default on. The Settings UI still calls it until U9 of the
- * app audio plan replaces that UI and this command.
- */
-async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
-    try {
-    return { status: "ok", data: await TAURI_INVOKE("set_system_audio_default", { enabled }) };
-} catch (e) {
-    if(e instanceof Error) throw e;
-    else return { status: "error", error: e  as any };
-}
-},
-/**
  * Whether this computer can record app audio (R17): macOS, or Windows 11.
  */
 async appAudioAvailable() : Promise<Result<boolean, string>> {
@@ -210,12 +197,13 @@ async appAudioAvailable() : Promise<Result<boolean, string>> {
 }
 },
 /**
- * The running apps with a window that are not on the app list, by name
- * (R2, KTD12). The list is read again at each call.
+ * The running apps with a window, by name (R2, R10, KTD12). With `all`
+ * false, the apps on the app list are left out. The list is read again
+ * at each call.
  */
-async listRunningApps() : Promise<Result<ListedApp[], string>> {
+async listRunningApps(all: boolean) : Promise<Result<RunningApp[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("list_running_apps") };
+    return { status: "ok", data: await TAURI_INVOKE("list_running_apps", { all }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2427,6 +2415,15 @@ export type RemoveAudioFailure =
  * The prompt that `restore_summary_prompt` added, and the settings after it.
  */
 export type RestoredPrompt = { id: string; settings: Settings }
+/**
+ * One running app with a window, for the add menu in Settings and the
+ * App Audio submenu of a note (R2, R3, R10).
+ */
+export type RunningApp = { id: string; name: string; path: string; 
+/**
+ * "Add Call Apps" adds this app when it is not on the list (R3).
+ */
+call_app: boolean }
 export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**

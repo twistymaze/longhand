@@ -275,18 +275,6 @@ pub fn set_microphone(
     Ok(updated)
 }
 
-/// The parked Computer audio default (R18). It changes nothing and refuses
-/// to turn the default on. The Settings UI still calls it until U9 of the
-/// app audio plan replaces that UI and this command.
-#[tauri::command]
-#[specta::specta]
-pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    if enabled {
-        return Err("Computer audio is not available.".to_string());
-    }
-    Ok(settings::get_settings(&app))
-}
-
 /// Why the app list cannot change on this computer (R17).
 pub const APP_AUDIO_UNAVAILABLE: &str = "App audio needs Windows 11.";
 
@@ -305,23 +293,44 @@ pub async fn app_audio_available() -> Result<bool, String> {
     blocking(|| Ok(audio_system::apps::supported())).await
 }
 
-/// The running apps with a window that are not on the app list, by name
-/// (R2, KTD12). The list is read again at each call.
+/// One running app with a window, for the add menu in Settings and the
+/// App Audio submenu of a note (R2, R3, R10).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct RunningApp {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    /// "Add Call Apps" adds this app when it is not on the list (R3).
+    pub call_app: bool,
+}
+
+/// The running apps with a window, by name (R2, R10, KTD12). With `all`
+/// false, the apps on the app list are left out. The list is read again
+/// at each call.
 #[tauri::command]
 #[specta::specta]
-pub async fn list_running_apps(app: AppHandle) -> Result<Vec<ListedApp>, String> {
+pub async fn list_running_apps(app: AppHandle, all: bool) -> Result<Vec<RunningApp>, String> {
     blocking(move || {
-        let listed = settings::get_settings(&app).apps;
+        let listed = if all {
+            Vec::new()
+        } else {
+            settings::get_settings(&app).apps
+        };
         Ok(not_listed(audio_system::apps::running_apps(), &listed))
     })
     .await
 }
 
-fn not_listed(running: Vec<audio_system::apps::App>, listed: &[ListedApp]) -> Vec<ListedApp> {
+fn not_listed(running: Vec<audio_system::apps::App>, listed: &[ListedApp]) -> Vec<RunningApp> {
     running
         .into_iter()
         .filter(|r| !listed.iter().any(|l| l.id == r.id))
-        .map(ListedApp::from)
+        .map(|r| RunningApp {
+            call_app: audio_system::apps::is_call_app(&r.id),
+            id: r.id,
+            name: r.name,
+            path: r.path,
+        })
         .collect()
 }
 
@@ -1640,6 +1649,31 @@ mod tests {
                 .map(|a| a.id)
                 .collect();
         assert_eq!(ids, vec!["com.hnc.Discord"]);
+    }
+
+    #[test]
+    fn the_note_menu_list_keeps_the_apps_on_the_list_and_marks_call_apps() {
+        let app = |id: &str| audio_system::apps::App {
+            id: id.into(),
+            name: id.into(),
+            path: format!("/Applications/{id}.app"),
+        };
+        let zoom = if cfg!(target_os = "windows") {
+            "zoom"
+        } else {
+            "us.zoom.xos"
+        };
+        let all: Vec<(String, bool)> = not_listed(vec![app("com.google.Chrome"), app(zoom)], &[])
+            .into_iter()
+            .map(|a| (a.id, a.call_app))
+            .collect();
+        assert_eq!(
+            all,
+            vec![
+                ("com.google.Chrome".to_owned(), false),
+                (zoom.to_owned(), true)
+            ]
+        );
     }
 
     #[test]

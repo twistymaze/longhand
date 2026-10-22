@@ -1,8 +1,7 @@
-import { describe, expect, test } from "vitest";
-import { features } from "../lib/features";
+import { afterEach, describe, expect, test } from "vitest";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { MicrophoneList, Readiness, Settings } from "../bindings";
+import type { ListedApp, MicrophoneList, Readiness, RunningApp, Settings } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { SettingsWindow } from "./SettingsWindow";
 
@@ -64,15 +63,20 @@ const twoInputs: MicrophoneList = {
 async function open({
   extra = {},
   microphones = twoInputs,
+  running = [],
   ready = {},
   handlers = {},
 }: {
   extra?: Partial<Settings>;
   microphones?: MicrophoneList;
+  /// The running apps with a window.
+  running?: RunningApp[];
   ready?: Partial<Readiness>;
   handlers?: Record<string, (args: Record<string, unknown>) => unknown>;
 } = {}) {
-  const state = { settings: settings(extra), microphones };
+  const state = { settings: settings(extra), microphones, running };
+  const listed = (id: string) => state.settings.apps.some((a) => a.id === id);
+  const entry = (app: RunningApp): ListedApp => ({ id: app.id, name: app.name, path: app.path });
   const mock = mockTauri({
     get_settings: () => state.settings,
     move_status: () => null,
@@ -92,6 +96,22 @@ async function open({
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
     list_microphones: () => state.microphones,
+    app_audio_available: () => true,
+    list_running_apps: ({ all }) => state.running.filter((a) => all || !listed(a.id)),
+    app_icon: () => null,
+    add_app: ({ entry }) => {
+      state.settings = { ...state.settings, apps: [...state.settings.apps, entry as ListedApp] };
+      return state.settings;
+    },
+    add_call_apps: () => {
+      const added = state.running.filter((a) => a.call_app && !listed(a.id)).map(entry);
+      state.settings = { ...state.settings, apps: [...state.settings.apps, ...added] };
+      return state.settings;
+    },
+    remove_app: ({ id }) => {
+      state.settings = { ...state.settings, apps: state.settings.apps.filter((a) => a.id !== id) };
+      return state.settings;
+    },
     set_microphone: ({ microphone }) => {
       state.settings = { ...state.settings, microphone: microphone as Settings["microphone"] };
       return state.settings;
@@ -210,7 +230,7 @@ describe("Recording pane", () => {
     expect(calls(mock, "list_microphones").length).toBeGreaterThan(before);
   });
 
-  test("while Computer audio is hidden, the pane has no Computer audio switch", async () => {
+  test("Covers R18. The pane has no Computer audio switch", async () => {
     await open();
     expect(screen.queryByRole("switch", { name: "Computer audio" })).toBeNull();
   });
@@ -352,15 +372,147 @@ describe("Recording pane", () => {
     }
   });
 
-  test("with Computer audio on, its group shows the access row", async () => {
-    features.systemAudio = true;
-    try {
-      await open({ ready: { system_audio: "not_asked" } });
-      const row = screen.getByText("Computer audio access").closest(".settings-row") as HTMLElement;
+  describe("the app list", () => {
+    const zoom: RunningApp = { id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app", call_app: true };
+    const discord: RunningApp = { id: "com.hnc.Discord", name: "Discord", path: "/Applications/Discord.app", call_app: true };
+    const chrome: RunningApp = { id: "com.google.Chrome", name: "Google Chrome", path: "/Applications/Google Chrome.app", call_app: false };
+    const teams: ListedApp = { id: "ms-teams", name: "Microsoft Teams", path: "C:\\Program Files\\WindowsApps\\ms-teams.exe" };
+    const entryOf = (app: RunningApp): ListedApp => ({ id: app.id, name: app.name, path: app.path });
+    const group = () => screen.getByRole("heading", { name: "App Audio" }).closest("section") as HTMLElement;
+    const addButton = () => within(group()).getByRole("button", { name: /Add App/ }) as HTMLButtonElement;
+    const callButton = () => within(group()).getByRole("button", { name: "Add Call Apps" }) as HTMLButtonElement;
+    const reasonOf = (button: HTMLElement) => button.closest("[title]")?.getAttribute("title");
+
+    afterEach(() => {
+      delete (navigator as { userAgent?: string }).userAgent;
+    });
+
+    test("Covers R1. An empty list shows no rows and no message", async () => {
+      const { mock } = await open({ running: [chrome] });
+      await waitFor(() => expect(addButton().disabled).toBe(false));
+      expect(within(group()).queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
+      expect(within(group()).queryByRole("status")).toBeNull();
+      expect(within(group()).queryByText("App audio access")).toBeNull();
+      expect(calls(mock, "list_running_apps")[0]).toEqual({ all: false });
+    });
+
+    test("Covers R2. The add menu lists the running apps that are not on the list, and adds the chosen app", async () => {
+      const { mock, user } = await open({ running: [discord, chrome], extra: { apps: [entryOf(discord)] } });
+      await waitFor(() => expect(addButton().disabled).toBe(false));
+      const before = calls(mock, "list_running_apps").length;
+      await user.click(addButton());
+      // The menu reads the running apps again when it opens.
+      expect(calls(mock, "list_running_apps").length).toBe(before + 1);
+      expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Google Chrome"]);
+      await user.click(screen.getByRole("menuitem", { name: "Google Chrome" }));
+      expect(calls(mock, "add_app")).toEqual([{ entry: entryOf(chrome) }]);
+      expect(await within(group()).findByRole("button", { name: "Remove Google Chrome" })).toBeTruthy();
+    });
+
+    test("Covers R2. When no app remains to add, Add App is disabled with its reason", async () => {
+      await open({ running: [chrome], extra: { apps: [entryOf(chrome)] } });
+      await waitFor(() => expect(addButton().disabled).toBe(true));
+      expect(reasonOf(addButton())).toBe("No other apps are running");
+      expect(group().textContent).toContain("No other apps are running");
+    });
+
+    test("Covers R3. Add Call Apps is disabled with its reason when no call app runs that is not on the list", async () => {
+      await open({ running: [zoom, chrome], extra: { apps: [entryOf(zoom)] } });
+      await waitFor(() => expect(addButton().disabled).toBe(false));
+      expect(callButton().disabled).toBe(true);
+      expect(reasonOf(callButton())).toBe("No other call apps are running");
+    });
+
+    test("Covers R3. Add Call Apps adds the running call apps", async () => {
+      const { mock, user } = await open({ running: [zoom, chrome] });
+      await waitFor(() => expect(callButton().disabled).toBe(false));
+      await user.click(callButton());
+      expect(calls(mock, "add_call_apps")).toHaveLength(1);
+      expect(await within(group()).findByRole("button", { name: "Remove zoom.us" })).toBeTruthy();
+      expect(within(group()).queryByRole("button", { name: "Remove Google Chrome" })).toBeNull();
+    });
+
+    test("Covers R4. Remove takes the app off the list", async () => {
+      const { mock, user } = await open({ extra: { apps: [entryOf(zoom)] } });
+      await user.click(within(group()).getByRole("button", { name: "Remove zoom.us" }));
+      expect(calls(mock, "remove_app")).toEqual([{ id: "us.zoom.xos" }]);
+      await waitFor(() => expect(within(group()).queryByRole("button", { name: "Remove zoom.us" })).toBeNull());
+    });
+
+    test("Covers R5. A row of an app that is not running shows its name and icon", async () => {
+      const icon = "data:image/png;base64,AAAA";
+      await open({
+        extra: { apps: [entryOf(zoom), entryOf(discord)] },
+        handlers: { app_icon: ({ path }) => (path === zoom.path ? icon : null) },
+      });
+      const zoomRow = within(group()).getByText("zoom.us").closest(".settings-row") as HTMLElement;
+      await waitFor(() => expect(zoomRow.querySelector("img")?.getAttribute("src")).toBe(icon));
+      // Longhand cannot read an icon for Discord: the row shows the generic icon.
+      const discordRow = within(group()).getByText("Discord").closest(".settings-row") as HTMLElement;
+      expect(discordRow.querySelector("img")).toBeNull();
+      expect(discordRow.querySelector("[data-generic-icon]")).toBeTruthy();
+    });
+
+    test("Covers R20. On Windows, the Teams row shows the secondary line and other rows do not", async () => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", configurable: true });
+      const line = "Windows can’t record Teams by itself, so Longhand records all computer sound while Teams plays.";
+      await open({ extra: { apps: [teams, entryOf(zoom)] } });
+      const teamsRow = within(group()).getByText("Microsoft Teams").closest(".settings-row") as HTMLElement;
+      const zoomRow = within(group()).getByText("zoom.us").closest(".settings-row") as HTMLElement;
+      expect(teamsRow.textContent).toContain(line);
+      expect(zoomRow.textContent).not.toContain(line);
+    });
+
+    test("on macOS, the Teams row shows no secondary line", async () => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Mac OS X)", configurable: true });
+      await open({ extra: { apps: [teams] } });
+      expect(group().textContent).not.toContain("Windows can’t record Teams");
+    });
+
+    test("Covers R17. On older Windows, the group is disabled with its reason", async () => {
+      await open({
+        running: [zoom, chrome],
+        extra: { apps: [entryOf(discord)] },
+        handlers: { app_audio_available: () => false },
+      });
+      await waitFor(() => expect(group().textContent).toContain("App audio needs Windows 11"));
+      expect(addButton().disabled).toBe(true);
+      expect(callButton().disabled).toBe(true);
+      expect(reasonOf(addButton())).toBe("App audio needs Windows 11");
+      expect((within(group()).getByRole("button", { name: "Remove Discord" }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    test("Covers R15. On macOS, the access row shows below a list that is not empty", async () => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Mac OS X)", configurable: true });
+      await open({ ready: { system_audio: "not_asked" }, extra: { apps: [entryOf(zoom)] } });
+      const row = within(group()).getByText("App audio access").closest(".settings-row") as HTMLElement;
       expect(row.textContent).toContain("Not allowed yet");
-    } finally {
-      features.systemAudio = false;
-    }
+    });
+
+    test("a running-apps reply that arrives after a newer reply is dropped", async () => {
+      // Each read waits until the test answers it.
+      const pending: ((apps: RunningApp[]) => void)[] = [];
+      const { user } = await open({
+        handlers: {
+          list_running_apps: () => new Promise<RunningApp[]>((resolve) => pending.push(resolve)),
+        },
+      });
+      await waitFor(() => expect(pending.length).toBe(1));
+      // The first reply gives a list with an app, so Add App can open.
+      await act(async () => pending.shift()!([zoom]));
+      await waitFor(() => expect(addButton().disabled).toBe(false));
+      // Two reads are open: the focus read and the menu read. The newer
+      // reply comes first, then the older one.
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      await user.click(addButton());
+      await waitFor(() => expect(pending.length).toBe(2));
+      const [older, newer] = pending.splice(0);
+      await act(async () => newer([discord]));
+      await act(async () => older([chrome]));
+      expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Discord"]);
+    });
   });
 
   test("Covers AE5. The alert switch is on by default, and turning it off saves the change", async () => {
