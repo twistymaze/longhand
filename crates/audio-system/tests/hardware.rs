@@ -124,6 +124,45 @@ fn list_the_audio_processes_and_their_apps() {
     }
 }
 
+/// U1: print the peak of each second of an app's audio for 30 s. Run it
+/// once while the app is idle and once during a call, to set the
+/// threshold of the first app sound (KTD6). Set `LONGHAND_TEST_APP` to
+/// the app's bundle ID.
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "needs the system audio permission and a running app"]
+async fn measure_the_peak_of_an_app_for_30_seconds() {
+    let app = std::env::var("LONGHAND_TEST_APP").expect("LONGHAND_TEST_APP holds a bundle ID");
+    let apps = audio_system::AppSet::new(vec![app.clone()]);
+    let capture = audio_system::open_apps(48_000, 960, apps).expect("app audio opens");
+    let mut stream = capture.stream;
+    let end = tokio::time::Instant::now() + Duration::from_secs(30);
+    let mut second = tokio::time::Instant::now() + Duration::from_secs(1);
+    let mut peak = 0.0_f32;
+    let mut frames = 0;
+    loop {
+        match tokio::time::timeout_at(second.min(end), stream.next()).await {
+            Ok(Some(Ok(frame))) => {
+                frames += 1;
+                peak = frame.raw_speaker.iter().fold(peak, |p, s| p.max(s.abs()));
+                if tokio::time::Instant::now() < second {
+                    continue;
+                }
+            }
+            Ok(Some(Err(e))) => panic!("app audio ended: {e}"),
+            Ok(None) => panic!("app audio stream closed"),
+            Err(_) => {}
+        }
+        println!("{app}: {frames} frames, peak {peak:.5}");
+        peak = 0.0;
+        frames = 0;
+        if tokio::time::Instant::now() >= end {
+            break;
+        }
+        second += Duration::from_secs(1);
+    }
+}
+
 /// AE2: an app that starts to play after the app tap opens is recorded.
 /// Set `LONGHAND_TEST_APP` to the app's bundle ID (for example
 /// `us.zoom.xos`), start the test, then start audio in that app within
