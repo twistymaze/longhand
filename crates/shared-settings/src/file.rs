@@ -17,6 +17,8 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::inside::{OUTSIDE_FILE, check_write_folder, inside_file};
+
 /// The hidden folder in the storage folder that holds Longhand's own
 /// files. It is the same folder as `library::scan::LONGHAND_FOLDER`.
 pub const LONGHAND_FOLDER: &str = ".longhand";
@@ -410,7 +412,8 @@ pub enum Unavailable {
     #[error("the shared settings cannot be read: {0}")]
     Unreadable(String),
     /// The file exists but is not one complete JSON object, for example
-    /// because a sync delivered only a part of it.
+    /// because a sync delivered only a part of it. A link to a file
+    /// outside the storage folder is also in this case.
     #[error("the shared settings file does not parse: {0}")]
     DoesNotParse(ParseError),
 }
@@ -421,7 +424,8 @@ pub enum Unavailable {
 pub struct ParseError {
     pub message: String,
     /// The line of the file where the parse stopped, from 1. `None` when
-    /// the file is JSON, but not an object.
+    /// the file is JSON, but not an object, or when the read did not parse
+    /// the file.
     pub line: Option<usize>,
 }
 
@@ -453,7 +457,37 @@ pub fn read_settings(root: &Path) -> FileRead {
     if let Err(cause) = check_root(root) {
         return FileRead::NotAvailable(cause);
     }
-    let bytes = match read_limited(&settings_path(root), MAX_SETTINGS_BYTES) {
+    let path = settings_path(root);
+    // `symlink_metadata` tells only whether the entry exists. A link to a
+    // file that does not exist exists.
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return FileRead::Missing,
+        Err(e) => return FileRead::NotAvailable(Unavailable::Unreadable(e.to_string())),
+    }
+    // A save and the join must not write into a `.longhand` folder outside
+    // the storage folder.
+    if let Err(e) = check_write_folder(root, &longhand_folder(root)) {
+        log_refused_link(&path, &e);
+        return FileRead::NotAvailable(Unavailable::Unreadable(e.to_string()));
+    }
+    let path = match inside_file(root, &path) {
+        Ok(path) => path,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return FileRead::Missing,
+        // The read does not open a file outside the storage folder, and no
+        // save writes its text into the folder. The read gives the state of
+        // a file that does not parse (R22): the settings come from the
+        // cache, and the prompts and the Background can change.
+        Err(e) if e.to_string() == OUTSIDE_FILE => {
+            log_refused_link(&path, &e);
+            return FileRead::NotAvailable(Unavailable::DoesNotParse(ParseError {
+                message: OUTSIDE_FILE.into(),
+                line: None,
+            }));
+        }
+        Err(e) => return FileRead::NotAvailable(Unavailable::Unreadable(e.to_string())),
+    };
+    let bytes = match read_limited(&path, MAX_SETTINGS_BYTES) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             return FileRead::NotAvailable(Unavailable::DoesNotParse(ParseError {
@@ -475,6 +509,15 @@ pub fn read_settings(root: &Path) -> FileRead {
             line: Some(e.line()).filter(|&line| line > 0),
         })),
     }
+}
+
+/// Log why the read refused the settings file at `path`, so that the user
+/// can find the link and remove it.
+fn log_refused_link(path: &Path, cause: &io::Error) {
+    log::warn!(
+        "shared settings: cannot read the settings file {}: {cause}",
+        path.display()
+    );
 }
 
 /// The most bytes that the settings file can hold. A synced file can be
@@ -543,6 +586,7 @@ pub fn save_settings(root: &Path, patch: &[SharedValue]) -> Result<SettingsFile,
 /// Longhand folder when it does not exist.
 pub(crate) fn write_settings(root: &Path, raw: &Map<String, Value>) -> io::Result<()> {
     let folder = longhand_folder(root);
+    check_write_folder(root, &folder)?;
     std::fs::create_dir_all(&folder)?;
     session_save::home_write::write_atomic(&folder, SETTINGS_FILE, &settings_bytes(raw))
 }
@@ -553,6 +597,7 @@ pub(crate) fn write_settings(root: &Path, raw: &Map<String, Value>) -> io::Resul
 /// file.
 pub(crate) fn write_new_settings(root: &Path, raw: &Map<String, Value>) -> io::Result<bool> {
     let folder = longhand_folder(root);
+    check_write_folder(root, &folder)?;
     std::fs::create_dir_all(&folder)?;
     write_new(&folder, SETTINGS_FILE, &settings_bytes(raw))
 }

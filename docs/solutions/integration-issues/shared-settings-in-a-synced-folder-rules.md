@@ -1,7 +1,7 @@
 ---
 title: Rules for settings that several computers share through a synced folder
 date: 2026-09-29
-last_updated: 2026-10-17
+last_updated: 2026-10-22
 category: integration-issues
 module: "Shared settings (crates/shared-settings/src/file.rs, prompts.rs, view.rs, join.rs; src-tauri/src/managers/shared.rs)"
 problem_type: integration_issue
@@ -54,13 +54,14 @@ These rules come from building this feature. Each rule guards against a fault th
 
    A prompt over the size limit has two cases. A file over `MAX_FILE_BYTES` is too large for the scan: the scan reads only its front matter, Settings lists it with no text and an over-limit flag, and a summary uses the default prompt. The file exists, so the prompt is not missing and the settings that name it stay. A file under that size whose prompt text or title text is over its character limit, for example after an edit outside Longhand, is listed with an over-limit flag, and a run uses its whole text (`PromptFile::over_limit`).
 
-10. **Follow a link in `.longhand` only to a file in the storage folder.** A sync service can deliver a link: `background.md`, a prompt file, the `prompts` folder or the whole `.longhand` folder can link to a place outside the storage folder. The Background and the prompt texts go to the summary service, so a link must not make a file that the user did not put in the storage folder into a Background or a prompt. The rules are in `crates/shared-settings/src/inside.rs` (PR #31):
+10. **Follow a link in `.longhand` only to a file in the storage folder.** A sync service can deliver a link: `settings.json`, `background.md`, a prompt file, the `prompts` folder or the whole `.longhand` folder can link to a place outside the storage folder. The Background and the prompt texts go to the summary service, so a link must not make a file that the user did not put in the storage folder into a Background or a prompt. A save of `settings.json` writes the whole object that it read into the synced folder, so a link must not make a file outside the storage folder into the shared settings. The rules are in `crates/shared-settings/src/inside.rs` (PR #31):
     - `inside_file` accepts a path only when its canonical path starts with the canonical storage folder. `Path::starts_with` compares by component, so a sibling folder such as `storage-other` does not match `storage`.
     - `canonicalize` runs only when `has_link` finds a link, or a part that cannot be examined, on the path under the storage folder. A path with no link is used as it is, because `canonicalize` fails on some network and virtual drives of Windows.
     - A Background that is refused is `Unreadable`. A prompt that is refused is `Found::Unusable(None)`, never missing (rule 9), so the wait for missing prompts does not start.
     - Each write into `.longhand` calls `check_write_folder`. It examines the nearest part of the path that exists, and refuses a folder that resolves outside the storage folder.
     - A Background save can replace a `background.md` link that points outside (`BackgroundUnavailable::is_outside_link`), because the save writes a new file in place of the link and does not touch the target. This is true only when the `.longhand` folder itself is in the storage folder. `read_background` examines the folder first: before that check, Settings offered a Background save that always failed for a linked `.longhand` folder.
-    - Accepted limits: the check runs before the open, so a link that a sync puts in place between the two is followed once. `settings.json` text does not go to the summary service, and its writes do not use this check.
+    - `read_settings` (`file.rs`) uses `check_write_folder` and `inside_file` for `settings.json`. A `.longhand` folder outside the storage folder is `Unreadable`, and all the shared settings are read-only. A `settings.json` that links outside is `DoesNotParse` with no line, so rule 4 applies: the settings come from the cache and are read-only, and the prompts and the Background can still change. The read logs the path and the cause. `write_settings` and `write_new_settings` call `check_write_folder` before they make the folder. Before these checks, a save followed the link: it wrote the text of the outside file, with the patch, as a new `settings.json` in the synced folder. The join and a save also wrote into a `.longhand` folder outside the storage folder.
+    - Accepted limits: the check runs before the open, so a link that a sync puts in place between the two is followed once.
 
 11. **Limit what a read and a write can do with a damaged file.** A `settings.json` larger than 1 MiB (`MAX_SETTINGS_BYTES`, read with `read_limited` in `file.rs`) is not read whole. It is `DoesNotParse` (rule 4), so nothing writes over it. `write_new` stages the new file as `.{uuid}.new`, not as the target name plus a suffix, so a prompt with the longest allowed name can still be written. The join writes each prompt that it can, then the Background, and returns the first error, so one prompt that cannot be written does not stop the others and the next join tries again (`merge_cache` in `join.rs`).
 
