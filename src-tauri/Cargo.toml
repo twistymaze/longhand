@@ -89,6 +89,9 @@ diarize = { path = "../crates/diarize", features = ["coreml"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3.2", features = ["NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services"] }
 objc2-service-management = "0.3.2"
+# Rich text on the clipboard without WebKit's added styles
+# (src/commands/clipboard.rs). tao already uses it.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
 # The recording widget panel (src/widget.rs), as in Handy. From crates.io,
 # because deny.toml refuses other sources.
 tauri-nspanel = "2.1"
