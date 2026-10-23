@@ -301,7 +301,7 @@ impl Store {
         let tx = self.conn.transaction()?;
         let mut changed = 0;
         for (block, payload) in blocks.iter().zip(payloads) {
-            let old: Option<String> = tx.query_row("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key=?3", params![id,block.scope.generation,block.key], |r| r.get(0)).optional()?;
+            let old: Option<String> = tx.query_row("SELECT payload FROM recognition_output WHERE note_id=?1 AND generation=?2 AND key=?3", params![id,block.scope.generation,block.key], |r| r.get(0)).optional()?;
             if let Some(old) = old {
                 let old: OutputBlock = serde_json::from_str(&old)?;
                 if block.revision < old.revision || block == &old {
@@ -318,7 +318,7 @@ impl Store {
                     ));
                 }
             }
-            tx.execute("INSERT INTO recognition_output(session_id,generation,key,revision,payload) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(session_id,generation,key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",params![id,block.scope.generation,block.key,block.revision as i64,payload])?;
+            tx.execute("INSERT INTO recognition_output(note_id,generation,key,revision,payload) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(note_id,generation,key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload",params![id,block.scope.generation,block.key,block.revision as i64,payload])?;
             changed += 1;
         }
         tx.commit()?;
@@ -330,7 +330,7 @@ impl Store {
         generation: &str,
         key: &str,
     ) -> crate::jobs::Result<Option<OutputBlock>> {
-        let value: Option<String> = self.conn.query_row("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key=?3",params![id,generation,key],|r|r.get(0)).optional()?;
+        let value: Option<String> = self.conn.query_row("SELECT payload FROM recognition_output WHERE note_id=?1 AND generation=?2 AND key=?3",params![id,generation,key],|r|r.get(0)).optional()?;
         value
             .map(|s| {
                 let block: OutputBlock = serde_json::from_str(&s)?;
@@ -348,7 +348,7 @@ impl Store {
         generation: &str,
         mut visitor: impl FnMut(OutputBlock) -> crate::jobs::Result<()>,
     ) -> crate::jobs::Result<()> {
-        let mut stmt = self.conn.prepare("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 ORDER BY key")?;
+        let mut stmt = self.conn.prepare("SELECT payload FROM recognition_output WHERE note_id=?1 AND generation=?2 ORDER BY key")?;
         let mut rows = stmt.query(params![id, generation])?;
         while let Some(row) = rows.next()? {
             let payload: String = row.get(0)?;
@@ -373,7 +373,7 @@ impl Store {
             return Err(StoreError::Recognition("invalid replay interval".into()));
         }
         let tx = self.conn.transaction()?;
-        let epoch: i64 = tx.query_row("INSERT INTO recognition_epochs(session_id,generation,next_epoch) VALUES (?1,?2,1) ON CONFLICT(session_id,generation) DO UPDATE SET next_epoch=next_epoch+1 RETURNING next_epoch",params![id,generation],|r|r.get(0))?;
+        let epoch: i64 = tx.query_row("INSERT INTO recognition_epochs(note_id,generation,next_epoch) VALUES (?1,?2,1) ON CONFLICT(note_id,generation) DO UPDATE SET next_epoch=next_epoch+1 RETURNING next_epoch",params![id,generation],|r|r.get(0))?;
         tx.commit()?;
         Ok(Replay {
             replay_from: epoch_start,
@@ -557,7 +557,7 @@ impl Store {
         after: &str,
     ) -> crate::jobs::Result<Vec<OutputBlock>> {
         let pattern = prefix_pattern(prefix);
-        let mut stmt=self.conn.prepare("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!' AND key>?4 ORDER BY key LIMIT 128")?;
+        let mut stmt=self.conn.prepare("SELECT payload FROM recognition_output WHERE note_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!' AND key>?4 ORDER BY key LIMIT 128")?;
         let values = stmt.query_map(params![id, generation, pattern, after], |r| {
             r.get::<_, String>(0)
         })?;
@@ -578,7 +578,7 @@ impl Store {
         prefix: &str,
     ) -> crate::jobs::Result<Option<OutputBlock>> {
         let pattern = prefix_pattern(prefix);
-        let value:Option<String>=self.conn.query_row("SELECT payload FROM recognition_output WHERE session_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!' ORDER BY key DESC LIMIT 1",params![id,generation,pattern],|r|r.get(0)).optional()?;
+        let value:Option<String>=self.conn.query_row("SELECT payload FROM recognition_output WHERE note_id=?1 AND generation=?2 AND key LIKE ?3 ESCAPE '!' ORDER BY key DESC LIMIT 1",params![id,generation,pattern],|r|r.get(0)).optional()?;
         value
             .map(|s| {
                 let block: OutputBlock = serde_json::from_str(&s)?;
@@ -667,7 +667,7 @@ impl Store {
             let mut stmt = tx.prepare(
                 "SELECT DISTINCT substr(key, ?3, instr(substr(key, ?3), '/') - 1) \
                  FROM recognition_output \
-                 WHERE session_id=?1 AND generation=?2 AND key >= ?4 AND key < ?5 \
+                 WHERE note_id=?1 AND generation=?2 AND key >= ?4 AND key < ?5 \
                  AND instr(substr(key, ?3), '/') > 0",
             )?;
             stmt.query_map(
@@ -692,7 +692,7 @@ pub(crate) fn generation_in(
 ) -> crate::jobs::Result<Option<String>> {
     let payload: Option<String> = conn
         .query_row(
-            "SELECT payload FROM checkpoints WHERE session_id=?1 AND stage=?2 AND key=?3",
+            "SELECT payload FROM checkpoints WHERE note_id=?1 AND stage=?2 AND key=?3",
             params![id, stage, GENERATION_KEY],
             |r| r.get(0),
         )
@@ -706,11 +706,11 @@ pub(crate) fn delete_generation(
     generation: &str,
 ) -> crate::jobs::Result<()> {
     conn.execute(
-        "DELETE FROM recognition_output WHERE session_id=?1 AND generation=?2",
+        "DELETE FROM recognition_output WHERE note_id=?1 AND generation=?2",
         params![id, generation],
     )?;
     conn.execute(
-        "DELETE FROM recognition_epochs WHERE session_id=?1 AND generation=?2",
+        "DELETE FROM recognition_epochs WHERE note_id=?1 AND generation=?2",
         params![id, generation],
     )?;
     Ok(())
@@ -728,7 +728,7 @@ fn delete_prefix(
     let end = format!("{prefix}{}", char::MAX);
     conn.execute(
         "DELETE FROM recognition_output \
-         WHERE session_id=?1 AND generation=?2 AND key >= ?3 AND key < ?4",
+         WHERE note_id=?1 AND generation=?2 AND key >= ?3 AND key < ?4",
         params![id, generation, prefix, end],
     )?;
     Ok(())
