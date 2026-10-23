@@ -64,6 +64,12 @@ The PR changed the same pattern in `crates/session-core/tests/note_folder.rs` at
 
 ## Prevention
 
-- In a test that can get a `FolderError` from note parsing (`NoteRecord::parse`, `NoteFiles::parse`, `session_id_of`), do not print the error with `{:?}` or `{}`. Use `assert!(matches!(..), "<input>")`.
+- In a test that can get a `FolderError` from note parsing (`NoteRecord::parse`, `NoteFiles::parse`, `note_id_of`), do not print the error with `{:?}` or `{}`. Use `assert!(matches!(..), "<input>")`.
 - If a test needs the error text for debugging, print the variant name or the `file` field, not the `message`.
 - The same applies to any new error that carries a value with a name like `session`, `token`, `password` or `secret`. In this case CodeQL treated a note id as sensitive, which suggests that it uses the name of the value, not whether the value is a real secret.
+
+## Update: the rename removed the cause
+
+On 2026-10-23 the note id rename (`docs/plans/2026-10-23-1220-refactor-note-id-and-note-terminology-plan.md`) changed each code name of the id from `session_id` to `note_id`. CodeQL's shared name rule (`SensitiveDataHeuristics.qll`, `maybeAccountInfo`) matches `session.?(id|key)` and names that contain `uid`, but not `note_id`. So a log line or a test message with the note id no longer gives an alert. Write `note_id`, not `session_id`, in new code (CONCEPTS.md, Note id).
+
+The test rule above still applies to other values whose names the rule matches, for example `secret`, `token`, `password`, `user_id` or `account`.

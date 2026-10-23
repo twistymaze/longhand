@@ -1,6 +1,6 @@
 # Longhand
 
-Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, npm). Records an in-person session on one microphone and produces a transcript and summary. The units (U1–U23) and checkpoint log in `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md` define scope and sequencing.
+Local-first desktop app (Tauri 2, Rust workspace, React + Vite + Tailwind, npm). Records an in-person meeting on one microphone into a note with a transcript and a summary. The units (U1–U23) and checkpoint log in `docs/plans/2026-09-21-2052-feat-longhand-walking-skeleton-plan.md` define scope and sequencing.
 
 ## Shared project memory
 
