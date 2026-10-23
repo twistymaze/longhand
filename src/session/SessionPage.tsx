@@ -810,13 +810,22 @@ export function SessionPage({
         <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
       </>
     ) : (
-      <TranscriptTab
-        lines={doc.lines}
-        hasSpeakers={doc.has_speakers}
-        foundSpeakers={entry?.found_speakers ?? null}
-        durationMs={entry?.duration_ms ?? 0}
-        transcriptMarkdown={doc.transcript_markdown}
-      />
+      <>
+        {/* The check of the transcript found speech with no text. The note
+            is saved; the user can choose Transcribe Again. */}
+        {detail?.low_coverage && (
+          <p role="status" className="mb-4 text-[0.85rem] text-caution">
+            Some speech in this note may have no text. Transcribe Again can try again.
+          </p>
+        )}
+        <TranscriptTab
+          lines={doc.lines}
+          hasSpeakers={doc.has_speakers}
+          foundSpeakers={entry?.found_speakers ?? null}
+          durationMs={entry?.duration_ms ?? 0}
+          transcriptMarkdown={doc.transcript_markdown}
+        />
+      </>
     );
   };
 

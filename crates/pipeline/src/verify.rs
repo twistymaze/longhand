@@ -1,19 +1,19 @@
-//! The verify stage (R17a, R20): a transcript that misses voiced audio is
-//! caught before it is saved. Per segment, the VAD's voiced spans are measured
+//! The verify stage (R17a, R20): it measures and logs how much voiced audio
+//! the transcript misses. Low coverage never stops a note: the note is
+//! saved with the text that it has. Per segment, the VAD's voiced spans are measured
 //! against the spans the recognizer actually put text on (its timestamped
 //! segments, not the request windows around them), so a window that decoded
 //! one word does not count its whole length as covered. Live parts and
 //! gap-fill windows put text on the spans of their timed words.
 //!
-//! A segment fails below [`MIN_COVERAGE`], or when one stretch of speech
-//! with nothing transcribed between its parts carries more than
+//! A segment has low coverage below [`MIN_COVERAGE`], or when one stretch of
+//! speech with nothing transcribed between its parts carries more than
 //! [`MAX_UNCOVERED_MS`] of voiced time. A segment with no voiced time
 //! passes: silence is never a shortfall (AE16). Voiced time that a gap fill
 //! sent to the model counts as covered, with or without words
-//! ([`refilled_spans`]). A failure is recorded with
-//! the windows to redo, so a retry re-transcribes only those.
+//! ([`refilled_spans`]). A failure that an older version recorded keeps its
+//! windows to redo, so a retry of that note re-transcribes only those.
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use asr::{LiveWord, Span};
@@ -30,7 +30,30 @@ pub const MAX_UNCOVERED_MS: u64 = 60_000;
 /// How far text covers beyond its timestamps to allow for timing error.
 pub const SLACK_MS: u64 = 1_000;
 /// Written when verification fails; a retry reads it to know what to redo.
+/// Only an older version wrote it: verification no longer fails.
 pub const FAILED: &str = "failed";
+/// Written when the text of a note covers too little of its voiced time.
+/// The note page shows a short warning (R17a).
+pub const LOW_COVERAGE: &str = "low-coverage";
+
+/// Save or remove the low-coverage mark of a note.
+pub(crate) fn mark_low_coverage(
+    store: &SharedStore,
+    session_id: &str,
+    low: bool,
+) -> Result<(), StageError> {
+    if low {
+        checkpoint::put(store, session_id, Stage::Verify, LOW_COVERAGE, &true)
+    } else {
+        lock(store).delete_checkpoint(session_id, Stage::Verify, LOW_COVERAGE)?;
+        Ok(())
+    }
+}
+
+/// The last verification found too little text for the voiced time.
+pub fn low_coverage(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
+    Ok(checkpoint::get::<bool>(store, session_id, Stage::Verify, LOW_COVERAGE)?.unwrap_or(false))
+}
 
 /// What verification found in one segment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -76,7 +99,6 @@ pub fn run(
 ) -> Result<(), StageError> {
     let windows = results(store, session_id)?;
     let mut failing = Vec::new();
-    let mut redo = BTreeSet::new();
     for segment in segments {
         let plan: WindowPlan = checkpoint::get(
             store,
@@ -113,15 +135,6 @@ pub fn run(
             wordless_ms(&coverage, &judged) / 1000
         );
         if !judged.passes() {
-            for (i, window) in plan.windows.iter().enumerate() {
-                if judged
-                    .uncovered
-                    .iter()
-                    .any(|u| u.start_ms < window.end_ms && window.start_ms < u.end_ms)
-                {
-                    redo.insert((segment.index, i));
-                }
-            }
             failing.push(judged);
         }
         checkpoint::put(
@@ -133,22 +146,16 @@ pub fn run(
         )?;
     }
 
-    if failing.is_empty() {
-        checkpoint::mark_complete(store, session_id, Stage::Verify, segments.len())?;
-        return Ok(());
+    // Low coverage does not stop the note: a note with a part that has no
+    // words is better than a note that does not finish.
+    if !failing.is_empty() {
+        log::warn!(
+            "{session_id}: {}; the note is saved with the text that it has",
+            describe(&failing, segments)
+        );
     }
-    let message = describe(&failing, segments);
-    checkpoint::put(
-        store,
-        session_id,
-        Stage::Verify,
-        FAILED,
-        &VerifyFailure {
-            segments: failing,
-            redo: redo.into_iter().collect(),
-        },
-    )?;
-    Err(StageError::Failed(message))
+    mark_low_coverage(store, session_id, !failing.is_empty())?;
+    checkpoint::mark_complete(store, session_id, Stage::Verify, segments.len())
 }
 
 /// The spans carrying decoded text, within the segment: only timestamped

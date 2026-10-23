@@ -484,6 +484,9 @@ pub struct SessionDetail {
     pub message: Option<String>,
     /// Why the summary is missing, when the session will be saved with a stub.
     pub summary_problem: Option<String>,
+    /// The last check of the transcript found voiced time with no text.
+    /// The note was saved; the Transcript tab shows a short warning.
+    pub low_coverage: bool,
     /// The state machine allows Resume now (R6a).
     pub resumable: bool,
     /// The recording button of the note page: Record or Resume, whether it
@@ -941,6 +944,7 @@ fn detail_of(
         failed_stage: failed_stage.map(stage_name),
         message,
         summary_problem,
+        low_coverage: pipeline::verify::low_coverage(&shared, &session_id).map_err(e)?,
         resumable,
         record: record_button,
         home_path: record.home_path.clone(),

@@ -29,6 +29,7 @@ const waiting: SessionDetail = {
   failed_stage: null,
   message: "The storage folder is not available.",
   summary_problem: null,
+  low_coverage: false,
   resumable: false,
   record: null,
   home_path: null,

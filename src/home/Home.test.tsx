@@ -51,6 +51,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   failed_stage: null,
   message: null,
   summary_problem: null,
+  low_coverage: false,
   resumable: false,
   record: null,
   home_path: home,

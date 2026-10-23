@@ -74,6 +74,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   failed_stage: null,
   message: null,
   summary_problem: null,
+  low_coverage: false,
   resumable: false,
   record: null,
   home_path: null,
@@ -1483,6 +1484,27 @@ describe("SessionPage", () => {
       renderPage({ id: "s", sessions: sessionsOf([e]) });
       expect(await screen.findByText("The summary could not be updated. It is from the previous transcript.")).toBeTruthy();
       expect(screen.getByText("We agreed the budget.")).toBeTruthy();
+    });
+
+    test("a saved note whose check found speech with no text says so on Transcript only", async () => {
+      const warning = "Some speech in this note may have no text. Transcribe Again can try again.";
+      const e = entry("s");
+      mockPage(e, { low_coverage: true });
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      expect(await screen.findByText("We agreed the budget.")).toBeTruthy();
+      expect(screen.queryByText(warning)).toBeNull();
+      await userEvent.setup().click(tab("Transcript"));
+      expect(await screen.findByText(warning)).toBeTruthy();
+    });
+
+    test("a saved note with full text shows no warning on Transcript", async () => {
+      const e = entry("s");
+      mockPage(e);
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      await screen.findByText("We agreed the budget.");
+      await userEvent.setup().click(tab("Transcript"));
+      await act(async () => {});
+      expect(screen.queryByText(/may have no text/)).toBeNull();
     });
 
     test("the menu has no Transcribe Again while the note processes", async () => {

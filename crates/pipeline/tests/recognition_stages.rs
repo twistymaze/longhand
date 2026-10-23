@@ -1188,7 +1188,7 @@ fn completed_live_prefix_survives_failure_in_the_next_epoch() {
 }
 
 #[test]
-fn changed_stereo_preprocessing_invalidates_live_text_and_labels_with_a_reason() {
+fn a_stereo_segment_keeps_its_verified_live_text() {
     let temp = tempfile::tempdir().unwrap();
     let store = common::store();
     store
@@ -1258,40 +1258,23 @@ fn changed_stereo_preprocessing_invalidates_live_text_and_labels_with_a_reason()
         &spec,
     )
     .unwrap();
-    assert!(pipeline::live::rows(&store, "stereo").unwrap().is_empty());
+    // The live reader and Assemble give the same plain mix to recognition
+    // (KTD9 of the app audio plan), so the live results stay.
+    assert_eq!(pipeline::live::rows(&store, "stereo").unwrap().len(), 1);
     assert!(
         pipeline::checkpoint::get::<serde_json::Value>(&store, "stereo", Stage::Diarize, key)
             .unwrap()
-            .is_none()
+            .is_some()
     );
-    let reasons: Vec<String> = pipeline::checkpoint::get(
-        &store,
-        "stereo",
-        Stage::Transcribe,
-        "live-invalidation-reasons",
-    )
-    .unwrap()
-    .unwrap();
     assert!(
-        reasons
-            .iter()
-            .any(|reason| reason.contains("preprocessing"))
-    );
-    checkpoint::put(
-        &store,
-        "stereo",
-        Stage::Diarize,
-        key,
-        &serde_json::json!({"range":{"start":0,"end":16000}, "recomputed":true}),
-    )
-    .unwrap();
-    pipeline::recognition::durable::prepare(&store, "stereo", temp.path(), &[segment], &spec)
-        .unwrap();
-    assert!(
-        checkpoint::get::<serde_json::Value>(&store, "stereo", Stage::Diarize, key)
-            .unwrap()
-            .is_some(),
-        "later prepare must retain recognition recomputed from cleaned audio"
+        pipeline::checkpoint::get::<Vec<String>>(
+            &store,
+            "stereo",
+            Stage::Transcribe,
+            "live-invalidation-reasons",
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -2272,15 +2255,13 @@ fn voiced_sound_without_words_after_a_gap_fill_passes_verify() {
         provider.0.loads.load(Ordering::SeqCst) > 0,
         "the gap fill must send the voiced time to the model"
     );
+    assert!(!pipeline::verify::low_coverage(&store, "route").unwrap());
 }
 #[test]
-fn voiced_sound_without_words_and_without_a_gap_fill_fails_verify() {
+fn voiced_sound_without_words_and_without_a_gap_fill_continues_with_low_coverage() {
     let (temp, store, spec, segments) = setup(SpeakerSource::Off);
-    let error = run_to_verify(&temp, &store, &spec, &segments, &wordless()).unwrap_err();
-    assert!(
-        error.to_string().contains("has speech but no text"),
-        "{error}"
-    );
+    run_to_verify(&temp, &store, &spec, &segments, &wordless()).unwrap();
+    assert!(pipeline::verify::low_coverage(&store, "route").unwrap());
 }
 #[test]
 fn a_resumed_note_keeps_the_verify_pass_of_its_saved_gap_filled_segment() {
@@ -2318,7 +2299,7 @@ fn a_resumed_note_keeps_the_verify_pass_of_its_saved_gap_filled_segment() {
 fn a_retry_without_a_failure_record_recognizes_the_audio_again() {
     let (temp, store, spec, segments) = setup(SpeakerSource::Off);
     let provider = wordless();
-    run_to_verify(&temp, &store, &spec, &segments, &provider).unwrap_err();
+    run_to_verify(&temp, &store, &spec, &segments, &provider).unwrap();
     assert!(
         pipeline::checkpoint::get::<pipeline::verify::VerifyFailure>(
             &store,

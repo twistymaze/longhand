@@ -1149,13 +1149,15 @@ fn a_gap_fill_window_that_decodes_nothing_passes_verify() {
 }
 
 #[test]
-fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_window() {
+fn low_coverage_does_not_stop_the_note_and_marks_it() {
     let g = Gaps::new(&[
         (0, 20_000, live_words(0, 20)),
         (40_000, 60_000, live_words(40, 60)),
     ]);
     g.transcribe();
     assert_eq!(g.calls(), 2);
+    g.verify().unwrap();
+    assert!(!verify::low_coverage(&g.r.store, ID).unwrap());
     // The result of the second gap-fill window is lost: the model did not
     // hear its voiced time.
     g.r.store
@@ -1163,16 +1165,8 @@ fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_windo
         .unwrap()
         .delete_checkpoint(ID, Stage::Transcribe, &checkpoint::window_key(0, 3))
         .unwrap();
-    assert!(g.verify().is_err());
-    let rows = live::rows(&g.r.store, ID).unwrap();
-
-    assert!(verify::prepare_retry(&g.r.store, ID).unwrap());
-    assert_eq!(live::rows(&g.r.store, ID).unwrap(), rows);
-    assert_eq!(g.filled(), vec![2]);
-    g.transcribe();
-    assert_eq!(g.calls(), 3, "only window 3 is transcribed again");
-    assert_eq!(g.filled(), vec![2, 3]);
     g.verify().unwrap();
+    assert!(verify::low_coverage(&g.r.store, ID).unwrap());
 }
 
 #[test]

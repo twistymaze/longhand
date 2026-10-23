@@ -2459,6 +2459,11 @@ message: string | null;
  */
 summary_problem: string | null; 
 /**
+ * The last check of the transcript found voiced time with no text.
+ * The note was saved; the Transcript tab shows a short warning.
+ */
+low_coverage: boolean; 
+/**
  * The state machine allows Resume now (R6a).
  */
 resumable: boolean; 

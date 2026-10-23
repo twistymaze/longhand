@@ -661,6 +661,7 @@ fn verify(
     let windows = transcribe::results(store, id)?;
     // The saved prefix passed Verify in the saved run, and its window
     // checkpoints are gone. Judge only the segments that this run transcribed.
+    let mut low = false;
     for segment in &segments[saved..] {
         let plan = transcribe::plan_segment(dir, segment, &[])?;
         let speech = plan
@@ -680,15 +681,6 @@ fn verify(
                 .filter(|w| w.segment == segment.index)
                 .collect::<Vec<_>>(),
         );
-        if !speech.is_empty()
-            && own.is_empty()
-            && !crate::verify::judge(segment.index, speech, &[], &refilled).passes()
-        {
-            return Err(failed(format!(
-                "segment {} has speech but no text",
-                segment.index
-            )));
-        }
         if own
             .iter()
             .any(|r| r.timing == TimingPrecision::SourceWindow)
@@ -726,38 +718,18 @@ fn verify(
             &checkpoint::segment_key(segment.index),
             &coverage,
         )?;
+        // Low coverage does not stop the note (see `verify::run`).
         if !judged.passes() {
-            let saved_plan: Option<transcribe::WindowPlan> = checkpoint::get(
-                store,
-                id,
-                Stage::Transcribe,
-                &checkpoint::plan_key(segment.index),
-            )?;
-            let redo = saved_plan
-                .as_ref()
-                .map(|p| {
-                    (0..p.windows.len())
-                        .map(|window| (segment.index, window))
-                        .collect()
-                })
-                .unwrap_or_default();
-            checkpoint::put(
-                store,
-                id,
-                Stage::Verify,
-                crate::verify::FAILED,
-                &crate::verify::VerifyFailure {
-                    segments: vec![coverage.clone()],
-                    redo,
-                },
-            )?;
-            return Err(failed(format!(
-                "segment {} text covers {:.1}% of detected speech",
+            low = true;
+            log::warn!(
+                "{id}: segment {} text covers {:.1}% of detected speech; the note is saved \
+                 with the text that it has",
                 segment.index,
                 coverage.ratio() * 100.0
-            )));
+            );
         }
     }
+    crate::verify::mark_low_coverage(store, id, low)?;
     checkpoint::mark_complete(store, id, Stage::Verify, segments.len())
 }
 

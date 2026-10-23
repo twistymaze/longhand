@@ -1578,7 +1578,7 @@ async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it() {
+async fn a_window_that_missed_speech_is_saved_with_a_low_coverage_mark() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1590,27 +1590,11 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
     );
     *r.script.blank_on.lock().unwrap() = vec![1];
     let (_, outcome) = r.runner.run_next().await.unwrap();
-    let Outcome::Failed { stage, message } = outcome else {
-        panic!("expected a failure, got {outcome:?}");
-    };
-    assert_eq!(stage, Stage::Verify);
-    assert!(message.contains("misses speech"), "{message}");
-    assert!(r.root.join("s").join(TRANSCRIPT_FILE).exists());
-    let windows = plan(&r.store, "s").windows.len();
-    assert_eq!(r.script.calls.load(Ordering::SeqCst), windows);
-
-    // The decoder recovers; only the blank window runs again.
-    r.script.blank_on.lock().unwrap().clear();
-    r.runner.retry("s", false).unwrap();
-    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
-    let (_, outcome) = r.runner.run_next().await.unwrap();
+    // A part with no words is better than a note that does not finish.
     assert_eq!(outcome, Outcome::Finished);
-    assert_eq!(r.script.calls.load(Ordering::SeqCst), windows + 1);
+    assert!(pipeline::verify::low_coverage(&r.store, "s").unwrap());
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
-    assert!(
-        transcript.contains(&format!("call {windows}")),
-        "{transcript}"
-    );
+    assert!(transcript.contains("call 0"), "{transcript}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1624,12 +1608,12 @@ async fn a_retry_that_fails_at_the_same_stage_offers_to_start_over_from_the_audi
         Some("m"),
         &[(16_000, conversation())],
     );
-    *r.script.blank_on.lock().unwrap() = vec![1];
+    *r.script.fail_on.lock().unwrap() = Some(1);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(matches!(
         outcome,
         Outcome::Failed {
-            stage: Stage::Verify,
+            stage: Stage::Transcribe,
             ..
         }
     ));
@@ -1640,20 +1624,19 @@ async fn a_retry_that_fails_at_the_same_stage_offers_to_start_over_from_the_audi
     );
 
     // The retry continues from the checkpoints and fails at the same stage.
-    r.script.blank_on.lock().unwrap().push(windows);
+    *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
     r.runner.retry("s", false).unwrap();
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(matches!(
         outcome,
         Outcome::Failed {
-            stage: Stage::Verify,
+            stage: Stage::Transcribe,
             ..
         }
     ));
     assert!(pipeline::runner::retry_starts_over(&r.store, "s").unwrap());
 
     // The start-over transcribes each window again from the recorded audio.
-    r.script.blank_on.lock().unwrap().clear();
     let before = r.script.calls.load(Ordering::SeqCst);
     r.runner.retry("s", true).unwrap();
     let (_, outcome) = r.runner.run_next().await.unwrap();
@@ -4643,33 +4626,25 @@ async fn a_view_opened_later_rebuilds_progress_and_the_failure_from_the_store() 
         Some("m"),
         &[(16_000, conversation())],
     );
-    *r.script.blank_on.lock().unwrap() = vec![1];
+    *r.script.fail_on.lock().unwrap() = Some(1);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(matches!(
         outcome,
         Outcome::Failed {
-            stage: Stage::Verify,
+            stage: Stage::Transcribe,
             ..
         }
     ));
 
     let snapshot = pipeline::progress::snapshot(&r.store, "s").unwrap();
-    assert_eq!(
-        snapshot.done,
-        vec![
-            Stage::Assemble,
-            Stage::Diarize,
-            Stage::Transcribe,
-            Stage::Join
-        ]
-    );
-    assert_eq!(snapshot.current, Some(Stage::Verify));
+    assert_eq!(snapshot.done, vec![Stage::Assemble, Stage::Diarize]);
+    assert_eq!(snapshot.current, Some(Stage::Transcribe));
     let windows = plan(&r.store, "s").windows.len();
-    assert_eq!(snapshot.windows, Some((windows, windows)));
-    let message = pipeline::progress::error(&r.store, "s", Stage::Verify)
+    assert_eq!(snapshot.windows, Some((1, windows)));
+    let message = pipeline::progress::error(&r.store, "s", Stage::Transcribe)
         .unwrap()
         .unwrap();
-    assert!(message.contains("misses speech"), "{message}");
+    assert!(message.contains("window 1"), "{message}");
 }
 
 /// Resume a completed session and record one more segment into it (R6d).
