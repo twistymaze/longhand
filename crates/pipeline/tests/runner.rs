@@ -5030,6 +5030,30 @@ async fn a_saved_session_renamed_has_one_folder_under_the_new_name() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_title_edit_of_a_layout_one_note_writes_layout_two_with_the_note_id() {
+    // Covers R7: a note converts on its next normal save.
+    let r = rig().await;
+    let old = saved_session(&r, None).await;
+    let path = old.join(session_core::note_record::NOTE_RECORD_FILE);
+    let layout_two = std::fs::read_to_string(&path).unwrap();
+    let layout_one = layout_two
+        .replace("\"layout\": 2", "\"layout\": 1")
+        .replace("\"note_id\"", "\"session_id\"");
+    assert_ne!(layout_one, layout_two);
+    std::fs::write(&path, &layout_one).unwrap();
+
+    r.runner.rename_session("s", "Budget review").unwrap();
+    let new = r.dest.join(name_for(Some("Budget review")));
+    let written: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(new.join(session_core::note_record::NOTE_RECORD_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(written["layout"], 2);
+    assert_eq!(written["note_id"], "s");
+    assert!(written.get("session_id").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rename_during_processing_changes_the_title_at_once_and_the_folder_after_done() {
     // Covers AE1.
     let r = rig().await;
