@@ -81,7 +81,7 @@ struct Pending<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
     speaker_count: Option<SpeakerCount>,
@@ -98,7 +98,7 @@ pub fn run(
         let key = checkpoint::segment_key(segment.index);
         let file = analysis_path(&session_dir.join(proc_file(&segment.audio_file)));
         let checkpointed =
-            checkpoint::get::<AnalyzedSegment>(store, session_id, Stage::Diarize, &key)?.is_some()
+            checkpoint::get::<AnalyzedSegment>(store, note_id, Stage::Diarize, &key)?.is_some()
                 && file.exists();
         if checkpointed {
             match read_analysis(&file) {
@@ -108,7 +108,7 @@ pub fn run(
                     continue;
                 }
                 Err(e) => log::warn!(
-                    "the speaker analysis of segment {} of {session_id} does not read: {e}; \
+                    "the speaker analysis of segment {} of {note_id} does not read: {e}; \
                      analysing it again",
                     segment.index
                 ),
@@ -116,9 +116,9 @@ pub fn run(
         }
         // Features saved during recording need no new analysis. When they
         // do not read, the segment is analysed again from its audio.
-        let indexed = crate::live::features::saved(store, session_id, segment.index)?;
+        let indexed = crate::live::features::saved(store, note_id, segment.index)?;
         let live = if indexed {
-            crate::live::features::restore(store, session_id, session_dir, segment.index)?
+            crate::live::features::restore(store, note_id, session_dir, segment.index)?
         } else {
             None
         };
@@ -156,7 +156,7 @@ pub fn run(
             None if indexed => None,
             None => crate::live::features::complete(
                 store,
-                session_id,
+                note_id,
                 session_dir,
                 segment,
                 analyzer,
@@ -168,7 +168,7 @@ pub fn run(
             write_analysis(&file, &analysis)?;
             checkpoint::put(
                 store,
-                session_id,
+                note_id,
                 Stage::Diarize,
                 &key,
                 &AnalyzedSegment {
@@ -219,7 +219,7 @@ pub fn run(
         write_analysis(&file, &analysis)?;
         checkpoint::put(
             store,
-            session_id,
+            note_id,
             Stage::Diarize,
             &key,
             &AnalyzedSegment {
@@ -230,7 +230,7 @@ pub fn run(
         )?;
         speakers.finished(units);
         log::info!(
-            "analysed segment {} of {session_id}: {} windows, {} embeddings",
+            "analysed segment {} of {note_id}: {} windows, {} embeddings",
             segment.index,
             analysis.activities.len(),
             analysis.embeddings.len()
@@ -250,25 +250,25 @@ pub fn run(
     let turns = smooth(&per_segment);
     let found: std::collections::BTreeSet<u32> = turns.iter().map(|t| t.speaker).collect();
     log::info!(
-        "diarized {session_id}: {} turns, {} speakers",
+        "diarized {note_id}: {} turns, {} speakers",
         turns.len(),
         found.len()
     );
     // A retry after a failure must not keep the failure's marker.
-    lock_clear_failure(store, session_id)?;
-    checkpoint::put(store, session_id, Stage::Diarize, TURNS, &turns)?;
-    checkpoint::mark_complete(store, session_id, Stage::Diarize, segments.len())?;
+    lock_clear_failure(store, note_id)?;
+    checkpoint::put(store, note_id, Stage::Diarize, TURNS, &turns)?;
+    checkpoint::mark_complete(store, note_id, Stage::Diarize, segments.len())?;
     Ok(())
 }
 
-fn lock_clear_failure(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
-    let rows = checkpoint::all(store, session_id, Stage::Diarize)?;
+fn lock_clear_failure(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
+    let rows = checkpoint::all(store, note_id, Stage::Diarize)?;
     if rows.iter().any(|(k, _)| k == FAILED) {
         let kept: Vec<_> = rows.into_iter().filter(|(k, _)| k != FAILED).collect();
         let guard = crate::lock(store);
-        guard.clear_checkpoints(session_id, Stage::Diarize)?;
+        guard.clear_checkpoints(note_id, Stage::Diarize)?;
         for (k, v) in kept {
-            guard.put_checkpoint(session_id, Stage::Diarize, &k, &v)?;
+            guard.put_checkpoint(note_id, Stage::Diarize, &k, &v)?;
         }
     }
     Ok(())
@@ -278,28 +278,28 @@ fn lock_clear_failure(store: &SharedStore, session_id: &str) -> Result<(), Stage
 /// speakers instead of failing the session (R20a).
 pub fn record_failure(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     segments: usize,
     message: &str,
 ) -> Result<(), StageError> {
     checkpoint::put(
         store,
-        session_id,
+        note_id,
         Stage::Diarize,
         FAILED,
         &DiarizeFailure {
             message: message.to_string(),
         },
     )?;
-    checkpoint::mark_complete(store, session_id, Stage::Diarize, segments)
+    checkpoint::mark_complete(store, note_id, Stage::Diarize, segments)
 }
 
-pub fn speakers(store: &SharedStore, session_id: &str) -> Result<Speakers, StageError> {
-    if checkpoint::get::<DiarizeFailure>(store, session_id, Stage::Diarize, FAILED)?.is_some() {
+pub fn speakers(store: &SharedStore, note_id: &str) -> Result<Speakers, StageError> {
+    if checkpoint::get::<DiarizeFailure>(store, note_id, Stage::Diarize, FAILED)?.is_some() {
         return Ok(Speakers::Unavailable);
     }
     Ok(
-        match checkpoint::get::<Vec<Turn>>(store, session_id, Stage::Diarize, TURNS)? {
+        match checkpoint::get::<Vec<Turn>>(store, note_id, Stage::Diarize, TURNS)? {
             Some(turns) => Speakers::Turns(turns),
             None => Speakers::Unavailable,
         },

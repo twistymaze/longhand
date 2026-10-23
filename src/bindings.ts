@@ -840,9 +840,9 @@ async continueRecording() : Promise<Result<null, string>> {
  * Refused with the reason that the note page shows (R12, R21, R23) while
  * another computer uses the note or did not finish its recording.
  */
-async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
+async resumeRecording(noteId: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("resume_recording", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("resume_recording", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -856,9 +856,9 @@ async resumeRecording(sessionId: string) : Promise<Result<string, string>> {
  * unavailable, or it waits for a sync. A note with audio uses
  * [`resume_recording`].
  */
-async recordNote(sessionId: string) : Promise<Result<null, string>> {
+async recordNote(noteId: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("record_note", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("record_note", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -874,12 +874,12 @@ async recordingStatus() : Promise<Result<RecordingStatus, string>> {
 },
 /**
  * Change the microphone of one note from the recording page (R2). With no
- * `session_id`, the next note uses it. `None` is "System default". Settings
+ * `note_id`, the next note uses it. `None` is "System default". Settings
  * does not change. Returns the status after the change.
  */
-async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice | null) : Promise<Result<RecordingStatus, string>> {
+async setNoteMicrophone(noteId: string | null, microphone: MicrophoneChoice | null) : Promise<Result<RecordingStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_microphone", { sessionId, microphone }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_microphone", { noteId, microphone }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -891,9 +891,9 @@ async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice |
  * is "not asked" starts the permission request (R15). Returns the status
  * after the change.
  */
-async setNoteApps(sessionId: string, apps: ListedApp[]) : Promise<Result<RecordingStatus, string>> {
+async setNoteApps(noteId: string, apps: ListedApp[]) : Promise<Result<RecordingStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_apps", { sessionId, apps }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_apps", { noteId, apps }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -959,9 +959,9 @@ async playAlertSound() : Promise<Result<null, string>> {
  * Summarize a saved session again, replacing its `summary.md` (R19,
  * AE17). Returns the summary's path.
  */
-async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
+async regenerateSummary(noteId: string) : Promise<Result<string, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("regenerate_summary", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("regenerate_summary", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -972,9 +972,9 @@ async regenerateSummary(sessionId: string) : Promise<Result<string, string>> {
  * settings now (R7, KTD2). This is read-only. The dialog opens only when
  * this gives the model of the run.
  */
-async checkTranscribeAgain(sessionId: string) : Promise<Result<TranscribeAgainCheck, TranscribeAgainRefusal>> {
+async checkTranscribeAgain(noteId: string) : Promise<Result<TranscribeAgainCheck, TranscribeAgainRefusal>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("check_transcribe_again", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("check_transcribe_again", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -987,9 +987,9 @@ async checkTranscribeAgain(sessionId: string) : Promise<Result<TranscribeAgainCh
  * its transcript and summary change when it saves. The row follows a
  * folder that can be synced, so this runs off the main thread.
  */
-async transcribeAgain(sessionId: string, modelId: string) : Promise<Result<null, TranscribeAgainRefusal>> {
+async transcribeAgain(noteId: string, modelId: string) : Promise<Result<null, TranscribeAgainRefusal>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("transcribe_again", { sessionId, modelId }) };
+    return { status: "ok", data: await TAURI_INVOKE("transcribe_again", { noteId, modelId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1000,9 +1000,9 @@ async transcribeAgain(sessionId: string, modelId: string) : Promise<Result<null,
  * checkpoints. With `start_over`, the run starts again from the recorded
  * audio (`retry_starts_over` of the note detail).
  */
-async retrySession(sessionId: string, startOver: boolean) : Promise<Result<null, string>> {
+async retrySession(noteId: string, startOver: boolean) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("retry_session", { sessionId, startOver }) };
+    return { status: "ok", data: await TAURI_INVOKE("retry_session", { noteId, startOver }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1012,9 +1012,9 @@ async retrySession(sessionId: string, startOver: boolean) : Promise<Result<null,
  * Try a blocked session's secret store again. Reading a locked keychain
  * item is what asks macOS to unlock it (R20b).
  */
-async unblockSession(sessionId: string) : Promise<Result<null, string>> {
+async unblockSession(noteId: string) : Promise<Result<null, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("unblock_session", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("unblock_session", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1059,9 +1059,9 @@ async convertOldNotes() : Promise<Result<null, string>> {
     else return { status: "error", error: e  as any };
 }
 },
-async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> {
+async sessionDetail(noteId: string) : Promise<Result<SessionDetail, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("session_detail", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("session_detail", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1071,9 +1071,9 @@ async sessionDetail(sessionId: string) : Promise<Result<SessionDetail, string>> 
  * A session's notes document, editable whatever its state (R20), with the
  * fingerprint that [`save_session_notes`] checks.
  */
-async loadSessionNotes(sessionId: string) : Promise<Result<LoadedNotes, string>> {
+async loadSessionNotes(noteId: string) : Promise<Result<LoadedNotes, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("load_session_notes", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("load_session_notes", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1088,9 +1088,9 @@ async loadSessionNotes(sessionId: string) : Promise<Result<LoadedNotes, string>>
  * fingerprint that [`load_session_notes`] gave for the document that the
  * editor changed; `None` skips the check.
  */
-async saveSessionNotes(sessionId: string, markdown: string, loadedFingerprint: string | null) : Promise<Result<NotesSaveResult, string>> {
+async saveSessionNotes(noteId: string, markdown: string, loadedFingerprint: string | null) : Promise<Result<NotesSaveResult, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("save_session_notes", { sessionId, markdown, loadedFingerprint }) };
+    return { status: "ok", data: await TAURI_INVOKE("save_session_notes", { noteId, markdown, loadedFingerprint }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1102,9 +1102,9 @@ async saveSessionNotes(sessionId: string, markdown: string, loadedFingerprint: s
  * the new name now; any other session's folder takes it later. The rename
  * runs off the main thread, since it can reach a synced folder.
  */
-async renameSession(sessionId: string, title: string) : Promise<Result<FolderRenameResult, string>> {
+async renameSession(noteId: string, title: string) : Promise<Result<FolderRenameResult, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("rename_session", { sessionId, title }) };
+    return { status: "ok", data: await TAURI_INVOKE("rename_session", { noteId, title }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1117,9 +1117,9 @@ async renameSession(sessionId: string, title: string) : Promise<Result<FolderRen
  * computer works on moves now, and any other folder moves later. The
  * change runs off the main thread, since it can reach a synced folder.
  */
-async setNoteType(sessionId: string, noteType: string | null) : Promise<Result<TypeChangeResult, string>> {
+async setNoteType(noteId: string, noteType: string | null) : Promise<Result<TypeChangeResult, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_type", { sessionId, noteType }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_type", { noteId, noteType }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1133,9 +1133,9 @@ async setNoteType(sessionId: string, noteType: string | null) : Promise<Result<T
  * edit. The edit runs off the main thread, since it can reach a synced
  * folder.
  */
-async setNoteTags(sessionId: string, add: string[], remove: string[]) : Promise<Result<string[], string>> {
+async setNoteTags(noteId: string, add: string[], remove: string[]) : Promise<Result<string[], string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_tags", { sessionId, add, remove }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_tags", { noteId, add, remove }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1156,9 +1156,9 @@ async listTags() : Promise<Result<TagEntry[], string>> {
 /**
  * The saved transcript and summary, read from the session's folder.
  */
-async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, string>> {
+async sessionDocument(noteId: string) : Promise<Result<SessionDocument, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("session_document", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("session_document", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1169,9 +1169,9 @@ async sessionDocument(sessionId: string) : Promise<Result<SessionDocument, strin
  * the open part (KTD10). The Transcript tab reads it when it opens during
  * recording, and then follows the live events.
  */
-async liveTranscript(sessionId: string) : Promise<Result<LiveTranscript, string>> {
+async liveTranscript(noteId: string) : Promise<Result<LiveTranscript, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("live_transcript", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("live_transcript", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1181,9 +1181,9 @@ async liveTranscript(sessionId: string) : Promise<Result<LiveTranscript, string>
  * Move the session's folder to the Trash and remove the session from
  * Longhand (R8). Refused while it records or is processed.
  */
-async deleteSession(sessionId: string) : Promise<Result<null, DeleteSessionError>> {
+async deleteSession(noteId: string) : Promise<Result<null, DeleteSessionError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_session", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_session", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1193,37 +1193,37 @@ async deleteSession(sessionId: string) : Promise<Result<null, DeleteSessionError
  * Delete the session's folder permanently, for a folder that cannot go
  * to the Trash (R33).
  */
-async deleteSessionPermanently(sessionId: string) : Promise<Result<null, DeleteSessionError>> {
+async deleteSessionPermanently(noteId: string) : Promise<Result<null, DeleteSessionError>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("delete_session_permanently", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("delete_session_permanently", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * The user left the note `session_id` (R18): the main window shows
+ * The user left the note `note_id` (R18): the main window shows
  * another view or closes, or the user starts a new note. An empty note
  * that this computer started goes, with its home folder, when every check
  * passes. The frontend calls it when the shown note changes and when the
  * main window hides or closes. The note stays when [`ShownNote`] names it:
  * the user opened the note again before the removal ended.
  */
-async leaveNote(sessionId: string) : Promise<Result<LeaveOutcome, string>> {
+async leaveNote(noteId: string) : Promise<Result<LeaveOutcome, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("leave_note", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("leave_note", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
 },
 /**
- * The main window shows the note `session_id`, or no note (KTD7). The
+ * The main window shows the note `note_id`, or no note (KTD7). The
  * frontend calls it on each view change, and with `None` when the main
  * window hides or closes.
  */
-async setShownNote(sessionId: string | null) : Promise<void> {
-    await TAURI_INVOKE("set_shown_note", { sessionId });
+async setShownNote(noteId: string | null) : Promise<void> {
+    await TAURI_INVOKE("set_shown_note", { noteId });
 },
 /**
  * Remove the audio of a saved note now, whether the setting of audio
@@ -1231,9 +1231,9 @@ async setShownNote(sessionId: string | null) : Promise<void> {
  * Refused while the note is busy, while a Move runs or is paused, or while
  * its storage folder is unavailable.
  */
-async removeAudio(sessionId: string) : Promise<Result<null, RemoveAudioFailure>> {
+async removeAudio(noteId: string) : Promise<Result<null, RemoveAudioFailure>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("remove_audio", { sessionId }) };
+    return { status: "ok", data: await TAURI_INVOKE("remove_audio", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1325,11 +1325,11 @@ async logFromWebview(level: WebviewLogLevel, message: string) : Promise<void> {
 },
 /**
  * The × on the pill: hide it until the note stops (R12). The note does not
- * change. `session_id` is the note that the pill showed when the user
+ * change. `note_id` is the note that the pill showed when the user
  * clicked, so a click does not hide the pill of a later note.
  */
-async widgetHide(sessionId: string) : Promise<void> {
-    await TAURI_INVOKE("widget_hide", { sessionId });
+async widgetHide(noteId: string) : Promise<void> {
+    await TAURI_INVOKE("widget_hide", { noteId });
 },
 /**
  * A click on the pill outside its controls: show the main window with the
@@ -1491,12 +1491,12 @@ locally_verified: boolean }
  * Capture stopped on its own: the device went away or the disk filled.
  * Interruption handling (U14, U15) consumes it.
  */
-export type CaptureEnded = { session_id: string; reason: string }
+export type CaptureEnded = { note_id: string; reason: string }
 /**
  * A quarter-second of capture: level and position (R9). Ticks follow frame
  * arrival, so their absence is what a stalled input looks like.
  */
-export type CaptureTick = { session_id: string; 
+export type CaptureTick = { note_id: string; 
 /**
  * The microphone's peak, 0.0 to 1.0.
  */
@@ -1734,7 +1734,7 @@ offset_ms: number; start_ms: number; end_ms: number; text: string;
 /**
  * In milliseconds from the start of the segment.
  */
-words: LiveWord[] }) & { session_id: string }
+words: LiveWord[] }) & { note_id: string }
 /**
  * One saved part of the live transcript.
  */
@@ -1750,7 +1750,7 @@ words: LiveWord[] }
 /**
  * Durable text or speaker revisions on the canonical 16 kHz timeline.
  */
-export type LiveRecognitionEvent = { session_id: string; phase: LiveRecognitionPhase; key: string; generation: string; epoch: number; revision: number; rows: LiveRecognitionRow[] }
+export type LiveRecognitionEvent = { note_id: string; phase: LiveRecognitionPhase; key: string; generation: string; epoch: number; revision: number; rows: LiveRecognitionRow[] }
 export type LiveRecognitionPhase = "patch" | "interim_begin" | "interim_batch" | "interim_end" | "snapshot_begin" | "snapshot_batch" | "snapshot_end" | "failed"
 export type LiveRecognitionRow = { start_sample: number; end_sample: number; text: string | null; speaker: string | null; text_final: boolean; speaker_final: boolean }
 export type LiveState = 
@@ -1792,7 +1792,7 @@ state: LiveState | null }
  * (KTD3). The words before `word_start` did not change. A new part starts
  * at index 0.
  */
-export type LiveTranscriptEvent = { session_id: string; segment: number; part: number; 
+export type LiveTranscriptEvent = { note_id: string; segment: number; part: number; 
 /**
  * The start of the segment, in milliseconds from the start of the note.
  */
@@ -1800,7 +1800,7 @@ offset_ms: number; committed: string; tentative: string; word_start: number; wor
 /**
  * What the live worker does now, for the lines of the live view (U8).
  */
-export type LiveTranscriptStatus = { session_id: string; segment: number; state: LiveState }
+export type LiveTranscriptStatus = { note_id: string; segment: number; state: LiveState }
 /**
  * One timed word, in milliseconds from the start of its segment.
  */
@@ -2024,12 +2024,12 @@ export type NotesSaveResult =
 { kind: "conflict"; draft: string } | 
 /**
  * Another computer removed the folder of this note with no audio
- * (R24). The text is in the new note `session_id`, with no audio, and
+ * (R24). The text is in the new note `note_id`, with no audio, and
  * the old note is gone from Longhand. The page tells the user and
  * opens the new note. `fingerprint` is the fingerprint of the saved
  * document.
  */
-{ kind: "new_note"; session_id: string; fingerprint: string }
+{ kind: "new_note"; note_id: string; fingerprint: string }
 /**
  * What a change of storage folder does with the notes in the old folder
  * (R4).
@@ -2120,7 +2120,7 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } |
 /**
  * What processing is doing, for the surface.
  */
-export type ProcessingUpdate = { session_id: string; update: ProcessingStep }
+export type ProcessingUpdate = { note_id: string; update: ProcessingStep }
 /**
  * One AI provider. Each provider has a default address, except Custom,
  * whose address the user enters. The serialized name of each provider is
@@ -2311,7 +2311,7 @@ export type RecordingChanged = {
 /**
  * The session now recording; `None` once nothing is.
  */
-session_id: string | null; 
+note_id: string | null; 
 /**
  * A segment opened for the session: a start, or a resume after a
  * stop, a pause or an interruption. The main window then shows the
@@ -2322,7 +2322,7 @@ export type RecordingStatus = {
 /**
  * The open session: recording, or interrupted and resumable.
  */
-session_id: string | null; state: string | null; 
+note_id: string | null; state: string | null; 
 /**
  * A note is open: a segment records, a restart reopens the
  * microphone, or the note is paused.
@@ -2805,7 +2805,7 @@ export type ShortcutStatuses = { recording: ShortcutStatus; show_window: Shortcu
 /**
  * The main window must show the page of this session (R3).
  */
-export type ShowSession = { session_id: string }
+export type ShowSession = { note_id: string }
 export type SpeakerCount = { kind: "exact"; count: number } | { kind: "range"; min: number; max: number }
 /**
  * An optional bound on how many people are speaking (R36).
@@ -2858,19 +2858,19 @@ export type StopOutcome =
 /**
  * The note kept audio and waits for processing.
  */
-{ kind: "recorded"; session_id: string } | 
+{ kind: "recorded"; note_id: string } | 
 /**
  * No segment was kept: every segment was under a second. The note
  * stays as a note with no audio, because it existed before this
  * recording or its notes have text.
  */
-{ kind: "notes_only"; session_id: string } | 
+{ kind: "notes_only"; note_id: string } | 
 /**
  * No segment was kept, the note started with this recording, and its
  * notes have no text. The note is a note with no audio now; the check
  * of empty notes removes it when the user leaves it (U6).
  */
-{ kind: "empty_note"; session_id: string } | 
+{ kind: "empty_note"; note_id: string } | 
 /**
  * The Stop cancelled the microphone open of a new note. No note was
  * made, and no note stopped.
@@ -2881,7 +2881,7 @@ export type StopOutcome =
  * Interrupted with its audio, and a later Stop or launch tries again.
  * The failed-capture alert tells the user: the page shows nothing.
  */
-{ kind: "interrupted"; session_id: string }
+{ kind: "interrupted"; note_id: string }
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.

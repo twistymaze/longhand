@@ -8,12 +8,12 @@ import { commands, type TranscribeAgainCheck, type TranscribeAgainRefusal } from
 import { ConfirmDialog } from "../lib/ConfirmDialog";
 
 export function useTranscribeAgain({
-  sessionId,
+  noteId,
   available,
   onQueued,
   onFailed,
 }: {
-  sessionId: string;
+  noteId: string;
   /// The note is saved, its folder can be read, no part of it waits for
   /// sync, and no summary is being made. When this becomes false, the dialog closes (KTD7).
   available: boolean;
@@ -33,12 +33,12 @@ export function useTranscribeAgain({
     asked.current += 1;
     setCheck(null);
   }, [available]);
-  useEffect(() => () => setCheck(null), [sessionId]);
+  useEffect(() => () => setCheck(null), [noteId]);
 
   const ask = async () => {
     const id = (asked.current += 1);
     try {
-      const result = await commands.checkTranscribeAgain(sessionId);
+      const result = await commands.checkTranscribeAgain(noteId);
       if (id !== asked.current) return;
       if (result.status === "ok") setCheck(result.data);
       else onFailed(result.error);
@@ -52,7 +52,7 @@ export function useTranscribeAgain({
     sending.current = true;
     setBusy(true);
     try {
-      const result = await commands.transcribeAgain(sessionId, check.model_id);
+      const result = await commands.transcribeAgain(noteId, check.model_id);
       setCheck(null);
       if (result.status === "ok") onQueued();
       else onFailed(result.error);

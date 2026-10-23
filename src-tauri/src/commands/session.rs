@@ -847,10 +847,10 @@ pub async fn session_detail(
     app: AppHandle,
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<SessionDetail, String> {
     let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
-    blocking(move || detail_of(app, capture, processing, session_id)).await
+    blocking(move || detail_of(app, capture, processing, note_id)).await
 }
 
 /// The body of [`session_detail`]. It runs on a blocking thread.
@@ -858,7 +858,7 @@ fn detail_of(
     app: AppHandle,
     capture: Arc<CaptureManager>,
     processing: Arc<ProcessingManager>,
-    session_id: String,
+    note_id: String,
 ) -> Result<SessionDetail, String> {
     let shared = capture.shared_store();
     let e = |e: pipeline::StageError| e.to_string();
@@ -867,22 +867,22 @@ fn detail_of(
     let (record, segments, saving, audio, again) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
-            .session(&session_id)
+            .session(&note_id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no note {session_id}"))?;
-        let segments = store.segments(&session_id).map_err(|e| e.to_string())?;
+            .ok_or_else(|| format!("no note {note_id}"))?;
+        let segments = store.segments(&note_id).map_err(|e| e.to_string())?;
         // A completed session has finished saving; only one still saving
         // refuses a resume.
         let saving = record.state != SessionState::Saved
-            && pipeline::save::begun(&store, &session_id).map_err(e)?;
-        let audio = pipeline::save::audio_state(&store, &session_id).map_err(e)?;
+            && pipeline::save::begun(&store, &note_id).map_err(e)?;
+        let audio = pipeline::save::audio_state(&store, &note_id).map_err(e)?;
         let again = store
-            .transcribe_again_marks(&session_id)
+            .transcribe_again_marks(&note_id)
             .map_err(|e| e.to_string())?;
         (record, segments, saving, audio, again)
     };
     let audio_intact = audio == pipeline::save::AudioState::Present;
-    let snapshot = pipeline::progress::snapshot(&shared, &session_id).map_err(e)?;
+    let snapshot = pipeline::progress::snapshot(&shared, &note_id).map_err(e)?;
 
     let resumable = !saving
         && record
@@ -897,18 +897,18 @@ fn detail_of(
     let (failed_stage, message) = match &record.state {
         SessionState::ProcessingFailed { stage, .. } => (
             Some(*stage),
-            pipeline::progress::error(&shared, &session_id, *stage).map_err(e)?,
+            pipeline::progress::error(&shared, &note_id, *stage).map_err(e)?,
         ),
         SessionState::Blocked { .. } => (
             None,
-            pipeline::progress::error(&shared, &session_id, Stage::Summarize).map_err(e)?,
+            pipeline::progress::error(&shared, &note_id, Stage::Summarize).map_err(e)?,
         ),
         SessionState::AwaitingDestination { problem, .. } => (None, Some(problem.clone())),
         _ => (None, None),
     };
     let summary_problem: Option<String> = pipeline::checkpoint::get(
         &shared,
-        &session_id,
+        &note_id,
         Stage::Summarize,
         pipeline::save::SUMMARY_FAILED,
     )
@@ -917,7 +917,7 @@ fn detail_of(
     let s = settings::get_settings(&app);
     let endpoint = EndpointView::of(&s);
 
-    let working = capture.working_root().join(&session_id);
+    let working = capture.working_root().join(&note_id);
     let (audio_kept, transcript_kept) = match &record.home_path {
         Some(path) => (
             has_files(&Path::new(path).join("audio")),
@@ -932,7 +932,7 @@ fn detail_of(
     };
 
     let status = processing.library_status();
-    let note = status.note(&session_id);
+    let note = status.note(&note_id);
     let record_button = record_button(&record, !segments.is_empty(), saving, audio, status);
     Ok(SessionDetail {
         entry: entry(&record, &segments, snapshot.current, status, &waits),
@@ -944,7 +944,7 @@ fn detail_of(
         failed_stage: failed_stage.map(stage_name),
         message,
         summary_problem,
-        low_coverage: pipeline::verify::low_coverage(&shared, &session_id).map_err(e)?,
+        low_coverage: pipeline::verify::low_coverage(&shared, &note_id).map_err(e)?,
         resumable,
         record: record_button,
         home_path: record.home_path.clone(),
@@ -955,13 +955,13 @@ fn detail_of(
         asr_model: record.asr_model.clone(),
         live_transcript: record.live_transcript == Some(true),
         transcribe_again: again.model.is_some(),
-        regenerating: processing.is_regenerating(&session_id),
+        regenerating: processing.is_regenerating(&note_id),
         transcribe_again_error: again.error,
-        retry_starts_over: pipeline::runner::retry_starts_over(&shared, &session_id).map_err(e)?,
+        retry_starts_over: pipeline::runner::retry_starts_over(&shared, &note_id).map_err(e)?,
         summary_not_updated: again.summary_error,
         waiting: waiting_parts(&note.waiting),
         conflict_files: file_names(&note.other_versions),
-        not_saved_yet: processing.early_homes().problem(&session_id),
+        not_saved_yet: processing.early_homes().problem(&note_id),
     })
 }
 
@@ -980,13 +980,11 @@ pub struct LoadedNotes {
 #[specta::specta]
 pub async fn load_session_notes(
     capture: State<'_, Arc<CaptureManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<LoadedNotes, String> {
     let capture = Arc::clone(&capture);
     blocking(move || {
-        let markdown = capture
-            .session_notes(&session_id)
-            .map_err(|e| e.to_string())?;
+        let markdown = capture.session_notes(&note_id).map_err(|e| e.to_string())?;
         Ok(LoadedNotes {
             fingerprint: pipeline::save::notes_fingerprint(&markdown),
             markdown,
@@ -1008,12 +1006,12 @@ pub enum NotesSaveResult {
     /// beside it. The editor loads the notes again.
     Conflict { draft: String },
     /// Another computer removed the folder of this note with no audio
-    /// (R24). The text is in the new note `session_id`, with no audio, and
+    /// (R24). The text is in the new note `note_id`, with no audio, and
     /// the old note is gone from Longhand. The page tells the user and
     /// opens the new note. `fingerprint` is the fingerprint of the saved
     /// document.
     NewNote {
-        session_id: String,
+        note_id: String,
         fingerprint: String,
     },
 }
@@ -1030,7 +1028,7 @@ pub enum NotesSaveResult {
 pub async fn save_session_notes(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
     markdown: String,
     loaded_fingerprint: Option<String>,
 ) -> Result<NotesSaveResult, String> {
@@ -1040,7 +1038,7 @@ pub async fn save_session_notes(
         save_notes_keeping_text(
             &capture,
             &processing,
-            &session_id,
+            &note_id,
             &markdown,
             loaded_fingerprint.as_deref(),
         )
@@ -1054,7 +1052,7 @@ pub async fn save_session_notes(
 fn save_notes_keeping_text(
     capture: &CaptureManager,
     processing: &Arc<ProcessingManager>,
-    session_id: &str,
+    note_id: &str,
     markdown: &str,
     loaded: Option<&str>,
 ) -> Result<NotesSaveResult, String> {
@@ -1062,16 +1060,16 @@ fn save_notes_keeping_text(
     let store = capture.shared_store();
     let early_homes = processing.early_homes();
     keep_notes_text(
-        session_id,
+        note_id,
         pipeline::save::notes_fingerprint(markdown),
         || {
             capture
-                .save_session_notes(session_id, markdown, loaded, &claims)
+                .save_session_notes(note_id, markdown, loaded, &claims)
                 .map_err(|e| e.to_string())
         },
         |new_id| {
             let now = chrono::Local::now().fixed_offset();
-            pipeline::save::rescue_notes(&store, session_id, new_id, now).map_err(|e| e.to_string())
+            pipeline::save::rescue_notes(&store, note_id, new_id, now).map_err(|e| e.to_string())
         },
         |step| match step {
             EarlyHomeStep::Cancel(id) => early_homes.cancel(id),
@@ -1089,13 +1087,13 @@ enum EarlyHomeStep<'a> {
     Start(&'a str),
 }
 
-/// The steps of [`save_notes_keeping_text`] for the note `session_id`,
+/// The steps of [`save_notes_keeping_text`] for the note `note_id`,
 /// with the notes save `save`, the rescue `rescue` of the notes into the
 /// new note that it gets, and the steps `early_home` on the early write
 /// jobs. `fingerprint` is the fingerprint of the document that the editor
 /// sends.
 fn keep_notes_text(
-    session_id: &str,
+    note_id: &str,
     fingerprint: String,
     mut save: impl FnMut() -> Result<pipeline::save::NotesSave, String>,
     rescue: impl FnOnce(&str) -> Result<pipeline::save::NotesRescue, String>,
@@ -1106,12 +1104,12 @@ fn keep_notes_text(
     if saved == NotesSave::FolderGone {
         // The early write job must not write into the folder of the note
         // while the rescue reads the storage folder.
-        early_home(EarlyHomeStep::Cancel(session_id));
+        early_home(EarlyHomeStep::Cancel(note_id));
         let new_id = uuid::Uuid::new_v4().to_string();
         let rescued = rescue(&new_id);
         if !matches!(rescued, Ok(NotesRescue::NewNote)) {
             // The note stays: its job syncs the folder again when it can.
-            early_home(EarlyHomeStep::Start(session_id));
+            early_home(EarlyHomeStep::Start(note_id));
         }
         match rescued? {
             NotesRescue::Moved => saved = save()?,
@@ -1120,7 +1118,7 @@ fn keep_notes_text(
             NotesRescue::NewNote => {
                 early_home(EarlyHomeStep::Start(&new_id));
                 return Ok(NotesSaveResult::NewNote {
-                    session_id: new_id,
+                    note_id: new_id,
                     fingerprint,
                 });
             }
@@ -1172,13 +1170,13 @@ impl From<FolderRename> for FolderRenameResult {
 #[specta::specta]
 pub async fn rename_session(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
     title: String,
 ) -> Result<FolderRenameResult, String> {
     let processing = Arc::clone(&processing);
     tauri::async_runtime::spawn_blocking(move || {
         processing
-            .rename_session(&session_id, &title)
+            .rename_session(&note_id, &title)
             .map(FolderRenameResult::from)
     })
     .await
@@ -1226,7 +1224,7 @@ pub async fn set_note_type(
     app: AppHandle,
     processing: State<'_, Arc<ProcessingManager>>,
     shared: State<'_, Arc<crate::managers::shared::SharedSettingsManager>>,
-    session_id: String,
+    note_id: String,
     note_type: Option<String>,
 ) -> Result<TypeChangeResult, String> {
     let to = match note_type {
@@ -1242,7 +1240,7 @@ pub async fn set_note_type(
     let processing = Arc::clone(&processing);
     tauri::async_runtime::spawn_blocking(move || {
         processing
-            .change_note_type(&session_id, to.as_deref())
+            .change_note_type(&note_id, to.as_deref())
             .map(TypeChangeResult::from)
     })
     .await
@@ -1259,7 +1257,7 @@ pub async fn set_note_type(
 #[specta::specta]
 pub async fn set_note_tags(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
     add: Vec<String>,
     remove: Vec<String>,
 ) -> Result<Vec<String>, String> {
@@ -1268,11 +1266,9 @@ pub async fn set_note_tags(
         .map(|tag| pipeline::tags::check_tag(tag))
         .collect::<Result<Vec<_>, _>>()?;
     let processing = Arc::clone(&processing);
-    tauri::async_runtime::spawn_blocking(move || {
-        processing.set_note_tags(&session_id, &add, &remove)
-    })
-    .await
-    .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || processing.set_note_tags(&note_id, &add, &remove))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// One tag of the tag list (R12, KTD10).
@@ -1323,10 +1319,10 @@ pub fn tag_entries(store: &pipeline::SharedStore) -> Result<Vec<TagEntry>, Strin
 pub async fn live_transcript(
     capture: State<'_, Arc<CaptureManager>>,
     live: State<'_, Arc<LiveManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<LiveTranscript, String> {
     let (store, live) = (capture.shared_store(), Arc::clone(&live));
-    blocking(move || live.transcript(&store, &session_id)).await
+    blocking(move || live.transcript(&store, &note_id)).await
 }
 
 /// The saved transcript and summary, read from the session's folder.
@@ -1334,14 +1330,14 @@ pub async fn live_transcript(
 #[specta::specta]
 pub async fn session_document(
     capture: State<'_, Arc<CaptureManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<SessionDocument, String> {
     let store = capture.shared_store();
     blocking(move || {
         let home = {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
             store
-                .session(&session_id)
+                .session(&note_id)
                 .map_err(|e| e.to_string())?
                 .and_then(|r| r.home_path)
                 .ok_or_else(|| "this note has not finished processing yet".to_string())?
@@ -1623,15 +1619,15 @@ fn in_use_elsewhere(
 async fn delete(
     capture: &CaptureManager,
     processing: &ProcessingManager,
-    session_id: String,
+    note_id: String,
     removal: Removal,
 ) -> Result<(), DeleteSessionError> {
     let store = capture.shared_store();
-    let working = capture.working_root().join(&session_id);
+    let working = capture.working_root().join(&note_id);
     let claims = processing.claims();
     let early_homes = Arc::clone(processing.early_homes());
     let in_use_by_scan =
-        remote_of(&store, processing.library_status(), &session_id) == Some(RemoteView::InUse);
+        remote_of(&store, processing.library_status(), &note_id) == Some(RemoteView::InUse);
     let own_runs = processing.own_runs().to_vec();
     let remove = match removal {
         Removal::Trash => move_to_trash,
@@ -1639,16 +1635,16 @@ async fn delete(
     };
     tauri::async_runtime::spawn_blocking(move || {
         let now = chrono::Local::now().fixed_offset();
-        if in_use_by_scan || in_use_elsewhere(&store, &own_runs, &session_id, now) {
+        if in_use_by_scan || in_use_elsewhere(&store, &own_runs, &note_id, now) {
             return Err(session_core::DeleteError::Busy {
                 state: IN_USE_REASON,
             });
         }
         // The early write job writes nothing more into the folder of the
         // note after this (KTD4).
-        early_homes.cancel(&session_id);
-        session_core::jobs::delete_session(&store, &session_id, &working, &claims, remove)
-            .inspect(|()| log::info!("deleted session {session_id} ({removal:?})"))
+        early_homes.cancel(&note_id);
+        session_core::jobs::delete_session(&store, &note_id, &working, &claims, remove)
+            .inspect(|()| log::info!("deleted session {note_id} ({removal:?})"))
     })
     .await
     .map_err(|e| DeleteSessionError::Failed {
@@ -1664,9 +1660,9 @@ async fn delete(
 pub async fn delete_session(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<(), DeleteSessionError> {
-    delete(&capture, &processing, session_id, Removal::Trash).await
+    delete(&capture, &processing, note_id, Removal::Trash).await
 }
 
 /// Delete the session's folder permanently, for a folder that cannot go
@@ -1676,9 +1672,9 @@ pub async fn delete_session(
 pub async fn delete_session_permanently(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<(), DeleteSessionError> {
-    delete(&capture, &processing, session_id, Removal::Permanent).await
+    delete(&capture, &processing, note_id, Removal::Permanent).await
 }
 
 /// What leaving a note did (R18).
@@ -1692,7 +1688,7 @@ pub enum LeaveOutcome {
     Kept,
 }
 
-/// The user left the note `session_id` (R18): the main window shows
+/// The user left the note `note_id` (R18): the main window shows
 /// another view or closes, or the user starts a new note. An empty note
 /// that this computer started goes, with its home folder, when every check
 /// passes. The frontend calls it when the shown note changes and when the
@@ -1704,13 +1700,13 @@ pub async fn leave_note(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
     shown: State<'_, ShownNote>,
-    session_id: String,
+    note_id: String,
 ) -> Result<LeaveOutcome, String> {
     let capture = Arc::clone(&capture);
     let processing = Arc::clone(&processing);
     let shown = shown.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        leave(&capture, &processing, &session_id, &|id| shown.shows(id))
+        leave(&capture, &processing, &note_id, &|id| shown.shows(id))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1723,33 +1719,31 @@ pub async fn leave_note(
 pub fn leave_note_now(
     capture: &CaptureManager,
     processing: &ProcessingManager,
-    session_id: &str,
+    note_id: &str,
 ) -> Result<LeaveOutcome, String> {
-    leave(capture, processing, session_id, &|_| false)
+    leave(capture, processing, note_id, &|_| false)
 }
 
-/// Leave the note `session_id`. The note stays while `shown(session_id)` is
+/// Leave the note `note_id`. The note stays while `shown(note_id)` is
 /// true.
 fn leave(
     capture: &CaptureManager,
     processing: &ProcessingManager,
-    session_id: &str,
+    note_id: &str,
     shown: &dyn Fn(&str) -> bool,
 ) -> Result<LeaveOutcome, String> {
-    Ok(
-        match processing.leave_note_unless_shown(session_id, shown)? {
-            pipeline::empty_note::Leave::Removed => {
-                // The working folder of a note with no audio is normally gone
-                // already.
-                let _ = std::fs::remove_dir_all(capture.session_dir(session_id));
-                LeaveOutcome::Removed
-            }
-            pipeline::empty_note::Leave::Kept(why) => {
-                log::debug!("the note {session_id} stays after the user left it: {why:?}");
-                LeaveOutcome::Kept
-            }
-        },
-    )
+    Ok(match processing.leave_note_unless_shown(note_id, shown)? {
+        pipeline::empty_note::Leave::Removed => {
+            // The working folder of a note with no audio is normally gone
+            // already.
+            let _ = std::fs::remove_dir_all(capture.session_dir(note_id));
+            LeaveOutcome::Removed
+        }
+        pipeline::empty_note::Leave::Kept(why) => {
+            log::debug!("the note {note_id} stays after the user left it: {why:?}");
+            LeaveOutcome::Kept
+        }
+    })
 }
 
 /// The note that the main window shows (KTD7). The main window keeps its
@@ -1776,13 +1770,13 @@ impl ShownNote {
     }
 }
 
-/// The main window shows the note `session_id`, or no note (KTD7). The
+/// The main window shows the note `note_id`, or no note (KTD7). The
 /// frontend calls it on each view change, and with `None` when the main
 /// window hides or closes.
 #[tauri::command]
 #[specta::specta]
-pub fn set_shown_note(shown: State<'_, ShownNote>, session_id: Option<String>) {
-    shown.set(session_id);
+pub fn set_shown_note(shown: State<'_, ShownNote>, note_id: Option<String>) {
+    shown.set(note_id);
 }
 
 /// Why Remove Audio did not complete (R13).
@@ -1874,18 +1868,18 @@ pub(crate) fn removal_folder_checks(
     Ok(())
 }
 
-/// Remove the audio of the note `session_id` with the checks of Remove
+/// Remove the audio of the note `note_id` with the checks of Remove
 /// Audio. The setting of audio removal has no effect here (R13). `sync`
 /// controls only the delete of `recognition.jsonl` (KTD8).
 fn run_removal(
     store: &pipeline::SharedStore,
     claims: &session_core::jobs::Claims,
-    session_id: &str,
+    note_id: &str,
     sync: pipeline::remove_audio::NoteSync,
 ) -> Result<(), RemoveAudioFailure> {
     use pipeline::remove_audio::RemoveAudioError;
     let removal =
-        pipeline::remove_audio::remove_audio(store, claims, session_id, removal_guard(), sync)
+        pipeline::remove_audio::remove_audio(store, claims, note_id, removal_guard(), sync)
             .map_err(|e| match e {
                 RemoveAudioError::Busy(reason) => RemoveAudioFailure::Refused {
                     message: removal_refusal(reason),
@@ -1898,12 +1892,12 @@ fn run_removal(
                 },
             })?;
     if removal.complete() {
-        log::info!("removed the audio of session {session_id}");
+        log::info!("removed the audio of session {note_id}");
         return Ok(());
     }
     for segment in &removal.segments {
         log::warn!(
-            "the audio {} of session {session_id} was not removed: {:?}",
+            "the audio {} of session {note_id} was not removed: {:?}",
             segment.audio_file,
             segment.outcome
         );
@@ -1922,13 +1916,13 @@ fn run_removal(
 pub async fn remove_audio(
     capture: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<(), RemoveAudioFailure> {
     let store = capture.shared_store();
     let home = {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         store
-            .session(&session_id)
+            .session(&note_id)
             .map_err(|e| RemoveAudioFailure::Failed {
                 message: e.to_string(),
             })?
@@ -1936,16 +1930,16 @@ pub async fn remove_audio(
     };
     if processing
         .library_status()
-        .storage_unavailable(&session_id, home.as_deref().map(Path::new))
+        .storage_unavailable(&note_id, home.as_deref().map(Path::new))
     {
         return Err(RemoveAudioFailure::Refused {
             message: FOLDER_UNAVAILABLE.to_string(),
         });
     }
-    let sync = crate::managers::audio_removal::note_sync(processing.library_status(), &session_id);
+    let sync = crate::managers::audio_removal::note_sync(processing.library_status(), &note_id);
     let claims = processing.claims();
     // A folder on a network volume can be slow.
-    tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &session_id, sync))
+    tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &note_id, sync))
         .await
         .map_err(|e| RemoveAudioFailure::Failed {
             message: e.to_string(),
@@ -3318,7 +3312,7 @@ mod notes_save_tests {
         assert_eq!(
             run.result,
             Ok(NotesSaveResult::NewNote {
-                session_id: new_id.clone(),
+                note_id: new_id.clone(),
                 fingerprint: "fp".into(),
             })
         );

@@ -58,19 +58,19 @@ pub struct Saved {
     pub copied: bool,
 }
 
-/// Whether saving has begun for `session_id` (a resume must refuse).
-pub fn begun(store: &Store, session_id: &str) -> Result<bool, StageError> {
+/// Whether saving has begun for `note_id` (a resume must refuse).
+pub fn begun(store: &Store, note_id: &str) -> Result<bool, StageError> {
     Ok(store
-        .checkpoints(session_id, Stage::Save)?
+        .checkpoints(note_id, Stage::Save)?
         .iter()
         .any(|(key, _)| key == STATE))
 }
 
 /// Whether this save has begun to replace the documents in the session's
 /// home folder.
-pub fn home_changed(store: &Store, session_id: &str) -> Result<bool, StageError> {
+pub fn home_changed(store: &Store, note_id: &str) -> Result<bool, StageError> {
     Ok(store
-        .checkpoints(session_id, Stage::Save)?
+        .checkpoints(note_id, Stage::Save)?
         .iter()
         .any(|(key, _)| key == HOME_CHANGED))
 }
@@ -92,60 +92,54 @@ pub fn recover_summary_publications(store: &SharedStore) -> Result<(), StageErro
     Ok(())
 }
 
-/// Finish or drop the summary publication of `session_id`, if it has one.
+/// Finish or drop the summary publication of `note_id`, if it has one.
 /// The staging and its row go when the publication ends. A staging with no
 /// record wrote nothing into the note folder. The caller holds the store
 /// lock.
-fn recover_summary_publication(store: &mut Store, session_id: &str) -> Result<(), StageError> {
-    let Some(value) = store.result_state(session_id, SUMMARY_PUBLICATION)? else {
+fn recover_summary_publication(store: &mut Store, note_id: &str) -> Result<(), StageError> {
+    let Some(value) = store.result_state(note_id, SUMMARY_PUBLICATION)? else {
         return Ok(());
     };
     let local: PathBuf = serde_json::from_value(value)?;
     if let Some(publication) = Publication::load(&local)? {
-        let home = run_home(store, session_id)?;
+        let home = run_home(store, note_id)?;
         // The caller holds the store lock already.
         match publication.publish(&home, &local, || ())? {
             Outcome::Committed => {
-                log::info!("finished the summary publication of {session_id}");
-                let segments = store.segments(session_id)?.len();
-                summary_published(store, session_id, segments)?;
+                log::info!("finished the summary publication of {note_id}");
+                let segments = store.segments(note_id)?.len();
+                summary_published(store, note_id, segments)?;
             }
             Outcome::Conflict => {
-                log::warn!(
-                    "{session_id}: {CHANGED_ELSEWHERE} The regenerated summary was dropped."
-                );
+                log::warn!("{note_id}: {CHANGED_ELSEWHERE} The regenerated summary was dropped.");
             }
         }
     }
-    drop_summary_staging(store, session_id, &local)
+    drop_summary_staging(store, note_id, &local)
 }
 
 /// Delete the record and the staging of a summary regeneration, then its
 /// row. The caller holds the store lock.
-fn drop_summary_staging(store: &Store, session_id: &str, local: &Path) -> Result<(), StageError> {
+fn drop_summary_staging(store: &Store, note_id: &str, local: &Path) -> Result<(), StageError> {
     if local.exists() {
         Publication::remove(local)?;
         std::fs::remove_dir_all(local)?;
     }
-    store.clear_result_state(session_id, SUMMARY_PUBLICATION)?;
+    store.clear_result_state(note_id, SUMMARY_PUBLICATION)?;
     Ok(())
 }
 
 /// The bookkeeping after a regenerated summary is in the note folder.
-fn summary_published(
-    store: &mut Store,
-    session_id: &str,
-    segments: usize,
-) -> Result<(), StageError> {
+fn summary_published(store: &mut Store, note_id: &str, segments: usize) -> Result<(), StageError> {
     store.put_checkpoint(
-        session_id,
+        note_id,
         Stage::Summarize,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone { segments })?,
     )?;
-    store.delete_checkpoint(session_id, Stage::Summarize, SUMMARY_FAILED)?;
-    store.clear_summary_not_updated(session_id)?;
-    store.apply(session_id, &Event::SavedEdit)?;
+    store.delete_checkpoint(note_id, Stage::Summarize, SUMMARY_FAILED)?;
+    store.clear_summary_not_updated(note_id)?;
+    store.apply(note_id, &Event::SavedEdit)?;
     Ok(())
 }
 
@@ -154,11 +148,11 @@ fn summary_published(
 /// [`AudioState::Present`] (R6d). A session that has not completed, or has
 /// no segment, has no audio in a folder: its state is
 /// [`AudioState::Waiting`].
-pub fn audio_state(store: &Store, session_id: &str) -> Result<AudioState, StageError> {
-    let Some(home) = home_path(store, session_id)? else {
+pub fn audio_state(store: &Store, note_id: &str) -> Result<AudioState, StageError> {
+    let Some(home) = home_path(store, note_id)? else {
         return Ok(AudioState::Waiting);
     };
-    let segments = store.segments(session_id)?;
+    let segments = store.segments(note_id)?;
     if segments.is_empty() {
         return Ok(AudioState::Waiting);
     }
@@ -179,16 +173,10 @@ pub fn audio_state(store: &Store, session_id: &str) -> Result<AudioState, StageE
 /// Record why summarization failed; the session is saved with a stub.
 pub fn record_summary_failure(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     message: &str,
 ) -> Result<(), StageError> {
-    checkpoint::put(
-        store,
-        session_id,
-        Stage::Summarize,
-        SUMMARY_FAILED,
-        &message,
-    )
+    checkpoint::put(store, note_id, Stage::Summarize, SUMMARY_FAILED, &message)
 }
 
 /// The cause of a first Save that waits for the early write of its home
@@ -213,7 +201,7 @@ const OLD_HOME_UNREADABLE: &str = "the note's folder outside the storage folder 
 /// waits. The caller holds the note guard.
 fn first_save_outside(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working: &Path,
     home: &Path,
     root: &Path,
@@ -224,12 +212,12 @@ fn first_save_outside(
     }
     match recorded {
         None => {}
-        Some(SaveState::Working) if !publication_begun(store, session_id, working)? => {
-            release(store, session_id);
+        Some(SaveState::Working) if !publication_begun(store, note_id, working)? => {
+            release(store, note_id);
         }
         Some(_) => return Ok(()),
     }
-    match crate::early_home::rehome_guarded(store, session_id, root)? {
+    match crate::early_home::rehome_guarded(store, note_id, root)? {
         crate::early_home::Rehome::Rehomed => {
             Err(StageError::NoDestination(WAITS_FOR_NEW_EARLY_WRITE.into()))
         }
@@ -241,21 +229,21 @@ fn first_save_outside(
 }
 
 /// Whether the publication of a save into the home folder of
-/// `session_id` has begun: its record is in `working`, or the save began
+/// `note_id` has begun: its record is in `working`, or the save began
 /// to replace the documents of the folder.
 fn publication_begun(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working: &Path,
 ) -> Result<bool, StageError> {
-    Ok(home_changed(&lock(store), session_id)?
+    Ok(home_changed(&lock(store), note_id)?
         || working.join(session_save::publication::RECORD).exists())
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working: &Path,
     segments: &[Segment],
     destination: Option<&Path>,
@@ -263,7 +251,7 @@ pub fn run(
     control: &dyn Control,
 ) -> Result<Saved, StageError> {
     // Only a verified transcript is saved (KD13).
-    if !checkpoint::is_complete(store, session_id, Stage::Verify, segments.len())? {
+    if !checkpoint::is_complete(store, note_id, Stage::Verify, segments.len())? {
         return Err(StageError::Failed(
             "the transcript has not been verified, so the note stays in the working location"
                 .into(),
@@ -281,19 +269,19 @@ pub fn run(
     // The note guard keeps the flag updates of the early write out of the
     // save: an update either completes before the claim, or sees the claim
     // and writes nothing (KTD4).
-    let _guard = crate::early_home::guard(session_id);
+    let _guard = crate::early_home::guard(note_id);
     // A note whose early write is not done waits for that one folder, and
     // never gets a second one here (R5). The authoritative state is the
     // early write state, not the home path, which its last step records
     // before that state.
-    if crate::early_home::unfinished(&lock(store), session_id)? {
+    if crate::early_home::unfinished(&lock(store), note_id)? {
         return Err(StageError::NoDestination(WAITS_FOR_EARLY_WRITE.into()));
     }
     let record = lock(store)
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))?;
     let home = record.home_path.clone().map(PathBuf::from);
-    let recorded = checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)?;
+    let recorded = checkpoint::get::<SaveState>(store, note_id, Stage::Save, STATE)?;
     // `home_path` is recorded with `Saved`, before the step loop reaches
     // `Done`: a first save still in progress finishes through the loop. A
     // resumed session has no save state, since resuming clears it.
@@ -305,9 +293,9 @@ pub fn run(
         && !first_save_in_progress
     {
         if let Some(root) = destination {
-            first_save_outside(store, session_id, working, &home, root, recorded.as_ref())?;
+            first_save_outside(store, note_id, working, &home, root, recorded.as_ref())?;
         }
-        return update_home(store, session_id, working, segments, &home, fs, control);
+        return update_home(store, note_id, working, segments, &home, fs, control);
     }
     let destination =
         destination.ok_or_else(|| StageError::NoDestination("no storage folder is set".into()))?;
@@ -317,27 +305,27 @@ pub fn run(
         Some(state) => {
             // A save that began before names were recorded used the
             // no-title name.
-            let name = checkpoint::get::<String>(store, session_id, Stage::Save, FOLDER_NAME)?
+            let name = checkpoint::get::<String>(store, note_id, Stage::Save, FOLDER_NAME)?
                 .unwrap_or_else(|| session_save::naming::folder_name(started, None));
             (state, name)
         }
         None => {
             control.proceed()?;
-            (SaveState::Working, claim_named(store, session_id, started)?)
+            (SaveState::Working, claim_named(store, note_id, started)?)
         }
     };
     let job = Job {
-        session_id,
+        note_id,
         working,
         destination,
         folder_name: &folder_name,
     };
     if state == SaveState::Working && working.exists() {
         // Nothing moved yet, so a failure here releases the claim.
-        if let Err(e) = render(store, session_id, working, segments)
+        if let Err(e) = render(store, note_id, working, segments)
             .and_then(|()| check_room(working, destination))
         {
-            release(store, session_id);
+            release(store, note_id);
             return Err(e);
         }
     }
@@ -358,11 +346,11 @@ pub fn run(
                 // there. A partial staging that stays has this session's
                 // marker, and the Working step removes it.
                 if matches!(state, SaveState::Copying { .. }) && working.exists() {
-                    checkpoint::put(store, session_id, Stage::Save, STATE, &SaveState::Working)?;
+                    checkpoint::put(store, note_id, Stage::Save, STATE, &SaveState::Working)?;
                     state = SaveState::Working;
                 }
                 if state == SaveState::Working && working.exists() {
-                    release(store, session_id);
+                    release(store, note_id);
                 }
                 // Every failure but a lost copy waits for the destination
                 // to be fixed or changed (R22b), naming what went wrong.
@@ -382,9 +370,9 @@ pub fn run(
         } = &next
         {
             copied = *working_retained;
-            lock(store).set_home_path(session_id, &path.to_string_lossy())?;
+            lock(store).set_home_path(note_id, &path.to_string_lossy())?;
         }
-        checkpoint::put(store, session_id, Stage::Save, STATE, &next)?;
+        checkpoint::put(store, note_id, Stage::Save, STATE, &next)?;
         state = next;
     }
     let SaveState::Done { path } = state else {
@@ -397,22 +385,22 @@ pub fn run(
     // edit comes either before this render or after the session is Saved,
     // where it rewrites the file itself.
     let mut guard = lock(store);
-    write_notes(&guard, session_id, &path)?;
-    record_transcript_fingerprint(&guard, session_id, &path)?;
+    write_notes(&guard, note_id, &path)?;
+    record_transcript_fingerprint(&guard, note_id, &path)?;
     guard.put_checkpoint(
-        session_id,
+        note_id,
         Stage::Save,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone {
             segments: segments.len(),
         })?,
     )?;
-    guard.finish_transcribe_again(session_id, None)?;
+    guard.finish_transcribe_again(note_id, None)?;
     // No Retry of this run follows the save. The native-final copies of
     // the finished live epochs stay; their live blocks go.
-    guard.delete_finished_live_blocks(session_id)?;
-    guard.apply(session_id, &Event::Saved)?;
-    let path = reconcile_after_done(&guard, session_id, path, fs);
+    guard.delete_finished_live_blocks(note_id)?;
+    guard.apply(note_id, &Event::Saved)?;
+    let path = reconcile_after_done(&guard, note_id, path, fs);
     Ok(Saved { path, copied })
 }
 
@@ -483,7 +471,7 @@ fn tree_size(dir: &Path, skip: &[&str]) -> std::io::Result<u64> {
 /// complete (R22b).
 fn update_home(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working: &Path,
     segments: &[Segment],
     home: &Path,
@@ -498,51 +486,47 @@ fn update_home(
     }
     // A Transcribe Again run whose summary failed keeps the previous
     // `summary.md`, not the stub (R19, KTD14).
-    let again = lock(store)
-        .transcribe_again_marks(session_id)?
-        .model
-        .is_some();
-    let summary_error = if again
-        && !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())?
-    {
-        Some(
-            checkpoint::get::<String>(store, session_id, Stage::Summarize, SUMMARY_FAILED)?
-                .unwrap_or_else(|| "summarization did not run".into()),
-        )
-    } else {
-        None
-    };
+    let again = lock(store).transcribe_again_marks(note_id)?.model.is_some();
+    let summary_error =
+        if again && !checkpoint::is_complete(store, note_id, Stage::Summarize, segments.len())? {
+            Some(
+                checkpoint::get::<String>(store, note_id, Stage::Summarize, SUMMARY_FAILED)?
+                    .unwrap_or_else(|| "summarization did not run".into()),
+            )
+        } else {
+            None
+        };
     let recorded = Publication::load(working)?;
-    let finished = match checkpoint::get::<SaveState>(store, session_id, Stage::Save, STATE)? {
+    let finished = match checkpoint::get::<SaveState>(store, note_id, Stage::Save, STATE)? {
         Some(state) => matches!(state, SaveState::Done { .. }),
         None => {
             control.proceed()?;
-            claim(store, session_id)?;
+            claim(store, note_id)?;
             false
         }
     };
     if !finished {
         let publication = match recorded {
             Some(publication) => publication,
-            None => stage_publication(store, session_id, working, segments, control)?,
+            None => stage_publication(store, note_id, working, segments, control)?,
         };
         // The library reconcile moves the home path when a sync delivers a
         // renamed folder (KTD6), so the publication reads it again.
-        let home = run_home(&lock(store), session_id)?;
+        let home = run_home(&lock(store), note_id)?;
         if publication.publish(&home, working, || lock(store))? == Outcome::Conflict {
-            return Err(drop_publication(store, session_id, working));
+            return Err(drop_publication(store, note_id, working));
         }
         let done = SaveState::Done { path: home };
-        checkpoint::put(store, session_id, Stage::Save, STATE, &done)?;
+        checkpoint::put(store, note_id, Stage::Save, STATE, &done)?;
     }
 
     let mut guard = lock(store);
-    let home = run_home(&guard, session_id)?;
-    follow_run(&mut guard, session_id)?;
-    write_notes(&guard, session_id, &home)?;
-    record_transcript_fingerprint(&guard, session_id, &home)?;
+    let home = run_home(&guard, note_id)?;
+    follow_run(&mut guard, note_id)?;
+    write_notes(&guard, note_id, &home)?;
+    record_transcript_fingerprint(&guard, note_id, &home)?;
     guard.put_checkpoint(
-        session_id,
+        note_id,
         Stage::Save,
         checkpoint::DONE,
         &serde_json::to_string(&checkpoint::StageDone {
@@ -550,17 +534,17 @@ fn update_home(
         })?,
     )?;
     // After `Done`: a crash before this line runs the bookkeeping again.
-    guard.finish_transcribe_again(session_id, summary_error.as_deref())?;
-    guard.delete_finished_live_blocks(session_id)?;
+    guard.finish_transcribe_again(note_id, summary_error.as_deref())?;
+    guard.delete_finished_live_blocks(note_id)?;
     let published = NoteFiles::read(&home)?.doc;
-    guard.promote_result_snapshot(session_id, published.recognition_snapshot.as_ref())?;
-    guard.set_speaker_count(session_id, published.speaker_count)?;
-    guard.apply(session_id, &Event::Saved)?;
+    guard.promote_result_snapshot(note_id, published.recognition_snapshot.as_ref())?;
+    guard.set_speaker_count(note_id, published.speaker_count)?;
+    guard.apply(note_id, &Event::Saved)?;
     // The record goes with the working directory, after the bookkeeping.
     if working.exists() {
         std::fs::remove_dir_all(working)?;
     }
-    let path = reconcile_after_done(&guard, session_id, home.to_path_buf(), fs);
+    let path = reconcile_after_done(&guard, note_id, home.to_path_buf(), fs);
     Ok(Saved {
         path,
         copied: false,
@@ -573,13 +557,13 @@ fn update_home(
 /// the previous result stays (R3, R5).
 fn stage_publication(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working: &Path,
     segments: &[Segment],
     control: &dyn Control,
 ) -> Result<Publication, StageError> {
-    checkpoint::put(store, session_id, Stage::Save, HOME_CHANGED, &true)?;
-    let mut home = run_home(&lock(store), session_id)?;
+    checkpoint::put(store, note_id, Stage::Save, HOME_CHANGED, &true)?;
+    let mut home = run_home(&lock(store), note_id)?;
     if !working.exists() {
         return Err(StageError::Failed(format!(
             "the working copy at {} is gone before {} was updated",
@@ -590,13 +574,13 @@ fn stage_publication(
     // Another computer can rename the note or edit its notes during the
     // run: the row takes them now, and the run's transcript and summary
     // replace the folder's (KTD3).
-    follow_run(&mut lock(store), session_id)?;
-    render(store, session_id, working, segments)?;
+    follow_run(&mut lock(store), note_id)?;
+    render(store, note_id, working, segments)?;
     // The library reconcile moves the home path when a sync delivers a
     // renamed folder (KTD6), so each write reads it again. The audio is
     // copied without the store lock; when the home path moved during
     // the copy, the copy runs again into the new folder.
-    home = run_home(&lock(store), session_id)?;
+    home = run_home(&lock(store), note_id)?;
     // Whether this run wrote into the note folder. A Transcribe Again run
     // copies no audio: each segment is in the folder already.
     let mut wrote = false;
@@ -606,7 +590,7 @@ fn stage_publication(
         // then has only the new audio.
         control.proceed()?;
         let guard = lock(store);
-        let now = run_home(&guard, session_id)?;
+        let now = run_home(&guard, note_id)?;
         if now == home {
             break guard;
         }
@@ -615,14 +599,14 @@ fn stage_publication(
     };
     // Under the store lock: the checks see the folder and the notes that
     // this computer holds now. They run once, before the record (KTD3).
-    follow_run(&mut guard, session_id)?;
+    follow_run(&mut guard, note_id)?;
     let summary_notes: Option<String> = guard
-        .checkpoints(session_id, Stage::Summarize)?
+        .checkpoints(note_id, Stage::Summarize)?
         .into_iter()
         .find(|(key, _)| key == "source-notes")
         .map(|(_, value)| serde_json::from_str(&value))
         .transpose()?;
-    let current_notes = folder::fingerprint(guard.notes(session_id)?.as_bytes());
+    let current_notes = folder::fingerprint(guard.notes(note_id)?.as_bytes());
     let notes_changed = summary_notes
         .as_ref()
         .is_some_and(|hash| *hash != current_notes);
@@ -639,22 +623,22 @@ fn stage_publication(
     {
         // Retry must produce a summary from the current notes. Keep the
         // recognition checkpoints and the previous result.
-        guard.clear_checkpoints(session_id, Stage::Summarize)?;
-        guard.delete_checkpoint(session_id, Stage::Save, STATE)?;
+        guard.clear_checkpoints(note_id, Stage::Summarize)?;
+        guard.delete_checkpoint(note_id, Stage::Save, STATE)?;
         return Err(StageError::Failed(
             "notes changed after the summary started; the previous result was kept".into(),
         ));
     }
     let mut record = guard
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
-    if let Some(pending) = guard.result_state(session_id, "pending-snapshot")? {
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))?;
+    if let Some(pending) = guard.result_state(note_id, "pending-snapshot")? {
         record.speaker_count =
             crate::reprocess::speaker_count(&serde_json::from_value(pending.clone())?);
         record.recognition_snapshot = Some(pending);
     }
     let expected: Option<(PathBuf, String)> = guard
-        .result_state(session_id, "replacement-base")?
+        .result_state(note_id, "replacement-base")?
         .map(serde_json::from_value)
         .transpose()?;
     // Only the records count (KTD4): an edit of a `.md` file, a title
@@ -666,7 +650,7 @@ fn stage_publication(
         Some(_) => {
             return Err(refuse_replacement(
                 &guard,
-                session_id,
+                note_id,
                 wrote,
                 "the note folder moved during processing; the previous result was kept",
             ));
@@ -676,20 +660,20 @@ fn stage_publication(
     if changed {
         return Err(refuse_replacement(
             &guard,
-            session_id,
+            note_id,
             wrote,
             "the note changed during processing; the previous result was kept",
         ));
     }
     let staged = with_summary(
         &session_doc(&record, segments, working)?,
-        summary_meta(&guard, session_id, segments)?,
+        summary_meta(&guard, note_id, segments)?,
     );
     let publication = Publication::new(&home, staged, WriteSet::Result)?;
     publication.record(working)?;
     // This marker prevents generic failure cleanup from discarding the
     // record. It does not prove that the publication committed.
-    guard.put_checkpoint(session_id, Stage::Save, HOME_CHANGED, "true")?;
+    guard.put_checkpoint(note_id, Stage::Save, HOME_CHANGED, "true")?;
     Ok(publication)
 }
 
@@ -700,9 +684,9 @@ fn stage_publication(
 /// Transcribe Again run that fails (R19). Otherwise each Retry would meet
 /// the same records and fail the same way. The caller holds the store
 /// lock.
-fn refuse_replacement(store: &Store, session_id: &str, wrote: bool, why: &str) -> StageError {
-    if !wrote && let Err(e) = store.delete_checkpoint(session_id, Stage::Save, HOME_CHANGED) {
-        log::warn!("could not clear the home_changed checkpoint of {session_id}: {e}");
+fn refuse_replacement(store: &Store, note_id: &str, wrote: bool, why: &str) -> StageError {
+    if !wrote && let Err(e) = store.delete_checkpoint(note_id, Stage::Save, HOME_CHANGED) {
+        log::warn!("could not clear the home_changed checkpoint of {note_id}: {e}");
     }
     StageError::Failed(why.into())
 }
@@ -711,19 +695,19 @@ fn refuse_replacement(store: &Store, session_id: &str, wrote: bool, why: &str) -
 /// publication finished (KTD4): delete the record and forget the run, and
 /// write nothing. A Transcribe Again then fails and keeps the folder, and
 /// its working directory goes. Returns the error that ends the run.
-fn drop_publication(store: &SharedStore, session_id: &str, working: &Path) -> StageError {
-    log::warn!("{session_id}: {CHANGED_ELSEWHERE} The result of this run was dropped.");
+fn drop_publication(store: &SharedStore, note_id: &str, working: &Path) -> StageError {
+    log::warn!("{note_id}: {CHANGED_ELSEWHERE} The result of this run was dropped.");
     let dropped = Publication::remove(working)
         .map_err(StageError::from)
         .and_then(|()| {
             let guard = lock(store);
-            guard.clear_checkpoints(session_id, Stage::Summarize)?;
-            guard.delete_checkpoint(session_id, Stage::Save, STATE)?;
-            guard.delete_checkpoint(session_id, Stage::Save, HOME_CHANGED)?;
+            guard.clear_checkpoints(note_id, Stage::Summarize)?;
+            guard.delete_checkpoint(note_id, Stage::Save, STATE)?;
+            guard.delete_checkpoint(note_id, Stage::Save, HOME_CHANGED)?;
             Ok(())
         });
     if let Err(e) = dropped {
-        log::warn!("could not drop the publication of {session_id}: {e}");
+        log::warn!("could not drop the publication of {note_id}: {e}");
     }
     StageError::Failed(CHANGED_ELSEWHERE.into())
 }
@@ -774,27 +758,27 @@ fn add_audio(home: &Path, working: &Path, segments: &[Segment]) -> Result<bool, 
 
 /// The home folder of a session in a run that updates its folder, whatever
 /// the session's state.
-fn run_home(store: &Store, session_id: &str) -> Result<PathBuf, StageError> {
+fn run_home(store: &Store, note_id: &str) -> Result<PathBuf, StageError> {
     store
-        .session(session_id)?
+        .session(note_id)?
         .and_then(|record| record.home_path)
         .map(PathBuf::from)
-        .ok_or_else(|| StageError::Failed(format!("the note {session_id} has no folder")))
+        .ok_or_else(|| StageError::Failed(format!("the note {note_id} has no folder")))
 }
 
 /// Inside a run that updates the note's folder: take the title and the
 /// notes from the folder, and keep the run's recognition results (KTD3).
-fn follow_run(store: &mut Store, session_id: &str) -> Result<(), StageError> {
-    let home = run_home(store, session_id)?;
-    crate::follow::follow_scoped(store, session_id, &home, Scope::TitleAndNotes)?;
+fn follow_run(store: &mut Store, note_id: &str) -> Result<(), StageError> {
+    let home = run_home(store, note_id)?;
+    crate::follow::follow_scoped(store, note_id, &home, Scope::TitleAndNotes)?;
     Ok(())
 }
 
 /// Take the session for saving, unless a resume took it first.
-fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
+fn claim(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
     let guard = lock(store);
-    processing(&guard, session_id)?;
-    put_working(&guard, session_id)
+    processing(&guard, note_id)?;
+    put_working(&guard, note_id)
 }
 
 /// Take the session for a first save and record its folder name, from the
@@ -802,35 +786,35 @@ fn claim(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 /// lock, so a recorded claim always has its name.
 fn claim_named(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     started: DateTime<FixedOffset>,
 ) -> Result<String, StageError> {
     let guard = lock(store);
-    let record = processing(&guard, session_id)?;
+    let record = processing(&guard, note_id)?;
     let title = record.title.map(|t| t.text);
     let name = session_save::naming::folder_name(started, title.as_deref());
     guard.put_checkpoint(
-        session_id,
+        note_id,
         Stage::Save,
         FOLDER_NAME,
         &serde_json::to_string(&name)?,
     )?;
-    put_working(&guard, session_id)?;
+    put_working(&guard, note_id)?;
     Ok(name)
 }
 
 /// The session's record, if it is still processing; a resume took it
 /// otherwise.
-fn processing(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {
-    match store.session(session_id)? {
+fn processing(store: &Store, note_id: &str) -> Result<SessionRecord, StageError> {
+    match store.session(note_id)? {
         Some(record) if matches!(record.state, SessionState::Processing { .. }) => Ok(record),
         _ => Err(StageError::Cancelled),
     }
 }
 
-fn put_working(store: &Store, session_id: &str) -> Result<(), StageError> {
+fn put_working(store: &Store, note_id: &str) -> Result<(), StageError> {
     store.put_checkpoint(
-        session_id,
+        note_id,
         Stage::Save,
         STATE,
         &serde_json::to_string(&SaveState::Working)?,
@@ -840,11 +824,11 @@ fn put_working(store: &Store, session_id: &str) -> Result<(), StageError> {
 
 /// Nothing moved: the session may be resumed again, and the next claim
 /// records a name from the title it has then.
-fn release(store: &SharedStore, session_id: &str) {
+fn release(store: &SharedStore, note_id: &str) {
     let guard = lock(store);
     for key in [STATE, FOLDER_NAME] {
-        if let Err(e) = guard.delete_checkpoint(session_id, Stage::Save, key) {
-            log::warn!("could not release the save claim on {session_id}: {e}");
+        if let Err(e) = guard.delete_checkpoint(note_id, Stage::Save, key) {
+            log::warn!("could not release the save claim on {note_id}: {e}");
         }
     }
 }
@@ -854,26 +838,26 @@ fn release(store: &SharedStore, session_id: &str) {
 /// `session.md`, then `longhand.json`.
 fn render(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working: &Path,
     segments: &[Segment],
 ) -> Result<(), StageError> {
     let (record, notes) = {
         let guard = lock(store);
         let mut record = guard
-            .session(session_id)?
-            .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
-        if let Some(pending) = guard.result_state(session_id, "pending-snapshot")? {
+            .session(note_id)?
+            .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))?;
+        if let Some(pending) = guard.result_state(note_id, "pending-snapshot")? {
             record.speaker_count =
                 crate::reprocess::speaker_count(&serde_json::from_value(pending.clone())?);
             record.recognition_snapshot = Some(pending);
         }
-        let notes = render_notes(&guard, session_id)?;
+        let notes = render_notes(&guard, note_id)?;
         (record, notes)
     };
     write_working(working, NOTES_FILE, &notes)?;
-    if !checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())? {
-        let why = checkpoint::get::<String>(store, session_id, Stage::Summarize, SUMMARY_FAILED)?
+    if !checkpoint::is_complete(store, note_id, Stage::Summarize, segments.len())? {
+        let why = checkpoint::get::<String>(store, note_id, Stage::Summarize, SUMMARY_FAILED)?
             .unwrap_or_else(|| "summarization did not run".into());
         write_working(working, SUMMARY_FILE, &stub(&why).render_body())?;
     }
@@ -886,7 +870,7 @@ fn render(
         SESSION_FILE,
         &note_files::new_session_md(doc.title.as_deref(), &doc.tags),
     )?;
-    let staged = with_summary(&doc, summary_meta(&lock(store), session_id, segments)?);
+    let staged = with_summary(&doc, summary_meta(&lock(store), note_id, segments)?);
     write_working(working, NOTE_RECORD_FILE, &staged.render())?;
     Ok(())
 }
@@ -899,15 +883,15 @@ fn with_summary(doc: &SessionDoc, summary: Option<SummaryMeta>) -> NoteRecord {
     }
 }
 
-/// The data of the summary in the working folder of `session_id`: the data
+/// The data of the summary in the working folder of `note_id`: the data
 /// that the Summarize stage recorded, or the stub's data when the stage did
 /// not complete. The caller holds the store lock.
 fn summary_meta(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     segments: &[Segment],
 ) -> Result<Option<SummaryMeta>, StageError> {
-    let value = |key: &str| store.checkpoint_value(session_id, Stage::Summarize, key);
+    let value = |key: &str| store.checkpoint_value(note_id, Stage::Summarize, key);
     let done = value(checkpoint::DONE)?
         .map(|text| serde_json::from_str::<checkpoint::StageDone>(&text))
         .transpose()?
@@ -1035,11 +1019,11 @@ fn read_artifact_header(
 /// computer's, and keeps the stored recognition results.
 fn record_transcript_fingerprint(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     folder: &Path,
 ) -> Result<(), StageError> {
     let written = fingerprint_of(folder, TRANSCRIPT_FILE)?;
-    store.set_transcript_fingerprint(session_id, written.as_deref())?;
+    store.set_transcript_fingerprint(note_id, written.as_deref())?;
     Ok(())
 }
 
@@ -1069,26 +1053,26 @@ fn unreadable(path: &Path, why: &str) -> StageError {
 /// not fail the save: the reconcile at the next launch tries again. No
 /// regeneration and no title job runs, because the stage holds the turn
 /// of the summary queue.
-fn reconcile_after_done(store: &Store, session_id: &str, path: PathBuf, fs: &dyn Fs) -> PathBuf {
+fn reconcile_after_done(store: &Store, note_id: &str, path: PathBuf, fs: &dyn Fs) -> PathBuf {
     moved_to(
-        session_id,
-        folder_rename::reconcile(store, session_id, false, true, fs),
+        note_id,
+        folder_rename::reconcile(store, note_id, false, true, fs),
     )
     .unwrap_or(path)
 }
 
 /// The folder's new path when a reconcile moved it. A reconcile that
 /// failed is logged, and the folder keeps its path.
-fn moved_to(session_id: &str, reconciled: Result<FolderRename, StageError>) -> Option<PathBuf> {
+fn moved_to(note_id: &str, reconciled: Result<FolderRename, StageError>) -> Option<PathBuf> {
     match reconciled {
         Ok(FolderRename::Moved(folder)) => Some(folder),
         Ok(FolderRename::Kept(why)) => {
-            log::warn!("the folder of {session_id} keeps its name: {why}");
+            log::warn!("the folder of {note_id} keeps its name: {why}");
             None
         }
         Ok(FolderRename::Unchanged | FolderRename::Later) => None,
         Err(e) => {
-            log::warn!("could not reconcile the folder of {session_id}: {e}");
+            log::warn!("could not reconcile the folder of {note_id}: {e}");
             None
         }
     }
@@ -1103,17 +1087,16 @@ pub fn stub(why: &str) -> Summary {
     }
 }
 
-fn render_notes(store: &Store, session_id: &str) -> Result<String, StageError> {
-    Ok(folder::render_notes(&store.notes(session_id)?))
+fn render_notes(store: &Store, note_id: &str) -> Result<String, StageError> {
+    Ok(folder::render_notes(&store.notes(note_id)?))
 }
 
 /// Write the notes of the store into `folder`, and record the fingerprint
 /// of the file as the `notes.md` that this computer last wrote (KTD8).
-fn write_notes(store: &Store, session_id: &str, folder: &Path) -> Result<(), StageError> {
-    let notes = render_notes(store, session_id)?;
+fn write_notes(store: &Store, note_id: &str, folder: &Path) -> Result<(), StageError> {
+    let notes = render_notes(store, note_id)?;
     home_write::write_atomic(folder, NOTES_FILE, notes.as_bytes())?;
-    store
-        .set_written_notes_fingerprint(session_id, Some(&folder::fingerprint(notes.as_bytes())))?;
+    store.set_written_notes_fingerprint(note_id, Some(&folder::fingerprint(notes.as_bytes())))?;
     Ok(())
 }
 
@@ -1135,15 +1118,15 @@ fn not_saved() -> StageError {
 
 /// Refuse a regeneration of a note that is not saved or has no home folder
 /// (R10). [`regenerate_summary`] does the same check again.
-pub fn require_saved(store: &Store, session_id: &str) -> Result<(), StageError> {
-    home_path(store, session_id)?.ok_or_else(not_saved)?;
+pub fn require_saved(store: &Store, note_id: &str) -> Result<(), StageError> {
+    home_path(store, note_id)?.ok_or_else(not_saved)?;
     Ok(())
 }
 
 /// The home folder of a session, if it is saved.
-fn home_path(store: &Store, session_id: &str) -> Result<Option<PathBuf>, StageError> {
+fn home_path(store: &Store, note_id: &str) -> Result<Option<PathBuf>, StageError> {
     Ok(store
-        .session(session_id)?
+        .session(note_id)?
         .filter(|r| r.state == SessionState::Saved)
         .and_then(|r| r.home_path)
         .map(PathBuf::from))
@@ -1176,8 +1159,8 @@ pub fn notes_fingerprint(document: &str) -> String {
 /// Replace a session's notes document (KTD5, R20), with no check of what
 /// the editor loaded. See [`save_notes`]. Returns whether the note
 /// folder's `notes.md` holds the document.
-pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<bool, StageError> {
-    match save_notes(store, session_id, document, None)? {
+pub fn set_notes(store: &mut Store, note_id: &str, document: &str) -> Result<bool, StageError> {
+    match save_notes(store, note_id, document, None)? {
         NotesSave::Saved { written } => Ok(written),
         NotesSave::FolderGone => Ok(false),
         NotesSave::Conflict { .. } => unreachable!("a save with no loaded fingerprint"),
@@ -1200,14 +1183,14 @@ pub fn set_notes(store: &mut Store, session_id: &str, document: &str) -> Result<
 /// that write or after it, so no edit is lost.
 pub fn save_notes(
     store: &mut Store,
-    session_id: &str,
+    note_id: &str,
     document: &str,
     loaded: Option<&str>,
 ) -> Result<NotesSave, StageError> {
     let record = store
-        .session(session_id)?
-        .ok_or_else(|| session_core::StoreError::NoSuchSession(session_id.to_string()))?;
-    crate::follow::follow_folder(store, session_id, false)?;
+        .session(note_id)?
+        .ok_or_else(|| session_core::StoreError::NoSuchSession(note_id.to_string()))?;
+    crate::follow::follow_folder(store, note_id, false)?;
     let saved = record.state == SessionState::Saved;
     // A session in a run keeps the edit in the store when its folder is
     // not there; the save of the run writes it. A saved session reports
@@ -1220,7 +1203,7 @@ pub fn save_notes(
     // early write and its sync take the notes from the store. So the folder
     // keeps the files that its removal checks.
     if let Some(old) = &home
-        && crate::early_home::rehoming(store, session_id, old)?
+        && crate::early_home::rehoming(store, note_id, old)?
     {
         home = None;
     }
@@ -1228,7 +1211,7 @@ pub fn save_notes(
     // the store and makes no folder (R24). Another app can have renamed
     // the folder, with or without audio: the rescue then finds it.
     if saved && home.as_ref().is_some_and(|home| !home.is_dir()) {
-        store.set_notes(session_id, document)?;
+        store.set_notes(note_id, document)?;
         return Ok(NotesSave::FolderGone);
     }
     // A `notes.md` that cannot be read in time is not replaced: this
@@ -1238,25 +1221,25 @@ pub fn save_notes(
             Read::Bytes(bytes) => folder::fingerprint(&bytes) != loaded,
             Read::Missing => false,
             Read::Failed(why) => {
-                log::warn!("cannot read the notes of {session_id}: {why}");
+                log::warn!("cannot read the notes of {note_id}: {why}");
                 true
             }
         }
     {
         let draft = write_draft(home, document)?;
         log::info!(
-            "the notes of {session_id} changed on another computer; the edit is in {}",
+            "the notes of {note_id} changed on another computer; the edit is in {}",
             draft.display()
         );
         return Ok(NotesSave::Conflict { draft });
     }
-    store.set_notes(session_id, document)?;
+    store.set_notes(note_id, document)?;
     let Some(home) = home else {
         return Ok(NotesSave::Saved { written: false });
     };
-    write_notes(store, session_id, &home)?;
+    write_notes(store, note_id, &home)?;
     if saved {
-        store.apply(session_id, &Event::SavedEdit)?;
+        store.apply(note_id, &Event::SavedEdit)?;
     }
     Ok(NotesSave::Saved { written: true })
 }
@@ -1358,7 +1341,7 @@ pub fn rescue_notes(
 #[allow(clippy::too_many_arguments)]
 pub fn regenerate_summary(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working_root: &Path,
     endpoint: SummaryEndpoint,
     resolve: &dyn Fn(Option<&str>) -> Prompt,
@@ -1368,7 +1351,7 @@ pub fn regenerate_summary(
 ) -> Result<PathBuf, StageError> {
     let regenerated = summarize_again(
         store,
-        session_id,
+        note_id,
         working_root,
         endpoint,
         resolve,
@@ -1379,21 +1362,21 @@ pub fn regenerate_summary(
     // A failed regeneration publishes no new summary, so the title request
     // of that summary is not sent (KTD13). The note keeps its title.
     if regenerated.is_err()
-        && let Err(e) = summarize::delete_title_request(store, session_id)
+        && let Err(e) = summarize::delete_title_request(store, note_id)
     {
-        log::warn!("could not delete the title request of {session_id}: {e}");
+        log::warn!("could not delete the title request of {note_id}: {e}");
     }
     // The regeneration has ended, and the caller holds the turn of the
     // summary queue, so no other regeneration, Save or title job runs.
-    let renamed = folder_rename::reconcile_shared(store, session_id, false, &session_save::RealFs);
+    let renamed = folder_rename::reconcile_shared(store, note_id, false, &session_save::RealFs);
     let path = regenerated?;
-    Ok(moved_to(session_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
+    Ok(moved_to(note_id, renamed).map_or(path, |folder| folder.join(SUMMARY_FILE)))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn summarize_again(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     working_root: &Path,
     endpoint: SummaryEndpoint,
     resolve: &dyn Fn(Option<&str>) -> Prompt,
@@ -1408,14 +1391,14 @@ fn summarize_again(
     // never overlap (KTD4).
     let (home, segments, note_type) = {
         let mut guard = lock(store);
-        home_path(&guard, session_id)?.ok_or_else(not_saved)?;
-        recover_summary_publication(&mut guard, session_id)?;
-        crate::follow::follow_folder(&mut guard, session_id, false)?;
-        let home = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
-        let record = guard.session(session_id)?.ok_or_else(not_saved)?;
+        home_path(&guard, note_id)?.ok_or_else(not_saved)?;
+        recover_summary_publication(&mut guard, note_id)?;
+        crate::follow::follow_folder(&mut guard, note_id, false)?;
+        let home = home_path(&guard, note_id)?.ok_or_else(not_saved)?;
+        let record = guard.session(note_id)?.ok_or_else(not_saved)?;
         (
             home,
-            guard.segments(session_id)?,
+            guard.segments(note_id)?,
             crate::type_move::shown_type(&record).0,
         )
     };
@@ -1466,40 +1449,34 @@ fn summarize_again(
     // summary, or a stub made with another prompt or with no saved prompt,
     // starts over. The title call always runs again, so a new proposal
     // follows (R31). A title that the user set stays.
-    let complete = checkpoint::is_complete(store, session_id, Stage::Summarize, segments.len())?;
-    let saved = checkpoint::get::<Prompt>(store, session_id, Stage::Summarize, summarize::PROMPT)?;
+    let complete = checkpoint::is_complete(store, note_id, Stage::Summarize, segments.len())?;
+    let saved = checkpoint::get::<Prompt>(store, note_id, Stage::Summarize, summarize::PROMPT)?;
     let same_prompt = saved.is_some_and(|p| {
         p.id == active.id
             && p.text == active.text
             && p.background.trim() == active.background.trim()
     });
     if complete || !same_prompt {
-        summarize::clear(store, session_id)?;
+        summarize::clear(store, note_id)?;
     } else {
         {
             let guard = lock(store);
-            guard.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE)?;
+            guard.delete_checkpoint(note_id, Stage::Summarize, summarize::TITLE)?;
             // A title request of an earlier summary is not sent (KTD9).
-            guard.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE_REQUEST)?;
+            guard.delete_checkpoint(note_id, Stage::Summarize, summarize::TITLE_REQUEST)?;
         }
         // The text is the same, so the cached calls stand. The name can
         // be new after a rename, and the summary records the name now.
-        checkpoint::put(
-            store,
-            session_id,
-            Stage::Summarize,
-            summarize::PROMPT,
-            &active,
-        )?;
+        checkpoint::put(store, note_id, Stage::Summarize, summarize::PROMPT, &active)?;
     }
     // The transcript comes from `transcript.md`, so a computer with no
     // recognition results for the note summarizes the same text (KTD4).
     // Only the records count (KTD4): a tag edit, a title edit, a title
     // proposal or a type move in the meantime does not make the run refuse.
     let expected = current.run_fingerprint();
-    let source_notes = folder::fingerprint(lock(store).notes(session_id)?.as_bytes());
+    let source_notes = folder::fingerprint(lock(store).notes(note_id)?.as_bytes());
     let summary = summarize::produce(
-        store, session_id, &home, endpoint, active, control, queued, progress,
+        store, note_id, &home, endpoint, active, control, queued, progress,
     )?;
     // The last point where a cancel stops the regeneration: after the
     // record, the publication only rolls forward.
@@ -1508,15 +1485,14 @@ fn summarize_again(
     // The checks run once, before the record (KTD3).
     let (path, local, publication) = {
         let guard = lock(store);
-        let path = home_path(&guard, session_id)?.ok_or_else(not_saved)?;
+        let path = home_path(&guard, note_id)?.ok_or_else(not_saved)?;
         // The model calls can take long. A user title that another
         // computer wrote in the meantime goes into the row first, so the
         // `session.md` below keeps it.
-        if path != home || source_notes != folder::fingerprint(guard.notes(session_id)?.as_bytes())
-        {
+        if path != home || source_notes != folder::fingerprint(guard.notes(note_id)?.as_bytes()) {
             return Err(changed());
         }
-        keep_folder_user_title(&guard, session_id, &path)?;
+        keep_folder_user_title(&guard, note_id, &path)?;
         let previous = note_files::new_layout_record(&path)?;
         if previous.run_fingerprint() != expected {
             return Err(changed());
@@ -1527,16 +1503,12 @@ fn summarize_again(
             .prefix(".longhand-summary-")
             .tempdir_in(working_root)?
             .keep();
-        guard.set_result_state(
-            session_id,
-            SUMMARY_PUBLICATION,
-            &serde_json::to_value(&local)?,
-        )?;
+        guard.set_result_state(note_id, SUMMARY_PUBLICATION, &serde_json::to_value(&local)?)?;
         let staged = (|| -> Result<Publication, StageError> {
             // `summary.md` has no frontmatter: its data goes into
             // `longhand.json` (R1).
             home_write::write_atomic(&local, SUMMARY_FILE, summary.render_body().as_bytes())?;
-            let record = guard.session(session_id)?.ok_or_else(not_saved)?;
+            let record = guard.session(note_id)?.ok_or_else(not_saved)?;
             let mut staged = with_summary(
                 &session_doc(&record, &segments, &local)?,
                 Some(summary.meta.clone()),
@@ -1555,7 +1527,7 @@ fn summarize_again(
         let publication = match staged {
             Ok(publication) => publication,
             Err(error) => {
-                drop_summary_staging(&guard, session_id, &local)?;
+                drop_summary_staging(&guard, note_id, &local)?;
                 return Err(error);
             }
         };
@@ -1568,12 +1540,12 @@ fn summarize_again(
     let outcome = publication.publish(&path, &local, || lock(store))?;
     let mut guard = lock(store);
     if outcome == Outcome::Conflict {
-        log::warn!("{session_id}: {CHANGED_ELSEWHERE} The regenerated summary was dropped.");
-        drop_summary_staging(&guard, session_id, &local)?;
+        log::warn!("{note_id}: {CHANGED_ELSEWHERE} The regenerated summary was dropped.");
+        drop_summary_staging(&guard, note_id, &local)?;
         return Err(StageError::Failed(CHANGED_ELSEWHERE.into()));
     }
-    summary_published(&mut guard, session_id, segments.len())?;
-    drop_summary_staging(&guard, session_id, &local)?;
+    summary_published(&mut guard, note_id, segments.len())?;
+    drop_summary_staging(&guard, note_id, &local)?;
     Ok(path.join(SUMMARY_FILE))
 }
 
@@ -1589,11 +1561,7 @@ fn summarize_again(
 /// reconcile takes it then. The regeneration does not write `session.md`,
 /// so the title stays in the folder. In the old layout, a title with no
 /// source is the user's when it is not the stored one (R5).
-fn keep_folder_user_title(
-    store: &Store,
-    session_id: &str,
-    folder: &Path,
-) -> Result<(), StageError> {
+fn keep_folder_user_title(store: &Store, note_id: &str, folder: &Path) -> Result<(), StageError> {
     let Some(files) = read_note_files(folder, READ_TIMEOUT) else {
         return Ok(());
     };
@@ -1609,12 +1577,12 @@ fn keep_folder_user_title(
     else {
         return Ok(());
     };
-    let stored = store.title(session_id)?;
+    let stored = store.title(note_id)?;
     if stored.as_ref().is_some_and(|t| t.text == text) {
         return Ok(());
     }
     if matches!(doc.title_source, None | Some(TitleSource::User)) {
-        store.set_title(session_id, text, TitleSource::User)?;
+        store.set_title(note_id, text, TitleSource::User)?;
     }
     Ok(())
 }

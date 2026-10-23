@@ -95,7 +95,7 @@ fn a_same_volume_save_moves_once_and_leaves_the_raw_audio_behind() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -142,7 +142,7 @@ fn across_volumes_the_copy_is_verified_and_the_working_copy_goes_only_after_the_
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -174,7 +174,7 @@ fn a_kill_between_the_verified_copy_and_the_final_rename_keeps_both_copies_and_r
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -204,7 +204,7 @@ fn a_final_rename_that_happened_before_its_record_is_found_by_its_marker() {
         let root = tempfile::tempdir().unwrap();
         let (work, dest) = (working(root.path()), destination(root.path()));
         let job = Job {
-            session_id: "s1",
+            note_id: "s1",
             working: &work,
             destination: &dest,
             folder_name: NAME,
@@ -236,7 +236,7 @@ fn a_partial_copy_left_by_a_crash_is_this_sessions_and_is_redone() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -272,7 +272,7 @@ fn this_sessions_leftover_staging_does_not_stop_a_later_save() {
     std::fs::write(staging.join(MARKER), "s1").unwrap();
     std::fs::write(staging.join("audio/segment-01.opus"), b"half").unwrap();
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -322,7 +322,7 @@ fn a_rename_that_happened_before_its_record_is_recognised_by_its_marker() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -340,7 +340,7 @@ fn a_taken_name_gets_a_suffix_and_an_empty_folder_is_never_replaced() {
     std::fs::create_dir_all(dest.join(NAME)).unwrap();
     std::fs::create_dir_all(dest.join(format!("{NAME}-2")).join("x")).unwrap();
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -390,7 +390,7 @@ fn a_final_rename_refused_for_a_moment_as_in_use_keeps_the_name() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -412,7 +412,7 @@ fn a_final_rename_that_stays_in_use_says_so_and_tries_no_other_name() {
     let root = tempfile::tempdir().unwrap();
     let (work, dest) = (working(root.path()), destination(root.path()));
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -434,7 +434,7 @@ fn a_staging_folder_this_session_did_not_make_is_refused() {
     let (work, dest) = (working(root.path()), destination(root.path()));
     std::fs::create_dir_all(dest.join(".longhand-staging-s1")).unwrap();
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -450,7 +450,7 @@ fn a_missing_destination_waits_with_the_session_whole_in_the_working_location() 
     let work = working(root.path());
     let dest = root.path().join("unplugged");
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,
@@ -484,7 +484,7 @@ fn a_staged_copy_is_saved_beside_itself_when_the_destination_has_changed() {
     let work = working(root.path());
     let first = destination(root.path());
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &first,
         folder_name: NAME,
@@ -544,7 +544,7 @@ fn a_read_only_destination_waits_naming_its_permissions() {
     let dest = destination(root.path());
     std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o555)).unwrap();
     let job = Job {
-        session_id: "s1",
+        note_id: "s1",
         working: &work,
         destination: &dest,
         folder_name: NAME,

@@ -97,7 +97,7 @@ export function useSessions(): Sessions & { loaded: boolean; loadError: string |
     window.addEventListener("focus", refresh);
     const unlisteners = [
       events.processingUpdate.listen(({ payload }) => {
-        const { session_id: id, update } = payload;
+        const { note_id: id, update } = payload;
         if (update.kind === "progress") {
           setLive((l) => ({ ...l, [id]: update }));
           if (performance.now() - (lastBump.current[id] ?? 0) >= REREAD_MS) bump(id);

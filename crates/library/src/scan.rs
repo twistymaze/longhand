@@ -820,7 +820,7 @@ pub fn is_note_folder(dir: &Path) -> bool {
 
 /// The note id in the `longhand.json` of `dir`, when the file parses. A
 /// folder whose `session.md` does not parse still gives its id. A file
-/// that a newer Longhand wrote gives its `session_id` when it has one as
+/// that a newer Longhand wrote gives its `note_id` when it has one as
 /// text, so that the row of the note stays.
 fn record_id(dir: &Path, timeout: Duration) -> Option<String> {
     let Read::Bytes(bytes) = read_timed(dir.join(NOTE_RECORD_FILE), timeout) else {

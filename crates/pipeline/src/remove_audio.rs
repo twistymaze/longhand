@@ -159,12 +159,12 @@ pub enum NoteSync {
     Waiting,
 }
 
-/// Remove the audio of the saved note `session_id`: [`remove_audio_with`]
+/// Remove the audio of the saved note `note_id`: [`remove_audio_with`]
 /// with a permanent delete.
 pub fn remove_audio<F, S>(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     guard: Guard<F, S>,
     sync: NoteSync,
 ) -> Result<Removal, RemoveAudioError>
@@ -172,12 +172,12 @@ where
     F: FnOnce(&SessionRecord) -> Result<(), &'static str>,
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
 {
-    remove_audio_with(store, claims, session_id, guard, sync, |path| {
+    remove_audio_with(store, claims, note_id, guard, sync, |path| {
         std::fs::remove_file(path)
     })
 }
 
-/// Remove the audio of the saved note `session_id`, and delete each audio
+/// Remove the audio of the saved note `note_id`, and delete each audio
 /// file with `remove`.
 ///
 /// The step takes a delete claim for the time it runs, as Delete Note does,
@@ -194,7 +194,7 @@ where
 pub fn remove_audio_with<F, S, R>(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     guard: Guard<F, S>,
     sync: NoteSync,
     remove: R,
@@ -204,10 +204,10 @@ where
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
     R: FnMut(&Path) -> io::Result<()>,
 {
-    run_step(store, claims, session_id, guard, sync, remove, Scope::Every)
+    run_step(store, claims, note_id, guard, sync, remove, Scope::Every)
 }
 
-/// Finish the removal of the audio of the saved note `session_id` (KTD2):
+/// Finish the removal of the audio of the saved note `note_id` (KTD2):
 /// delete the audio file of each segment that has its removal marker. The
 /// step writes no marker, so a segment with no marker keeps its audio. The
 /// removal pass does this whether the setting is on or off. The claim, the
@@ -218,7 +218,7 @@ where
 pub fn finish_removal<F, S>(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     guard: Guard<F, S>,
     sync: NoteSync,
 ) -> Result<Removal, RemoveAudioError>
@@ -229,7 +229,7 @@ where
     run_step(
         store,
         claims,
-        session_id,
+        note_id,
         guard,
         sync,
         |path| std::fs::remove_file(path),
@@ -247,28 +247,25 @@ enum Scope {
     Marked,
 }
 
-/// The row of `session_id`. The note must be saved.
-pub(crate) fn saved_row(
-    store: &Store,
-    session_id: &str,
-) -> Result<SessionRecord, RemoveAudioError> {
+/// The row of `note_id`. The note must be saved.
+pub(crate) fn saved_row(store: &Store, note_id: &str) -> Result<SessionRecord, RemoveAudioError> {
     let record = store
-        .session(session_id)?
-        .ok_or_else(|| RemoveAudioError::Failed(format!("no session {session_id}")))?;
+        .session(note_id)?
+        .ok_or_else(|| RemoveAudioError::Failed(format!("no session {note_id}")))?;
     if record.state != SessionState::Saved {
         return Err(RemoveAudioError::Busy(record.state.name()));
     }
     Ok(record)
 }
 
-/// Take the delete claim of `session_id`, as Delete Note does.
-pub(crate) fn delete_claim(claims: &Claims, session_id: &str) -> Result<Claim, RemoveAudioError> {
+/// Take the delete claim of `note_id`, as Delete Note does.
+pub(crate) fn delete_claim(claims: &Claims, note_id: &str) -> Result<Claim, RemoveAudioError> {
     // A second delete claim is not refused by `Claims::delete`, so a
     // running Delete Note is checked first.
-    if claims.is_regenerating_or_deleting(session_id) && !claims.is_regenerating(session_id) {
+    if claims.is_regenerating_or_deleting(note_id) && !claims.is_regenerating(note_id) {
         return Err(RemoveAudioError::Busy("deleting"));
     }
-    claims.delete(session_id).map_err(RemoveAudioError::Busy)
+    claims.delete(note_id).map_err(RemoveAudioError::Busy)
 }
 
 /// The canonical path of the home folder `home`. A path that is not a
@@ -283,7 +280,7 @@ pub(crate) fn home_dir(home: &Path) -> Result<PathBuf, RemoveAudioError> {
 fn run_step<F, S, R>(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     guard: Guard<F, S>,
     sync: NoteSync,
     mut remove: R,
@@ -296,16 +293,16 @@ where
 {
     // The claim comes before the home folder is read, as in
     // `session_core::jobs::delete_session`.
-    let _claim = delete_claim(claims, session_id)?;
+    let _claim = delete_claim(claims, note_id)?;
 
     // The folder check reads files, so it runs with no store lock.
-    let checked = saved_row(&lock(store), session_id)?;
+    let checked = saved_row(&lock(store), note_id)?;
     let folder_check = (guard.folder)(&checked);
 
     let (home, segments, refreshed) = {
         let mut store = lock(store);
-        let refreshed = crate::follow::follow_folder(&mut store, session_id, false)?;
-        let record = saved_row(&store, session_id)?;
+        let refreshed = crate::follow::follow_folder(&mut store, note_id, false)?;
+        let record = saved_row(&store, note_id)?;
         // The claim stops a Move and a folder rename. If the home folder
         // changed all the same, the result of the folder check is not
         // valid.
@@ -317,7 +314,7 @@ where
         let Some(home) = record.home_path.clone() else {
             return Err(RemoveAudioError::NoFolder);
         };
-        (PathBuf::from(home), store.segments(session_id)?, refreshed)
+        (PathBuf::from(home), store.segments(note_id)?, refreshed)
     };
     // The step never makes a home folder. The canonical path is the base of
     // the check that a name resolves inside the home folder.
@@ -356,13 +353,13 @@ where
             }
             // A later pass deletes it.
             NoteSync::Waiting => log::debug!(
-                "audio removal: {session_id} waits for a sync, so {ARTIFACT_FILE} stays for now"
+                "audio removal: {note_id} waits for a sync, so {ARTIFACT_FILE} stays for now"
             ),
         }
     }
 
     let store = lock(store);
-    let mut flags = store.removed_audio(session_id)?;
+    let mut flags = store.removed_audio(note_id)?;
     flags.extend(
         results
             .iter()
@@ -372,7 +369,7 @@ where
     );
     flags.sort();
     flags.dedup();
-    let flags_changed = store.set_removed_audio(session_id, &flags)?;
+    let flags_changed = store.set_removed_audio(note_id, &flags)?;
     Ok(Removal {
         segments: results,
         row_changed: refreshed.changed || flags_changed,
@@ -527,18 +524,18 @@ pub enum Eligibility {
     NotYet { due: DateTime<FixedOffset> },
 }
 
-/// Whether the removal of the audio of the note `session_id` can start
+/// Whether the removal of the audio of the note `note_id` can start
 /// (KTD5, KTD7). The last recording end is the latest segment `wall_end`.
 /// The check uses the store only and opens no file (KTD11). The step
 /// checks the state again after it takes its claim.
 pub fn eligibility(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     inputs: &EligibilityInputs,
 ) -> Result<Eligibility, StoreError> {
     let record = store
-        .session(session_id)?
-        .ok_or_else(|| StoreError::NoSuchSession(session_id.to_string()))?;
+        .session(note_id)?
+        .ok_or_else(|| StoreError::NoSuchSession(note_id.to_string()))?;
     if record.state != SessionState::Saved || record.home_path.is_none() {
         return Ok(Eligibility::NotSaved);
     }
@@ -548,11 +545,11 @@ pub fn eligibility(
     if inputs.in_use {
         return Ok(Eligibility::InUse);
     }
-    let segments = store.segments(session_id)?;
+    let segments = store.segments(note_id)?;
     let Some(end) = segments.iter().map(|s| s.wall_end).max() else {
         return Ok(Eligibility::NoRecording);
     };
-    let removed = store.removed_audio(session_id)?;
+    let removed = store.removed_audio(note_id)?;
     if segments.iter().all(|s| removed.contains(&s.audio_file)) {
         return Ok(Eligibility::NoAudio);
     }

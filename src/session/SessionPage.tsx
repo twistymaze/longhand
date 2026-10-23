@@ -237,7 +237,7 @@ export function SessionPage({
   // A recording that just started can be known first to the capture status
   // or first to the list. Either one makes the page open as a recording, so
   // it never opens on Summary and then moves to My Notes.
-  const open = capture.status?.session_id === id || entry?.state === "capturing";
+  const open = capture.status?.note_id === id || entry?.state === "capturing";
   const phase: Phase = open ? "recording" : !entry ? "missing" : entry.state === "saved" ? "saved" : "processing";
 
   const [chosen, setChosen] = useState<Tab>(phase === "recording" ? "notes" : "summary");
@@ -476,7 +476,7 @@ export function SessionPage({
   // the commands set a target state, so a second click does no harm
   // (KTD8). The click focuses the control, because WebKit does not, so the
   // focus stays on it when its name changes.
-  const pausable = phase === "recording" && capture.status?.session_id === id && capture.status.recording;
+  const pausable = phase === "recording" && capture.status?.note_id === id && capture.status.recording;
   const paused = capture.status?.paused ?? false;
   const pauseOrContinue = async (e: MouseEvent<HTMLButtonElement>) => {
     e.currentTarget.focus();
@@ -581,7 +581,7 @@ export function SessionPage({
   });
 
   const again = useTranscribeAgain({
-    sessionId: id,
+    noteId: id,
     available: phase === "saved" && !heldForAudio && !summarizing && !removed,
     onQueued: () => {
       setNotice(null);
@@ -591,7 +591,7 @@ export function SessionPage({
   });
 
   const removal = useRemoveAudio({
-    sessionId: id,
+    noteId: id,
     onRemoved: () => {
       setNotice(null);
       changed();
@@ -655,7 +655,7 @@ export function SessionPage({
   if (phase === "recording" && capture.status?.recording) {
     items.push({ label: "Number of Speakers…", onSelect: () => setSpeakers(true) });
   }
-  if (phase === "recording" && capture.status?.session_id === id) {
+  if (phase === "recording" && capture.status?.note_id === id) {
     const choice = capture.status.microphone_choice;
     items.push({
       label: "Microphone",
@@ -765,7 +765,7 @@ export function SessionPage({
   // The note's own live mode decides, not the model selected now (R9). A
   // Transcribe Again run has no live text.
   const liveMode = (detail?.live_transcript ?? false) && !detail?.transcribe_again;
-  const liveView = (mode: LiveMode) => <LiveTranscript sessionId={id} mode={mode} scroller={scroller} textAfterStop={!detail?.live_transcript} />;
+  const liveView = (mode: LiveMode) => <LiveTranscript noteId={id} mode={mode} scroller={scroller} textAfterStop={!detail?.live_transcript} />;
   const processing =
     detail && phase === "processing" ? (
       <ProcessingStatus
@@ -954,7 +954,7 @@ export function SessionPage({
         <div className="note-column pt-6 pb-1">
           <TitleField
             ref={title}
-            sessionId={id}
+            noteId={id}
             title={shown?.title ?? null}
             placeholder={shown ? sessionTitle(shown.started) : "Recording"}
             onRenamed={(n) => {
@@ -965,7 +965,7 @@ export function SessionPage({
           <p className="mt-1 text-[0.85rem] text-label-secondary tabular-nums">{subtitle}</p>
           {!deleted && phase !== "missing" && (
             <TypeAndTags
-              sessionId={id}
+              noteId={id}
               present={entry !== undefined}
               noteType={entry?.note_type ?? null}
               tags={entry?.tags ?? []}
@@ -1045,7 +1045,7 @@ export function SessionPage({
         <div ref={notesPanel} role="tabpanel" hidden={tab !== "notes"}>
           <NotesTab
             key={id}
-            sessionId={id}
+            noteId={id}
             autoFocus={phase === "recording" || started}
             editable={!notesHeld && !deleted}
             synced={sessions.synced[id] ?? 0}

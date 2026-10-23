@@ -24,14 +24,14 @@ pub fn segment_audio_file(index: u32) -> String {
 /// A session the sweep found recording under a dead process.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Recovered {
-    pub session_id: String,
+    pub note_id: String,
     pub state: SessionState,
 }
 
 /// A session that the sweep could not recover. It keeps its files.
 #[derive(Debug)]
 pub struct Failed {
-    pub session_id: String,
+    pub note_id: String,
     pub error: StageError,
 }
 
@@ -66,10 +66,7 @@ pub fn recover_crashed(store: &SharedStore, working_root: &Path) -> Result<Recov
             Err(error) => {
                 log::error!("could not recover session {id} after a crash: {error}");
                 interrupt_failed(store, &id, record.created_at);
-                report.failed.push(Failed {
-                    session_id: id,
-                    error,
-                });
+                report.failed.push(Failed { note_id: id, error });
                 continue;
             }
         };
@@ -77,10 +74,7 @@ pub fn recover_crashed(store: &SharedStore, working_root: &Path) -> Result<Recov
             "session {id} was recording when Longhand stopped; now {}",
             state.name()
         );
-        report.recovered.push(Recovered {
-            session_id: id,
-            state,
-        });
+        report.recovered.push(Recovered { note_id: id, state });
     }
     // A failed store write or an earlier failed recovery can leave chunks
     // with no segment row in an Interrupted session. Their rows are added,

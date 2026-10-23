@@ -151,7 +151,7 @@ export function Home({
   const restoreFocus = useRef(false);
   const selected = order.find((e) => e.id === selectedId) ?? order[0] ?? null;
   const pendingCapture =
-    recording !== null && !entries.some((e) => e.id === recording.sessionId);
+    recording !== null && !entries.some((e) => e.id === recording.noteId);
   useEffect(() => {
     setSelectedId(selected?.id ?? null);
   }, [selected?.id]);
@@ -433,13 +433,13 @@ export function Home({
                           <RecordingRow
                             key={entry.id}
                             recording={{
-                              sessionId: entry.id,
+                              noteId: entry.id,
                               elapsedMs:
-                                recording?.sessionId === entry.id
+                                recording?.noteId === entry.id
                                   ? recording.elapsedMs
                                   : entry.duration_ms,
                               interrupted: entry.state === "interrupted",
-                              paused: recording?.sessionId === entry.id && recording.paused === true,
+                              paused: recording?.noteId === entry.id && recording.paused === true,
                               noteType: rowType(entry.note_type),
                               tags: entry.tags,
                             }}

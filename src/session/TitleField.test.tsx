@@ -13,10 +13,10 @@ afterEach(() => {
 function setup(title: string | null) {
   const tauri = mockTauri({ rename_session: () => ({ kind: "later" }) });
   const onRenamed = vi.fn(() => {});
-  const view = render(<TitleField sessionId="s1" title={title} placeholder="Start" onRenamed={onRenamed} />);
+  const view = render(<TitleField noteId="s1" title={title} placeholder="Start" onRenamed={onRenamed} />);
   const field = () => screen.getByLabelText("Title") as HTMLInputElement;
   const rerender = (next: string | null) =>
-    view.rerender(<TitleField sessionId="s1" title={next} placeholder="Start" onRenamed={onRenamed} />);
+    view.rerender(<TitleField noteId="s1" title={next} placeholder="Start" onRenamed={onRenamed} />);
   const renames = () => tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args);
   return { field, rerender, renames, onRenamed };
 }
@@ -52,7 +52,7 @@ describe("TitleField", () => {
     expect(field().value).toBe("Typed");
     act(() => field().blur());
     await waitFor(() => expect(onRenamed).toHaveBeenCalled());
-    expect(renames()).toEqual([{ sessionId: "s1", title: "Typed" }]);
+    expect(renames()).toEqual([{ noteId: "s1", title: "Typed" }]);
   });
 
   test("Escape puts the title back and does not rename", async () => {

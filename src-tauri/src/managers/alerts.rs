@@ -41,7 +41,7 @@ fn cue_times(cue: bool, alert_sound: bool) -> &'static [Duration] {
 const WATCH: Duration = Duration::from_secs(1);
 
 struct Raised {
-    session_id: String,
+    note_id: String,
     generation: u64,
     cancel: CancellationToken,
 }
@@ -102,7 +102,7 @@ impl AlertsManager {
         self: &Arc<Self>,
         app: &AppHandle,
         capture: &Arc<CaptureManager>,
-        session_id: &str,
+        note_id: &str,
         reason: InterruptReason,
         detail: Option<&str>,
         cue: bool,
@@ -116,7 +116,7 @@ impl AlertsManager {
         {
             let mut raised = self.raised.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(previous) = raised.replace(Raised {
-                session_id: session_id.to_string(),
+                note_id: note_id.to_string(),
                 generation,
                 cancel: cancel.clone(),
             }) {
@@ -125,12 +125,12 @@ impl AlertsManager {
         }
         crate::tray::set_alert(app, Some(headline(reason)));
         notify(app, reason, detail);
-        log::warn!("failed-capture alert raised for {session_id}");
+        log::warn!("failed-capture alert raised for {note_id}");
 
         let alerts = Arc::clone(self);
         let app = app.clone();
         let capture = Arc::clone(capture);
-        let id = session_id.to_string();
+        let id = note_id.to_string();
         let spawned = std::thread::Builder::new()
             .name("longhand-alert".into())
             .spawn(move || {
@@ -159,20 +159,20 @@ impl AlertsManager {
     }
 
     /// Stop the cue at once for a session the user has acted on.
-    pub fn clear(&self, session_id: &str) {
+    pub fn clear(&self, note_id: &str) {
         let raised = self.raised.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(raised) = raised.as_ref().filter(|r| r.session_id == session_id) {
+        if let Some(raised) = raised.as_ref().filter(|r| r.note_id == note_id) {
             raised.cancel.cancel();
         }
     }
 
-    fn cleared(&self, app: &AppHandle, session_id: &str, generation: u64) {
+    fn cleared(&self, app: &AppHandle, note_id: &str, generation: u64) {
         let mut raised = self.raised.lock().unwrap_or_else(|e| e.into_inner());
         // A newer alert may have replaced this one; it owns the tray now.
         if raised.as_ref().is_some_and(|r| r.generation == generation) {
             *raised = None;
             crate::tray::set_alert(app, None);
-            log::info!("failed-capture alert for {session_id} ended");
+            log::info!("failed-capture alert for {note_id} ended");
         }
     }
 

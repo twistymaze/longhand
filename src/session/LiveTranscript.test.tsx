@@ -17,13 +17,13 @@ function Harness({ id = "rec", mode = "recording" }: { id?: string; mode?: LiveM
   const scroller = useRef<HTMLElement>(null);
   return (
     <main ref={scroller} data-testid="scroller">
-      <LiveTranscript sessionId={id} mode={mode} scroller={scroller} />
+      <LiveTranscript noteId={id} mode={mode} scroller={scroller} />
     </main>
   );
 }
 
-const text = (session_id: string, committed: string, tentative = "", part = 0) => ({
-  session_id,
+const text = (note_id: string, committed: string, tentative = "", part = 0) => ({
+  note_id,
   segment: 0,
   part,
   offset_ms: 0,
@@ -49,7 +49,7 @@ const turn = (start: number, end: number, speaker: string, speaker_final = true)
 
 /// A complete speaker snapshot of one epoch.
 const snapshot = (revision: number, rows: ReturnType<typeof turn>[], epoch = 0) => {
-  const base = { session_id: "rec", generation: "g", epoch, key: "speakers", revision };
+  const base = { note_id: "rec", generation: "g", epoch, key: "speakers", revision };
   return [
     { ...base, phase: "snapshot_begin" as const, rows: [] },
     { ...base, phase: "snapshot_batch" as const, rows },
@@ -120,7 +120,7 @@ describe("LiveTranscript", () => {
     const schedule = controlledRecognitionSchedule();
     try {
       await act(() => tauri.emit("live-recognition-event", {
-        session_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch", revision: 1,
+        note_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch", revision: 1,
         rows: [{ start_sample: 0, end_sample: 16000, text: "Hidden window words", speaker: null, text_final: true, speaker_final: true }],
       }));
       expect(screen.queryByText("Hidden window words")).toBeNull();
@@ -141,7 +141,7 @@ describe("LiveTranscript", () => {
     try {
       await act(async () => {
         for (let i = 0; i < 1000; i++) await tauri.emit("live-recognition-event", {
-          session_id: "rec", generation: "g", epoch: 0, key: `word${i}`, phase: "patch", revision: 1,
+          note_id: "rec", generation: "g", epoch: 0, key: `word${i}`, phase: "patch", revision: 1,
           rows: [{ start_sample: i * 16000, end_sample: (i + 1) * 16000, text: `word${i}`, speaker: "g:0:0:1", text_final: true, speaker_final: true }],
         });
       });
@@ -165,7 +165,7 @@ describe("LiveTranscript", () => {
     const schedule = controlledRecognitionSchedule();
     try {
       await act(() => tauri.emit("live-recognition-event", {
-        session_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch", revision: 1,
+        note_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch", revision: 1,
         rows: [{ start_sample: 0, end_sample: 16000, text: "Previous note", speaker: null, text_final: true, speaker_final: true }],
       }));
       rerender(<Harness id="next" />);
@@ -180,7 +180,7 @@ describe("LiveTranscript", () => {
 
   test("a status event flushes an earlier recognition correction and cancels both callbacks", async () => {
     const initial = {
-      session_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch" as const, revision: 1,
+      note_id: "rec", generation: "g", epoch: 0, key: "word", phase: "patch" as const, revision: 1,
       rows: [{ start_sample: 0, end_sample: 16000, text: "Earlier words", speaker: "g:0:0:1", text_final: true, speaker_final: true }],
     };
     const tauri = mockLive({ ...empty, recognition: [initial] });
@@ -192,7 +192,7 @@ describe("LiveTranscript", () => {
         ...initial, revision: 2, rows: [{ ...initial.rows[0], text: "Corrected words", speaker: "g:0:0:2" }],
       }));
       expect(screen.queryByText("Corrected words")).toBeNull();
-      await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "behind" }));
+      await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 0, state: "behind" }));
       expect(screen.getByText("Corrected words")).toBeTruthy();
       expect(screen.getByText("Speaker labels updated.")).toBeTruthy();
       expect(screen.getByText("Live transcript paused. The missing part is transcribed after you stop.")).toBeTruthy();
@@ -210,7 +210,7 @@ describe("LiveTranscript", () => {
     render(<Harness />);
     await screen.findByText("The transcript shows here as people speak.");
     const send = async (phase: string, revision: number, speaker = "g:0:0:1") => act(() => tauri.emit("live-recognition-event", {
-      session_id: "rec", generation: "g", epoch: 0, key: "interim", phase, revision,
+      note_id: "rec", generation: "g", epoch: 0, key: "interim", phase, revision,
       rows: phase.endsWith("batch") || phase === "patch" ? [{ start_sample: 0, end_sample: 16000, text: "Native words", speaker, text_final: phase === "patch", speaker_final: phase === "patch" }] : [],
     }));
     await send("interim_begin", 1);
@@ -232,7 +232,7 @@ describe("LiveTranscript", () => {
     render(<Harness />);
     await screen.findByText("The transcript shows here as people speak.");
     await act(() => tauri.emit("live-recognition-event", {
-      session_id: "rec", generation: "", epoch: 0, key: "failure", phase: "failed", revision: 0,
+      note_id: "rec", generation: "", epoch: 0, key: "failure", phase: "failed", revision: 0,
       rows: [{ start_sample: 0, end_sample: 0, text: "Recognition unavailable", speaker: null, text_final: false, speaker_final: false }],
     }));
     expect(screen.getByRole("alert").textContent).toContain("Recognition unavailable");
@@ -242,7 +242,7 @@ describe("LiveTranscript", () => {
   test("a complete speaker snapshot replaces earlier labels and keeps epoch namespaces separate", async () => {
     const tauri = mockLive(); render(<Harness />);
     await screen.findByText("The transcript shows here as people speak.");
-    const send = async (phase: string, revision: number, rows: unknown[], epoch = 0, key = "speech") => act(() => tauri.emit("live-recognition-event", { session_id: "rec", generation: "g", epoch, key, phase, revision, rows }));
+    const send = async (phase: string, revision: number, rows: unknown[], epoch = 0, key = "speech") => act(() => tauri.emit("live-recognition-event", { note_id: "rec", generation: "g", epoch, key, phase, revision, rows }));
     const words = (start: number, text: string) => ({ start_sample: start, end_sample: start + 16000, text, speaker: null, text_final: true, speaker_final: false });
     const label = (speaker: string) => ({ start_sample: 0, end_sample: 16000, text: null, speaker, text_final: false, speaker_final: true });
     await send("patch", 1, [words(0, "First epoch")]);
@@ -269,7 +269,7 @@ describe("LiveTranscript", () => {
     render(<Harness />);
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "live_transcript")).toBe(true));
     const row = { start_sample: 0, end_sample: 16000, text: "Old words", speaker: null, text_final: true, speaker_final: true };
-    const patch = { session_id: "rec", phase: "patch" as const, generation: "g", epoch: 0, key: "text", revision: 1, rows: [row] };
+    const patch = { note_id: "rec", phase: "patch" as const, generation: "g", epoch: 0, key: "text", revision: 1, rows: [row] };
     await act(() => tauri.emit("live-recognition-event", { ...patch, revision: 2, rows: [{ ...row, text: "New words" }] }));
     await act(async () => answer({ recognition: [patch], parts: [], current: null, state: "running" }));
     expect(screen.getByText("New words")).toBeTruthy();
@@ -285,7 +285,7 @@ describe("LiveTranscript", () => {
   test("equal speaker overlaps stay unassigned instead of choosing the first label", async () => {
     const tauri = mockLive(); render(<Harness />);
     await screen.findByText("The transcript shows here as people speak.");
-    const event = { session_id: "rec", generation: "g", epoch: 0, key: "text", revision: 1 };
+    const event = { note_id: "rec", generation: "g", epoch: 0, key: "text", revision: 1 };
     await act(() => tauri.emit("live-recognition-event", { ...event, phase: "patch", rows: [{ start_sample: 0, end_sample: 16000, text: "Overlapping speech", speaker: null, text_final: true, speaker_final: false }] }));
     await act(() => tauri.emit("live-recognition-event", { ...event, key: "speakers", phase: "snapshot_begin", rows: [] }));
     await act(() => tauri.emit("live-recognition-event", { ...event, key: "speakers", phase: "snapshot_batch", rows: [
@@ -339,7 +339,7 @@ describe("LiveTranscript", () => {
     await act(() => tauri.emit("live-transcript-event", text("rec", "We agreed", " the bud")));
     await act(() =>
       tauri.emit("live-part-saved", {
-        session_id: "rec",
+        note_id: "rec",
         segment: 0,
         part: 0,
         start_ms: 0,
@@ -387,11 +387,11 @@ describe("LiveTranscript", () => {
     });
     render(<Harness />);
     await screen.findByText("Before the gap.");
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "behind" }));
+    await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 0, state: "behind" }));
     expect(screen.getByText("Live transcript paused. The missing part is transcribed after you stop.")).toBeTruthy();
     expect(screen.getByText("Before the gap.")).toBeTruthy();
     // The worker reports running again with the first text after the gap.
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "running" }));
+    await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 0, state: "running" }));
     await act(() => tauri.emit("live-transcript-event", text("rec", "After the gap", "", 1)));
     expect(screen.queryByText(/Live transcript paused/)).toBeNull();
   });
@@ -406,7 +406,7 @@ describe("LiveTranscript", () => {
     await screen.findByText("Before the pause.");
     expect(screen.getByText("Paused. Nothing is recorded until you continue.")).toBeTruthy();
     // The worker can report that it fell behind when the segment ends.
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "behind" }));
+    await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 0, state: "behind" }));
     expect(screen.getByText("Paused. Nothing is recorded until you continue.")).toBeTruthy();
     expect(screen.queryByText(/Live transcript paused/)).toBeNull();
     expect(screen.queryByText(/The missing part/)).toBeNull();
@@ -427,7 +427,7 @@ describe("LiveTranscript", () => {
     const { rerender } = render(<Harness mode="paused" />);
     await screen.findByText("Before the pause.");
     rerender(<Harness mode="recording" />);
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 1, state: "running" }));
+    await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 1, state: "running" }));
     await act(() => tauri.emit("live-transcript-event", { ...text("rec", "After the pause"), segment: 1 }));
     expect(paragraphs()).toEqual(["Before the pause.", "After the pause"]);
     expect(screen.queryByText("Paused. Nothing is recorded until you continue.")).toBeNull();
@@ -450,8 +450,8 @@ describe("LiveTranscript", () => {
     const tauri = mockLive({ recognition: [], parts: [], current: null, state: "starting" });
     render(<Harness />);
     await screen.findByText("Starting the live transcript…");
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "unavailable" }));
-    await act(() => tauri.emit("live-transcript-status", { session_id: "rec", segment: 0, state: "ended" }));
+    await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 0, state: "unavailable" }));
+    await act(() => tauri.emit("live-transcript-status", { note_id: "rec", segment: 0, state: "ended" }));
     expect(screen.getByText("The transcript is ready after you stop recording.")).toBeTruthy();
   });
 
@@ -521,7 +521,7 @@ test("word-level live updates read as one paragraph with one provisional notice"
   const tauri = mockLive();
   render(<Harness />);
   await screen.findByText("The transcript shows here as people speak.");
-  const event = { session_id: "rec", generation: "g", epoch: 0, key: "interim", revision: 1 };
+  const event = { note_id: "rec", generation: "g", epoch: 0, key: "interim", revision: 1 };
   await act(() => tauri.emit("live-recognition-event", { ...event, phase: "interim_begin", rows: [] }));
   await act(() => tauri.emit("live-recognition-event", { ...event, phase: "interim_batch", rows: ["New", "test", "with", "the", "live", "transcript."].map((text, index) => ({
     start_sample: index * 4000, end_sample: (index + 1) * 4000,
@@ -540,7 +540,7 @@ test("partial post-recording results do not duplicate the complete live transcri
     parts: [{ segment: 0, part: 0, offset_ms: 0, words: [], start_ms: 0, end_ms: 10000, text: "The first passage." }],
     current: { segment: 1, part: 0, offset_ms: 0, words: [], committed: "The resumed passage.", tentative: "" },
     state: "ended",
-    recognition: [{ session_id: "rec", generation: "g", epoch: 0, key: "native-window/0/0", phase: "patch", revision: 1,
+    recognition: [{ note_id: "rec", generation: "g", epoch: 0, key: "native-window/0/0", phase: "patch", revision: 1,
       rows: [{ start_sample: 0, end_sample: 160000, text: "The first passage.", speaker: "g:0:0:1", text_final: true, speaker_final: true }],
     }],
   });
@@ -688,7 +688,7 @@ describe("speaker rows (U6)", () => {
     await screen.findByText(words);
     await send(tauri, snapshot(1, [turn(0, 2500, "g:0:0:1")]));
     await send(tauri, [{
-      session_id: "rec", generation: "g", epoch: 0, key: "failure", phase: "failed", revision: 0,
+      note_id: "rec", generation: "g", epoch: 0, key: "failure", phase: "failed", revision: 0,
       rows: [{ start_sample: 0, end_sample: 0, text: "Speaker recognition stopped.", speaker: null, text_final: false, speaker_final: false }],
     }]);
     expect(screen.getByRole("alert").textContent).toBe("Speaker recognition stopped.");

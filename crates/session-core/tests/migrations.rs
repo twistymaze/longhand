@@ -22,10 +22,10 @@ fn add_session(conn: &Connection, id: &str) {
     .unwrap();
 }
 
-fn add_note(conn: &Connection, session_id: Option<&str>, text: &str, anchor: &str) {
+fn add_note(conn: &Connection, note_id: Option<&str>, text: &str, anchor: &str) {
     conn.execute(
         "INSERT INTO notes (session_id, text, anchor) VALUES (?1, ?2, ?3)",
-        params![session_id, text, anchor],
+        params![note_id, text, anchor],
     )
     .unwrap();
 }
@@ -852,7 +852,7 @@ fn migration_twenty_two_keeps_the_rows_of_each_table_with_their_note_id() {
 }
 
 #[test]
-fn after_migration_twenty_two_no_table_has_a_session_id_column() {
+fn after_migration_twenty_two_no_table_has_the_old_id_column() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("longhand.db");
     drop(Store::open(&path).unwrap());

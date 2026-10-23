@@ -191,12 +191,12 @@ fn copy_one(working: &Path, home: &dyn Fn() -> Option<PathBuf>, audio_file: &str
     }
 }
 
-/// [`copy`] with the home folder that the store records for `session_id`
+/// [`copy`] with the home folder that the store records for `note_id`
 /// now.
-pub fn copy_for(store: &SharedStore, session_id: &str, working: &Path) -> io::Result<()> {
+pub fn copy_for(store: &SharedStore, note_id: &str, working: &Path) -> io::Result<()> {
     let home = || {
         lock(store)
-            .session(session_id)
+            .session(note_id)
             .ok()
             .flatten()
             .and_then(|record| record.home_path)

@@ -46,7 +46,7 @@ function DownChevron() {
 }
 
 export function TypeAndTags({
-  sessionId,
+  noteId,
   present,
   noteType,
   tags,
@@ -56,7 +56,7 @@ export function TypeAndTags({
   onTypeChanged,
   locked = null,
 }: {
-  sessionId: string;
+  noteId: string;
   /// The list has the note. Until then the row is empty.
   present: boolean;
   /// The type that the app shows (`SessionEntry.note_type`).
@@ -126,7 +126,7 @@ export function TypeAndTags({
 
   const chooseType = async (next: string | null) => {
     if (!shown || next === shown.noteType) return;
-    const result = await commands.setNoteType(sessionId, next);
+    const result = await commands.setNoteType(noteId, next);
     onNotice(typeNotice(result));
     if (result.status === "ok") {
       setShown((s) => (s ? { ...s, noteType: next } : s));
@@ -136,7 +136,7 @@ export function TypeAndTags({
   };
 
   const editTags = async (add: string[], remove: string[]) => {
-    const result = await commands.setNoteTags(sessionId, add, remove);
+    const result = await commands.setNoteTags(noteId, add, remove);
     if (result.status === "error") {
       onNotice({ tone: "negative", text: sentence(result.error) });
       return;

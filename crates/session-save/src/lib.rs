@@ -68,7 +68,7 @@ pub enum SaveState {
 }
 
 pub struct Job<'a> {
-    pub session_id: &'a str,
+    pub note_id: &'a str,
     pub working: &'a Path,
     pub destination: &'a Path,
     /// See [`naming::folder_name`].
@@ -165,8 +165,8 @@ pub fn remove_marker_last(dir: &Path, marker: &str) -> io::Result<()> {
     std::fs::remove_dir_all(dir)
 }
 
-fn is_ours(staging: &Path, session_id: &str) -> bool {
-    std::fs::read_to_string(staging.join(MARKER)).is_ok_and(|m| m.trim() == session_id)
+fn is_ours(staging: &Path, note_id: &str) -> bool {
+    std::fs::read_to_string(staging.join(MARKER)).is_ok_and(|m| m.trim() == note_id)
 }
 
 fn exists(path: &Path) -> bool {
@@ -175,12 +175,12 @@ fn exists(path: &Path) -> bool {
 
 /// Take one save step from `state`.
 pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, SaveError> {
-    let staging = job.destination.join(naming::staging_name(job.session_id));
+    let staging = job.destination.join(naming::staging_name(job.note_id));
     match state {
         SaveState::Working => {
             if !exists(job.working) {
                 // The move happened and its record did not.
-                if is_ours(&staging, job.session_id) {
+                if is_ours(&staging, job.note_id) {
                     return Ok(SaveState::Staged {
                         staging,
                         copied: false,
@@ -193,18 +193,18 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
             }
             check_destination(job.destination)?;
             if exists(&staging) {
-                if !is_ours(&staging, job.session_id) {
+                if !is_ours(&staging, job.note_id) {
                     return Err(SaveError::StagingTaken(staging));
                 }
                 // A copy of this session whose removal failed. The working
                 // copy is whole, so the staging is not the only copy.
                 log::info!(
                     "removing the staging that an earlier save of {} left",
-                    job.session_id
+                    job.note_id
                 );
                 remove_marker_last(&staging, MARKER)?;
             }
-            std::fs::write(job.working.join(MARKER), job.session_id)?;
+            std::fs::write(job.working.join(MARKER), job.note_id)?;
             fsync::sync_tree(job.working)?;
             match fs.rename(job.working, &staging) {
                 Ok(()) => {
@@ -232,7 +232,7 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
                 remove_marker_last(staging, MARKER)?;
             }
             check_destination(job.destination)?;
-            if let Err(e) = stage::copy_staging(job.working, staging, job.session_id, LEFT_BEHIND) {
+            if let Err(e) = stage::copy_staging(job.working, staging, job.note_id, LEFT_BEHIND) {
                 // A staging that stays has the marker, and the next save
                 // removes it.
                 if let Err(removal) = remove_marker_last(staging, MARKER) {
@@ -256,7 +256,7 @@ pub fn step(state: &SaveState, job: &Job, fs: &dyn Fs) -> Result<SaveState, Save
                 // marker, kept through the rename, finds the folder.
                 if let Some(path) = (1..=MAX_NAMES)
                     .map(|attempt| root.join(naming::candidate(job.folder_name, attempt)))
-                    .find(|path| is_ours(path, job.session_id))
+                    .find(|path| is_ours(path, job.note_id))
                 {
                     return Ok(SaveState::Saved {
                         path,

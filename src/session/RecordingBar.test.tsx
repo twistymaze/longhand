@@ -52,7 +52,7 @@ describe("RecordingBar", () => {
 
 describe("the app audio warnings", () => {
   const status: RecordingStatus = {
-    session_id: "rec",
+    note_id: "rec",
     state: "capturing",
     recording: true,
     paused: false,

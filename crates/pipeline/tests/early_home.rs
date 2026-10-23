@@ -312,7 +312,7 @@ fn a_crash_while_the_staging_folder_is_partly_written_completes_it_in_one_folder
 }
 
 #[test]
-fn a_crash_after_the_rename_and_before_its_record_finds_the_folder_by_session_id() {
+fn a_crash_after_the_rename_and_before_its_record_finds_the_folder_by_note_id() {
     let dest = tempfile::tempdir().unwrap();
     let store = store();
     recording_note(&store, "s", "");

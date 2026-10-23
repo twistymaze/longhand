@@ -51,9 +51,9 @@ pub enum Resolved {
     Missing,
 }
 
-/// The temporary name for `session_id`'s change of case.
-pub fn temp_name(session_id: &str) -> String {
-    format!("{TEMP_PREFIX}{session_id}")
+/// The temporary name for `note_id`'s change of case.
+pub fn temp_name(note_id: &str) -> String {
+    format!("{TEMP_PREFIX}{note_id}")
 }
 
 /// Whether a folder called `current` already has the name `name` gives:
@@ -77,14 +77,14 @@ pub fn has_name(current: &str, name: &str) -> bool {
 pub fn rename(
     from: &Path,
     name: &str,
-    session_id: &str,
+    note_id: &str,
     fs: &dyn Fs,
     record: &mut dyn FnMut(&Move) -> Result<(), RenameError>,
 ) -> Result<PathBuf, RenameError> {
     let Some(parent) = from.parent() else {
         return Err(RenameError::Missing(from.to_path_buf()));
     };
-    rename_into(from, parent, name, session_id, fs, record)
+    rename_into(from, parent, name, note_id, fs, record)
 }
 
 /// Move the folder `from` into the folder `parent` with the name `name`,
@@ -96,7 +96,7 @@ pub fn rename_into(
     from: &Path,
     parent: &Path,
     name: &str,
-    session_id: &str,
+    note_id: &str,
     fs: &dyn Fs,
     record: &mut dyn FnMut(&Move) -> Result<(), RenameError>,
 ) -> Result<PathBuf, RenameError> {
@@ -126,7 +126,7 @@ pub fn rename_into(
         let intent = Move {
             from: from.to_path_buf(),
             to: to.clone(),
-            temp: (case_only || at_temp).then(|| parent.join(temp_name(session_id))),
+            temp: (case_only || at_temp).then(|| parent.join(temp_name(note_id))),
         };
         record(&intent)?;
         match take(&intent, fs) {

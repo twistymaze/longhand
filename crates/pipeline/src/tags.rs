@@ -94,7 +94,7 @@ pub fn edited(tags: &[String], edit: &BulkEdit) -> Option<Vec<String>> {
     }
 }
 
-/// The user adds the tags `add` to the note `session_id` and removes the
+/// The user adds the tags `add` to the note `note_id` and removes the
 /// tags `remove` (R10). This works during a recording and during
 /// processing. The tags of `add` must have passed [`check_tag`]. Returns
 /// the tags of the note after the edit.
@@ -105,47 +105,43 @@ pub fn edited(tags: &[String], edit: &BulkEdit) -> Option<Vec<String>> {
 pub fn set_note_tags(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     add: &[String],
     remove: &[String],
 ) -> Result<Vec<String>, StageError> {
-    write_tags(store, claims, session_id, &|tags| {
-        changed(tags, add, remove)
-    })
+    write_tags(store, claims, note_id, &|tags| changed(tags, add, remove))
 }
 
-/// Apply `edit` to the tags of the note `session_id`, in `session.md` and
+/// Apply `edit` to the tags of the note `note_id`, in `session.md` and
 /// in the row. A note whose early write is not done has its tags in the row
 /// only, and the early write puts them into `session.md`. Under the note
 /// guard of the early write, so the write and the edit do not overlap.
 fn write_tags(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     edit: &dyn Fn(&[String]) -> Vec<String>,
 ) -> Result<Vec<String>, StageError> {
     // A note with a home folder needs no guard: the early write is done,
     // and each later writer reads the tags of the file under the store
     // lock.
     let has_home = |store: &Store| -> Result<bool, StageError> {
-        let record = store
-            .session(session_id)?
-            .ok_or_else(|| no_session(session_id))?;
-        Ok(home_to_write(store, session_id, record.home_path.as_deref())?.is_some())
+        let record = store.session(note_id)?.ok_or_else(|| no_session(note_id))?;
+        Ok(home_to_write(store, note_id, record.home_path.as_deref())?.is_some())
     };
     let home_first = has_home(&lock(store))?;
-    let mut note_guard = (!home_first).then(|| early_home::guard(session_id));
-    let mut guard = crate::move_notes::lock_unheld(store, claims, session_id);
+    let mut note_guard = (!home_first).then(|| early_home::guard(note_id));
+    let mut guard = crate::move_notes::lock_unheld(store, claims, note_id);
     // A rehome between the first check and the store lock makes the home
     // folder one that gets no write: the edit then needs the note guard, so
     // that it does not overlap the new early write. The guard comes before
     // the store lock.
     if note_guard.is_none() && !has_home(&guard)? {
         drop(guard);
-        note_guard = Some(early_home::guard(session_id));
-        guard = crate::move_notes::lock_unheld(store, claims, session_id);
+        note_guard = Some(early_home::guard(note_id));
+        guard = crate::move_notes::lock_unheld(store, claims, note_id);
     }
-    let edited = write_locked(&guard, session_id, edit);
+    let edited = write_locked(&guard, note_id, edit);
     drop(guard);
     drop(note_guard);
     edited
@@ -154,45 +150,43 @@ fn write_tags(
 /// [`write_tags`] with the store lock held.
 fn write_locked(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     edit: &dyn Fn(&[String]) -> Vec<String>,
 ) -> Result<Vec<String>, StageError> {
-    let record = store
-        .session(session_id)?
-        .ok_or_else(|| no_session(session_id))?;
-    let Some(home) = home_to_write(store, session_id, record.home_path.as_deref())? else {
+    let record = store.session(note_id)?.ok_or_else(|| no_session(note_id))?;
+    let Some(home) = home_to_write(store, note_id, record.home_path.as_deref())? else {
         let tags = edit(&record.tags);
         // A staging folder that is complete becomes the home folder with
         // its `session.md` as it is: that file gets the tags too.
-        if let Some(EarlyState::Filled { root, .. }) = early_home::state(store, session_id)? {
-            let staging = root.join(session_save::naming::staging_name(session_id));
-            write_file(&staging, session_id, &|_| tags.clone())?;
+        if let Some(EarlyState::Filled { root, .. }) = early_home::state(store, note_id)? {
+            let staging = root.join(session_save::naming::staging_name(note_id));
+            write_file(&staging, note_id, &|_| tags.clone())?;
         }
         if tags != record.tags {
-            store.set_tags(session_id, &tags)?;
+            store.set_tags(note_id, &tags)?;
         }
         return Ok(tags);
     };
-    let tags = write_file(&home, session_id, edit)?;
+    let tags = write_file(&home, note_id, edit)?;
     if tags != record.tags {
-        store.set_tags(session_id, &tags)?;
+        store.set_tags(note_id, &tags)?;
     }
     Ok(tags)
 }
 
-/// The home folder `home` of `session_id` when a tag edit writes into it.
+/// The home folder `home` of `note_id` when a tag edit writes into it.
 /// An old home folder of a note that gets a new early write is not
 /// written: the new early write takes the tags from the row
 /// ([`early_home::rehoming`]).
 fn home_to_write(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     home: Option<&str>,
 ) -> Result<Option<PathBuf>, StageError> {
     let Some(home) = home.map(PathBuf::from) else {
         return Ok(None);
     };
-    if early_home::rehoming(store, session_id, &home)? {
+    if early_home::rehoming(store, note_id, &home)? {
         return Ok(None);
     }
     Ok(Some(home))
@@ -204,7 +198,7 @@ fn home_to_write(
 /// key (R8). Returns the tags of the file after the edit.
 fn write_file(
     folder: &Path,
-    session_id: &str,
+    note_id: &str,
     edit: &dyn Fn(&[String]) -> Vec<String>,
 ) -> Result<Vec<String>, StageError> {
     let unavailable = |why: String| {
@@ -223,7 +217,7 @@ fn write_file(
         NoteRead::Invalid(invalid) => return Err(unavailable(invalid.reason)),
         NoteRead::Unreadable(why) => return Err(unavailable(why)),
     };
-    if files.doc.note_id != session_id {
+    if files.doc.note_id != note_id {
         return Err(unavailable(format!(
             "the files are of the note {}",
             files.doc.note_id
@@ -384,6 +378,6 @@ pub fn tag_list(store: &Store) -> Result<Vec<TagCount>, StageError> {
     Ok(list)
 }
 
-fn no_session(session_id: &str) -> StageError {
-    StageError::Failed(format!("no session {session_id}"))
+fn no_session(note_id: &str) -> StageError {
+    StageError::Failed(format!("no session {note_id}"))
 }

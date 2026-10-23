@@ -18,7 +18,7 @@ const readiness: Readiness = {
 };
 
 const idle: RecordingStatus = {
-  session_id: null,
+  note_id: null,
   state: null,
   recording: false,
   reconnecting: false,
@@ -70,7 +70,7 @@ function mockApp(
     app_audio_available: () => true,
     list_sessions: () => entries.current,
     load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
-    session_detail: ({ sessionId }) => ({ entry: entries.current.find((e) => e.id === sessionId) ?? recordingEntry, done: [], current: null, resumable: false }),
+    session_detail: ({ noteId }) => ({ entry: entries.current.find((e) => e.id === noteId) ?? recordingEntry, done: [], current: null, resumable: false }),
     session_document: () => ({ has_speakers: false, lines: [], transcript_markdown: "", summary: null }),
   });
 }
@@ -152,9 +152,9 @@ describe("App", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
 
-    status.current = { ...idle, session_id: "rec", state: "capturing", recording: true };
+    status.current = { ...idle, note_id: "rec", state: "capturing", recording: true };
     entries.current = [recordingEntry];
-    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: true }));
+    await act(() => tauri.emit("recording-changed", { note_id: "rec", opened: true }));
     const back = await screen.findByRole("button", { name: "Back" });
 
     await userEvent.setup().click(back);
@@ -164,20 +164,20 @@ describe("App", () => {
 
   test("a change of the recording note that opens no segment keeps the note that the user opened", async () => {
     const b: SessionEntry = { ...recordingEntry, id: "b", title: "Beta", state: "saved" };
-    const status = { current: { ...idle, session_id: "rec", state: "capturing", recording: true } };
+    const status = { current: { ...idle, note_id: "rec", state: "capturing", recording: true } };
     const tauri = mockApp(status, { current: [{ ...recordingEntry, title: "Alpha" }, b] });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
-    await act(() => tauri.emit("show-session", { session_id: "b" }));
+    await act(() => tauri.emit("show-session", { note_id: "b" }));
     const title = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
     expect(title.value).toBe("Beta");
 
     // A pause, a device switch or a Computer audio change sends the id with `opened: false`.
-    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: false }));
+    await act(() => tauri.emit("recording-changed", { note_id: "rec", opened: false }));
     expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Beta");
 
     // A resume opens a segment and shows the recording note.
-    await act(() => tauri.emit("recording-changed", { session_id: "rec", opened: true }));
+    await act(() => tauri.emit("recording-changed", { note_id: "rec", opened: true }));
     await waitFor(() =>
       expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Alpha"),
     );
@@ -186,7 +186,7 @@ describe("App", () => {
   // Covers R9, R11, and a window opened while paused.
   test("a paused note shows on Home as the paused open-note row with the recorded time, and no New Note", async () => {
     const status = {
-      current: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true, recorded_ms: 312_000 },
+      current: { ...idle, note_id: "rec", state: "capturing", recording: true, paused: true, recorded_ms: 312_000 },
     };
     mockApp(status, { current: [recordingEntry] });
     render(<App />);
@@ -199,7 +199,7 @@ describe("App", () => {
   // Covers R9: an interrupted note keeps its own row.
   test("an interrupted note shows on Home as Recording interrupted", async () => {
     const status = {
-      current: { ...idle, session_id: "rec", state: "interrupted", interruption: { headline: "Microphone lost", disk: false } },
+      current: { ...idle, note_id: "rec", state: "interrupted", interruption: { headline: "Microphone lost", disk: false } },
     };
     mockApp(status, { current: [{ ...recordingEntry, state: "interrupted" }] });
     render(<App />);
@@ -208,13 +208,13 @@ describe("App", () => {
 
   // Covers R3: the tray's "Open Longhand" during a recording.
   test("a request to show a session opens its page", async () => {
-    const status = { current: { ...idle, session_id: "rec", state: "capturing", recording: true } };
+    const status = { current: { ...idle, note_id: "rec", state: "capturing", recording: true } };
     const entries = { current: [recordingEntry] };
     const tauri = mockApp(status, entries);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
-    await act(() => tauri.emit("show-session", { session_id: "rec" }));
+    await act(() => tauri.emit("show-session", { note_id: "rec" }));
     expect(await screen.findByRole("button", { name: "Back" })).toBeTruthy();
   });
 
@@ -224,7 +224,7 @@ describe("App", () => {
     const tauri = mockApp({ current: idle }, { current: [note] });
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
-    await act(() => tauri.emit("show-session", { session_id: "n" }));
+    await act(() => tauri.emit("show-session", { note_id: "n" }));
     const editor = await screen.findByRole("textbox", { name: "My Notes" });
     await waitFor(() => expect(editor === document.activeElement || editor.contains(document.activeElement)).toBe(true));
   });
@@ -246,8 +246,8 @@ describe("App", () => {
       app_audio_available: () => true,
       list_sessions: () => entries,
         load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
-      session_detail: ({ sessionId }) => ({
-        entry: entries.find((e) => e.id === sessionId),
+      session_detail: ({ noteId }) => ({
+        entry: entries.find((e) => e.id === noteId),
         done: [],
         current: null,
         resumable: false,
@@ -259,14 +259,14 @@ describe("App", () => {
     expect(await screen.findByRole("heading", { name: "Notes" })).toBeTruthy();
     await screen.findByRole("option", { name: /Alpha/ });
 
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     const first = (await screen.findByRole("textbox", { name: "Title" })) as HTMLInputElement;
     expect(first.value).toBe("Alpha");
     const user = userEvent.setup();
     await user.click(first);
     await user.keyboard(" draft");
 
-    await act(() => tauri.emit("show-session", { session_id: "b" }));
+    await act(() => tauri.emit("show-session", { note_id: "b" }));
     const second = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
     await act(async () => {
       fireEvent.blur(second);
@@ -350,42 +350,42 @@ describe("the shown note (KTD7, R18)", () => {
     render(<App />);
     const user = userEvent.setup();
     await user.dblClick(await screen.findByRole("option", { name: /Alpha/ }));
-    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: "a" }));
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ noteId: "a" }));
     expect(args(tauri, "leave_note")).toEqual([]);
 
     await user.click(await screen.findByRole("button", { name: "Back" }));
-    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: null }));
-    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ noteId: null }));
+    expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]);
   });
 
   test("a note that opens in place of another leaves the first note", async () => {
     const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha"), saved("b", "Beta")] });
     render(<App />);
     await screen.findByRole("option", { name: /Alpha/ });
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     await screen.findByRole("button", { name: "Back" });
-    await act(() => tauri.emit("show-session", { session_id: "b" }));
-    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: "b" }));
-    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
+    await act(() => tauri.emit("show-session", { note_id: "b" }));
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ noteId: "b" }));
+    expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]);
   });
 
   test("when the main window hides, the shown note is left and is reported again when the window comes back", async () => {
     const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
     render(<App />);
     await screen.findByRole("option", { name: /Alpha/ });
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     await screen.findByRole("button", { name: "Back" });
 
     await act(() => tauri.emit("main-window-hidden", null));
-    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]));
-    expect(shownLast(tauri)).toEqual({ sessionId: null });
+    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]));
+    expect(shownLast(tauri)).toEqual({ noteId: null });
     // The note stays, so its page stays.
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
 
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
     });
-    await waitFor(() => expect(shownLast(tauri)).toEqual({ sessionId: "a" }));
+    await waitFor(() => expect(shownLast(tauri)).toEqual({ noteId: "a" }));
   });
 
   // Covers AE4 when the window closes.
@@ -393,15 +393,15 @@ describe("the shown note (KTD7, R18)", () => {
     const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] }, () => ({ kind: "removed" }));
     render(<App />);
     await screen.findByRole("option", { name: /Alpha/ });
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     await screen.findByRole("button", { name: "Back" });
 
     await act(() => tauri.emit("main-window-hidden", null));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Back" })).toBeNull());
     expect(screen.getByRole("heading", { name: "Notes" })).toBeTruthy();
     // The note is left one time only.
-    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
-    expect(shownLast(tauri)).toEqual({ sessionId: null });
+    expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]);
+    expect(shownLast(tauri)).toEqual({ noteId: null });
   });
 });
 
@@ -416,13 +416,13 @@ describe("a leave that waits (R18)", () => {
     let shown: unknown = null;
     const waiting: (() => void)[] = [];
     const tauri = mockTauri({
-      set_shown_note: ({ sessionId }) => {
-        shown = sessionId;
+      set_shown_note: ({ noteId }) => {
+        shown = noteId;
         return null;
       },
-      leave_note: ({ sessionId }) =>
+      leave_note: ({ noteId }) =>
         new Promise((resolve) => {
-          waiting.push(() => resolve({ kind: shown === sessionId ? "kept" : "removed" }));
+          waiting.push(() => resolve({ kind: shown === noteId ? "kept" : "removed" }));
         }),
       get_settings: () => ({ shortcut: "Alt+Shift+L", shared: available, apps: [] }) as Partial<Settings>,
       readiness: () => readiness,
@@ -449,7 +449,7 @@ describe("a leave that waits (R18)", () => {
   async function openAlpha(tauri: ReturnType<typeof mockTauri>) {
     render(<App />);
     await screen.findByRole("option", { name: /Alpha/ });
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     await screen.findByRole("button", { name: "Back" });
   }
 
@@ -459,14 +459,14 @@ describe("a leave that waits (R18)", () => {
     const user = userEvent.setup();
 
     await user.click(screen.getByRole("button", { name: "Back" }));
-    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]));
+    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]));
     await user.dblClick(screen.getByRole("option", { name: /Alpha/ }));
     await screen.findByRole("button", { name: "Back" });
-    await waitFor(() => expect(args(tauri, "set_shown_note").slice(-1)[0]).toEqual({ sessionId: "a" }));
+    await waitFor(() => expect(args(tauri, "set_shown_note").slice(-1)[0]).toEqual({ noteId: "a" }));
 
     await finish();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
-    expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]);
+    expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]);
   });
 
   test("a window that shows the note again before its leave ends keeps the page", async () => {
@@ -474,11 +474,11 @@ describe("a leave that waits (R18)", () => {
     await openAlpha(tauri);
 
     await act(() => tauri.emit("main-window-hidden", null));
-    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]));
+    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]));
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
     });
-    await waitFor(() => expect(args(tauri, "set_shown_note").slice(-1)[0]).toEqual({ sessionId: "a" }));
+    await waitFor(() => expect(args(tauri, "set_shown_note").slice(-1)[0]).toEqual({ noteId: "a" }));
 
     await finish();
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
@@ -499,13 +499,13 @@ describe("a leave that waits (R18)", () => {
     // The editor has not sent the change yet: the leave sends it first.
     await act(() => tauri.emit("main-window-hidden", null));
     await waitFor(() =>
-      expect(args(tauri, "save_session_notes")).toEqual([{ sessionId: "a", markdown: "x", loadedFingerprint: "f" }]),
+      expect(args(tauri, "save_session_notes")).toEqual([{ noteId: "a", markdown: "x", loadedFingerprint: "f" }]),
     );
     await act(async () => {});
     expect(args(tauri, "leave_note")).toEqual([]);
 
     await act(async () => finishSave());
-    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ sessionId: "a" }]));
+    await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]));
     await finish();
   });
 });
@@ -521,7 +521,7 @@ describe("a failed shortcut press", () => {
     await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
     expect(await screen.findByText(reason)).toBeTruthy();
 
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     const back = await screen.findByRole("button", { name: "Back" });
     expect(screen.queryByText(reason)).toBeNull();
     await userEvent.setup().click(back);
@@ -533,7 +533,7 @@ describe("a failed shortcut press", () => {
     const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
     render(<App />);
     await screen.findByRole("option", { name: /Alpha/ });
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     const back = await screen.findByRole("button", { name: "Back" });
     await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
     expect(await screen.findByText(reason)).toBeTruthy();
@@ -549,12 +549,12 @@ describe("a failed shortcut press", () => {
     const tauri = mockApp({ current: idle }, { current: [saved("a", "Alpha")] });
     render(<App />);
     await screen.findByRole("option", { name: /Alpha/ });
-    await act(() => tauri.emit("show-session", { session_id: "a" }));
+    await act(() => tauri.emit("show-session", { note_id: "a" }));
     await screen.findByRole("button", { name: "Back" });
     await act(() => tauri.emit("shortcut-failed", { text: "microphone: the microphone did not start within 5s" }));
     expect(await screen.findByText(reason)).toBeTruthy();
 
-    await act(() => tauri.emit("recording-changed", { session_id: "a", opened: true }));
+    await act(() => tauri.emit("recording-changed", { note_id: "a", opened: true }));
     await waitFor(() => expect(screen.queryByText(reason)).toBeNull());
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
   });

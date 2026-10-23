@@ -6,7 +6,7 @@ import { ChevronIcon, WaveformIcon } from "../settings/icons";
 import { NoteLabels } from "./NoteLabels";
 
 export type RecordingNow = {
-  sessionId: string;
+  noteId: string;
   elapsedMs: number;
   interrupted: boolean;
   /// The user paused the note (R9). Its time stops.
@@ -35,11 +35,11 @@ export function RecordingRow({ recording, selected, onSelect, onOpen }: { record
       role="option"
       aria-selected={selected}
       tabIndex={selected ? 0 : -1}
-      data-session={recording.sessionId}
+      data-session={recording.noteId}
       onClick={(e) => { e.currentTarget.focus(); onSelect(); }}
-      onDoubleClick={() => onOpen(recording.sessionId)}
+      onDoubleClick={() => onOpen(recording.noteId)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") { e.preventDefault(); onOpen(recording.sessionId); }
+        if (e.key === "Enter") { e.preventDefault(); onOpen(recording.noteId); }
       }}
       className={`${selected ? "bg-accent/15 ring-1 ring-accent" : "bg-group"} flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left shadow-[0_0_0_0.5px_var(--separator),0_1px_3px_rgb(0_0_0/0.06)] hover:bg-row-hover active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}
     >

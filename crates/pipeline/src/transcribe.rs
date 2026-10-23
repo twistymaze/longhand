@@ -139,7 +139,7 @@ struct GapFill {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
     turn_cuts: &TurnCuts,
@@ -149,7 +149,7 @@ pub fn run(
 ) -> Result<(), StageError> {
     run_with_timing(
         store,
-        session_id,
+        note_id,
         session_dir,
         segments,
         turn_cuts,
@@ -165,7 +165,7 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 pub fn run_with_timing(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
     turn_cuts: &TurnCuts,
@@ -176,36 +176,35 @@ pub fn run_with_timing(
 ) -> Result<(), StageError> {
     // The live worker saved its last part before processing started (KTD9),
     // so the live rows do not change during this stage.
-    let live_rows = live::rows(store, session_id)?;
-    let again = lock(store).transcribe_again_marks(session_id)?.model;
+    let live_rows = live::rows(store, note_id)?;
+    let again = lock(store).transcribe_again_marks(note_id)?.model;
     for segment in segments {
         let done_key = checkpoint::segment_done_key(segment.index);
-        if checkpoint::get::<bool>(store, session_id, Stage::Transcribe, &done_key)?.is_some() {
+        if checkpoint::get::<bool>(store, note_id, Stage::Transcribe, &done_key)?.is_some() {
             continue;
         }
         control.proceed()?;
         if native_tokens {
             let mode_key = format!("seg-{:04}-native-tokens", segment.index);
-            if checkpoint::get::<bool>(store, session_id, Stage::Transcribe, &mode_key)?
-                != Some(true)
+            if checkpoint::get::<bool>(store, note_id, Stage::Transcribe, &mode_key)? != Some(true)
             {
                 // An interrupted older segment-only plan can contain short
                 // speaker cuts. Replan only this unfinished batch segment.
                 let guard = lock(store);
-                for (key, _) in guard.checkpoints(session_id, Stage::Transcribe)? {
+                for (key, _) in guard.checkpoints(note_id, Stage::Transcribe)? {
                     if key.starts_with(&checkpoint::window_prefix(segment.index))
                         || key == checkpoint::plan_key(segment.index)
                     {
-                        guard.delete_checkpoint(session_id, Stage::Transcribe, &key)?;
+                        guard.delete_checkpoint(note_id, Stage::Transcribe, &key)?;
                     }
                 }
                 drop(guard);
-                checkpoint::put(store, session_id, Stage::Transcribe, &mode_key, &true)?;
+                checkpoint::put(store, note_id, Stage::Transcribe, &mode_key, &true)?;
             }
         }
         let plan = match checkpoint::get::<WindowPlan>(
             store,
-            session_id,
+            note_id,
             Stage::Transcribe,
             &checkpoint::plan_key(segment.index),
         )? {
@@ -215,7 +214,7 @@ pub fn run_with_timing(
                 let plan = plan_segment(session_dir, segment, cuts)?;
                 put_for_run(
                     store,
-                    session_id,
+                    note_id,
                     again.as_deref(),
                     &checkpoint::plan_key(segment.index),
                     &plan,
@@ -231,7 +230,7 @@ pub fn run_with_timing(
         let echo = if rows.is_empty() {
             Vec::new()
         } else {
-            echo_spans(store, session_id, segment.index)?
+            echo_spans(store, note_id, segment.index)?
         };
         let fill = (!rows.is_empty()).then(|| {
             // Live words inside an echo span came from echoed audio: they
@@ -264,7 +263,7 @@ pub fn run_with_timing(
         };
         if let Some(fill) = &fill {
             log::info!(
-                "{session_id} segment {}: live text covers all but {} s of speech \
+                "{note_id} segment {}: live text covers all but {} s of speech \
                  ({} s of echo); {} of {} windows get a gap fill",
                 segment.index,
                 fill.gaps.iter().map(Span::duration_ms).sum::<u64>() / 1000,
@@ -275,7 +274,7 @@ pub fn run_with_timing(
         }
 
         let prefix = checkpoint::window_prefix(segment.index);
-        let finished: HashSet<String> = checkpoint::all(store, session_id, Stage::Transcribe)?
+        let finished: HashSet<String> = checkpoint::all(store, note_id, Stage::Transcribe)?
             .into_iter()
             .map(|(k, _)| k)
             .filter(|k| k.starts_with(&prefix))
@@ -325,7 +324,7 @@ pub fn run_with_timing(
                     segment.index, i, window.start_ms, window.end_ms
                 ))
             })?;
-            put_for_run(store, session_id, again.as_deref(), &key, &result)?;
+            put_for_run(store, note_id, again.as_deref(), &key, &result)?;
             done += 1;
             progress(Progress {
                 segment: segment.index,
@@ -333,11 +332,11 @@ pub fn run_with_timing(
                 windows_total: total,
             });
         }
-        put_for_run(store, session_id, again.as_deref(), &done_key, &true)?;
+        put_for_run(store, note_id, again.as_deref(), &done_key, &true)?;
     }
     put_for_run(
         store,
-        session_id,
+        note_id,
         again.as_deref(),
         checkpoint::DONE,
         &checkpoint::StageDone {
@@ -354,17 +353,17 @@ pub fn run_with_timing(
 /// the resume takes.
 fn put_for_run<T: Serialize>(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     again: Option<&str>,
     key: &str,
     value: &T,
 ) -> Result<(), StageError> {
     let payload = serde_json::to_string(value)?;
     let guard = lock(store);
-    if again.is_some() && guard.transcribe_again_marks(session_id)?.model.as_deref() != again {
+    if again.is_some() && guard.transcribe_again_marks(note_id)?.model.as_deref() != again {
         return Err(StageError::Cancelled);
     }
-    guard.put_checkpoint(session_id, Stage::Transcribe, key, &payload)?;
+    guard.put_checkpoint(note_id, Stage::Transcribe, key, &payload)?;
     Ok(())
 }
 
@@ -477,12 +476,8 @@ fn union(mut spans: Vec<Span>) -> Vec<Span> {
 
 /// The echo spans of a segment, from its Assemble checkpoint. Empty for a
 /// mono segment.
-fn echo_spans(
-    store: &SharedStore,
-    session_id: &str,
-    segment: u32,
-) -> Result<Vec<Span>, StageError> {
-    Ok(echo::saved(store, session_id, segment)?
+fn echo_spans(store: &SharedStore, note_id: &str, segment: u32) -> Result<Vec<Span>, StageError> {
+    Ok(echo::saved(store, note_id, segment)?
         .map(|e| e.spans)
         .unwrap_or_default())
 }
@@ -612,13 +607,13 @@ fn read_span(
 /// audio.
 pub fn seed_from_transcript(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     folder: &Path,
 ) -> Result<bool, StageError> {
-    if !store.checkpoints(session_id, Stage::Transcribe)?.is_empty() {
+    if !store.checkpoints(note_id, Stage::Transcribe)?.is_empty() {
         return Ok(false);
     }
-    let mut segments = store.segments(session_id)?;
+    let mut segments = store.segments(note_id)?;
     if segments.is_empty() {
         return Ok(false);
     }
@@ -630,7 +625,7 @@ pub fn seed_from_transcript(
         Ok(transcript) => transcript,
         Err(e) => {
             log::warn!(
-                "{session_id} is transcribed again from its audio: {} cannot be used: {e}",
+                "{note_id} is transcribed again from its audio: {} cannot be used: {e}",
                 path.display()
             );
             return Ok(false);
@@ -644,7 +639,7 @@ pub fn seed_from_transcript(
         .any(|line| matches!(line, TranscriptLine::Text { .. }))
     {
         log::warn!(
-            "{session_id} is transcribed again from its audio: {} has lines that are not turns",
+            "{note_id} is transcribed again from its audio: {} has lines that are not turns",
             path.display()
         );
         return Ok(false);
@@ -741,7 +736,7 @@ pub fn seed_from_transcript(
             live: false,
         };
         let put = |key: &str, payload: String| {
-            store.put_checkpoint(session_id, Stage::Transcribe, key, &payload)
+            store.put_checkpoint(note_id, Stage::Transcribe, key, &payload)
         };
         put(
             &checkpoint::plan_key(segment.index),
@@ -757,7 +752,7 @@ pub fn seed_from_transcript(
         )?;
     }
     log::info!(
-        "{session_id} resumes with the text of its {} recorded segment(s) from {}",
+        "{note_id} resumes with the text of its {} recorded segment(s) from {}",
         segments.len(),
         path.display()
     );
@@ -768,10 +763,10 @@ pub fn seed_from_transcript(
 /// for the stages that follow (join, verify, summarize). A gap-fill window
 /// holds only the words that the merge kept (KTD7). A live part holds only
 /// its words outside the echo spans of its segment (KTD10).
-pub fn results(store: &SharedStore, session_id: &str) -> Result<Vec<WindowResult>, StageError> {
+pub fn results(store: &SharedStore, note_id: &str) -> Result<Vec<WindowResult>, StageError> {
     let mut out = Vec::new();
     let mut echo: BTreeMap<u32, Vec<Span>> = BTreeMap::new();
-    for (key, payload) in checkpoint::all(store, session_id, Stage::Transcribe)? {
+    for (key, payload) in checkpoint::all(store, note_id, Stage::Transcribe)? {
         if key.contains("-win-") {
             out.push(serde_json::from_str::<WindowResult>(&payload)?);
         } else if key.contains("-live-") {
@@ -779,7 +774,7 @@ pub fn results(store: &SharedStore, session_id: &str) -> Result<Vec<WindowResult
             let spans = match echo.entry(row.segment) {
                 std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(echo_spans(store, session_id, row.segment)?)
+                    e.insert(echo_spans(store, note_id, row.segment)?)
                 }
             };
             if !spans.is_empty() {

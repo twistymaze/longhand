@@ -65,53 +65,53 @@ pub struct StageDone {
 
 pub fn get<T: for<'de> Deserialize<'de>>(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
     key: &str,
 ) -> Result<Option<T>, StageError> {
     lock(store)
-        .checkpoint_value(session_id, stage, key)?
+        .checkpoint_value(note_id, stage, key)?
         .map(|payload| serde_json::from_str(&payload).map_err(StageError::from))
         .transpose()
 }
 
 pub fn put<T: Serialize>(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
     key: &str,
     value: &T,
 ) -> Result<(), StageError> {
     let payload = serde_json::to_string(value)?;
-    lock(store).put_checkpoint(session_id, stage, key, &payload)?;
+    lock(store).put_checkpoint(note_id, stage, key, &payload)?;
     Ok(())
 }
 
 /// Every checkpoint of a stage, key-ordered.
 pub fn all(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
 ) -> Result<Vec<(String, String)>, StageError> {
-    Ok(lock(store).checkpoints(session_id, stage)?)
+    Ok(lock(store).checkpoints(note_id, stage)?)
 }
 
 pub fn is_complete(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
     segments: usize,
 ) -> Result<bool, StageError> {
-    Ok(get::<StageDone>(store, session_id, stage, DONE)?.is_some_and(|d| d.segments == segments))
+    Ok(get::<StageDone>(store, note_id, stage, DONE)?.is_some_and(|d| d.segments == segments))
 }
 
 pub fn mark_complete(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
     segments: usize,
 ) -> Result<(), StageError> {
-    put(store, session_id, stage, DONE, &StageDone { segments })
+    put(store, note_id, stage, DONE, &StageDone { segments })
 }
 
 #[cfg(test)]

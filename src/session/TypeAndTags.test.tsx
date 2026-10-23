@@ -39,7 +39,7 @@ function renderRow(props: Props) {
   const onTypeChanged = vi.fn(() => {});
   const ui = (p: Props) => (
     <TypeAndTags
-      sessionId="s1"
+      noteId="s1"
       present
       noteType={p.noteType}
       tags={p.tags}
@@ -72,7 +72,7 @@ describe("TypeAndTags", () => {
     mockRow();
     render(
       <TypeAndTags
-        sessionId="s1"
+        noteId="s1"
         present
         noteType="One on One"
         tags={["urgent"]}
@@ -106,7 +106,7 @@ describe("TypeAndTags", () => {
     await user.click(typeButton());
     await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
     await waitFor(() => expect(typeButton().textContent).toContain("Pathfinder"));
-    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "s1", noteType: "Pathfinder" });
+    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ noteId: "s1", noteType: "Pathfinder" });
     expect(onNotice).toHaveBeenLastCalledWith(null);
     expect(onChanged).toHaveBeenCalled();
     expect(screen.queryByRole("menu")).toBeNull();
@@ -142,7 +142,7 @@ describe("TypeAndTags", () => {
     await user.click(typeButton());
     await user.click(await screen.findByRole("menuitemradio", { name: "General" }));
     await waitFor(() => expect(typeButton().textContent).toContain("General"));
-    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "s1", noteType: null });
+    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ noteId: "s1", noteType: null });
   });
 
   // The app moves the folder later without help: the user gets no notice.
@@ -192,7 +192,7 @@ describe("TypeAndTags", () => {
     await waitFor(() => expect(typeButton().textContent).toContain("Customer Call"));
     expect(tauri.calls.find((c) => c.cmd === "add_note_type")?.args).toEqual({ name: "Customer Call" });
     expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({
-      sessionId: "s1",
+      noteId: "s1",
       noteType: "Customer Call",
     });
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -229,12 +229,12 @@ describe("TypeAndTags", () => {
     await user.keyboard("Follow up{Enter}");
     await screen.findByRole("button", { name: "Remove Follow up" });
     expect(tauri.calls.filter((c) => c.cmd === "set_note_tags").map((c) => c.args)).toEqual([
-      { sessionId: "s1", add: ["Follow up"], remove: [] },
+      { noteId: "s1", add: ["Follow up"], remove: [] },
     ]);
     await user.click(screen.getByRole("button", { name: "Remove Person: Nathan" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Remove Person: Nathan" })).toBeNull());
     expect(tauri.calls.filter((c) => c.cmd === "set_note_tags").map((c) => c.args)[1]).toEqual({
-      sessionId: "s1",
+      noteId: "s1",
       add: [],
       remove: ["Person::Nathan"],
     });

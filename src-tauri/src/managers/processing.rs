@@ -31,7 +31,7 @@ use crate::managers::shared::SharedSettingsManager;
 /// What processing is doing, for the surface.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct ProcessingUpdate {
-    pub session_id: String,
+    pub note_id: String,
     pub update: ProcessingStep,
 }
 
@@ -275,34 +275,34 @@ enum Sent {
 
 impl From<RunnerEvent> for Sent {
     fn from(event: RunnerEvent) -> Self {
-        let (session_id, update) = match event {
-            RunnerEvent::TitleProposed { session_id, .. } => {
+        let (note_id, update) = match event {
+            RunnerEvent::TitleProposed { note_id, .. } => {
                 return Self::Library(LibraryChanged {
-                    changed: vec![session_id],
+                    changed: vec![note_id],
                     removed: Vec::new(),
                 });
             }
-            RunnerEvent::Waits { session_id, wait } => (
-                session_id,
+            RunnerEvent::Waits { note_id, wait } => (
+                note_id,
                 ProcessingStep::Waits {
                     wait: wait.map(WaitView::from),
                 },
             ),
-            RunnerEvent::StageStarted { session_id, stage } => (
-                session_id,
+            RunnerEvent::StageStarted { note_id, stage } => (
+                note_id,
                 ProcessingStep::StageStarted {
                     stage: stage_name(stage),
                 },
             ),
             RunnerEvent::Progress {
-                session_id,
+                note_id,
                 stage,
                 segment,
                 summary_step,
                 done,
                 total,
             } => (
-                session_id,
+                note_id,
                 ProcessingStep::Progress {
                     stage: stage_name(stage),
                     segment,
@@ -311,66 +311,59 @@ impl From<RunnerEvent> for Sent {
                     total: total as u32,
                 },
             ),
-            RunnerEvent::SpeakerProgress {
-                session_id,
-                progress,
-            } => (session_id, ProcessingStep::SpeakerProgress(progress.into())),
+            RunnerEvent::SpeakerProgress { note_id, progress } => {
+                (note_id, ProcessingStep::SpeakerProgress(progress.into()))
+            }
             RunnerEvent::StageFailed {
-                session_id,
+                note_id,
                 stage,
                 message,
             } => (
-                session_id,
+                note_id,
                 ProcessingStep::StageFailed {
                     stage: stage_name(stage),
                     message,
                 },
             ),
-            RunnerEvent::SpeakersUnavailable {
-                session_id,
-                message,
-            } => (session_id, ProcessingStep::SpeakersUnavailable { message }),
-            RunnerEvent::Blocked {
-                session_id,
-                message,
-            } => (session_id, ProcessingStep::Blocked { message }),
-            RunnerEvent::Waiting { session_id, what } => {
-                (session_id, ProcessingStep::Waiting { what })
+            RunnerEvent::SpeakersUnavailable { note_id, message } => {
+                (note_id, ProcessingStep::SpeakersUnavailable { message })
             }
-            RunnerEvent::SummaryUnavailable {
-                session_id,
-                message,
-            } => (session_id, ProcessingStep::SummaryUnavailable { message }),
-            RunnerEvent::AwaitingDestination {
-                session_id,
-                problem,
-            } => (session_id, ProcessingStep::AwaitingDestination { problem }),
+            RunnerEvent::Blocked { note_id, message } => {
+                (note_id, ProcessingStep::Blocked { message })
+            }
+            RunnerEvent::Waiting { note_id, what } => (note_id, ProcessingStep::Waiting { what }),
+            RunnerEvent::SummaryUnavailable { note_id, message } => {
+                (note_id, ProcessingStep::SummaryUnavailable { message })
+            }
+            RunnerEvent::AwaitingDestination { note_id, problem } => {
+                (note_id, ProcessingStep::AwaitingDestination { problem })
+            }
             RunnerEvent::Saved {
-                session_id,
+                note_id,
                 path,
                 copied,
             } => (
-                session_id,
+                note_id,
                 ProcessingStep::Saved {
                     path: path.to_string_lossy().into_owned(),
                     copied,
                 },
             ),
             RunnerEvent::TranscribeAgainFailed {
-                session_id,
+                note_id,
                 stage,
                 message,
             } => (
-                session_id,
+                note_id,
                 ProcessingStep::TranscribeAgainFailed {
                     stage: stage_name(stage),
                     message,
                 },
             ),
-            RunnerEvent::Cancelled { session_id } => (session_id, ProcessingStep::Cancelled),
-            RunnerEvent::Finished { session_id } => (session_id, ProcessingStep::Finished),
+            RunnerEvent::Cancelled { note_id } => (note_id, ProcessingStep::Cancelled),
+            RunnerEvent::Finished { note_id } => (note_id, ProcessingStep::Finished),
         };
-        Self::Processing(ProcessingUpdate { session_id, update })
+        Self::Processing(ProcessingUpdate { note_id, update })
     }
 }
 
@@ -735,23 +728,23 @@ fn saved_notice(folder: &str, has_summary: bool) -> (&'static str, String) {
     ("Note ready", body)
 }
 
-/// Whether the Summarize stage made the summary of `session_id`: the stage
+/// Whether the Summarize stage made the summary of `note_id`: the stage
 /// is complete for each segment and no summary failure is recorded. In
 /// the other cases the save writes the stub summary. A read error gives
 /// false.
-fn summary_made(store: &pipeline::SharedStore, session_id: &str) -> bool {
+fn summary_made(store: &pipeline::SharedStore, note_id: &str) -> bool {
     use session_core::Stage;
     let read = || -> Result<bool, pipeline::StageError> {
         let segments = store
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .segments(session_id)?
+            .segments(note_id)?
             .len();
         Ok(
-            pipeline::checkpoint::is_complete(store, session_id, Stage::Summarize, segments)?
+            pipeline::checkpoint::is_complete(store, note_id, Stage::Summarize, segments)?
                 && pipeline::checkpoint::get::<String>(
                     store,
-                    session_id,
+                    note_id,
                     Stage::Summarize,
                     pipeline::save::SUMMARY_FAILED,
                 )?
@@ -759,7 +752,7 @@ fn summary_made(store: &pipeline::SharedStore, session_id: &str) -> bool {
         )
     };
     read().unwrap_or_else(|e| {
-        log::warn!("could not read if the note {session_id} has a summary: {e}");
+        log::warn!("could not read if the note {note_id} has a summary: {e}");
         false
     })
 }
@@ -779,7 +772,7 @@ fn ends_work(event: &RunnerEvent) -> bool {
 fn notify_saved(
     app: &AppHandle,
     store: &pipeline::SharedStore,
-    session_id: &str,
+    note_id: &str,
     path: &std::path::Path,
 ) {
     use tauri::Manager;
@@ -795,7 +788,7 @@ fn notify_saved(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (title, body) = saved_notice(&folder, summary_made(store, session_id));
+    let (title, body) = saved_notice(&folder, summary_made(store, note_id));
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         log::warn!("could not post the save notification: {e}");
     }
@@ -885,11 +878,8 @@ impl ProcessingManager {
             }),
             suspended: Box::new(move || suspended.is_capturing() || draining.busy()),
             events: Box::new(move |event| {
-                if let RunnerEvent::Saved {
-                    session_id, path, ..
-                } = &event
-                {
-                    notify_saved(&events, &saved, session_id, path);
+                if let RunnerEvent::Saved { note_id, path, .. } = &event {
+                    notify_saved(&events, &saved, note_id, path);
                 }
                 if ends_work(&event)
                     && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
@@ -903,13 +893,10 @@ impl ProcessingManager {
                 // folder in the storage folder: the write starts now. The
                 // job of a note that has one gets more work, which does no
                 // harm.
-                if let RunnerEvent::AwaitingDestination {
-                    session_id,
-                    problem,
-                } = &event
+                if let RunnerEvent::AwaitingDestination { note_id, problem } = &event
                     && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
                 {
-                    processing.start_unfinished_early_write(session_id, problem);
+                    processing.start_unfinished_early_write(note_id, problem);
                 }
                 match Sent::from(event) {
                     Sent::Processing(update) => {
@@ -1085,10 +1072,10 @@ impl ProcessingManager {
         &self.own_runs
     }
 
-    /// True while the summary of `session_id` is regenerated or waits to
+    /// True while the summary of `note_id` is regenerated or waits to
     /// be. The regeneration continues when the user leaves the note.
-    pub fn is_regenerating(&self, session_id: &str) -> bool {
-        self.runner.is_regenerating(session_id)
+    pub fn is_regenerating(&self, note_id: &str) -> bool {
+        self.runner.is_regenerating(note_id)
     }
 
     /// What each note waits for now (KTD10). This locks the capture
@@ -1665,9 +1652,9 @@ impl ProcessingManager {
         }
     }
 
-    /// A resume took `session_id` back; its stage stops at the next checkpoint.
-    pub fn cancel(&self, session_id: &str) {
-        self.runner.cancel(session_id);
+    /// A resume took `note_id` back; its stage stops at the next checkpoint.
+    pub fn cancel(&self, note_id: &str) {
+        self.runner.cancel(note_id);
     }
 
     /// The destination changed: sessions waiting for one go back in line.
@@ -1687,16 +1674,16 @@ impl ProcessingManager {
         }
     }
 
-    pub fn retry(&self, session_id: &str, start_over: bool) -> Result<(), String> {
+    pub fn retry(&self, note_id: &str, start_over: bool) -> Result<(), String> {
         self.runner
-            .retry(session_id, start_over)
+            .retry(note_id, start_over)
             .map_err(|e| e.to_string())?;
         self.in_use_changed();
         Ok(())
     }
 
-    pub fn unblock(&self, session_id: &str) -> Result<(), String> {
-        self.runner.unblock(session_id).map_err(|e| e.to_string())
+    pub fn unblock(&self, note_id: &str) -> Result<(), String> {
+        self.runner.unblock(note_id).map_err(|e| e.to_string())
     }
 
     /// True while the live worker drains or the runner runs a stage or a
@@ -1740,12 +1727,12 @@ impl ProcessingManager {
     /// folder, so call it off the main thread.
     pub fn rename_session(
         &self,
-        session_id: &str,
+        note_id: &str,
         title: &str,
     ) -> Result<pipeline::folder_rename::FolderRename, String> {
-        refuse_with_problem(&self.library_status, session_id)?;
+        refuse_with_problem(&self.library_status, note_id)?;
         self.runner
-            .rename_session(session_id, title)
+            .rename_session(note_id, title)
             .map_err(|e| e.to_string())
     }
 
@@ -1755,18 +1742,18 @@ impl ProcessingManager {
     /// folder, so call it off the main thread.
     pub fn change_note_type(
         &self,
-        session_id: &str,
+        note_id: &str,
         to: Option<&str>,
     ) -> Result<pipeline::type_move::TypeChange, String> {
-        refuse_with_problem(&self.library_status, session_id)?;
+        refuse_with_problem(&self.library_status, note_id)?;
         let changed = self
             .runner
-            .change_note_type(session_id, to, &self.own_runs)
+            .change_note_type(note_id, to, &self.own_runs)
             .map_err(|e| e.to_string())?;
         emit_library_changed(
             &self.app,
             LibraryChanged {
-                changed: vec![session_id.to_string()],
+                changed: vec![note_id.to_string()],
                 removed: Vec::new(),
             },
         );
@@ -1890,16 +1877,16 @@ impl ProcessingManager {
     /// thread.
     pub fn set_note_tags(
         &self,
-        session_id: &str,
+        note_id: &str,
         add: &[String],
         remove: &[String],
     ) -> Result<Vec<String>, String> {
-        refuse_with_problem(&self.library_status, session_id)?;
+        refuse_with_problem(&self.library_status, note_id)?;
         let tags = self
             .runner
-            .set_note_tags(session_id, add, remove)
+            .set_note_tags(note_id, add, remove)
             .map_err(|e| e.to_string())?;
-        self.emit_changed(vec![session_id.to_string()]);
+        self.emit_changed(vec![note_id.to_string()]);
         Ok(tags)
     }
 
@@ -2094,32 +2081,30 @@ impl ProcessingManager {
     /// Check if Transcribe Again can start on a saved note now, with the
     /// recognition settings (KTD1, KTD2). Returns the transcription model
     /// of the run.
-    pub fn check_transcribe_again(&self, session_id: &str) -> Result<String, Refusal> {
-        self.refuse_while_syncing(session_id)?;
+    pub fn check_transcribe_again(&self, note_id: &str) -> Result<String, Refusal> {
+        self.refuse_while_syncing(note_id)?;
         let settings = settings::get_settings(&self.app).recognition_config();
         self.runner
-            .check_transcribe_again(session_id, &settings, &|spec| self.readiness(spec))
+            .check_transcribe_again(note_id, &settings, &|spec| self.readiness(spec))
             .map(|spec| spec.config.asr_model)
     }
 
     /// Queue a saved note to be transcribed again with the recognition
     /// settings (R15, KTD2). `model_id` is the model that the user
     /// confirmed.
-    pub fn transcribe_again(&self, session_id: &str, model_id: &str) -> Result<(), Refusal> {
-        self.refuse_while_syncing(session_id)?;
+    pub fn transcribe_again(&self, note_id: &str, model_id: &str) -> Result<(), Refusal> {
+        self.refuse_while_syncing(note_id)?;
         let settings = settings::get_settings(&self.app).recognition_config();
         self.runner
-            .transcribe_again(session_id, &settings, model_id, &|spec| {
-                self.readiness(spec)
-            })?;
+            .transcribe_again(note_id, &settings, model_id, &|spec| self.readiness(spec))?;
         self.in_use_changed();
         Ok(())
     }
 
     /// [`refuse_while_syncing`] with the status of the latest scans, as a
     /// Transcribe Again refusal.
-    fn refuse_while_syncing(&self, session_id: &str) -> Result<(), Refusal> {
-        refuse_while_syncing(&self.library_status, session_id).map_err(|message| Refusal {
+    fn refuse_while_syncing(&self, note_id: &str) -> Result<(), Refusal> {
+        refuse_while_syncing(&self.library_status, note_id).map_err(|message| Refusal {
             message,
             in_settings: false,
         })
@@ -2140,10 +2125,10 @@ impl ProcessingManager {
     }
 
     /// Summarize a saved session again, replacing its `summary.md` (AE17).
-    pub async fn regenerate_summary(&self, session_id: &str) -> Result<String, String> {
-        refuse_while_syncing(&self.library_status, session_id)?;
+    pub async fn regenerate_summary(&self, note_id: &str) -> Result<String, String> {
+        refuse_while_syncing(&self.library_status, note_id)?;
         self.runner
-            .regenerate_summary(session_id)
+            .regenerate_summary(note_id)
             .await
             .map(|path| path.to_string_lossy().into_owned())
             .map_err(|e| e.to_string())
@@ -2239,7 +2224,7 @@ mod tests {
     fn a_proposed_title_reaches_the_app_as_a_library_change_of_the_note() {
         // Home and the note page read the note again on a library change.
         let Sent::Library(changes) = Sent::from(RunnerEvent::TitleProposed {
-            session_id: "s".into(),
+            note_id: "s".into(),
             title: "Weekly sync".into(),
         }) else {
             panic!("a processing update, not a library change");
@@ -2256,7 +2241,7 @@ mod tests {
     #[test]
     fn speaker_progress_reaches_the_surface_with_its_attempt() {
         let update = processing_update(RunnerEvent::SpeakerProgress {
-            session_id: "s".into(),
+            note_id: "s".into(),
             progress: pipeline::progress::SpeakerProgress {
                 attempt: "a1".into(),
                 work: pipeline::progress::SpeakerWork {
@@ -2268,7 +2253,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&update).unwrap(),
             serde_json::json!({
-                "session_id": "s",
+                "note_id": "s",
                 "update": {
                     "kind": "speaker_progress",
                     "attempt": "a1",
@@ -2282,7 +2267,7 @@ mod tests {
     #[test]
     fn transcription_progress_keeps_its_window_counts() {
         let update = processing_update(RunnerEvent::Progress {
-            session_id: "s".into(),
+            note_id: "s".into(),
             stage: session_core::Stage::Transcribe,
             segment: 1,
             summary_step: None,
@@ -2709,18 +2694,18 @@ mod tests {
         let id = || "s".to_string();
         for event in [
             RunnerEvent::Saved {
-                session_id: id(),
+                note_id: id(),
                 path: "/notes/a".into(),
                 copied: false,
             },
             RunnerEvent::StageFailed {
-                session_id: id(),
+                note_id: id(),
                 stage: Stage::Transcribe,
                 message: "failed".into(),
             },
-            RunnerEvent::Cancelled { session_id: id() },
+            RunnerEvent::Cancelled { note_id: id() },
             RunnerEvent::TranscribeAgainFailed {
-                session_id: id(),
+                note_id: id(),
                 stage: Stage::Transcribe,
                 message: "failed".into(),
             },
@@ -2729,16 +2714,16 @@ mod tests {
         }
         for event in [
             RunnerEvent::Progress {
-                session_id: id(),
+                note_id: id(),
                 stage: Stage::Transcribe,
                 segment: 0,
                 summary_step: None,
                 done: 1,
                 total: 2,
             },
-            RunnerEvent::Finished { session_id: id() },
+            RunnerEvent::Finished { note_id: id() },
             RunnerEvent::SummaryUnavailable {
-                session_id: id(),
+                note_id: id(),
                 message: "no summary service".into(),
             },
         ] {

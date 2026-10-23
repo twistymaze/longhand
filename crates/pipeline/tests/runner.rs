@@ -519,11 +519,11 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
         suspended: Box::new(move || capturing.capturing.load(Ordering::SeqCst)),
         events: Box::new(move |e| {
             if let RunnerEvent::StageStarted {
-                session_id,
+                note_id,
                 stage: Stage::Diarize,
             } = &e
             {
-                let progress = pipeline::progress::speakers(&saved, session_id).unwrap();
+                let progress = pipeline::progress::speakers(&saved, note_id).unwrap();
                 recording
                     .saved_at_start
                     .lock()
@@ -686,7 +686,7 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
             .unwrap()
             .iter()
             .filter_map(|e| match e {
-                RunnerEvent::StageStarted { session_id, stage } if session_id == id => Some(*stage),
+                RunnerEvent::StageStarted { note_id, stage } if note_id == id => Some(*stage),
                 _ => None,
             })
             .collect()
@@ -698,7 +698,7 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
     // note starts after the earlier note leaves Verify.
     let earlier_waits = event_at(
         &r,
-        |e| matches!(e, RunnerEvent::Waits { session_id, wait: Some(Wait::SummaryTurn) } if session_id == "earlier"),
+        |e| matches!(e, RunnerEvent::Waits { note_id, wait: Some(Wait::SummaryTurn) } if note_id == "earlier"),
     )
     .unwrap();
     assert!(earlier_waits < event_at(&r, stage_started("later", Stage::Assemble)).unwrap());
@@ -3863,7 +3863,7 @@ async fn a_relaunch_after_the_move_finishes_the_save_without_redoing_any_stage()
         s.apply("s", &session_core::Event::Retry).unwrap();
     }
     let job = session_save::Job {
-        session_id: "s",
+        note_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
         folder_name: &session_save::naming::folder_name(segments[0].wall_start, None),
@@ -3918,7 +3918,7 @@ async fn a_relaunch_after_the_final_rename_is_recorded_finishes_the_first_save()
         s.apply("s", &session_core::Event::Retry).unwrap();
     }
     let job = session_save::Job {
-        session_id: "s",
+        note_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
         folder_name: &session_save::naming::folder_name(segments[0].wall_start, None),
@@ -4585,7 +4585,7 @@ async fn a_save_begun_with_no_recorded_name_finishes_under_the_no_title_name() {
     let segments = r.store.lock().unwrap().segments("s").unwrap();
     let old = session_save::naming::folder_name(segments[0].wall_start, None);
     let job = session_save::Job {
-        session_id: "s",
+        note_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
         folder_name: &old,
@@ -7261,7 +7261,7 @@ async fn a_recognizer_failure_during_transcribe_again_keeps_the_previous_transcr
     );
     assert!(!r.root.join("s").exists(), "the working copy is gone");
     assert!(r.events.lock().unwrap().iter().any(
-        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { note_id, .. } if note_id == "s")
     ));
     // The previous checkpoints came back: they rebuild the saved
     // transcript, and a regeneration works from it.
@@ -7571,7 +7571,7 @@ async fn a_snapshot_refused_at_the_claim_fails_the_note_with_its_reason() {
     );
     assert!(r.events.lock().unwrap().iter().any(|e| matches!(
         e,
-        RunnerEvent::StageFailed { session_id, stage: Stage::Transcribe, .. } if session_id == "s"
+        RunnerEvent::StageFailed { note_id, stage: Stage::Transcribe, .. } if note_id == "s"
     )));
 }
 
@@ -7599,7 +7599,7 @@ async fn a_transcribe_again_whose_snapshot_is_refused_at_the_claim_keeps_the_sav
         );
         assert_eq!(read(&folder, TRANSCRIPT_FILE), transcript);
         assert!(r.events.lock().unwrap().iter().any(
-            |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+            |e| matches!(e, RunnerEvent::TranscribeAgainFailed { note_id, .. } if note_id == "s")
         ));
     }
 }
@@ -7695,7 +7695,7 @@ async fn a_speaker_analysis_failure_during_transcribe_again_keeps_the_previous_r
     assert_eq!(asr_model(&r).as_deref(), Some("m"));
     assert!(marks(&r).error.is_some(), "{:?}", marks(&r));
     assert!(r.events.lock().unwrap().iter().any(
-        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { session_id, .. } if session_id == "s")
+        |e| matches!(e, RunnerEvent::TranscribeAgainFailed { note_id, .. } if note_id == "s")
     ));
 }
 
@@ -9610,9 +9610,7 @@ fn proposed_titles(r: &Rig) -> Vec<(String, String)> {
         .unwrap()
         .iter()
         .filter_map(|e| match e {
-            RunnerEvent::TitleProposed { session_id, title } => {
-                Some((session_id.clone(), title.clone()))
-            }
+            RunnerEvent::TitleProposed { note_id, title } => Some((note_id.clone(), title.clone())),
             _ => None,
         })
         .collect()
@@ -10129,13 +10127,13 @@ fn event_at(r: &Rig, matches: impl Fn(&RunnerEvent) -> bool) -> Option<usize> {
 
 fn stage_started(id: &'static str, stage: Stage) -> impl Fn(&RunnerEvent) -> bool {
     move |e| {
-        matches!(e, RunnerEvent::StageStarted { session_id, stage: s }
-            if session_id == id && *s == stage)
+        matches!(e, RunnerEvent::StageStarted { note_id, stage: s }
+            if note_id == id && *s == stage)
     }
 }
 
 fn saved_event(id: &'static str) -> impl Fn(&RunnerEvent) -> bool {
-    move |e| matches!(e, RunnerEvent::Saved { session_id, .. } if session_id == id)
+    move |e| matches!(e, RunnerEvent::Saved { note_id, .. } if note_id == id)
 }
 
 /// Summaries that wait for the gate before they answer. The title call
@@ -10186,7 +10184,7 @@ async fn a_new_note_transcribes_while_another_note_waits_for_its_summary() {
     assert!(
         event_at(
             &r,
-            |e| matches!(e, RunnerEvent::Waits { session_id, wait: Some(Wait::SummaryTurn) } if session_id == "b")
+            |e| matches!(e, RunnerEvent::Waits { note_id, wait: Some(Wait::SummaryTurn) } if note_id == "b")
         )
         .is_some()
     );
@@ -10297,7 +10295,7 @@ async fn a_title_job_does_not_wait_for_the_audio_stages_of_another_note() {
 }
 
 fn cancelled_event(id: &'static str) -> impl Fn(&RunnerEvent) -> bool {
-    move |e| matches!(e, RunnerEvent::Cancelled { session_id } if session_id == id)
+    move |e| matches!(e, RunnerEvent::Cancelled { note_id } if note_id == id)
 }
 
 fn resume(store: &SharedStore, id: &str) {
@@ -10419,13 +10417,11 @@ async fn the_runner_reports_what_a_note_waits_for() {
         engines: Box::new(Provider(Arc::clone(&r.script))),
         suspended: Box::new(|| false),
         events: Box::new(move |e| {
-            if let RunnerEvent::StageStarted { session_id, stage } = &e
+            if let RunnerEvent::StageStarted { note_id, stage } = &e
                 && let Some(runner) = runner_of.get().and_then(std::sync::Weak::upgrade)
             {
-                let wait = runner.waits().of(session_id, &processing, Some(*stage));
-                seen.lock()
-                    .unwrap()
-                    .push((session_id.clone(), *stage, wait));
+                let wait = runner.waits().of(note_id, &processing, Some(*stage));
+                seen.lock().unwrap().push((note_id.clone(), *stage, wait));
             }
             sink.lock().unwrap().push(e)
         }),
@@ -10469,8 +10465,8 @@ async fn the_runner_reports_what_a_note_waits_for() {
     });
     until("B waits for the local permit", || {
         event_at(&r, |e| {
-            matches!(e, RunnerEvent::Waits { session_id, wait: Some(Wait::AnotherNote) }
-                if session_id == "b")
+            matches!(e, RunnerEvent::Waits { note_id, wait: Some(Wait::AnotherNote) }
+                if note_id == "b")
         })
         .is_some()
     })
@@ -10733,7 +10729,7 @@ async fn a_note_whose_save_has_begun_saves_while_another_note_has_the_local_perm
     let segments = r.store.lock().unwrap().segments("s").unwrap();
     let name = session_save::naming::folder_name(segments[0].wall_start, None);
     let job = session_save::Job {
-        session_id: "s",
+        note_id: "s",
         working: &r.root.join("s"),
         destination: &r.dest,
         folder_name: &name,
@@ -11088,7 +11084,7 @@ async fn a_title_job_waits_for_the_summarize_and_save_of_a_new_note() {
     let saved = event_at(&r, saved_event("t")).unwrap();
     let proposed = event_at(
         &r,
-        |e| matches!(e, RunnerEvent::TitleProposed { session_id, .. } if session_id == "s"),
+        |e| matches!(e, RunnerEvent::TitleProposed { note_id, .. } if note_id == "s"),
     )
     .unwrap();
     assert!(saved < proposed, "the title job runs after the Save");

@@ -22,10 +22,10 @@
 //!    state. After that, [`sync`] keeps the flag and the notes of the
 //!    folder up to date until the first Save.
 //!
-//! Every file in the folder is identifiable by the `session_id` in its
+//! Every file in the folder is identifiable by the `note_id` in its
 //! `longhand.json`. When the staging folder is gone in the Filled state, the
 //! rename happened and its record did not: the step finds the folder at a
-//! name candidate by `session_id` before it does anything again. So a crash
+//! name candidate by `note_id` before it does anything again. So a crash
 //! at any step leaves at most one folder (R4). When no candidate holds the
 //! note, another computer or the user removed the folder, and the write
 //! ends with no folder (R23, R24).

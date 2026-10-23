@@ -12,11 +12,11 @@ import { sentence } from "../processing/describe";
 export const REMOVED_REASON = "The audio of this note was removed.";
 
 export function useRemoveAudio({
-  sessionId,
+  noteId,
   onRemoved,
   onFailed,
 }: {
-  sessionId: string;
+  noteId: string;
   /// The audio of the note is gone.
   onRemoved: () => void;
   /// The removal was refused or did not complete, with a sentence that says why.
@@ -32,7 +32,7 @@ export function useRemoveAudio({
     sending.current = true;
     setBusy(true);
     try {
-      const result = await commands.removeAudio(sessionId);
+      const result = await commands.removeAudio(noteId);
       setOpen(false);
       if (result.status === "ok") onRemoved();
       else onFailed(sentence(result.error.message));
