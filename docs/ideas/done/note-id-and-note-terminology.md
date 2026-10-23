@@ -15,3 +15,6 @@ Rename the session id to "note id" in code names, in the `longhand.json` key and
 
 ## Why
 CodeQL treats any name that matches `session.?(id|key)` as sensitive, so each PR that logs the id fails the CodeQL check. The id is a random folder name and is not a secret. About 100 alerts were dismissed by hand before 2026-10-23.
+
+## Outcome
+Shipped in PR #64 (2026-10-23). `longhand.json` layout 2 writes `note_id`, migration 0022 renames the database columns, and the `longhand-notes` skill reads both layouts. CodeQL passed on the PR with the default setup.

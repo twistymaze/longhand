@@ -136,7 +136,7 @@ U1 and U2 are independent, and each leaves the workspace building: U2 renames ev
 ### Risks
 
 - **A friend with two computers sees problem notices.** After one computer saves a note in layout 2, a computer that is not updated shows that note as a problem at once (`crates/library/src/status.rs`, `NewerRecord`). The user tells current users to update every computer (Dependencies / Assumptions).
-- **An older build can lose the link to a renamed note.** An older build finds the id of a newer-layout note only from a `session_id` key or from the folder path that it knows (`crates/library/src/scan.rs`, `record_id`). When the updated computer saves a note and also renames its folder, for example after a title change, the older computer shows a problem folder with no id after about a minute, and its row of that note waits with no link to the folder. Nothing is lost; it is fixed when the older computer is updated. The manual test covers this case.
+- **An older build can lose the link to a renamed note.** An older build finds the id of a newer-layout note only from a `session_id` key or from the folder path that it knows (`crates/library/src/scan.rs`, `record_id`). When the updated computer saves a note and also renames its folder, for example after a title change, the older computer shows a problem folder with no id after about a minute, and its row of that note waits with no link to the folder. When the updated computer moves the folder to another storage folder, the older computer removes its row of that note after a full scan (`crates/library/src/reconcile.rs`), and rows that only its store holds, such as open jobs, go with it. (Correction after the code review of PR #64.) The note files stay; it is fixed when the older computer is updated. The manual test covers this case.
 - **A large mechanical rename can touch text that must stay.** A search and replace across the repo would also change applied migrations, old-format test data and the version-2 hook SQL. Each unit names what keeps `session_id`; the final check in the Verification Contract lists every remaining place.
 - **CodeQL runs only in CI, about 13 minutes after a push.** A remaining identifier with "session_id" in its name shows up late. The local check in the Verification Contract finds identifiers before the push.
 
@@ -332,5 +332,5 @@ U1 and U2 are independent, and each leaves the workspace building: U2 renames ev
 - R1 to R9 and AE1 to AE4 hold, each with the test or check named in its unit.
 - The identifier check lists only the allowed places.
 - All checks in the Verification Contract pass locally and in CI, and CI was not re-run to get a pass.
-- The idea `docs/ideas/next/note-id-and-note-terminology.md` moves to `done/` after the merge.
+- The idea `docs/ideas/done/note-id-and-note-terminology.md` moves to `done/` after the merge.
 - No code from abandoned attempts is left in the diff.
