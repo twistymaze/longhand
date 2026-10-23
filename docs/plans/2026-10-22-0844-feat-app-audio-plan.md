@@ -453,7 +453,7 @@ U1 runs first and can change KTD2, KTD3, KTD5 and KTD6. U5 does not depend on ca
 - **Goal:** The docs describe app audio and no longer describe the removed parts.
 - **Requirements:** R18.
 - **Dependencies:** U9.
-- **Files:** `CONCEPTS.md`, `PROVENANCE.md`, `docs/ideas/next/app-audio.md`, `docs/ideas/parked/system-audio-capture.md`, `docs/solutions/` (the U1 entry).
+- **Files:** `CONCEPTS.md`, `PROVENANCE.md`, `docs/ideas/done/app-audio.md`, `docs/ideas/parked/system-audio-capture.md`, `docs/solutions/` (the U1 entry).
 - **Approach:**
   1. In `CONCEPTS.md`, replace the "System audio", "Echo removal" and "Echo span" entries with the "App audio" entry, updated to the shipped behavior.
   2. Update the parked idea: the whole-computer capture and echo removal are gone; per-channel processing stays parked.

@@ -18,7 +18,7 @@ Needed for meetings held on calls. Irrelevant to an in-person room, which is why
 ## Why parked
 The capture works, but processing a stereo note is not reliable. The mono mix makes a fault in one channel a fault in the whole note, and two Teams test calls failed Verify. It waits for a new processing design ([per-channel processing](#process-each-channel-on-its-own)). Faster diarization, which that design needed first, shipped in archived PR 18.
 
-**2026-10-22:** [App audio](../next/app-audio.md) replaces the whole-computer capture with the audio of the apps on a list and a plain mix, from the user's Loopback setup. Per-channel processing below stays parked.
+**2026-10-22:** [App audio](../done/app-audio.md) replaces the whole-computer capture with the audio of the apps on a list and a plain mix, from the user's Loopback setup. Per-channel processing below stays parked.
 
 ## Current state
 - **App audio removed the whole-computer feature:** the Computer audio switch and menu item, `SYSTEM_AUDIO_AVAILABLE`, `features.systemAudio`, the global tap with the mixer exclusion, the Windows other-output warning, the silence warning, the copy check (`mic_copy.rs`), the echo gate, echo removal (`crates/aec`) and the delay probe (`crates/audio-sync`). The sections below describe what archived PR 12 built. The macOS global tap stays only for the permission request.
