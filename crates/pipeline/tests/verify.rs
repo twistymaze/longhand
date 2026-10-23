@@ -90,15 +90,14 @@ fn verification_counts_speech_without_request_padding() {
         &window,
     )
     .unwrap();
-    assert!(
-        pipeline::verify::run(
-            &store,
-            "coverage",
-            dir.path(),
-            std::slice::from_ref(&segment)
-        )
-        .is_err()
-    );
+    pipeline::verify::run(
+        &store,
+        "coverage",
+        dir.path(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap();
+    assert!(pipeline::verify::low_coverage(&store, "coverage").unwrap());
     window.segments.clear();
     window.text.clear();
     pipeline::checkpoint::put(
@@ -109,7 +108,8 @@ fn verification_counts_speech_without_request_padding() {
         &window,
     )
     .unwrap();
-    assert!(pipeline::verify::run(&store, "coverage", dir.path(), &[segment]).is_err());
+    pipeline::verify::run(&store, "coverage", dir.path(), &[segment]).unwrap();
+    assert!(pipeline::verify::low_coverage(&store, "coverage").unwrap());
 }
 
 #[test]
@@ -146,9 +146,8 @@ fn legacy_non_silent_plan_rechecks_audio_instead_of_using_padding() {
         &legacy,
     )
     .unwrap();
-    assert!(
-        pipeline::verify::run(&store, "legacy", &dir.path().join("legacy"), &segments).is_err()
-    );
+    pipeline::verify::run(&store, "legacy", &dir.path().join("legacy"), &segments).unwrap();
+    assert!(pipeline::verify::low_coverage(&store, "legacy").unwrap());
     let coverage: pipeline::verify::Coverage = pipeline::checkpoint::get(
         &store,
         "legacy",
@@ -484,7 +483,8 @@ fn voiced_sound_without_words_after_a_gap_fill_passes() {
     let dir = tempfile::tempdir().unwrap();
     let run = || pipeline::verify::run(&store, "music", dir.path(), std::slice::from_ref(&segment));
     // Without a gap fill, the model did not hear the voiced sound again.
-    assert!(run().is_err());
+    run().unwrap();
+    assert!(pipeline::verify::low_coverage(&store, "music").unwrap());
     put(
         &fill,
         serde_json::to_value(WindowResult {

@@ -9,10 +9,8 @@ publish.workspace = true
 models = { path = "../models" }
 nemo-runtime = { path = "../nemo-runtime" }
 power = { path = "../power" }
-aec = { path = "../aec" }
 asr = { path = "../asr" }
 audio = { path = "../audio" }
-audio-sync = { path = "../audio-sync" }
 diarize = { path = "../diarize" }
 # The refresh step that every writer runs first (KTD3, KTD8).
 library = { path = "../library" }

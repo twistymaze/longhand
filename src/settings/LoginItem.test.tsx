@@ -7,7 +7,7 @@ import { StatusPane } from "./Status";
 
 function setup(handlers: Parameters<typeof mockTauri>[0] = {}) {
   const mock = mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled", ...handlers });
-  render(<StatusPane readiness={{ microphone_authorized: true, system_audio: "allowed", destination: { kind: "ready", path: "/x", free_bytes: null }, armed: true, shortcut: shortcutStatuses.recording, missing_models: [], endpoint_configured: true, can_start_note: true, note_start_refusal: null }} settings={{ hide_from_dock: false, system_audio_default: false, shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null } } as unknown as Settings} onSettings={() => {}} onRefresh={async () => {}} onNavigate={() => {}} />);
+  render(<StatusPane readiness={{ microphone_authorized: true, system_audio: "allowed", destination: { kind: "ready", path: "/x", free_bytes: null }, armed: true, shortcut: shortcutStatuses.recording, missing_models: [], endpoint_configured: true, can_start_note: true, note_start_refusal: null }} settings={{ hide_from_dock: false, apps: [], shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null } } as unknown as Settings} onSettings={() => {}} onRefresh={async () => {}} onNavigate={() => {}} />);
   return mock;
 }
 

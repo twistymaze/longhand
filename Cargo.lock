@@ -15,15 +15,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "aec"
-version = "0.1.0"
-dependencies = [
- "onnx",
- "realfft",
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "aes"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -370,13 +361,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "audio-sync"
-version = "0.1.0"
-dependencies = [
- "realfft",
-]
-
-[[package]]
 name = "audio-system"
 version = "0.1.0"
 dependencies = [
@@ -385,12 +369,16 @@ dependencies = [
  "cpal",
  "futures-util",
  "hound",
+ "libc",
  "log",
+ "objc2-app-kit",
+ "objc2-foundation",
  "rtrb",
  "tokio",
  "tokio-stream",
  "wasapi",
  "windows 0.62.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4235,10 +4223,8 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "pipeline"
 version = "0.1.0"
 dependencies = [
- "aec",
  "asr",
  "audio",
- "audio-sync",
  "chrono",
  "diarize",
  "hound",

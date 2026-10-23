@@ -63,6 +63,7 @@ const settings = {
   ...inUse,
   chosen_recognition: inUse,
   recognition: settled,
+  apps: [],
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 

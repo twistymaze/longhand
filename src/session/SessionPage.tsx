@@ -13,10 +13,12 @@
 import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   commands,
+  type ListedApp,
   type MicrophoneChoice,
   type MicrophoneList,
   type NoteTypeEntry,
   type Readiness,
+  type RunningApp,
   type SessionDetail,
   type SessionDocument,
   type SummaryPromptEntry,
@@ -25,12 +27,12 @@ import {
 } from "../bindings";
 import { rowTitle } from "../home/group";
 import { copySelection, copyText } from "../lib/clipboard";
-import { features } from "../lib/features";
 import { sameType } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
 import { formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
+import { useRunningApps } from "../settings/Recording";
 import { Button } from "../settings/ui";
 import { useDeleteSession } from "./DeleteSession";
 import { LevelBars } from "./LevelBars";
@@ -134,6 +136,35 @@ export function microphoneItems(
       reason: "This microphone is not connected.",
       onSelect: () => {},
     });
+  }
+  return items;
+}
+
+/// The "App Audio" submenu (R10): the running apps, then the apps that the
+/// note records but that do not run, with a check mark on each app that
+/// the note records. `running` is null until the first read. Only a
+/// running app can be added; an app that does not run can only be removed.
+export function appItems(
+  running: RunningApp[] | null,
+  noteApps: ListedApp[],
+  choose: (next: ListedApp[]) => void,
+): MenuItem[] {
+  const records = (id: string) => noteApps.some((a) => a.id === id);
+  const toggle = (app: ListedApp) =>
+    choose(records(app.id) ? noteApps.filter((a) => a.id !== app.id) : [...noteApps, app]);
+  const item = (app: ListedApp, label: string): MenuItem => ({
+    key: app.id,
+    label,
+    checked: records(app.id),
+    onSelect: () => toggle(app),
+  });
+  if (running === null) return noteApps.map((app) => item(app, app.name));
+  const items = running.map((app) => item({ id: app.id, name: app.name, path: app.path }, app.name));
+  for (const app of noteApps) {
+    if (!running.some((r) => r.id === app.id)) items.push(item(app, `${app.name} (not running)`));
+  }
+  if (items.length === 0) {
+    items.push({ key: "none", label: "No apps are running", disabled: true, onSelect: () => {} });
   }
   return items;
 }
@@ -571,18 +602,53 @@ export function SessionPage({
     },
   });
 
-  // The inputs are read each time the menu opens, because a microphone can
-  // be connected or removed during the note.
+  // The inputs and the running apps are read each time the menu opens,
+  // because a microphone can be connected or removed, and an app can start
+  // or quit, during the note.
   const readMicrophones = async () => {
     const result = await commands.listMicrophones();
     if (result.status === "ok") setMicrophones(result.data);
   };
+  const running = useRunningApps(true);
 
-  // Each change is for this note only. Settings does not change (R2, R8).
+  // On Windows before Windows 11, the menu has no App Audio submenu (R17).
+  const [appAudio, setAppAudio] = useState(false);
+  useEffect(() => {
+    if (phase !== "recording") return;
+    let current = true;
+    void commands.appAudioAvailable().then((result) => {
+      if (current) setAppAudio(result.status === "ok" && result.data);
+    });
+    return () => {
+      current = false;
+    };
+  }, [phase]);
+  const readInputs = async () => {
+    await Promise.all([readMicrophones(), running.read()]);
+  };
+
+  // Each change is for this note only. Settings does not change (R2, R8;
+  // R10 of the app audio plan).
   const changeInput = async (change: () => ReturnType<typeof commands.setNoteMicrophone>) => {
     const result = await change();
     setNotice(result.status === "error" ? { tone: "negative", text: sentence(result.error) } : null);
     await capture.refresh();
+  };
+
+  // A choice in the App Audio submenu builds the next set from the set
+  // that the menu shows. Until the status shows a change, the menu shows
+  // the set that was sent, and the changes go out one at a time in order,
+  // so two quick choices do not replace each other.
+  const [pendingApps, setPendingApps] = useState<ListedApp[] | null>(null);
+  const appsChange = useRef({ count: 0, queue: Promise.resolve() });
+  const changeApps = (next: ListedApp[]) => {
+    const change = appsChange.current;
+    const count = ++change.count;
+    setPendingApps(next);
+    change.queue = change.queue.then(async () => {
+      await changeInput(() => commands.setNoteApps(id, next));
+      if (change.count === count) setPendingApps(null);
+    });
   };
 
   const items: MenuItem[] = [];
@@ -598,12 +664,11 @@ export function SessionPage({
         void changeInput(() => commands.setNoteMicrophone(id, next)),
       ),
     });
-    if (features.systemAudio) {
-      const on = capture.status.system_audio;
+    if (appAudio) {
       items.push({
-        label: "Record Computer Audio",
-        checked: on,
-        onSelect: () => void changeInput(() => commands.setNoteSystemAudio(id, !on)),
+        label: "App Audio",
+        onSelect: () => {},
+        submenu: appItems(running.apps, pendingApps ?? capture.status.note_apps, changeApps),
       });
     }
   }
@@ -745,13 +810,22 @@ export function SessionPage({
         <SummaryTab summary={doc.summary} regenerate={regenerateControl} />
       </>
     ) : (
-      <TranscriptTab
-        lines={doc.lines}
-        hasSpeakers={doc.has_speakers}
-        foundSpeakers={entry?.found_speakers ?? null}
-        durationMs={entry?.duration_ms ?? 0}
-        transcriptMarkdown={doc.transcript_markdown}
-      />
+      <>
+        {/* The check of the transcript found speech with no text. The note
+            is saved; the user can choose Transcribe Again. */}
+        {detail?.low_coverage && (
+          <p role="status" className="mb-4 text-[0.85rem] text-caution">
+            Some speech in this note may have no text. Transcribe Again can try again.
+          </p>
+        )}
+        <TranscriptTab
+          lines={doc.lines}
+          hasSpeakers={doc.has_speakers}
+          foundSpeakers={entry?.found_speakers ?? null}
+          durationMs={entry?.duration_ms ?? 0}
+          transcriptMarkdown={doc.transcript_markdown}
+        />
+      </>
     );
   };
 
@@ -867,7 +941,7 @@ export function SessionPage({
           >
             {copied ? "Copied" : "Copy"}
           </button>
-          <SessionMenu items={items} onOpen={phase === "recording" ? () => void readMicrophones() : undefined} />
+          <SessionMenu items={items} onOpen={phase === "recording" ? () => void readInputs() : undefined} />
         </div>
       </header>
       <main

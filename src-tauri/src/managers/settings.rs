@@ -173,6 +173,56 @@ pub struct MicrophoneChoice {
     pub label: String,
 }
 
+/// An app on the app list (R1, R5, KTD1): the app ID, the name that
+/// Settings shows, and the path that the icon comes from when the app does
+/// not run.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct ListedApp {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+impl From<audio_system::apps::App> for ListedApp {
+    fn from(app: audio_system::apps::App) -> Self {
+        Self {
+            id: app.id,
+            name: app.name,
+            path: app.path,
+        }
+    }
+}
+
+impl From<&ListedApp> for audio_system::apps::App {
+    fn from(app: &ListedApp) -> Self {
+        Self {
+            id: app.id.clone(),
+            name: app.name.clone(),
+            path: app.path.clone(),
+        }
+    }
+}
+
+/// The app list as the store holds it. An entry that does not parse or has
+/// no ID is dropped, and the other entries stay (KTD8).
+fn valid_apps<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<ListedApp>, D::Error> {
+    let Value::Array(items) = Value::deserialize(d)? else {
+        log::warn!("the stored app list is not a list; it reads as empty");
+        return Ok(Vec::new());
+    };
+    let mut apps: Vec<ListedApp> = Vec::new();
+    for item in items {
+        match serde_json::from_value::<ListedApp>(item) {
+            Ok(app) if !app.id.trim().is_empty() && !apps.iter().any(|a| a.id == app.id) => {
+                apps.push(app)
+            }
+            Ok(app) if !app.id.trim().is_empty() => {}
+            _ => log::warn!("dropping an invalid app list entry"),
+        }
+    }
+    Ok(apps)
+}
+
 /// A summary prompt that the user made (R1, KTD6). The built-in prompts are
 /// never saved: their text lives in `summarize::prompts`.
 #[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
@@ -374,7 +424,10 @@ pub struct LocalSettings {
     pub recognition_language: Option<String>,
     pub default_speaker_count: Option<SpeakerCountSetting>,
     pub microphone: Option<MicrophoneChoice>,
-    pub system_audio_default: bool,
+    /// The apps whose audio each new note records (R1, KTD8). App IDs
+    /// differ by platform, so the list stays on this computer.
+    #[serde(deserialize_with = "valid_apps")]
+    pub apps: Vec<ListedApp>,
     /// Whether a recording that stops and cannot restart plays the alert
     /// sound (R9). Local to this computer (KTD1).
     pub alert_sound: bool,
@@ -622,8 +675,9 @@ pub struct Settings {
     /// The microphone a new note records from. `None` is "System default"
     /// (R1, KTD17).
     pub microphone: Option<MicrophoneChoice>,
-    /// Whether a new note starts with system audio on (R6, KD13).
-    pub system_audio_default: bool,
+    /// The app list: the apps whose audio each new note records (R1). Empty
+    /// on a new install (KD3).
+    pub apps: Vec<ListedApp>,
     /// A shared setting. What New Note and the recording shortcut do (R8,
     /// R10): start a note that records, or open a note that does not
     /// record. On by default.
@@ -847,7 +901,7 @@ impl Default for Settings {
             chosen_recognition: RecognitionChoice::default(),
             recognition: RecognitionState::default(),
             microphone: None,
-            system_audio_default: false,
+            apps: Vec::new(),
             new_note_records: true,
             alert_sound: true,
             hide_from_dock: false,
@@ -902,7 +956,7 @@ impl Settings {
             },
             chosen_recognition,
             microphone: local.microphone,
-            system_audio_default: local.system_audio_default,
+            apps: local.apps,
             new_note_records: known_or(&fields.new_note_records, defaults.new_note_records),
             alert_sound: local.alert_sound,
             hide_from_dock: local.hide_from_dock,
@@ -967,7 +1021,7 @@ impl Settings {
             recognition_language: self.recognition_language.clone(),
             default_speaker_count: self.default_speaker_count,
             microphone: self.microphone.clone(),
-            system_audio_default: self.system_audio_default,
+            apps: self.apps.clone(),
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
         }
@@ -1012,6 +1066,24 @@ impl Settings {
         }
         self.microphone = choice;
         Ok(())
+    }
+
+    /// Add `app` to the app list (R2). An app that is on the list already
+    /// stays there once. An app with a blank ID or name is refused.
+    pub fn add_app(&mut self, app: ListedApp) -> Result<(), String> {
+        if app.id.trim().is_empty() || app.name.trim().is_empty() {
+            return Err("An app needs an ID and a name.".into());
+        }
+        if !self.apps.iter().any(|a| a.id == app.id) {
+            self.apps.push(app);
+        }
+        Ok(())
+    }
+
+    /// Remove the app with `id` from the app list (R4). The app set of an
+    /// open note does not change (R11).
+    pub fn remove_app(&mut self, id: &str) {
+        self.apps.retain(|a| a.id != id);
     }
 
     /// The storage folder, or `None` before the launch sets one.
@@ -2467,7 +2539,7 @@ mod tests {
     }
 
     #[test]
-    fn a_store_without_the_recording_keys_reads_as_system_default_and_no_system_audio() {
+    fn a_store_without_the_recording_keys_reads_as_system_default() {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "shortcut": "kept",
@@ -2475,10 +2547,8 @@ mod tests {
         let (settings, updated) = settings_from_value(&stored);
         assert!(!updated, "the new keys need no migration (KTD17)");
         assert_eq!(settings.microphone, None);
-        assert!(!settings.system_audio_default);
         assert_eq!(settings.shortcut.as_deref(), Some("kept"));
         assert_eq!(Settings::default().microphone, None);
-        assert!(!Settings::default().system_audio_default);
     }
 
     // Covers R9: a store from before the setting plays the alert sound, as
@@ -2694,12 +2764,85 @@ mod tests {
         let stored = json!({
             "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
             "microphone": "USB Audio",
-            "system_audio_default": true,
+            "hide_from_dock": true,
         });
         let (settings, updated) = settings_from_value(&stored);
         assert!(updated);
         assert_eq!(settings.microphone, None);
-        assert!(settings.system_audio_default);
+        assert!(settings.hide_from_dock);
+    }
+
+    fn zoom() -> ListedApp {
+        ListedApp {
+            id: "us.zoom.xos".into(),
+            name: "zoom.us".into(),
+            path: "/Applications/zoom.us.app".into(),
+        }
+    }
+
+    #[test]
+    fn a_store_without_the_app_list_reads_as_an_empty_list() {
+        let stored = json!({ "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION });
+        let (settings, _) = settings_from_value(&stored);
+        assert!(settings.apps.is_empty());
+        assert!(Settings::default().apps.is_empty());
+    }
+
+    #[test]
+    fn the_app_list_round_trips_and_an_app_is_on_it_once() {
+        let mut settings = Settings::default();
+        settings.add_app(zoom()).unwrap();
+        settings.add_app(zoom()).unwrap();
+        assert_eq!(settings.apps, vec![zoom()]);
+        let written = serde_json::to_value(settings.local()).unwrap();
+        let (read, updated) = settings_from_value(&written);
+        assert!(!updated);
+        assert_eq!(read.apps, vec![zoom()]);
+        settings.remove_app("us.zoom.xos");
+        assert!(settings.apps.is_empty());
+    }
+
+    #[test]
+    fn an_app_needs_an_id_and_a_name() {
+        let mut settings = Settings::default();
+        for bad in [
+            ListedApp {
+                id: " ".into(),
+                ..zoom()
+            },
+            ListedApp {
+                name: String::new(),
+                ..zoom()
+            },
+        ] {
+            assert!(settings.add_app(bad).is_err());
+        }
+        assert!(settings.apps.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_app_entry_is_dropped_and_the_rest_is_kept() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "apps": [
+                "us.zoom.xos",
+                { "id": "", "name": "Blank", "path": "" },
+                { "id": "us.zoom.xos", "name": "zoom.us", "path": "/Applications/zoom.us.app" },
+                { "id": "us.zoom.xos", "name": "Second copy", "path": "" },
+            ],
+            "hide_from_dock": true,
+        });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.apps, vec![zoom()]);
+        assert!(settings.hide_from_dock);
+
+        let (settings, _) = settings_from_value(&json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "apps": "us.zoom.xos",
+            "alert_sound": false,
+        }));
+        assert!(settings.apps.is_empty());
+        assert!(!settings.alert_sound);
     }
 
     #[test]
@@ -4235,7 +4378,6 @@ mod stale_recognition_tests {
             "speaker_source": "integrated",
             "speaker_processing_mode": "after_stop",
             "recognition_language": "de",
-            "system_audio_default": true,
             "destination_roots": ["/vault/a"],
             "current_destination": "/vault/a",
         }));
@@ -4261,7 +4403,6 @@ mod stale_recognition_tests {
                 ..ProviderEntries::default()
             },
             legacy_key_provider: Some(Provider::Custom),
-            system_audio_default: true,
             storage_folder: "/vault/a".into(),
             chosen_recognition: recognition.clone(),
             ..Settings::default()

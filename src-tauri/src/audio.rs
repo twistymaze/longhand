@@ -1,4 +1,4 @@
-//! The app's [`AudioProvider`]: the microphone from `audio-cpal` and system
+//! The app's [`AudioProvider`]: the microphone from `audio-cpal` and app
 //! audio from `audio-system` (KTD4). `audio-cpal` stays microphone-only, so
 //! the two backends meet here and neither crate depends on the other.
 
@@ -6,7 +6,7 @@ use std::sync::mpsc as std_mpsc;
 
 use audio::{AudioProvider, CaptureConfig, CaptureStream, Error};
 use audio_cpal::CpalAudio;
-use audio_system::SystemAudioCapture;
+use audio_system::AppSet;
 
 #[derive(Default)]
 pub struct AppAudio {
@@ -24,31 +24,34 @@ impl AppAudio {
         &self.mic
     }
 
-    /// System audio with the status that the frames do not show, such as
-    /// the Windows other-output flag (U4 step 6).
-    pub fn open_system_audio(
+    /// The audio of the apps in `apps` (R6). Change the set with
+    /// [`AppSet::set`] while the stream runs.
+    pub fn open_apps(
         &self,
         sample_rate: u32,
         chunk_size: usize,
-    ) -> Result<SystemAudioCapture, Error> {
-        audio_system::open(sample_rate, chunk_size)
+        apps: AppSet,
+    ) -> Result<CaptureStream, Error> {
+        audio_system::open_apps(sample_rate, chunk_size, apps).map(|capture| capture.stream)
     }
 }
 
 impl AudioProvider for AppAudio {
-    /// The microphone only. U6 pairs it with system audio.
+    /// The microphone only. The capture manager opens app audio with
+    /// [`AppAudio::open_apps`].
     fn open_capture(&self, config: CaptureConfig) -> Result<CaptureStream, Error> {
         self.mic
             .open_mic_capture(config.mic_device, config.sample_rate, config.chunk_size)
     }
 
+    /// Longhand records no capture of all computer audio (R18): the app
+    /// audio of a note comes from [`AppAudio::open_apps`].
     fn open_speaker_capture(
         &self,
-        sample_rate: u32,
-        chunk_size: usize,
+        _sample_rate: u32,
+        _chunk_size: usize,
     ) -> Result<CaptureStream, Error> {
-        self.open_system_audio(sample_rate, chunk_size)
-            .map(|capture| capture.stream)
+        Err(Error::SpeakerStreamSetupFailed)
     }
 
     fn open_mic_capture(
@@ -90,17 +93,14 @@ impl AudioProvider for AppAudio {
 mod tests {
     use super::*;
 
-    /// Moved from `audio-cpal`, which no longer has a speaker half: the
-    /// speaker half of the provider is `audio-system`.
     #[test]
-    fn the_speaker_is_captured_only_through_audio_system() {
+    fn no_capture_of_all_computer_audio_opens() {
+        // R18: the parked whole-computer capture is gone.
         let audio = AppAudio::new();
         assert_eq!(audio.probe_speaker(), audio_system::probe());
-        if !audio_system::SUPPORTED {
-            assert!(matches!(
-                audio.open_speaker_capture(16_000, 320),
-                Err(Error::SpeakerStreamSetupFailed)
-            ));
-        }
+        assert!(matches!(
+            audio.open_speaker_capture(16_000, 320),
+            Err(Error::SpeakerStreamSetupFailed)
+        ));
     }
 }

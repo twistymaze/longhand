@@ -1,8 +1,8 @@
 // The bar at the bottom of the session page while it records (R12, KD2).
 // It keeps the two tiers of walking-skeleton U7, because a glance is all a
 // participant at the table should spend:
-// - always: the live dot, the elapsed time, the microphone as secondary
-//   text, and the Computer audio toggle (KTD14). Pause and Stop are in the
+// - always: the live dot, the elapsed time and the microphone as secondary
+//   text (KTD14). Pause and Stop are in the
 //   page's toolbar, in the place of Record and Resume. While paused, the
 //   bar says "Paused", the time stops, and the dot is grey;
 // - only while a condition exists: the level meter and the warnings.
@@ -12,12 +12,10 @@
 
 import { type MouseEvent, type ReactNode, useState } from "react";
 import { commands, type Readiness, type RecordingStatus, type SpeakerCountSetting } from "../bindings";
-import { features } from "../lib/features";
 import { formatPosition, levelFraction } from "../lib/timeline";
 import type { InputStatus } from "../recording/inputStatus";
 import { type Capture, HISTORY } from "../recording/useCapture";
 import { describeDestination } from "../settings/DestinationPicker";
-import { CheckIcon } from "../settings/icons";
 import { Button, fieldClass, formatBytes } from "../settings/ui";
 import { SetUpProviderButton } from "./ProcessingStatus";
 
@@ -154,8 +152,15 @@ function warnings(capture: Capture, readiness: Readiness | null): Warning[] {
   return items;
 }
 
-/// Why the note records from another microphone, or without system
-/// audio (R4, R5, R10). The microphone continues to record in each case.
+/// The text of the app audio warnings (R16 of the app audio plan).
+export const APP_AUDIO_NOT_ALLOWED =
+  "App audio is not recorded. Allow Longhand under Screen & System Audio Recording in System Settings.";
+export const APP_AUDIO_FAILED = "App audio is not recorded: it stopped and could not start again.";
+
+/// Why the note records from another microphone (R4, R5), and why it does
+/// not record its apps (R16 of the app audio plan). The microphone
+/// continues to record. An app that does not run or makes no sound is
+/// normal and gives no warning.
 function inputWarnings(status: RecordingStatus): Warning[] {
   const items: Warning[] = [];
   const choice = status.microphone_choice;
@@ -165,27 +170,14 @@ function inputWarnings(status: RecordingStatus): Warning[] {
       text: `Using ${status.microphone ?? "the system default"}: ${choice.label} is not connected.`,
     });
   }
-  if (!status.system_audio) return items;
-  const permission = status.system_audio_permission;
-  if (permission === "denied") {
-    items.push({ tone: "caution", text: "Computer audio is not recorded. Allow it in System Settings." });
-  } else if (permission === "not_asked") {
-    // The macOS prompt can wait for an answer while the note records.
-    items.push({ tone: "caution", text: "Computer audio is not recorded until you allow it." });
-  } else if (status.system_audio_failed) {
-    items.push({ tone: "caution", text: "Computer audio stopped. The microphone is still recording." });
-  }
-  if (status.system_audio_silent) {
-    items.push({ tone: "caution", text: "Computer audio is silent. Check the permission in System Settings." });
-  }
-  if (status.system_audio_other_output) {
-    items.push({ tone: "caution", text: "Computer audio is silent. Sound is playing on another output." });
-  }
-  if (status.system_audio_mic_copy) {
+  if (status.app_audio === "not_allowed") {
     items.push({
       tone: "caution",
-      text: "Computer audio also has your microphone in it, so your voice is recorded twice. Check your audio mixer app.",
+      text: APP_AUDIO_NOT_ALLOWED,
+      action: <Button onClick={() => void commands.openSystemAudioSettings()}>Open System Settings</Button>,
     });
+  } else if (status.app_audio === "failed") {
+    items.push({ tone: "negative", text: APP_AUDIO_FAILED });
   }
   return items;
 }
@@ -198,26 +190,6 @@ function MicrophoneText({ status }: { status: RecordingStatus | null }) {
     <span title={status.microphone} className="min-w-0 truncate text-label-secondary">
       {status.microphone}
     </span>
-  );
-}
-
-/// The Computer audio switch of this note (R8). A toggle button: its fill
-/// and check mark show the state at a glance, and it does not move.
-function SystemAudioToggle({ on, disabled, onClick }: { on: boolean; disabled: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      aria-pressed={on}
-      disabled={disabled}
-      onClick={onClick}
-      title={on ? "Computer audio is recorded. Click to stop recording it." : "Click to record computer audio too."}
-      className={`flex shrink-0 items-center gap-1 rounded-md py-[3px] pr-2.5 pl-2 whitespace-nowrap outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-40 ${
-        on ? "bg-accent/15 text-accent active:bg-accent/25" : "bg-fill text-label-secondary active:bg-fill-pressed"
-      }`}
-    >
-      <CheckIcon className={`size-3.5 ${on ? "" : "invisible"}`} />
-      Computer audio
-    </button>
   );
 }
 
@@ -302,13 +274,6 @@ export function RecordingBar({
         <MicrophoneText status={status} />
         {showsLevel.includes(capture.input) ? <LevelMeter levels={capture.levels} /> : <span className="flex-1" />}
         {speakers && <SpeakerField onDone={onSpeakersDone} />}
-        {features.systemAudio && status && id && !interruption && (
-          <SystemAudioToggle
-            on={status.system_audio}
-            disabled={busy}
-            onClick={() => void act(() => commands.setNoteSystemAudio(id, !status.system_audio))}
-          />
-        )}
         {interruption && id && (
           <Button prominent disabled={busy} onClick={() => void act(() => commands.resumeRecording(id))}>
             Resume

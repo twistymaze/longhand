@@ -16,10 +16,8 @@ set -euo pipefail
 BORROWED_DIRS=(
   .github/workflows
   native/nemo-helper
-  crates/aec
   crates/audio
   crates/audio-cpal
-  crates/audio-sync
   crates/audio-system
   crates/asr
   crates/audio-mock

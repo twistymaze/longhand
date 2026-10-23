@@ -1418,7 +1418,6 @@ fn usb_mic() -> CaptureChoice {
             id: "usb-uid".into(),
             label: "USB Audio".into(),
         }),
-        system_audio: true,
     }
 }
 
@@ -2582,4 +2581,50 @@ fn the_computer_id_stays_the_same_and_differs_between_databases() {
     assert_eq!(id.len(), 32);
     assert_eq!(Store::open(&path).unwrap().computer_id().unwrap(), id);
     assert_ne!(Store::open_in_memory().unwrap().computer_id().unwrap(), id);
+}
+
+fn app(id: &str, name: &str, path: &str) -> session_core::RecordedApp {
+    session_core::RecordedApp {
+        id: id.into(),
+        name: name.into(),
+        path: path.into(),
+    }
+}
+
+#[test]
+fn a_note_app_set_reads_back_with_names_and_paths() {
+    // R21, KTD7: the note keeps its own app set.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    let apps = vec![
+        app("us.zoom.xos", "zoom.us", "/Applications/zoom.us.app"),
+        app(
+            "com.microsoft.teams2",
+            "Microsoft Teams",
+            "/Applications/Microsoft Teams.app",
+        ),
+    ];
+    store.set_note_apps("s1", &apps).unwrap();
+    assert_eq!(store.note_apps("s1").unwrap(), apps);
+}
+
+#[test]
+fn two_notes_keep_different_app_sets() {
+    // R10: a change to the app set of one note does not change another note.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.create_session("s2", t(1), None).unwrap();
+    let zoom = vec![app("us.zoom.xos", "zoom.us", "/Applications/zoom.us.app")];
+    let teams = vec![app(
+        "ms-teams",
+        "Microsoft Teams",
+        r"C:\Program Files\WindowsApps\ms-teams.exe",
+    )];
+    store.set_note_apps("s1", &zoom).unwrap();
+    store.set_note_apps("s2", &teams).unwrap();
+    assert_eq!(store.note_apps("s1").unwrap(), zoom);
+    assert_eq!(store.note_apps("s2").unwrap(), teams);
+    store.set_note_apps("s1", &[]).unwrap();
+    assert!(store.note_apps("s1").unwrap().is_empty());
+    assert_eq!(store.note_apps("s2").unwrap(), teams);
 }

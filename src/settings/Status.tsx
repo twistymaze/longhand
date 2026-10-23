@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { commands, type Readiness, type Result, type Settings, type SettingsPane, type ShortcutStatus } from "../bindings";
 import { sentence } from "../processing/describe";
-import { features } from "../lib/features";
 import { describeDestination } from "./DestinationPicker";
 import { ShortcutField } from "./ShortcutField";
 import { readOnlyReason } from "./shared";
@@ -79,7 +78,7 @@ function SetupRow({
     }
     case "system_audio":
       return (
-        <Row label="Computer audio access" detail={systemAudioDetail(readiness.system_audio)}>
+        <Row label="App audio access" detail={systemAudioDetail(readiness.system_audio)}>
           <SystemAudioButton permission={readiness.system_audio} onRefresh={onRefresh} />
         </Row>
       );
@@ -115,7 +114,7 @@ function SetupGroup({
   onRefresh: () => Promise<void>;
   onNavigate: (p: PaneId) => void;
 }) {
-  const items = outstandingItems(readiness, settings, { systemAudio: features.systemAudio });
+  const items = outstandingItems(readiness, settings);
   const detail = !readiness.armed
     ? "Set up the items below to record"
     : items.length > 0

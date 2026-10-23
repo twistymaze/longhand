@@ -99,25 +99,20 @@ A second copy of a session's file that a sync service makes when two computers c
 ### Microphone choice
 The input that a note records from. The user chooses the usual microphone in Settings, or "System default", and can change it for one note on the recording page. The choice is saved by the device ID, with the name as a label. A chosen microphone that is missing or disconnects is replaced by the system default, and the choice stays. When the chosen microphone is back for two polls in a row, the note moves back to it. Each change of input is a segment boundary.
 
-### System audio
-All audio that the computer plays, from any app. A note records it only while its Computer audio switch is on. The UI calls it "Computer audio"; "system audio" is the term in code and docs only. A note with system audio saves the raw microphone on the left channel and the raw system audio on the right. The microphone is the clock: the system audio is padded or trimmed to match it. On macOS the capture is a global process tap that leaves out Longhand's own sounds and the known mixer apps (apps that play the audio of other apps again, often with the microphone in it), and needs the Screen & System Audio Recording permission. On Windows it is a loopback of one output device, which follows the device where another app plays.
-
 ### App audio
-The audio of the apps on the user's list in Settings, recorded with the microphone in every note. The list is empty on a new install, and the user adds only running apps. An app records while it plays and is ignored at other times. The note menu can add or remove an app for one note. A note with app audio saves the microphone on the left channel and the app audio on the right, and processing uses a plain mix of the two. App audio replaces system audio (planned in `docs/plans/2026-10-22-0844-feat-app-audio-plan.md`).
+The audio of the apps in a note's app set, recorded with the microphone. The app list in Settings is empty on a new install, and the user adds only running apps. Each new note copies the app list into its own app set; the note menu changes the app set of that note only. An app is recorded while it plays and is ignored at other times. A note saves only the microphone until the first app sound above a low level; from then on it saves the microphone on the left channel and the app audio on the right. The microphone is the clock: the app audio is padded or trimmed to match it. Processing and the live transcript use a plain mix of the two channels. On macOS the capture is a process tap of the app set's processes and needs the Screen & System Audio Recording permission. On Windows 11 it is one process loopback client for each app. The client also records the processes that the app started, also an app that is not in the app set; Windows gives no way to exclude them. While Teams plays, it records the whole output device of Teams, because Windows gives silence for Teams. Code calls the capture "system audio" in some names.
+*Avoid:* computer audio (the removed whole-computer feature)
+
+### App set
+The apps whose audio one note records: a copy of the Settings app list at the note's start, changed only from that note's menu. Continue and Resume use it.
 
 ### Pause
-The state of a recording note that captures nothing for a time, by the user's choice. The microphone and the system audio are closed, and no audio, not even recovery data, goes to disk. Continue records into the same note; the UI does not call it Resume, because Resume records into a stopped note. A paused note is still open: processing starts only at Stop. The transcript and the summary input mark each pause with its duration. A pause is not a gap: gap fill does not transcribe it.
+The state of a recording note that captures nothing for a time, by the user's choice. The microphone and the app audio are closed, and no audio, not even recovery data, goes to disk. Continue records into the same note; the UI does not call it Resume, because Resume records into a stopped note. A paused note is still open: processing starts only at Stop. The transcript and the summary input mark each pause with its duration. A pause is not a gap: gap fill does not transcribe it.
 *Avoid:* "pause" for a silence in speech (say silence)
 
 ### Recording widget
 A small window above all other windows that shows the open note's state, time and Pause, Continue and Stop while a note is recording, paused or interrupted, so the user does not forget a note that still records or is paused. It never takes the focus from the app in front and is hidden from screen capture where the system allows. A Settings switch sets whether each new note shows it; the user can hide or show it for the open note only, and that choice ends when the note stops.
 *Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)
-
-### Echo removal
-The processing step after Stop that removes the system audio that the microphone heard from the speakers. It changes only the audio that processing uses, never the saved recording. It is distinct from the echo gate, which only leaves out microphone chunks that are mostly echo from the live mix during recording.
-
-### Echo span
-A part of a stereo segment where the microphone holds echo of the system audio. Assemble finds echo spans by the delay of the system audio in the microphone channel, and runs echo removal only inside them. Transcribe treats each echo span as a gap: it removes the live words inside the span and recognizes the span again from the cleaned mix.
 
 ## Transcription
 

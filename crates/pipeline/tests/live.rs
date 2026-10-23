@@ -1149,13 +1149,15 @@ fn a_gap_fill_window_that_decodes_nothing_passes_verify() {
 }
 
 #[test]
-fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_window() {
+fn low_coverage_does_not_stop_the_note_and_marks_it() {
     let g = Gaps::new(&[
         (0, 20_000, live_words(0, 20)),
         (40_000, 60_000, live_words(40, 60)),
     ]);
     g.transcribe();
     assert_eq!(g.calls(), 2);
+    g.verify().unwrap();
+    assert!(!verify::low_coverage(&g.r.store, ID).unwrap());
     // The result of the second gap-fill window is lost: the model did not
     // hear its voiced time.
     g.r.store
@@ -1163,16 +1165,8 @@ fn a_verify_failure_and_retry_keep_the_live_rows_and_redo_only_the_flagged_windo
         .unwrap()
         .delete_checkpoint(ID, Stage::Transcribe, &checkpoint::window_key(0, 3))
         .unwrap();
-    assert!(g.verify().is_err());
-    let rows = live::rows(&g.r.store, ID).unwrap();
-
-    assert!(verify::prepare_retry(&g.r.store, ID).unwrap());
-    assert_eq!(live::rows(&g.r.store, ID).unwrap(), rows);
-    assert_eq!(g.filled(), vec![2]);
-    g.transcribe();
-    assert_eq!(g.calls(), 3, "only window 3 is transcribed again");
-    assert_eq!(g.filled(), vec![2, 3]);
     g.verify().unwrap();
+    assert!(verify::low_coverage(&g.r.store, ID).unwrap());
 }
 
 #[test]
@@ -1202,8 +1196,9 @@ fn the_merge_keeps_gap_words_and_drops_repeats_and_words_outside_the_gaps() {
 // ------------------------------------------ echo spans as gaps (U10, KTD10)
 
 impl Gaps {
-    /// Save the echo spans checkpoint that Assemble saves for a stereo
-    /// segment (KTD8 step 7).
+    /// Save the echo spans checkpoint of a stereo segment. Assemble saves
+    /// it with no spans (KTD10 of the app audio plan); the merge in
+    /// Transcribe still reads spans.
     fn echo(&self, spans: &[Span]) {
         let echo = pipeline::echo::EchoSpans {
             segment: 0,
@@ -1253,7 +1248,8 @@ fn live_words_inside_an_echo_span_give_way_to_words_from_the_cleaned_file() {
 
 #[test]
 fn a_segment_with_no_echo_spans_keeps_its_live_text_and_runs_no_batch_window() {
-    // Covers AE1: a call on headphones.
+    // The row that Assemble saves for each stereo segment (KTD10 of the app
+    // audio plan): Transcribe keeps every live word.
     let g = Gaps::new(&[(0, 60_000, live_words(0, 60))]);
     g.echo(&[]);
     g.transcribe();

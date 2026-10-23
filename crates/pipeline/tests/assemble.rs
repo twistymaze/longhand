@@ -525,27 +525,6 @@ mod stereo {
         10.0 * ratio.max(1e-20).log10()
     }
 
-    /// The RMS over the 20 ms frames above -50 dBFS, in dBFS.
-    fn speech_level(x: &[f32]) -> f64 {
-        let frames: Vec<f64> = x
-            .chunks(320)
-            .map(|f| energy(f) / f.len() as f64)
-            .filter(|&p| p > 1e-5)
-            .collect();
-        assert!(!frames.is_empty(), "no speech");
-        db(frames.iter().sum::<f64>() / frames.len() as f64)
-    }
-
-    /// The energy of the part of `signal` that is a scaled copy of `reference`.
-    fn projected(signal: &[f32], reference: &[f32]) -> f64 {
-        let cross: f64 = signal
-            .iter()
-            .zip(reference)
-            .map(|(&a, &b)| f64::from(a) * f64::from(b))
-            .sum();
-        cross * cross / energy(reference).max(1e-20)
-    }
-
     fn noise(len: usize, level: f32) -> Vec<f32> {
         let mut state = 0x2545_f491u32;
         (0..len)
@@ -601,7 +580,7 @@ mod stereo {
             std::fs::read_dir(dir.join(pipeline::PROC_DIR))
                 .unwrap()
                 .all(|e| e.unwrap().file_name().to_string_lossy().ends_with(".wav")),
-            "the temporary stereo file is gone"
+            "no temporary file stays"
         );
         Assembled {
             store,
@@ -613,11 +592,11 @@ mod stereo {
         }
     }
 
-    /// Cancels once the processing file's `.tmp` exists: the stereo arm
-    /// creates it just before echo removal and the mix.
-    struct CancelInEcho(std::path::PathBuf);
+    /// Cancels once the processing file's `.tmp` exists, while Assemble
+    /// writes the segment.
+    struct CancelWhileWriting(std::path::PathBuf);
 
-    impl pipeline::Control for CancelInEcho {
+    impl pipeline::Control for CancelWhileWriting {
         fn proceed(&self) -> Result<(), pipeline::StageError> {
             if self.0.exists() {
                 Err(pipeline::StageError::Cancelled)
@@ -642,7 +621,7 @@ mod stereo {
     }
 
     #[test]
-    fn a_cancel_during_echo_removal_removes_the_temporary_files() {
+    fn a_cancel_while_a_stereo_segment_is_written_removes_the_temporary_files() {
         let (system, _) = remote(secs(20.0));
         let mic = delayed(&system, ECHO_DELAY, ECHO_GAIN);
         let root = tempfile::tempdir().unwrap();
@@ -657,7 +636,7 @@ mod stereo {
         let processing = dir.join(proc_file(&segment.audio_file));
         let mut name = processing.file_name().unwrap().to_os_string();
         name.push(".tmp");
-        let control = CancelInEcho(processing.with_file_name(name));
+        let control = CancelWhileWriting(processing.with_file_name(name));
 
         let result = assemble::run(
             &store,
@@ -685,10 +664,6 @@ mod stereo {
         let parts: Vec<(usize, &[f32])> = starts.iter().map(|&s| (s, &sentence[..])).collect();
         let sentences = starts.iter().map(|&s| (s, s + sentence.len())).collect();
         (place(len, &parts), sentences)
-    }
-
-    fn ms(samples: usize) -> u64 {
-        samples as u64 * 1000 / RATE as u64
     }
 
     #[test]
@@ -729,38 +704,6 @@ mod stereo {
         assert!(level.abs() < 0.5, "the tone changed by {level:.2} dB");
     }
 
-    #[test]
-    fn with_headphones_no_echo_spans_and_the_mix_is_the_balanced_sum() {
-        // Covers AE1.
-        let len = secs(20.0);
-        let room = voice(secs(8.0), 120.0, 3, 0.05);
-        let call = voice(secs(10.0), 210.0, 9, 0.02);
-        let mic = add(
-            &place(len, &[(secs(1.0), &room), (secs(11.0), &room[..secs(5.0)])]),
-            &noise(len, 1e-4),
-        );
-        let system = place(len, &[(secs(4.0), &call)]);
-        let a = assemble_stereo(RATE as u32, &mic, &system);
-
-        assert_eq!(a.echo.spans, [], "no echo spans");
-        let (mic, system) = (stored(&mic), stored(&system));
-        let (g_mic, g_system) = (a.echo.mic_gain, a.echo.system_gain);
-        assert!(
-            g_system > g_mic,
-            "the quieter call is raised: {g_mic} {g_system}"
-        );
-        for (i, &got) in a.proc.iter().enumerate() {
-            let want = g_mic * mic[i] + g_system * system[i];
-            assert!(
-                (got - want).abs() < 1e-5,
-                "sample {i}: {got} against {want}"
-            );
-        }
-        let scaled = |x: &[f32], g: f32| x.iter().map(|s| s * g).collect::<Vec<_>>();
-        let diff = speech_level(&scaled(&mic, g_mic)) - speech_level(&scaled(&system, g_system));
-        assert!(diff.abs() < 1.0, "levels differ by {diff:.2} dB");
-    }
-
     type Call = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<(usize, usize)>);
 
     /// The microphone hears the call from the speakers, late and quieter:
@@ -776,201 +719,68 @@ mod stereo {
         (mic, system, echo, sentences)
     }
 
-    /// The microphone part of the mix, from the mix and the system channel.
-    fn mic_part(a: &Assembled, system: &[f32]) -> Vec<f32> {
-        let system = stored(system);
-        a.proc
+    /// The echo row that Assemble saves for a stereo segment: no spans and
+    /// gains of 1 (KTD10).
+    fn no_echo(segment: u32) -> EchoSpans {
+        EchoSpans {
+            segment,
+            spans: Vec::new(),
+            mic_gain: 1.0,
+            system_gain: 1.0,
+        }
+    }
+
+    /// The plain mix of the stored channels (KTD9): their sum, clamped to
+    /// the sample range.
+    fn plain(left: &[f32], right: &[f32]) -> Vec<f32> {
+        stored(left)
             .iter()
-            .zip(&system)
-            .map(|(p, s)| (p - a.echo.system_gain * s) / a.echo.mic_gain)
+            .zip(&stored(right))
+            .map(|(l, r)| (l + r).clamp(-1.0, 1.0))
             .collect()
     }
 
     #[test]
-    fn speaker_echo_gives_echo_spans_over_the_echoed_speech_and_removes_the_echo() {
-        // Covers AE2.
-        let (mic, system, echo, sentences) = speaker_call(None);
-        let a = assemble_stereo(RATE as u32, &mic, &system);
-
-        assert_eq!(a.echo.spans.len(), sentences.len(), "{:?}", a.echo.spans);
-        for (span, (start, end)) in a.echo.spans.iter().zip(&sentences) {
-            let (start, end) = (ms(start + ECHO_DELAY), ms(end + ECHO_DELAY));
-            assert!(
-                span.start_ms.abs_diff(start) <= 100,
-                "span {span:?} for the echo at {start}..{end} ms"
-            );
-            assert!(
-                span.end_ms >= end - 100 && span.end_ms <= end + 600,
-                "span {span:?} for the echo at {start}..{end} ms"
-            );
-        }
-        let cleaned = mic_part(&a, &system);
-        for (start, end) in &sentences {
-            let (start, end) = (start + ECHO_DELAY, end + ECHO_DELAY);
-            let loss = db(energy(&echo[start..end]) / energy(&cleaned[start..end]));
-            assert!(loss >= 15.0, "the echo at {start} lost {loss:.1} dB");
-        }
-    }
-
-    #[test]
-    fn a_sentence_at_a_span_start_loses_its_echo_from_its_first_syllable() {
-        let (mic, system, echo, sentences) = speaker_call(None);
-        let a = assemble_stereo(RATE as u32, &mic, &system);
-        let cleaned = mic_part(&a, &system);
-        for (start, _) in &sentences {
-            let start = start + ECHO_DELAY;
-            let first = start..start + secs(0.3);
-            let loss = db(energy(&echo[first.clone()]) / energy(&cleaned[first]));
-            assert!(
-                loss >= 15.0,
-                "the first 300 ms at {start} lost {loss:.1} dB"
-            );
-        }
-    }
-
-    #[test]
-    fn a_delay_that_changes_from_60_to_250_ms_is_followed() {
-        // The output device changes after the first sentence.
-        let len = secs(24.0);
-        let (system, sentences) = remote(len);
-        let early = delayed(&system[..secs(6.0)], secs(0.06), ECHO_GAIN);
-        let mut echo = delayed(&system, ECHO_DELAY, ECHO_GAIN);
-        echo[..secs(6.0)].copy_from_slice(&early);
-        let mic = add(&echo, &noise(len, 1e-4));
-        let a = assemble_stereo(RATE as u32, &mic, &system);
-
-        assert_eq!(a.echo.spans.len(), 3, "{:?}", a.echo.spans);
-        assert!(a.echo.spans[0].start_ms.abs_diff(ms(sentences[0].0) + 60) <= 100);
-        let cleaned = mic_part(&a, &system);
-        for (k, (start, end)) in sentences.iter().enumerate() {
-            let delay = if k == 0 { secs(0.06) } else { ECHO_DELAY };
-            let (start, end) = (start + delay, end + delay);
-            let loss = db(energy(&echo[start..end]) / energy(&cleaned[start..end]));
-            assert!(loss >= 15.0, "the echo at {start} lost {loss:.1} dB");
-        }
-    }
-
-    /// The Assemble time of 30 minutes of a call on the speakers at 48 kHz,
-    /// with echo in 80% of it. Run with `--release --ignored --nocapture`.
-    #[test]
-    #[ignore = "a measurement, not a check"]
-    fn thirty_minutes_of_a_call_on_the_speakers() {
-        let rate = 48_000usize;
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("s");
-        // A 10 s pattern at 48 kHz: 8 s of remote speech, and its echo.
-        let sentence = voice(rate * 8, 70.0, 7, 0.05);
-        let system = place(rate * 10, &[(rate / 2, &sentence)]);
-        let mic = add(
-            &delayed(&system, rate / 4, ECHO_GAIN),
-            &noise(rate * 10, 1e-4),
+    fn the_processing_file_of_a_call_on_the_speakers_is_the_plain_mix() {
+        // The speaker echo stays in the mix (KD6).
+        let room = place(
+            secs(24.0),
+            &[(secs(8.5), &voice(secs(4.0), 120.0, 3, 0.05))],
         );
-        let block: Vec<f32> = mic
-            .iter()
-            .zip(&system)
-            .flat_map(|(&m, &s)| [m, s])
-            .collect();
-        let mut writer = recorder::ChunkedWriter::with_probe(
-            recorder::SegmentArgs {
-                dir: dir.join(pipeline::RECOVERY_DIR),
+        let (mic, system, _, _) = speaker_call(Some(room));
+        let a = assemble_stereo(RATE as u32, &mic, &system);
+        assert_eq!(a.echo, no_echo(0));
+        assert_eq!(a.proc, plain(&mic, &system));
+    }
+
+    #[test]
+    fn the_mix_adds_the_two_channels_and_clamps_the_sum() {
+        let part = |value: f32| vec![value; secs(0.5)];
+        let left = [part(0.25), part(0.75), part(-0.75)].concat();
+        let right = [part(0.5), part(0.75), part(-0.75)].concat();
+        let a = assemble_stereo(RATE as u32, &left, &right);
+        assert_eq!(a.proc, [part(0.75), part(1.0), part(-1.0)].concat());
+    }
+
+    #[test]
+    fn the_live_mix_and_the_assemble_mix_of_a_stereo_segment_are_equal() {
+        let (mic, system, _, _) = speaker_call(None);
+        let a = assemble_stereo(RATE as u32, &mic, &system);
+        let mut reader =
+            pipeline::live::archive::ArchiveReader::new(pipeline::live::archive::Archive {
+                dir: a.dir.join(RECOVERY_DIR),
                 segment: 0,
-                capture_started_at: 1_800_000_000_000,
                 offset_ms: 0,
-                sample_rate: rate as u32,
-                channels: 2,
-                floor_bytes: 0,
-            },
-            Box::new(|_| Some(u64::MAX)),
-        )
-        .unwrap();
-        for _ in 0..180 {
-            for frame in block.chunks(rate / 50 * 2) {
-                writer.write(frame).unwrap();
-            }
+                rate: RATE as u32,
+            });
+        let mut live = Vec::new();
+        while let Some(frame) = reader.next_frame().unwrap() {
+            live.extend_from_slice(&frame.pcm);
         }
-        writer.finish().unwrap();
-        let segment = Segment {
-            index: 0,
-            offset_ms: 0,
-            duration_ms: 1_800_000,
-            wall_start: at(0),
-            wall_end: at(1_800),
-            audio_file: "audio/segment-01.opus".into(),
-            channels: 2,
-            ends_in_pause: false,
-        };
-        let store = store();
-        store
-            .lock()
-            .unwrap()
-            .create_session("s", at(0), None)
-            .unwrap();
-        let started = std::time::Instant::now();
-        assemble::run(
-            &store,
-            "s",
-            &dir,
-            std::slice::from_ref(&segment),
-            None,
-            &Unattended,
-        )
-        .unwrap();
-        let echo = echo::saved(&store, "s", 0).unwrap().unwrap();
-        let covered: u64 = echo.spans.iter().map(|s| s.end_ms - s.start_ms).sum();
-        println!(
-            "30 minutes assembled in {:.1} s; echo spans cover {:.0}%",
-            started.elapsed().as_secs_f64(),
-            covered as f64 / 18_000.0
-        );
-    }
-
-    #[test]
-    fn room_speech_over_speaker_echo_is_an_echo_span_and_keeps_the_room_speech() {
-        let len = secs(24.0);
-        // The room talks over the second remote sentence.
-        let room = place(len, &[(secs(8.5), &voice(secs(4.0), 120.0, 3, 0.05))]);
-        let (mic, system, echo, sentences) = speaker_call(Some(room.clone()));
-        let a = assemble_stereo(RATE as u32, &mic, &system);
-
-        let (start, end) = sentences[1];
-        let (start, end) = (start + ECHO_DELAY, end + ECHO_DELAY);
-        assert!(
-            a.echo
-                .spans
-                .iter()
-                .any(|s| s.start_ms <= ms(start) + 100 && s.end_ms >= ms(end)),
-            "no echo span over the double talk: {:?}",
-            a.echo.spans
-        );
-        let cleaned = mic_part(&a, &system);
-        let overlap = start + secs(0.25)..end - secs(0.25);
-        let loss = db(energy(&echo[overlap.clone()])
-            / projected(&cleaned[overlap.clone()], &echo[overlap.clone()]));
-        assert!(
-            loss >= 10.0,
-            "the echo under the room speech lost {loss:.1} dB"
-        );
-        let change = db(energy(&cleaned[overlap.clone()]) / energy(&room[overlap]));
-        assert!(
-            change.abs() < 3.0,
-            "the room speech changed by {change:.2} dB"
-        );
-    }
-
-    #[test]
-    fn a_quiet_system_channel_is_raised_to_within_3_db_of_the_microphone() {
-        let len = secs(18.0);
-        let mic = place(len, &[(secs(2.0), &voice(secs(6.0), 120.0, 3, 0.05))]);
-        // -20 dB against the microphone speech.
-        let system = place(len, &[(secs(10.0), &voice(secs(6.0), 210.0, 9, 0.005))]);
-        let a = assemble_stereo(RATE as u32, &mic, &system);
-
-        let room = speech_level(&a.proc[secs(2.0)..secs(8.0)]);
-        let call = speech_level(&a.proc[secs(10.0)..secs(16.0)]);
-        assert!(
-            (room - call).abs() <= 3.0,
-            "the room is at {room:.1} dBFS and the call at {call:.1} dBFS"
-        );
+        assert_eq!(live.len(), a.proc.len());
+        for (i, (l, p)) in live.iter().zip(&a.proc).enumerate() {
+            assert_eq!(l, p, "sample {i}");
+        }
     }
 
     #[test]
@@ -981,8 +791,7 @@ mod stereo {
             &noise(len, 1e-4),
         );
         let a = assemble_stereo(RATE as u32, &mic, &vec![0.0; len]);
-        assert_eq!(a.echo.spans, []);
-        assert_eq!((a.echo.mic_gain, a.echo.system_gain), (1.0, 1.0));
+        assert_eq!(a.echo, no_echo(0));
         assert_eq!(a.proc, stored(&mic));
     }
 
@@ -1142,7 +951,7 @@ mod stereo {
     }
 
     #[test]
-    fn a_stereo_archive_decoded_again_gives_the_same_echo_spans_within_100_ms() {
+    fn a_stereo_archive_decoded_again_gives_the_plain_mix_and_an_echo_row_with_no_spans() {
         let (mic, system, _, _) = speaker_call(None);
         let a = assemble_stereo(RATE as u32, &mic, &system);
         let home = complete(&a.store, &a.dir, std::slice::from_ref(&a.segment));
@@ -1176,20 +985,26 @@ mod stereo {
             .unwrap()
             .is_empty()
         );
-        let again = echo::saved(&a.store, "s", 0)
-            .unwrap()
-            .expect("an echo spans row");
-        assert_eq!(again.spans.len(), a.echo.spans.len(), "{:?}", again.spans);
-        for (first, again) in a.echo.spans.iter().zip(&again.spans) {
-            assert!(
-                first.start_ms.abs_diff(again.start_ms) <= 100
-                    && first.end_ms.abs_diff(again.end_ms) <= 100,
-                "{first:?} against {again:?}"
-            );
-        }
+        assert_eq!(echo::saved(&a.store, "s", 0).unwrap(), Some(no_echo(0)));
         let (_, decoded) = read_proc(&a.dir.join(proc_file(&a.segment.audio_file)));
         assert_eq!(done[0].proc_samples, decoded.len() as u64);
         assert!((decoded.len() as i64 - a.proc.len() as i64).abs() <= 16);
+        // The plain mix of the two channels in the archive, at 16 kHz.
+        let mut reader = ArchiveReader::open(&home.join(&a.segment.audio_file)).unwrap();
+        let mut pcm = Vec::new();
+        while reader.read(&mut pcm).unwrap() {}
+        let sum: Vec<f32> = pcm
+            .chunks_exact(2)
+            .map(|p| (p[0] + p[1]).clamp(-1.0, 1.0))
+            .collect();
+        let mut want = Vec::new();
+        let mut resampler = pipeline::resample::StreamResampler::new(48_000, PROC_RATE);
+        resampler.push(&sum, &mut |s| want.extend_from_slice(s));
+        resampler.finish(&mut |s| want.extend_from_slice(s));
+        assert_eq!(want.len(), decoded.len());
+        for (i, (w, d)) in want.iter().zip(&decoded).enumerate() {
+            assert!((w - d).abs() < 1e-4, "sample {i}: {d} against {w}");
+        }
         assert_eq!(
             std::fs::read(home.join(&a.segment.audio_file)).unwrap(),
             archive
@@ -1219,7 +1034,7 @@ mod stereo {
         let dir = root.path().join("s");
         let segments = store.lock().unwrap().segments("s").unwrap();
         assemble::run(&store, "s", &dir, &segments, None, &Unattended).unwrap();
-        let first = echo::saved(&store, "s", 1).unwrap().unwrap();
+        assert_eq!(echo::saved(&store, "s", 1).unwrap(), Some(no_echo(1)));
         let home = complete(&store, &dir, &segments);
 
         let done = assemble::run(&store, "s", &dir, &segments, Some(&home), &Unattended).unwrap();
@@ -1229,8 +1044,7 @@ mod stereo {
             None,
             "mono has no echo row"
         );
-        let again = echo::saved(&store, "s", 1).unwrap().unwrap();
-        assert_eq!(again.spans.len(), first.spans.len());
+        assert_eq!(echo::saved(&store, "s", 1).unwrap(), Some(no_echo(1)));
         for segment in &segments {
             let (spec, pcm) = read_proc(&dir.join(proc_file(&segment.audio_file)));
             assert_eq!((spec.channels, spec.sample_rate), (1, PROC_RATE));
@@ -1244,17 +1058,17 @@ mod stereo {
     }
 
     #[test]
-    fn the_disk_check_counts_the_temporary_stereo_file() {
+    fn the_disk_check_of_a_stereo_segment_counts_its_archive_and_its_mix() {
         let store = store();
         let hour = 3_600u64;
-        let segment = |channels| Segment {
+        let segment = Segment {
             index: 0,
             offset_ms: 0,
             duration_ms: hour * 1000,
             wall_start: at(0),
             wall_end: at(hour as i64),
             audio_file: "audio/segment-01.opus".into(),
-            channels,
+            channels: 2,
             ends_in_pause: false,
         };
         store
@@ -1262,19 +1076,13 @@ mod stereo {
             .unwrap()
             .create_session("s", at(0), None)
             .unwrap();
-        let reserve = recorder::storage::DISK_RESERVE_BYTES;
-        let archive_and_mix = recorder::storage::processing_bytes_per_second(2) * hour;
-        let temporary = 16_000 * 4 * 2 * hour;
+        let needed = recorder::storage::processing_bytes_per_second(2) * hour
+            + recorder::storage::DISK_RESERVE_BYTES;
 
         let check =
-            |channels, free| assemble::check_space(&store, "s", &[segment(channels)], Some(free));
-        let short = archive_and_mix + reserve + temporary / 2;
-        let err = check(2, short).unwrap_err().to_string();
+            |free| assemble::check_space(&store, "s", std::slice::from_ref(&segment), Some(free));
+        let err = check(needed - 1).unwrap_err().to_string();
         assert!(err.contains("free some space"), "{err}");
-        assert!(
-            check(1, short).is_ok(),
-            "a mono segment needs no temporary file"
-        );
-        assert!(check(2, archive_and_mix + temporary + reserve).is_ok());
+        assert!(check(needed).is_ok(), "no temporary file is needed");
     }
 }

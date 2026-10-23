@@ -1,7 +1,6 @@
 pub mod joiner;
 pub mod level;
 pub mod live_mix;
-pub mod mic_copy;
 pub mod resampler;
 
 use std::pin::Pin;

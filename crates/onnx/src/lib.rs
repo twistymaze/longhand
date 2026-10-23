@@ -16,18 +16,6 @@ pub fn load_model_from_bytes(bytes: &[u8]) -> Result<Session, Error> {
     Ok(session_builder()?.commit_from_memory(bytes)?)
 }
 
-/// Loads a CPU session that uses `intra_threads` threads inside each operator.
-/// A batch workload that runs a small model many times (the echo canceller)
-/// uses it; the default of one thread suits the models on the live path.
-pub fn load_model_from_bytes_with_threads(
-    bytes: &[u8],
-    intra_threads: usize,
-) -> Result<Session, Error> {
-    Ok(session_builder()?
-        .with_intra_threads(intra_threads.max(1))?
-        .commit_from_memory(bytes)?)
-}
-
 // Opt-in per call site rather than global: small per-frame models on the
 // live path (e.g. Silero VAD) are faster on plain CPU than through CoreML
 // dispatch, so only batch workloads should ask for acceleration.

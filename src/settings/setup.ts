@@ -16,12 +16,7 @@ export type SetupItem = {
 
 /// The outstanding items, in the order that the General list shows them:
 /// the recording blockers first, then the other items in sidebar order.
-/// `systemAudio` is the Computer audio feature switch.
-export function outstandingItems(
-  readiness: Readiness,
-  settings: Settings,
-  { systemAudio }: { systemAudio: boolean },
-): SetupItem[] {
+export function outstandingItems(readiness: Readiness, settings: Settings): SetupItem[] {
   const items: SetupItem[] = [];
   if (!readiness.microphone_authorized) items.push({ id: "microphone", blocksRecording: true });
   // A cleared shortcut is a choice, not a problem (R13 of the shortcut work).
@@ -29,9 +24,9 @@ export function outstandingItems(
   if (readiness.destination.kind !== "ready" || readOnlyReason(settings) !== null) {
     items.push({ id: "storage", blocksRecording: false });
   }
-  // The microphone alone is enough to record. Computer audio access is
-  // needed only when new notes start with Computer audio on.
-  if (systemAudio && settings.system_audio_default && readiness.system_audio !== "allowed") {
+  // The microphone alone is enough to record. App audio access is needed
+  // only when the app list is not empty (R15).
+  if (settings.apps.length > 0 && readiness.system_audio !== "allowed") {
     items.push({ id: "system_audio", blocksRecording: false });
   }
   if (readiness.missing_models.length > 0) items.push({ id: "models", blocksRecording: false });

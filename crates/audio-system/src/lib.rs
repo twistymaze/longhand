@@ -1,12 +1,14 @@
-//! System audio capture: all audio that the computer plays (R7, KTD4).
+//! System audio capture: the audio of the apps in the note's app set
+//! ([`open_apps`]), or all audio that the computer plays ([`open`]).
 //!
-//! - On macOS, a global Core Audio process tap through `cidre`. The tap
-//!   excludes Longhand's own process, so the alert sound is not in the note.
-//! - On Windows, WASAPI loopback on the output device that anarlog's
-//!   `EndpointFollower` picks.
+//! - On macOS, a Core Audio process tap through `cidre`: a tap of the app
+//!   set's processes, or a global tap that excludes Longhand's own process,
+//!   so the alert sound is not in the note.
+//! - On Windows, one process loopback client for each app in the set. Only
+//!   [`open_apps`] is available.
 //!
 //! Both backends are borrowed from anarlog (see PROVENANCE.md). Each one
-//! runs on its own thread, and [`open`] returns a [`CaptureStream`] of
+//! runs on its own thread, and [`open_apps`] returns a [`CaptureStream`] of
 //! [`CaptureFrame`]s whose `raw_speaker` holds `chunk_size` mono samples at
 //! the rate that the caller asks for. `raw_mic` is empty. A backend error
 //! ends this stream with [`Error::SpeakerStreamEnded`]. The microphone
@@ -19,19 +21,25 @@ mod follow;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod rate;
 
+pub mod apps;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod permission;
-pub mod silence;
 #[cfg(target_os = "windows")]
 mod windows;
+#[cfg(target_os = "windows")]
+pub mod windows_app_audio;
+#[cfg(target_os = "windows")]
+mod windows_apps;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod windows_mix;
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+mod windows_tree;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub use audio::{CaptureFrame, CaptureStream, Error};
 pub use permission::Permission;
-pub use silence::{SilenceRun, SilentCheck};
 
 /// Whether this platform has a system audio backend.
 pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
@@ -41,74 +49,99 @@ pub const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows")
 #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 const FRAME_QUEUE: usize = 64;
 
-/// What the backend knows about the capture that the frames do not show.
-/// The capture manager reads it at each tick (U6), and the recording page
-/// shows its warnings (U7).
-#[derive(Debug, Clone, Default)]
-pub struct SystemAudioStatus {
-    other_output: Arc<AtomicBool>,
-}
-
-impl SystemAudioStatus {
-    /// True when the followed output has been silent for 30 s while another
-    /// output plays sound (Windows only, U4 step 6). The call can then play
-    /// on a device that Longhand does not record. Always false on macOS,
-    /// where the tap records every output.
-    pub fn other_output_playing(&self) -> bool {
-        self.other_output.load(Ordering::Relaxed)
-    }
-
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-    fn set_other_output(&self, value: bool) {
-        let before = self.other_output.swap(value, Ordering::Relaxed);
-        if before != value {
-            if value {
-                log::warn!(
-                    "the followed output is silent while another output plays; \
-                     system audio can miss the call"
-                );
-            } else {
-                log::info!("the other-output flag cleared");
-            }
-        }
-    }
-}
-
 /// A running system audio capture.
 pub struct SystemAudioCapture {
     /// The frames. Drop the stream to stop the capture.
     pub stream: CaptureStream,
-    pub status: SystemAudioStatus,
 }
 
-/// Start system audio capture. Frames hold `chunk_size` mono samples at
-/// `sample_rate`; a `sample_rate` of 0 means the backend's own rate.
+/// The IDs of the apps whose audio a capture records: the note's app set.
+/// Clones share one set, so the capture manager can change it while the
+/// stream runs (R10).
+#[derive(Debug, Clone, Default)]
+pub struct AppSet(Arc<Mutex<Vec<String>>>);
+
+impl AppSet {
+    pub fn new(ids: Vec<String>) -> Self {
+        Self(Arc::new(Mutex::new(ids)))
+    }
+
+    /// Replace the set. The backend reads it at its next check.
+    pub fn set(&self, ids: Vec<String>) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = ids;
+    }
+
+    pub fn get(&self) -> Vec<String> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Start capture of all computer sound except Longhand's own (macOS only;
+/// on other platforms it returns [`Error::SpeakerStreamSetupFailed`]). Frames hold
+/// `chunk_size` mono samples at `sample_rate`; a `sample_rate` of 0 means
+/// the backend's own rate. The permission request uses it (KTD11).
 pub fn open(sample_rate: u32, chunk_size: usize) -> Result<SystemAudioCapture, Error> {
     let chunk_size = chunk_size.max(1);
     #[cfg(target_os = "macos")]
     {
-        let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
-        macos::open(sample_rate, chunk_size, tx)?;
-        Ok(SystemAudioCapture {
-            stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
-            status: SystemAudioStatus::default(),
-        })
+        open_macos(sample_rate, chunk_size, macos::Target::Global)
     }
-    #[cfg(target_os = "windows")]
-    {
-        let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
-        let status = SystemAudioStatus::default();
-        windows::open(sample_rate, chunk_size, tx, status.clone())?;
-        Ok(SystemAudioCapture {
-            stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
-            status,
-        })
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(target_os = "macos"))]
     {
         let _ = (sample_rate, chunk_size);
         Err(Error::SpeakerStreamSetupFailed)
     }
+}
+
+/// Start capture of the audio of the apps in `apps` (R6-R10). Frames are as
+/// in [`open`]. While no app in the set plays, the stream sends no frames
+/// and no error. Change the set with [`AppSet::set`]. On a Windows build
+/// before 20348 ([`apps::supported`] is false), it returns
+/// [`Error::SpeakerStreamSetupFailed`] (R17).
+pub fn open_apps(
+    sample_rate: u32,
+    chunk_size: usize,
+    apps: AppSet,
+) -> Result<SystemAudioCapture, Error> {
+    let chunk_size = chunk_size.max(1);
+    #[cfg(target_os = "macos")]
+    {
+        open_macos(sample_rate, chunk_size, macos::Target::Apps(apps))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // R17: per-process loopback needs Windows build 20348 or later.
+        if !apps::supported() {
+            log::warn!(
+                "app audio needs Windows build {} or later",
+                apps::FIRST_WINDOWS_BUILD
+            );
+            return Err(Error::SpeakerStreamSetupFailed);
+        }
+        let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
+        windows_app_audio::open(sample_rate, chunk_size, apps, tx)?;
+        Ok(SystemAudioCapture {
+            stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        })
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (sample_rate, chunk_size, apps);
+        Err(Error::SpeakerStreamSetupFailed)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn open_macos(
+    sample_rate: u32,
+    chunk_size: usize,
+    target: macos::Target,
+) -> Result<SystemAudioCapture, Error> {
+    let (tx, rx) = tokio::sync::mpsc::channel(FRAME_QUEUE);
+    macos::open(sample_rate, chunk_size, target, tx)?;
+    Ok(SystemAudioCapture {
+        stream: CaptureStream::new(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    })
 }
 
 /// Check that the platform can capture system audio: a backend exists and
@@ -126,21 +159,6 @@ pub fn probe() -> Result<(), Error> {
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         Err(Error::SpeakerStreamSetupFailed)
-    }
-}
-
-/// Whether the default output device plays audio for some process now
-/// (`kAudioDevicePropertyDeviceIsRunningSomewhere`, U5 step 6). `None`
-/// when the device cannot be read, and on the platforms that do not need
-/// the check: only an unknown macOS permission needs it.
-pub fn output_running() -> Option<bool> {
-    #[cfg(target_os = "macos")]
-    {
-        macos::output_running()
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        None
     }
 }
 
@@ -182,50 +200,10 @@ fn own_process_exclusion<T>(
     }
 }
 
-/// Apps that play the audio of other apps again: audio mixers and routing
-/// tools. A global tap records each app's own output, so the audio that a
-/// mixer plays again is a second copy, often late, and a mixer can also
-/// play the microphone to a virtual device. The macOS tap excludes these
-/// apps. Bundle IDs that start with an entry of [`MIXER_BUNDLE_PREFIXES`]
-/// match too.
-pub const MIXER_BUNDLE_IDS: &[&str] = &[
-    // Elgato Wave Link 3 (verified on a Mac with Wave Link 3) and earlier.
-    "com.elgato.WaveLink3",
-    "com.elgato.WaveLink",
-    // OBS Studio plays monitored sources to an output.
-    "com.obsproject.obs-studio",
-];
-
-/// Bundle ID prefixes of mixer vendors: Rogue Amoeba (Loopback,
-/// SoundSource, Audio Hijack, and their helpers).
-pub const MIXER_BUNDLE_PREFIXES: &[&str] = &["com.rogueamoeba."];
-
-/// True when the app with this bundle ID plays the audio of other apps
-/// again. The test ignores case.
-pub fn is_mixer(bundle_id: &str) -> bool {
-    let id = bundle_id.to_ascii_lowercase();
-    MIXER_BUNDLE_IDS.iter().any(|m| m.eq_ignore_ascii_case(&id))
-        || MIXER_BUNDLE_PREFIXES
-            .iter()
-            .any(|p| id.starts_with(&p.to_ascii_lowercase()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
-
-    #[test]
-    fn mixer_apps_match_by_bundle_id() {
-        assert!(is_mixer("com.elgato.WaveLink3"));
-        assert!(is_mixer("COM.ELGATO.WAVELINK3"));
-        assert!(is_mixer("com.rogueamoeba.Loopback"));
-        assert!(is_mixer("com.rogueamoeba.soundsource"));
-        assert!(!is_mixer("com.microsoft.teams2"));
-        assert!(!is_mixer("us.zoom.xos"));
-        assert!(!is_mixer("com.elgato.WaveLink3Helper.other"));
-        assert!(!is_mixer(""));
-    }
 
     struct Capture(Mutex<Vec<String>>);
 
@@ -289,17 +267,6 @@ mod tests {
         let excluded: Vec<u32> = own_process_exclusion(4_103, |_| Ok(None));
         assert!(excluded.is_empty());
         assert_eq!(lines_about(4_103).len(), 1);
-    }
-
-    #[test]
-    fn the_status_starts_clear_and_is_shared_between_clones() {
-        let status = SystemAudioStatus::default();
-        let reader = status.clone();
-        assert!(!reader.other_output_playing());
-        status.set_other_output(true);
-        assert!(reader.other_output_playing());
-        status.set_other_output(false);
-        assert!(!reader.other_output_playing());
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]

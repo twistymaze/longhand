@@ -16,7 +16,6 @@ import { type PaneId, StatusPane } from "./Status";
 import { outstandingItems, type SetupItemId } from "./setup";
 import { TypesAndTags } from "./TypesAndTags";
 import { ErrorText, type Tone } from "./ui";
-import { features } from "../lib/features";
 import { useAppSettings, useRecognitionDefaultsSave } from "./useAppSettings";
 
 type PaneEntry = { id: PaneId; label: string; icon: ReactNode };
@@ -50,7 +49,7 @@ export const paneOrder = sections.flatMap((s) => s.panes.map((p) => p.id));
 /// other items are outstanding. The other marks read the same items, so a
 /// mark and the General list cannot disagree.
 export function paneTone(id: PaneId, readiness: Readiness, settings: Settings): Tone | null {
-  const items = outstandingItems(readiness, settings, { systemAudio: features.systemAudio });
+  const items = outstandingItems(readiness, settings);
   const has = (item: SetupItemId) => items.some((i) => i.id === item);
   switch (id) {
     case "status":

@@ -1,6 +1,6 @@
 # Provenance
 
-Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the status handle and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/silence.rs` (the silent system audio flag, U5 step 6) is new.
+Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the public API, the app set and the own-process exclusion rule) and `src/rate.rs` (the rate reader) are new (KTD4). `src/windows_apps.rs` (the Windows running-app list, process table and build number) is new. `src/windows_app_audio.rs` (the Windows per-process capture and the Teams mode), `src/windows_mix.rs` (the block mixer) and `src/windows_tree.rs` (the process tree) are new.
 
 ## `src/macos.rs`
 
@@ -9,7 +9,7 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/macos.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — the tap excludes Longhand's own process and the running mixer apps (`is_mixer`), and takes a new exclusion list when one starts or quits; a dedicated thread owns the tap and the device and reads an `rtrb` ring in place of anarlog's async ring reader; the thread reads the rate that the device measures and resamples to fixed-size frames; a device that is no longer alive ends the stream
+- Status: modified — an app tap records only the processes of the note's app set and takes a new process list when an app starts or quits, and a global tap excludes Longhand's own process; a dedicated thread owns the tap and the device and reads an `rtrb` ring in place of anarlog's async ring reader; the thread reads the rate that the device measures and resamples to fixed-size frames; a device that is no longer alive ends the stream
 
 ## `src/windows.rs`
 
@@ -18,16 +18,16 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Source paths: `crates/audio-actual/src/speaker/windows.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — every channel is downmixed to mono in place of the first channel only; the thread resamples to fixed-size frames and starts the resampler again on an endpoint switch; each follower poll reads the peak meter of each active output for the other-output rule; a read error opens the device that the rule picks now, and ends the stream when none opens
+- Status: modified — only the loopback client of one output device is kept (the Teams mode of app audio uses it); the capture format holds every channel, so the caller downmixes all channels in place of the first channel only
 
 ## `src/follow.rs`
 
 - Repository: https://github.com/fastrepl/anarlog
 - Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
-- Source paths: `crates/audio-actual/src/speaker/windows.rs` (`EndpointFollower`, `ENDPOINT_POLL_INTERVAL`, `ENDPOINT_SWITCH_CONFIRMATIONS` and their tests)
+- Source paths: `crates/audio-actual/src/speaker/windows.rs` (`ENDPOINT_POLL_INTERVAL`)
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — moved out of the WASAPI file so that the rule is tested on every platform; `OtherOutputWatch` (the other-output rule, U4 step 6) is new
+- Status: modified — only the poll interval is kept, as the scan interval of app audio; `TeamsMode` (the Teams mode rule of app audio) is new
 
 ## `src/convert.rs`
 
@@ -56,3 +56,12 @@ Borrowed material in this crate, one record per file (R27). `src/lib.rs` (the pu
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: modified — Rust in place of Swift: `dlopen` and `dlsym` load `TCCAccessPreflight` directly, so no Swift build step is needed (KTD12); the function returns a C `int`; a missing function or an unknown result gives "unknown"; the loader is a test seam; `request` (a short tap) and the Windows result are new; a result other than "allowed" is read again in a new process of the app binary (`CHILD_FLAG`), in place of anarlog's `check-permissions` helper
+
+## `src/apps.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: afb3565040e69e72b11d785533f9b965d203904a
+- Source paths: `crates/detect/src/list/macos.rs` (`find_outermost_app`, `APPLE_CALL_DAEMON_IDS`)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — the outermost `.app` rule works on the executable path text, and the FaceTime processes map to the FaceTime app ID in place of a display label; the WebKit rule (the responsible app), the call-app table, the Windows app ID, the running-app list and the icon read are new

@@ -22,6 +22,7 @@ const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   failed_stage: null,
   message: null,
   summary_problem: null,
+  low_coverage: false,
   resumable: false,
   record: null,
   home_path: null,

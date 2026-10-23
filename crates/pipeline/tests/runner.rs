@@ -1578,7 +1578,7 @@ async fn missing_weights_put_the_session_back_in_line_with_its_audio_ready() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it() {
+async fn a_window_that_missed_speech_is_saved_with_a_low_coverage_mark() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -1590,27 +1590,11 @@ async fn a_window_that_missed_speech_fails_verification_and_retry_redoes_only_it
     );
     *r.script.blank_on.lock().unwrap() = vec![1];
     let (_, outcome) = r.runner.run_next().await.unwrap();
-    let Outcome::Failed { stage, message } = outcome else {
-        panic!("expected a failure, got {outcome:?}");
-    };
-    assert_eq!(stage, Stage::Verify);
-    assert!(message.contains("misses speech"), "{message}");
-    assert!(r.root.join("s").join(TRANSCRIPT_FILE).exists());
-    let windows = plan(&r.store, "s").windows.len();
-    assert_eq!(r.script.calls.load(Ordering::SeqCst), windows);
-
-    // The decoder recovers; only the blank window runs again.
-    r.script.blank_on.lock().unwrap().clear();
-    r.runner.retry("s", false).unwrap();
-    assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
-    let (_, outcome) = r.runner.run_next().await.unwrap();
+    // A part with no words is better than a note that does not finish.
     assert_eq!(outcome, Outcome::Finished);
-    assert_eq!(r.script.calls.load(Ordering::SeqCst), windows + 1);
+    assert!(pipeline::verify::low_coverage(&r.store, "s").unwrap());
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
-    assert!(
-        transcript.contains(&format!("call {windows}")),
-        "{transcript}"
-    );
+    assert!(transcript.contains("call 0"), "{transcript}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1624,12 +1608,12 @@ async fn a_retry_that_fails_at_the_same_stage_offers_to_start_over_from_the_audi
         Some("m"),
         &[(16_000, conversation())],
     );
-    *r.script.blank_on.lock().unwrap() = vec![1];
+    *r.script.fail_on.lock().unwrap() = Some(1);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(matches!(
         outcome,
         Outcome::Failed {
-            stage: Stage::Verify,
+            stage: Stage::Transcribe,
             ..
         }
     ));
@@ -1640,20 +1624,19 @@ async fn a_retry_that_fails_at_the_same_stage_offers_to_start_over_from_the_audi
     );
 
     // The retry continues from the checkpoints and fails at the same stage.
-    r.script.blank_on.lock().unwrap().push(windows);
+    *r.script.fail_on.lock().unwrap() = Some(r.script.calls.load(Ordering::SeqCst));
     r.runner.retry("s", false).unwrap();
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(matches!(
         outcome,
         Outcome::Failed {
-            stage: Stage::Verify,
+            stage: Stage::Transcribe,
             ..
         }
     ));
     assert!(pipeline::runner::retry_starts_over(&r.store, "s").unwrap());
 
     // The start-over transcribes each window again from the recorded audio.
-    r.script.blank_on.lock().unwrap().clear();
     let before = r.script.calls.load(Ordering::SeqCst);
     r.runner.retry("s", true).unwrap();
     let (_, outcome) = r.runner.run_next().await.unwrap();
@@ -4643,33 +4626,25 @@ async fn a_view_opened_later_rebuilds_progress_and_the_failure_from_the_store() 
         Some("m"),
         &[(16_000, conversation())],
     );
-    *r.script.blank_on.lock().unwrap() = vec![1];
+    *r.script.fail_on.lock().unwrap() = Some(1);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert!(matches!(
         outcome,
         Outcome::Failed {
-            stage: Stage::Verify,
+            stage: Stage::Transcribe,
             ..
         }
     ));
 
     let snapshot = pipeline::progress::snapshot(&r.store, "s").unwrap();
-    assert_eq!(
-        snapshot.done,
-        vec![
-            Stage::Assemble,
-            Stage::Diarize,
-            Stage::Transcribe,
-            Stage::Join
-        ]
-    );
-    assert_eq!(snapshot.current, Some(Stage::Verify));
+    assert_eq!(snapshot.done, vec![Stage::Assemble, Stage::Diarize]);
+    assert_eq!(snapshot.current, Some(Stage::Transcribe));
     let windows = plan(&r.store, "s").windows.len();
-    assert_eq!(snapshot.windows, Some((windows, windows)));
-    let message = pipeline::progress::error(&r.store, "s", Stage::Verify)
+    assert_eq!(snapshot.windows, Some((1, windows)));
+    let message = pipeline::progress::error(&r.store, "s", Stage::Transcribe)
         .unwrap()
         .unwrap();
-    assert!(message.contains("misses speech"), "{message}");
+    assert!(message.contains("window 1"), "{message}");
 }
 
 /// Resume a completed session and record one more segment into it (R6d).
@@ -7724,7 +7699,7 @@ async fn a_speaker_analysis_failure_during_transcribe_again_keeps_the_previous_r
     ));
 }
 
-// ------------------------------------------- stereo notes and echo removal (U9)
+// ------------------------------------------------ stereo notes and the plain mix
 
 const ECHO_DELAY: usize = 4_000;
 
@@ -7747,23 +7722,15 @@ fn remote_sentences() -> Vec<(String, Vec<f32>)> {
 
 /// A call on the laptop speakers: the system channel holds the remote
 /// sentences from `starts` (in seconds), and the microphone hears them 250
-/// ms late at 0.4, with `room` added.
-fn speaker_call(starts: [f64; 3], room: Option<(f64, f64, f64)>) -> (Vec<f32>, Vec<f32>) {
+/// ms late at the same level.
+fn speaker_call(starts: [f64; 3]) -> (Vec<f32>, Vec<f32>) {
     let len = 24 * 16_000;
     let mut system = vec![0.0f32; len];
     for ((_, sentence), start) in remote_sentences().iter().zip(starts) {
         let at = (start * 16_000.0) as usize;
         system[at..at + sentence.len()].copy_from_slice(sentence);
     }
-    let mut mic = common::delayed(&system, ECHO_DELAY, 0.4);
-    if let Some((at, from, to)) = room {
-        let speech = speech();
-        let room = &speech[(from * 16_000.0) as usize..(to * 16_000.0) as usize];
-        let at = (at * 16_000.0) as usize;
-        for (m, s) in mic[at..].iter_mut().zip(room) {
-            *m += s * 8.0;
-        }
-    }
+    let mic = common::delayed(&system, ECHO_DELAY, 1.0);
     (mic, system)
 }
 
@@ -7808,20 +7775,35 @@ fn times_heard_in_transcript(r: &Rig) -> Vec<(String, usize)> {
         .collect()
 }
 
-fn once_each() -> Vec<(String, usize)> {
+/// Each remote sentence twice: once from the system channel and once from
+/// its echo in the microphone channel. The plain mix keeps the echo (KD6).
+fn twice_each() -> Vec<(String, usize)> {
     remote_sentences()
         .into_iter()
-        .map(|(name, _)| (name, 1))
+        .map(|(name, _)| (name, 2))
         .collect()
+}
+
+/// The echo row that Assemble saves for a stereo segment (KTD10).
+fn no_echo(segment: u32) -> pipeline::echo::EchoSpans {
+    pipeline::echo::EchoSpans {
+        segment,
+        spans: Vec::new(),
+        mic_gain: 1.0,
+        system_gain: 1.0,
+    }
 }
 
 #[test]
 fn the_test_recognizer_hears_an_echo_250_ms_late_as_a_second_sentence() {
-    // The check of each test below: without echo removal, the plain sum of
-    // the channels holds each sentence twice.
-    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
-    let sum = common::add(&mic.iter().map(|s| s * 2.5).collect::<Vec<_>>(), &system);
-    let names = heard(&sum, &remote_sentences());
+    // The check of each test below: the plain mix of the channels holds
+    // each sentence twice, and the system channel alone holds it once.
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0]);
+    let mix: Vec<f32> = common::add(&mic, &system)
+        .into_iter()
+        .map(|s| s.clamp(-1.0, 1.0))
+        .collect();
+    let names = heard(&mix, &remote_sentences());
     assert_eq!(
         names,
         ["alpha", "alpha", "bravo", "bravo", "charlie", "charlie"]
@@ -7833,24 +7815,25 @@ fn the_test_recognizer_hears_an_echo_250_ms_late_as_a_second_sentence() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_call_on_the_speakers_is_transcribed_with_each_remote_sentence_once() {
-    // Covers AE2.
+async fn a_call_on_the_speakers_is_transcribed_from_the_plain_mix() {
     let r = stereo_rig().await;
-    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0]);
     queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
-    assert_eq!(echo.spans.len(), 3, "{:?}", echo.spans);
-    assert_eq!(times_heard(&r), once_each());
+    assert_eq!(
+        pipeline::echo::saved(&r.store, "s", 0).unwrap(),
+        Some(no_echo(0))
+    );
+    assert_eq!(times_heard(&r), twice_each());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn live_text_inside_the_echo_spans_gives_way_to_the_cleaned_mix() {
-    // Covers AE2 with the live transcript on (U10): the live text holds each
-    // remote sentence twice, from the system channel and from its echo.
+async fn a_stereo_segment_keeps_all_its_live_words() {
+    // The live transcript is on: Assemble saves an echo row with no spans,
+    // so Transcribe keeps every live word of the segment.
     let r = stereo_rig().await;
     let starts = [2.0, 9.0, 16.0];
-    let (mic, system) = speaker_call(starts, None);
+    let (mic, system) = speaker_call(starts);
     let duration_ms = mic.len() as u64 / 16;
     queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
     let word = |start_ms: u64, end_ms: u64, text: &str| asr::LiveWord {
@@ -7858,7 +7841,6 @@ async fn live_text_inside_the_echo_spans_gives_way_to_the_cleaned_mix() {
         end_ms,
         text: text.into(),
     };
-    // A room word before the call, outside every echo span.
     let mut words = vec![word(500, 800, "hello")];
     for ((name, sentence), start) in remote_sentences().iter().zip(starts) {
         let at = (start * 1_000.0) as u64;
@@ -7874,53 +7856,29 @@ async fn live_text_inside_the_echo_spans_gives_way_to_the_cleaned_mix() {
     pipeline::live::save_part(&r.store, "s", 0, 0, &part).unwrap();
 
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
-    assert_eq!(echo.spans.len(), 3, "{:?}", echo.spans);
-    assert_eq!(times_heard(&r), once_each());
+    assert_eq!(
+        pipeline::echo::saved(&r.store, "s", 0).unwrap(),
+        Some(no_echo(0))
+    );
     let live: Vec<String> = transcribe::results(&r.store, "s")
         .unwrap()
         .into_iter()
         .filter(|w| w.live)
-        .map(|w| w.text)
+        .flat_map(|w| {
+            w.text
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
         .collect();
-    assert_eq!(live, ["hello"], "the live word outside the spans stays");
+    assert_eq!(
+        live,
+        [
+            "hello", "alpha", "alpha", "bravo", "bravo", "charlie", "charlie"
+        ]
+    );
     let transcript = std::fs::read_to_string(saved_folder(&r, "s").join(TRANSCRIPT_FILE)).unwrap();
     assert!(transcript.contains("hello"), "{transcript}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn room_speech_over_the_call_keeps_each_remote_sentence_once() {
-    let r = stereo_rig().await;
-    // The room talks over the second sentence.
-    let (mic, system) = speaker_call([2.0, 9.0, 16.0], Some((8.5, 20.0, 26.0)));
-    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
-    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
-    assert!(
-        echo.spans
-            .iter()
-            .any(|s| s.start_ms <= 9_350 && s.end_ms >= 11_250),
-        "{:?}",
-        echo.spans
-    );
-    assert_eq!(times_heard(&r), once_each());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_remote_sentence_that_starts_an_echo_span_is_heard_once() {
-    // The first sentence starts 1 s into the note, so its span starts 1.25 s
-    // in, and the sentences follow each other closely.
-    let r = stereo_rig().await;
-    let (mic, system) = speaker_call([1.0, 5.5, 10.0], None);
-    queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
-    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let echo = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
-    assert!(
-        echo.spans[0].start_ms.abs_diff(1_250) <= 100,
-        "{:?}",
-        echo.spans
-    );
-    assert_eq!(times_heard(&r), once_each());
 }
 
 /// The note "s" with one stereo call segment, saved.
@@ -7931,33 +7889,24 @@ async fn saved_stereo_note(r: &Rig, segments: &[common::Recorded]) -> std::path:
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn transcribe_again_on_a_stereo_note_finds_the_same_echo_spans_within_100_ms() {
+async fn transcribe_again_on_a_stereo_note_uses_the_plain_mix() {
     let r = stereo_rig().await;
-    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0]);
     saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
-    let first = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
 
     confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    let again = pipeline::echo::saved(&r.store, "s", 0).unwrap().unwrap();
-    assert_eq!(again.spans.len(), first.spans.len(), "{:?}", again.spans);
-    for (a, b) in first.spans.iter().zip(&again.spans) {
-        assert!(
-            a.start_ms.abs_diff(b.start_ms) <= 100 && a.end_ms.abs_diff(b.end_ms) <= 100,
-            "{a:?} against {b:?}"
-        );
-    }
     assert_eq!(
-        times_heard_in_transcript(&r),
-        once_each(),
-        "from the cleaned mix"
+        pipeline::echo::saved(&r.store, "s", 0).unwrap(),
+        Some(no_echo(0))
     );
+    assert_eq!(times_heard_in_transcript(&r), twice_each());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_each() {
     let r = stereo_rig().await;
-    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0]);
     saved_stereo_note(
         &r,
         &[
@@ -7979,20 +7928,16 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
     assert_eq!(
-        pipeline::echo::saved(&r.store, "s", 1)
-            .unwrap()
-            .unwrap()
-            .spans
-            .len(),
-        3
+        pipeline::echo::saved(&r.store, "s", 1).unwrap(),
+        Some(no_echo(1))
     );
-    assert_eq!(times_heard_in_transcript(&r), once_each());
+    assert_eq!(times_heard_in_transcript(&r), twice_each());
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancelled_transcribe_again_restores_the_previous_echo_spans() {
     let r = stereo_rig().await;
-    let (mic, system) = speaker_call([2.0, 9.0, 16.0], None);
+    let (mic, system) = speaker_call([2.0, 9.0, 16.0]);
     saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
     let before = checkpoint::all(&r.store, "s", Stage::Assemble).unwrap();
     assert!(before.iter().any(|(k, _)| k == &checkpoint::echo_key(0)));

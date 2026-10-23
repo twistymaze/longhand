@@ -94,7 +94,7 @@ Rust sources are in `~/.cargo/registry/src/index.crates.io-*/<crate>-<version>/`
 
 High risk (use `data-loss`, `concurrency`, and `error-recovery` where they fit):
 
-- Capture and recording: `crates/recorder`, `crates/audio*`, `crates/aec`, `src-tauri/src/managers/capture.rs`, `src-tauri/src/managers/live.rs`.
+- Capture and recording: `crates/recorder`, `crates/audio*`, `src-tauri/src/managers/capture.rs`, `src-tauri/src/managers/live.rs`.
 - Saving and the library: `crates/session-save`, `crates/library`, `crates/session-core`, `src-tauri/src/managers/library.rs`, `destination.rs`, `audio_removal.rs`.
 - Shared settings across computers: `crates/shared-settings`, `src-tauri/src/managers/shared.rs`, `settings.rs`.
 - Processing and the summary queue: `crates/pipeline`, `crates/summarize`, `src-tauri/src/managers/processing.rs`.

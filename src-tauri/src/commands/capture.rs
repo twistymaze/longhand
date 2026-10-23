@@ -12,7 +12,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::managers::capture::{CaptureError, CaptureManager, RecordingStatus, StopOutcome};
 use crate::managers::destination;
 use crate::managers::processing::ProcessingManager;
-use crate::managers::settings::{self, MicrophoneChoice, SpeakerCountSetting};
+use crate::managers::settings::{self, ListedApp, MicrophoneChoice, SpeakerCountSetting};
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager};
 use crate::shortcut::{self, ShortcutKind, ShortcutRegistration, ShortcutStatuses};
 
@@ -252,29 +252,30 @@ pub async fn set_note_microphone(
     .await
 }
 
-/// The refusal while Computer audio is not available.
-pub const SYSTEM_AUDIO_UNAVAILABLE: &str = "Computer audio is not available yet.";
-
-/// Turn system audio on or off for one note from the recording page (R8).
-/// With no `session_id`, the next note starts with it. Settings does not
-/// change. Returns the status after the change.
+/// Change the app set of one note from the note menu (R10). The app list
+/// in Settings does not change (KD7). On macOS, an add while the permission
+/// is "not asked" starts the permission request (R15). Returns the status
+/// after the change.
 #[tauri::command]
 #[specta::specta]
-pub async fn set_note_system_audio(
+pub async fn set_note_apps(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
-    session_id: Option<String>,
-    enabled: bool,
+    session_id: String,
+    apps: Vec<ListedApp>,
 ) -> Result<RecordingStatus, String> {
-    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
-        return Err(SYSTEM_AUDIO_UNAVAILABLE.to_string());
+    if !audio_system::apps::supported() {
+        return Err(super::settings::APP_AUDIO_UNAVAILABLE.to_string());
     }
     let manager = Arc::clone(&manager);
     blocking(move || {
-        manager
-            .set_note_system_audio(&app, session_id.as_deref(), enabled)
-            .and_then(|()| manager.status(&app))
-            .map_err(|e| e.to_string())
+        let added = manager
+            .set_note_apps(&app, &session_id, apps)
+            .map_err(|e| e.to_string())?;
+        if added {
+            super::settings::request_permission_if_not_asked();
+        }
+        manager.status(&app).map_err(|e| e.to_string())
     })
     .await
 }

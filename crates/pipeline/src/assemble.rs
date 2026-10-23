@@ -4,11 +4,12 @@
 //! recognition and diarization read. Audio streams through in blocks; no
 //! segment is ever held in memory (R7).
 //!
-//! A stereo segment (the microphone on the left, system audio on the right)
+//! A stereo segment (the microphone on the left, app audio on the right)
 //! keeps both raw channels in its archive, as two uncoupled Opus streams
-//! (KTD7). Its processing file is the mono mix with the speaker echo removed
-//! from the microphone channel, and its echo spans are saved as a checkpoint
-//! (KTD8; see `echo.rs`).
+//! (KTD7). Its processing file is the plain mix of the two channels, the
+//! same mix that the live transcript reads (KTD9 of the app audio plan). Its
+//! echo spans row, with no spans, records that the segment is done (KTD10;
+//! see `echo.rs`).
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, BufWriter, Write};
@@ -18,7 +19,7 @@ use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use serde::{Deserialize, Serialize};
 use session_core::{Segment, Stage};
 
-use crate::echo::{self, Analysis, EchoSpans};
+use crate::echo::{self, EchoSpans};
 use crate::resample::StreamResampler;
 use crate::{Control, RECOVERY_DIR, SharedStore, StageError, checkpoint, opus_ms, proc_file};
 
@@ -54,8 +55,7 @@ pub struct Assembled {
 
 /// Refuse to start when the working location cannot hold what assembling
 /// the remaining segments writes (R7b): better named now, with the session
-/// whole, than as a write failure part-way through. A stereo segment also
-/// needs its temporary 16 kHz stereo file (KTD8). `available` is the free
+/// whole, than as a write failure part-way through. `available` is the free
 /// space; `None` when unknown, which passes.
 pub fn check_space(
     store: &SharedStore,
@@ -70,9 +70,6 @@ pub fn check_space(
         {
             let seconds = segment.duration_ms.div_ceil(1_000);
             needed += recorder::storage::processing_bytes_per_second(segment.channels) * seconds;
-            if segment.channels == 2 {
-                needed += echo::TEMPORARY_BYTES_PER_SECOND * seconds;
-            }
         }
     }
     recorder::storage::check_headroom(available, needed, recorder::storage::DISK_RESERVE_BYTES)
@@ -244,12 +241,6 @@ fn record(
             &checkpoint::echo_key(index),
             echo,
         )?;
-        log::info!(
-            "segment {index} of {session_id}: {} echo spans, microphone gain {:.2}, system gain {:.2}",
-            echo.spans.len(),
-            echo.mic_gain,
-            echo.system_gain
-        );
     }
     checkpoint::put(
         store,
@@ -277,8 +268,8 @@ enum Sink {
     },
     Stereo {
         to_opus: [StreamResampler; 2],
-        to_proc: [StreamResampler; 2],
-        analysis: Analysis,
+        to_proc: StreamResampler,
+        proc: ProcWriter,
     },
 }
 
@@ -327,11 +318,8 @@ impl Sink {
                     StreamResampler::new(rate, OPUS_RATE),
                     StreamResampler::new(rate, OPUS_RATE),
                 ],
-                to_proc: [
-                    StreamResampler::new(rate, PROC_RATE),
-                    StreamResampler::new(rate, PROC_RATE),
-                ],
-                analysis: Analysis::create(&stereo_temp_path(processing))?,
+                to_proc: StreamResampler::new(rate, PROC_RATE),
+                proc: ProcWriter::create(&temp_path(processing))?,
             },
         })
     }
@@ -354,20 +342,22 @@ impl Sink {
             Sink::Stereo {
                 to_opus,
                 to_proc,
-                analysis,
+                proc,
             } => {
                 let (left, right) = deinterleave(block);
                 let [l, r] = resample_pair(to_opus, [&left, &right], false);
                 opus.push(&interleave(&l, &r))?;
-                let [l, r] = resample_pair(to_proc, [&left, &right], false);
-                analysis.push(&l, &r)
+                let mut out = Vec::new();
+                to_proc.push(&audio::live_mix::mix(&left, &right), &mut |s| {
+                    out.extend_from_slice(s)
+                });
+                proc.push(&out)
             }
         }
     }
 
-    /// Flush the resamplers, and finish the processing file or the
-    /// temporary stereo file.
-    fn finish(self, opus: &mut OpusWriter) -> Result<Finished, StageError> {
+    /// Flush the resamplers and give the processing file writer.
+    fn finish(self, opus: &mut OpusWriter) -> Result<ProcWriter, StageError> {
         match self {
             Sink::Mono {
                 mut to_opus,
@@ -380,53 +370,38 @@ impl Sink {
                 out.clear();
                 to_proc.finish(&mut |s| out.extend_from_slice(s));
                 proc.push(&out)?;
-                Ok(Finished::Mono(proc))
+                Ok(proc)
             }
             Sink::Stereo {
                 mut to_opus,
                 mut to_proc,
-                mut analysis,
+                mut proc,
             } => {
                 let [l, r] = resample_pair(&mut to_opus, [&[], &[]], true);
                 opus.push(&interleave(&l, &r))?;
-                let [l, r] = resample_pair(&mut to_proc, [&[], &[]], true);
-                analysis.push(&l, &r)?;
-                Ok(Finished::Stereo(analysis.finish()?))
+                let mut out = Vec::new();
+                to_proc.finish(&mut |s| out.extend_from_slice(s));
+                proc.push(&out)?;
+                Ok(proc)
             }
         }
     }
 }
 
-enum Finished {
-    Mono(ProcWriter),
-    Stereo(echo::Measured),
-}
-
-/// Write the processing file of a segment from what its first pass made:
-/// the mono file as it is, or the mix of the temporary stereo file (KTD8
-/// steps 2 to 6). Returns the processing samples and the echo spans.
+/// Commit the processing file of a segment. Returns its samples and, for a
+/// stereo segment, its echo spans row (KTD10).
 fn finish_processing(
-    finished: Finished,
+    proc: ProcWriter,
     processing: &Path,
     segment: u32,
-    control: &dyn Control,
+    channels: u16,
 ) -> Result<(u64, Option<EchoSpans>), StageError> {
-    match finished {
-        Finished::Mono(proc) => {
-            let samples = proc.finish()?;
-            commit(&temp_path(processing), processing)?;
-            Ok((samples, None))
-        }
-        Finished::Stereo(measured) => {
-            let stereo = stereo_temp_path(processing);
-            let mut proc = ProcWriter::create(&temp_path(processing))?;
-            let spans = echo::finish(measured, &stereo, segment, control, &mut |s| proc.push(s))?;
-            let samples = proc.finish()?;
-            commit(&temp_path(processing), processing)?;
-            // The caller's `TempFiles` removes the temporary stereo file.
-            Ok((samples, Some(spans)))
-        }
-    }
+    let samples = proc.finish()?;
+    commit(&temp_path(processing), processing)?;
+    Ok((
+        samples,
+        (channels == 2).then(|| EchoSpans::plain_mix(segment)),
+    ))
 }
 
 pub fn assemble_segment(
@@ -461,11 +436,7 @@ pub fn assemble_segment(
     let archive = crate::audio_path(session_dir, &segment.audio_file)
         .ok_or_else(|| StageError::Failed(format!("bad audio name {}", segment.audio_file)))?;
     let processing = session_dir.join(proc_file(&segment.audio_file));
-    let _temps = TempFiles(vec![
-        temp_path(&archive),
-        temp_path(&processing),
-        stereo_temp_path(&processing),
-    ]);
+    let _temps = TempFiles(vec![temp_path(&archive), temp_path(&processing)]);
     let mut opus = OpusWriter::create(&temp_path(&archive), rate, channels)?;
     let mut sink = Sink::new(rate, channels, &processing)?;
 
@@ -528,9 +499,9 @@ pub fn assemble_segment(
         native_samples += (block.len() / width) as u64;
         sink.push(&mut opus, &block)?;
     }
-    let finished = sink.finish(&mut opus)?;
+    let proc = sink.finish(&mut opus)?;
     opus.finish()?;
-    let (proc_samples, echo) = finish_processing(finished, &processing, segment.index, control)?;
+    let (proc_samples, echo) = finish_processing(proc, &processing, segment.index, channels)?;
     commit(&temp_path(&archive), &archive)?;
 
     Ok(Assembled {
@@ -546,7 +517,7 @@ pub fn assemble_segment(
 
 /// Decode an archive this stage wrote back into a 16 kHz processing file,
 /// in the format of the archive: a mono archive as it is, a stereo archive
-/// through echo removal and the mix, as when it was assembled (R17).
+/// through the plain mix, as when it was assembled (R17).
 fn decode_segment(
     archive: &Path,
     session_dir: &Path,
@@ -554,22 +525,12 @@ fn decode_segment(
     control: &dyn Control,
 ) -> Result<Assembled, StageError> {
     let processing = session_dir.join(proc_file(&segment.audio_file));
-    let _temps = TempFiles(vec![temp_path(&processing), stereo_temp_path(&processing)]);
+    let _temps = TempFiles(vec![temp_path(&processing)]);
     let mut reader = ArchiveReader::open(archive)?;
     let channels = reader.channels();
-    let mut sink = match channels {
-        1 => Finishing::Mono(
-            StreamResampler::new(OPUS_RATE, PROC_RATE),
-            ProcWriter::create(&temp_path(&processing))?,
-        ),
-        _ => Finishing::Stereo(
-            [
-                StreamResampler::new(OPUS_RATE, PROC_RATE),
-                StreamResampler::new(OPUS_RATE, PROC_RATE),
-            ],
-            Analysis::create(&stereo_temp_path(&processing))?,
-        ),
-    };
+    let mut to_proc = StreamResampler::new(OPUS_RATE, PROC_RATE);
+    let mut proc = ProcWriter::create(&temp_path(&processing))?;
+    let mut out = Vec::new();
     let mut pcm = Vec::new();
     let mut packets = 0u64;
     loop {
@@ -581,10 +542,21 @@ fn decode_segment(
         if packets.is_multiple_of(PACKETS_PER_PAGE * 60) {
             control.proceed()?;
         }
-        sink.push(&pcm)?;
+        out.clear();
+        if channels == 2 {
+            let (left, right) = deinterleave(&pcm);
+            to_proc.push(&audio::live_mix::mix(&left, &right), &mut |s| {
+                out.extend_from_slice(s)
+            });
+        } else {
+            to_proc.push(&pcm, &mut |s| out.extend_from_slice(s));
+        }
+        proc.push(&out)?;
     }
-    let finished = sink.finish()?;
-    let (proc_samples, echo) = finish_processing(finished, &processing, segment.index, control)?;
+    out.clear();
+    to_proc.finish(&mut |s| out.extend_from_slice(s));
+    proc.push(&out)?;
+    let (proc_samples, echo) = finish_processing(proc, &processing, segment.index, channels)?;
     Ok(Assembled {
         segment: AssembledSegment {
             segment: segment.index,
@@ -594,46 +566,6 @@ fn decode_segment(
         },
         echo,
     })
-}
-
-/// The 16 kHz side of a decode, for one or two channels.
-#[allow(clippy::large_enum_variant, reason = "one value for each segment")]
-enum Finishing {
-    Mono(StreamResampler, ProcWriter),
-    Stereo([StreamResampler; 2], Analysis),
-}
-
-impl Finishing {
-    fn push(&mut self, pcm: &[f32]) -> Result<(), StageError> {
-        match self {
-            Finishing::Mono(to_proc, proc) => {
-                let mut out = Vec::new();
-                to_proc.push(pcm, &mut |s| out.extend_from_slice(s));
-                proc.push(&out)
-            }
-            Finishing::Stereo(to_proc, analysis) => {
-                let (left, right) = deinterleave(pcm);
-                let [l, r] = resample_pair(to_proc, [&left, &right], false);
-                analysis.push(&l, &r)
-            }
-        }
-    }
-
-    fn finish(self) -> Result<Finished, StageError> {
-        match self {
-            Finishing::Mono(mut to_proc, mut proc) => {
-                let mut out = Vec::new();
-                to_proc.finish(&mut |s| out.extend_from_slice(s));
-                proc.push(&out)?;
-                Ok(Finished::Mono(proc))
-            }
-            Finishing::Stereo(mut to_proc, mut analysis) => {
-                let [l, r] = resample_pair(&mut to_proc, [&[], &[]], true);
-                analysis.push(&l, &r)?;
-                Ok(Finished::Stereo(analysis.finish()?))
-            }
-        }
-    }
 }
 
 enum Decoder {
@@ -751,15 +683,6 @@ fn temp_path(path: &Path) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".tmp");
     path.with_file_name(name)
-}
-
-/// The temporary 16 kHz stereo file of a stereo segment, next to its
-/// processing file (KTD8 step 1). Its samples are interleaved little-endian
-/// f32 pairs with no header.
-fn stereo_temp_path(processing: &Path) -> PathBuf {
-    let mut name = processing.file_name().unwrap_or_default().to_os_string();
-    name.push(".stereo.tmp");
-    processing.with_file_name(name)
 }
 
 /// Removes the temporary files of one segment when it drops: after a

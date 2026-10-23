@@ -208,9 +208,10 @@ fn live_source_matches(
     let (Some(proof), Some(recorded)) = (proof, recorded) else {
         return Ok(false);
     };
-    // Assemble uses final level estimates and echo removal on stereo input.
-    // All live stereo samples can differ, including samples outside echo spans.
-    if segment.channels != 1 || recorded != *spec {
+    // A stereo segment reuses its live results too: the live reader and
+    // Assemble give the same plain mix to recognition (KTD9 of the app
+    // audio plan).
+    if recorded != *spec {
         return Ok(false);
     }
     let mut reader = crate::live::archive::ArchiveReader::new(crate::live::archive::Archive {
@@ -298,11 +299,6 @@ fn bind_live(
             let reason = if source.is_none() {
                 format!(
                     "Live text and speaker output for segment {} had no saved source proof. Recognition used the recorded audio.",
-                    segment.index + 1
-                )
-            } else if segment.channels == 2 {
-                format!(
-                    "Live text and speaker output for segment {} were invalidated because final stereo level and echo preprocessing differs from the live mix. This segment required recognition of the cleaned audio.",
                     segment.index + 1
                 )
             } else {

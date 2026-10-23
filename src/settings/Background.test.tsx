@@ -34,7 +34,7 @@ const baseSettings: Settings = {
   chosen_recognition: { asr_model: "a", live_transcript: true, speaker_source: "pyannote", speaker_processing_mode: "after_stop", recognition_language: null, default_speaker_count: null },
   recognition: { differs: false, chosen_not_known: false, waiting_for: [], failure: null },
   microphone: null,
-  system_audio_default: false,
+  apps: [],
   new_note_records: true,
   alert_sound: true,
   show_recording_widget: true,

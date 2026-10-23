@@ -1,10 +1,8 @@
 //! Interleaved PCM bytes to mono frames at one output rate (U4 step 4).
 //!
 //! The Windows backend reads loopback packets in the format of the output
-//! device that it follows. When it follows another device, the channel
-//! count can change, for example from a 5.1 device to a stereo headset.
-//! [`Converter::switch`] takes the new format, and the frames keep one
-//! channel and one rate, with no segment boundary (KTD4).
+//! device, for example a 5.1 device. The frames have one channel and one
+//! rate.
 
 use crate::rate::RateFollower;
 
@@ -80,23 +78,11 @@ impl Converter {
         }
     }
 
-    #[cfg(test)]
-    pub fn format(&self) -> PcmFormat {
-        self.format
-    }
-
     /// Convert one packet and give each complete frame to `emit`.
     pub fn push(&mut self, data: &[u8], emit: impl FnMut(&[f32])) {
         self.mono.clear();
         downmix(data, self.format.channels, self.format.kind, &mut self.mono);
         self.rate.push(&self.mono, emit);
-    }
-
-    /// Take the format of a new output device. The resampler starts again,
-    /// so no audio of the old device mixes with the new one.
-    pub fn switch(&mut self, format: PcmFormat) {
-        self.rate.reset_at(format.sample_rate);
-        self.format = format;
     }
 }
 
@@ -146,14 +132,12 @@ mod tests {
     }
 
     #[test]
-    fn a_switch_from_six_to_two_channels_keeps_mono_frames_at_the_same_rate() {
-        let rate = 44_100;
+    fn six_channels_become_mono_frames_at_the_output_rate() {
         let six = PcmFormat {
             channels: 6,
             kind: SampleKind::F32,
-            sample_rate: rate,
+            sample_rate: 44_100,
         };
-        let two = PcmFormat { channels: 2, ..six };
         let mut converter = Converter::new(six, 48_000, 960);
         let mut frames = Vec::new();
 
@@ -161,25 +145,16 @@ mod tests {
             .flatten()
             .collect();
         converter.push(&f32_bytes(&packet), |f| frames.push(f.to_vec()));
-        let before = frames.len();
-        assert!(before >= 45, "one second at 48 kHz, got {before} frames");
-
-        converter.switch(two);
-        assert_eq!(converter.format(), two);
-        let packet: Vec<f32> = std::iter::repeat_n([0.3_f32, 0.3], 44_100)
-            .flatten()
-            .collect();
-        converter.push(&f32_bytes(&packet), |f| frames.push(f.to_vec()));
-        let after = frames.len() - before;
         assert!(
-            (45..=50).contains(&after),
-            "one more second at 48 kHz, got {after} frames"
+            (45..=50).contains(&frames.len()),
+            "one second at 48 kHz, got {} frames",
+            frames.len()
         );
         assert!(frames.iter().all(|f| f.len() == 960), "every frame is mono");
         let settled = &frames[frames.len() - 1];
         assert!(
             settled.iter().all(|s| (s - 0.3).abs() < 0.02),
-            "the level of the new device passes through"
+            "the level passes through"
         );
     }
 }

@@ -75,11 +75,11 @@ function renderSystemAudio(
       }}
     />,
   );
-  const row = () => screen.getByText("Computer audio access").closest(".settings-row") as HTMLElement;
+  const row = () => screen.getByText("App audio access").closest(".settings-row") as HTMLElement;
   return { tauri, row, refreshed: () => refreshed };
 }
 
-describe("the Computer audio access row", () => {
+describe("the App audio access row", () => {
   test("not asked: says so and offers Allow…", () => {
     const { row } = renderSystemAudio("not_asked");
     expect(row().textContent).toContain("Not allowed yet");

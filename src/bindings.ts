@@ -186,11 +186,73 @@ async setMicrophone(microphone: MicrophoneChoice | null) : Promise<Result<Settin
 }
 },
 /**
- * Choose whether a new note starts with system audio on (R6).
+ * Whether this computer can record app audio (R17): macOS, or Windows 11.
  */
-async setSystemAudioDefault(enabled: boolean) : Promise<Result<Settings, string>> {
+async appAudioAvailable() : Promise<Result<boolean, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_system_audio_default", { enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("app_audio_available") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The running apps with a window, by name (R2, R10, KTD12). With `all`
+ * false, the apps on the app list are left out. The list is read again
+ * at each call.
+ */
+async listRunningApps(all: boolean) : Promise<Result<RunningApp[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("list_running_apps", { all }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add one app to the app list (R2). On macOS, the first add asks for the
+ * system audio permission (R15, KTD11).
+ */
+async addApp(entry: ListedApp) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_app", { entry }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Add the common call apps that run now and are not on the app list (R3,
+ * KTD13). It adds nothing when none runs, and asks for the permission
+ * once.
+ */
+async addCallApps() : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("add_call_apps") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove an app from the app list (R4). The app set of an open note does
+ * not change (R11).
+ */
+async removeApp(id: string) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_app", { id }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The icon of the app at `path` as a PNG data URL, or `None` when it
+ * cannot be read. The UI then shows a generic icon (R5).
+ */
+async appIcon(path: string) : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("app_icon", { path }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -824,13 +886,14 @@ async setNoteMicrophone(sessionId: string | null, microphone: MicrophoneChoice |
 }
 },
 /**
- * Turn system audio on or off for one note from the recording page (R8).
- * With no `session_id`, the next note starts with it. Settings does not
- * change. Returns the status after the change.
+ * Change the app set of one note from the note menu (R10). The app list
+ * in Settings does not change (KD7). On macOS, an add while the permission
+ * is "not asked" starts the permission request (R15). Returns the status
+ * after the change.
  */
-async setNoteSystemAudio(sessionId: string | null, enabled: boolean) : Promise<Result<RecordingStatus, string>> {
+async setNoteApps(sessionId: string, apps: ListedApp[]) : Promise<Result<RecordingStatus, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_note_system_audio", { sessionId, enabled }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_note_apps", { sessionId, apps }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1355,6 +1418,26 @@ export type AgentBlockStatus =
  * fixes the file.
  */
 { kind: "damaged"; file: string }
+/**
+ * The app audio state of the segment that records (R16).
+ */
+export type AppAudioState = 
+/**
+ * The note records its apps. An app that does not run or makes no
+ * sound is normal.
+ */
+"recording" | 
+/**
+ * The macOS permission is denied, or its prompt waits for an answer:
+ * the app audio is silence. The microphone records.
+ */
+"not_allowed" | 
+/**
+ * The app stream ended or did not open, and the reopen of the capture
+ * watcher also failed. The microphone records, and the watcher tries
+ * again.
+ */
+"failed"
 export type ArtifactSpec = { id: string; filename: string; sha256: string; revision: string; url: string; size_bytes: number; format: string }
 export type Assessment = { source: string; source_revision: string; speed_score: number | null; asr_accuracy_score: number | null; speaker_accuracy_score: number | null; benchmark_context: string | null }
 /**
@@ -1419,7 +1502,7 @@ export type CaptureTick = { session_id: string;
  */
 peak: number; 
 /**
- * The system audio peak of a stereo segment, 0.0 to 1.0. `None` while
+ * The app audio peak of a stereo segment, 0.0 to 1.0. `None` while
  * the segment is mono.
  */
 speaker_peak: number | null; 
@@ -1619,6 +1702,12 @@ export type LicenceInfo = { name: string; url: string; attribution: string }
  * Why Longhand sent no model list request (R12, R17).
  */
 export type ListNotRequested = "no-provider" | "no-address" | "not-chosen" | "keychain-locked" | "keychain-failed" | "key-needed"
+/**
+ * An app on the app list (R1, R5, KTD1): the app ID, the name that
+ * Settings shows, and the path that the icon comes from when the app does
+ * not run.
+ */
+export type ListedApp = { id: string; name: string; path: string }
 /**
  * The text of the part that is open now.
  */
@@ -2292,46 +2381,14 @@ microphone_fallback: boolean;
  */
 microphone_choice: MicrophoneChoice | null; 
 /**
- * The system audio permission is unknown, the output plays, and the
- * system audio channel has been digital silence for 10 s: system
- * audio can be missing (U5 step 6). It clears when audio appears.
+ * The app set of the open note (R10, R21). Empty with no note open.
  */
-system_audio_silent: boolean; 
+note_apps: ListedApp[]; 
 /**
- * The Computer audio switch of the open note (R8). With no note open,
- * the switch that the next note starts with (R6).
+ * The app audio state of the segment that records (R16). `None` when
+ * no segment records or the note's app set is empty.
  */
-system_audio: boolean; 
-/**
- * A speaker stream is attached to the recording segment: the note
- * records system audio on the right now.
- */
-system_audio_recording: boolean; 
-/**
- * System audio is on, but the speaker stream failed or did not open.
- * The microphone records, the right channel holds silence, and the
- * capture watcher tries the speaker stream again (R10).
- */
-system_audio_failed: boolean; 
-/**
- * The last system audio permission check while system audio is on
- * and a segment records (KTD12). The page uses it to say why system
- * audio is not recorded: denied, not asked (the prompt can wait for an
- * answer), or unknown. `None` while system audio is off.
- */
-system_audio_permission: SystemAudioPermission | null; 
-/**
- * The output that Longhand follows has been silent for 30 s while
- * another output plays sound (Windows only, U4 step 6): the call can
- * play on a device that the note does not record.
- */
-system_audio_other_output: boolean; 
-/**
- * The system audio of the last 30 s held a late copy of the
- * microphone: an audio mixer app plays the microphone to an output, so
- * the note hears the user twice.
- */
-system_audio_mic_copy: boolean }
+app_audio: AppAudioState | null }
 /**
  * Work on a note on another computer (KTD5). Record, Resume, Transcribe
  * Again, Regenerate Summary, Remove Audio and Delete wait for it (R21),
@@ -2366,6 +2423,15 @@ export type RemoveAudioFailure =
  * The prompt that `restore_summary_prompt` added, and the settings after it.
  */
 export type RestoredPrompt = { id: string; settings: Settings }
+/**
+ * One running app with a window, for the add menu in Settings and the
+ * App Audio submenu of a note (R2, R3, R10).
+ */
+export type RunningApp = { id: string; name: string; path: string; 
+/**
+ * "Add Call Apps" adds this app when it is not on the list (R3).
+ */
+call_app: boolean }
 export type RuntimeSpec = { name: string; revision: string }
 export type SessionDetail = { entry: SessionEntry; 
 /**
@@ -2392,6 +2458,11 @@ message: string | null;
  * Why the summary is missing, when the session will be saved with a stub.
  */
 summary_problem: string | null; 
+/**
+ * The last check of the transcript found voiced time with no text.
+ * The note was saved; the Transcript tab shows a short warning.
+ */
+low_coverage: boolean; 
 /**
  * The state machine allows Resume now (R6a).
  */
@@ -2602,9 +2673,10 @@ recognition: RecognitionState;
  */
 microphone: MicrophoneChoice | null; 
 /**
- * Whether a new note starts with system audio on (R6, KD13).
+ * The app list: the apps whose audio each new note records (R1). Empty
+ * on a new install (KD3).
  */
-system_audio_default: boolean; 
+apps: ListedApp[]; 
 /**
  * A shared setting. What New Note and the recording shortcut do (R8,
  * R10): start a note that records, or open a note that does not

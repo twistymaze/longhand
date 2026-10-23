@@ -31,7 +31,6 @@ pub struct SourceProof {
 pub struct ArchiveReader {
     archive: Archive,
     next: u64,
-    mix: Option<audio::live_mix::LiveMix>,
     active: Option<OpenChunk>,
     logical_start: Option<u64>,
     channels: u16,
@@ -42,7 +41,6 @@ impl ArchiveReader {
         Self {
             archive,
             next: 0,
-            mix: None,
             active: None,
             logical_start: None,
             channels: 0,
@@ -86,10 +84,7 @@ impl ArchiveReader {
         let pcm: Arc<[f32]> = if chunk.channels == 2 {
             let left: Vec<_> = samples.iter().step_by(2).copied().collect();
             let right: Vec<_> = samples.iter().skip(1).step_by(2).copied().collect();
-            self.mix
-                .get_or_insert_with(|| audio::live_mix::LiveMix::new(self.archive.rate))
-                .mix(&left, &right)
-                .into()
+            audio::live_mix::mix(&left, &right).into()
         } else {
             samples.into()
         };

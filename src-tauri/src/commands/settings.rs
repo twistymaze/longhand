@@ -21,7 +21,8 @@ use crate::managers::models::ModelsManager;
 use crate::managers::processing::{MoveStatus, ProcessingManager};
 use crate::managers::secrets::SecretsManager;
 use crate::managers::settings::{
-    self, KeyLocation, MicrophoneChoice, Settings, SpeakerCountSetting, SummaryPromptList,
+    self, KeyLocation, ListedApp, MicrophoneChoice, Settings, SpeakerCountSetting,
+    SummaryPromptList,
 };
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager, StorageFolders};
 use summarize::Provider;
@@ -274,17 +275,143 @@ pub fn set_microphone(
     Ok(updated)
 }
 
-/// Choose whether a new note starts with system audio on (R6).
+/// Why the app list cannot change on this computer (R17).
+pub const APP_AUDIO_UNAVAILABLE: &str = "App audio needs Windows 11.";
+
+fn app_audio_supported(supported: bool) -> Result<(), String> {
+    if supported {
+        Ok(())
+    } else {
+        Err(APP_AUDIO_UNAVAILABLE.to_string())
+    }
+}
+
+/// Whether this computer can record app audio (R17): macOS, or Windows 11.
 #[tauri::command]
 #[specta::specta]
-pub fn set_system_audio_default(app: AppHandle, enabled: bool) -> Result<Settings, String> {
-    if enabled && !crate::managers::capture::SYSTEM_AUDIO_AVAILABLE {
-        return Err(crate::commands::capture::SYSTEM_AUDIO_UNAVAILABLE.to_string());
-    }
-    settings::update_settings(&app, |s| {
-        s.system_audio_default = enabled;
-        Ok(())
+pub async fn app_audio_available() -> Result<bool, String> {
+    blocking(|| Ok(audio_system::apps::supported())).await
+}
+
+/// One running app with a window, for the add menu in Settings and the
+/// App Audio submenu of a note (R2, R3, R10).
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct RunningApp {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+    /// "Add Call Apps" adds this app when it is not on the list (R3).
+    pub call_app: bool,
+}
+
+/// The running apps with a window, by name (R2, R10, KTD12). With `all`
+/// false, the apps on the app list are left out. The list is read again
+/// at each call.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_running_apps(app: AppHandle, all: bool) -> Result<Vec<RunningApp>, String> {
+    blocking(move || {
+        let listed = if all {
+            Vec::new()
+        } else {
+            settings::get_settings(&app).apps
+        };
+        Ok(not_listed(audio_system::apps::running_apps(), &listed))
     })
+    .await
+}
+
+fn not_listed(running: Vec<audio_system::apps::App>, listed: &[ListedApp]) -> Vec<RunningApp> {
+    running
+        .into_iter()
+        .filter(|r| !listed.iter().any(|l| l.id == r.id))
+        .map(|r| RunningApp {
+            call_app: audio_system::apps::is_call_app(&r.id),
+            id: r.id,
+            name: r.name,
+            path: r.path,
+        })
+        .collect()
+}
+
+/// Add one app to the app list (R2). On macOS, the first add asks for the
+/// system audio permission (R15, KTD11).
+#[tauri::command]
+#[specta::specta]
+pub async fn add_app(app: AppHandle, entry: ListedApp) -> Result<Settings, String> {
+    blocking(move || {
+        app_audio_supported(audio_system::apps::supported())?;
+        let updated = settings::update_settings(&app, |s| s.add_app(entry))?;
+        request_permission_if_not_asked();
+        Ok(updated)
+    })
+    .await
+}
+
+/// Add the common call apps that run now and are not on the app list (R3,
+/// KTD13). It adds nothing when none runs, and asks for the permission
+/// once.
+#[tauri::command]
+#[specta::specta]
+pub async fn add_call_apps(app: AppHandle) -> Result<Settings, String> {
+    blocking(move || {
+        app_audio_supported(audio_system::apps::supported())?;
+        let running = audio_system::apps::running_apps();
+        let updated = settings::update_settings(&app, |s| {
+            let listed: Vec<audio_system::apps::App> = s.apps.iter().map(Into::into).collect();
+            for found in audio_system::apps::call_apps_to_add(&running, &listed) {
+                s.add_app(found.into())?;
+            }
+            Ok(())
+        })?;
+        request_permission_if_not_asked();
+        Ok(updated)
+    })
+    .await
+}
+
+/// Remove an app from the app list (R4). The app set of an open note does
+/// not change (R11).
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_app(app: AppHandle, id: String) -> Result<Settings, String> {
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.remove_app(&id);
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// The icon of the app at `path` as a PNG data URL, or `None` when it
+/// cannot be read. The UI then shows a generic icon (R5).
+#[tauri::command]
+#[specta::specta]
+pub async fn app_icon(path: String) -> Result<Option<String>, String> {
+    use base64::Engine as _;
+    blocking(move || {
+        Ok(audio_system::apps::icon_png(&path).map(|png| {
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(png)
+            )
+        }))
+    })
+    .await
+}
+
+/// On macOS, start the permission request when macOS has not asked the
+/// user yet (R15, KTD11). The request runs on its own thread, so the add
+/// returns at once.
+pub fn request_permission_if_not_asked() {
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(|| {
+        if audio_system::permission::preflight() == audio_system::Permission::NotAsked {
+            log::info!("the first app is on the list; asking for the system audio permission");
+            audio_system::permission::request();
+        }
+    });
 }
 
 /// Choose what New Note and the recording shortcut do (R8): start a note
@@ -1506,6 +1633,56 @@ mod tests {
             serde_json::from_value::<OldNotes>(serde_json::json!("move")).unwrap(),
             OldNotes::Move
         );
+    }
+
+    #[test]
+    fn the_add_list_leaves_out_the_apps_on_the_list() {
+        let app = |id: &str| audio_system::apps::App {
+            id: id.into(),
+            name: id.into(),
+            path: format!("/Applications/{id}.app"),
+        };
+        let listed = vec![ListedApp::from(app("us.zoom.xos"))];
+        let ids: Vec<String> =
+            not_listed(vec![app("com.hnc.Discord"), app("us.zoom.xos")], &listed)
+                .into_iter()
+                .map(|a| a.id)
+                .collect();
+        assert_eq!(ids, vec!["com.hnc.Discord"]);
+    }
+
+    #[test]
+    fn the_note_menu_list_keeps_the_apps_on_the_list_and_marks_call_apps() {
+        let app = |id: &str| audio_system::apps::App {
+            id: id.into(),
+            name: id.into(),
+            path: format!("/Applications/{id}.app"),
+        };
+        let zoom = if cfg!(target_os = "windows") {
+            "zoom"
+        } else {
+            "us.zoom.xos"
+        };
+        let all: Vec<(String, bool)> = not_listed(vec![app("com.google.Chrome"), app(zoom)], &[])
+            .into_iter()
+            .map(|a| (a.id, a.call_app))
+            .collect();
+        assert_eq!(
+            all,
+            vec![
+                ("com.google.Chrome".to_owned(), false),
+                (zoom.to_owned(), true)
+            ]
+        );
+    }
+
+    #[test]
+    fn an_old_windows_refuses_the_add_commands() {
+        assert_eq!(
+            app_audio_supported(false),
+            Err(APP_AUDIO_UNAVAILABLE.to_string())
+        );
+        assert_eq!(app_audio_supported(true), Ok(()));
     }
 
     #[test]
