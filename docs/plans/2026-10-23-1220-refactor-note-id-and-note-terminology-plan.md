@@ -67,7 +67,7 @@ Default setup gives no way to tell CodeQL that one name is not sensitive. The na
 ### Acceptance Examples
 
 - AE1. **Covers R3, R4.** Given a note whose `longhand.json` has `layout: 1` and `session_id`, when the new build opens it, the note shows as usual. When the new build saves the note, the file has `note_id`, the new layout and no `session_id`.
-- AE2. **Covers R3.** Given two computers on one storage folder, one updated and one not, when the updated computer saves a note, the older computer does not use or change that note, and it shows the note as a problem at once, as it does today for a note from a newer Longhand. This continues until the older computer is updated. Notes that only the older computer saves stay usable on both.
+- AE2. **Covers R3.** Given two computers on one storage folder, one updated and one not, when the updated computer saves a note, the older computer does not use or change that note, and it shows the note as a problem at once, as it does today for a note from a newer Longhand. When that save also renamed the note's folder, the older computer shows a problem folder with no link to the note after about a minute, and nothing is lost. This continues until the older computer is updated. Notes that only the older computer saves stay usable on both.
 - AE3. **Covers R4.** Given a note in the old layout, with `session_id` in `session.md`, Convert still converts it, and the new note record file has `note_id`.
 - AE4. **Covers R6.** Given the plugin from `main` and an app release from before this change, the plugin reads and changes notes as before.
 
@@ -99,7 +99,7 @@ None. Planning resolved both deferred questions: the new layout is 2 (KTD1), and
 - Earlier CodeQL lessons: `docs/solutions/test-failures/codeql-cleartext-logging-from-a-test-panic.md`, `docs/solutions/security-issues/dispatched-release-build-could-write-main-caches.md`.
 - Granola calls the typed text "raw notes" and the AI output "enhanced notes" (https://docs.granola.ai/help-center/taking-notes/ai-enhanced-notes).
 
-**Product Contract preservation:** Product Contract unchanged. Outstanding Questions resolved in place (KTD1, KTD2), and three considered-not-built items added to Scope Boundaries.
+**Product Contract preservation:** changed: AE2 — adds what an older computer shows for a note whose folder was renamed; the user accepted this on 2026-10-23. Outstanding Questions resolved in place (KTD1, KTD2), and three considered-not-built items added to Scope Boundaries.
 
 ---
 
