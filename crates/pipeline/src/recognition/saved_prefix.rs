@@ -113,15 +113,19 @@ fn same_audio(
     audio: &BTreeMap<String, String>,
 ) -> Result<bool, StageError> {
     for segment in old {
-        let local = dir.join(&segment.audio_file);
+        // A name that can point outside the folder counts as a missing file.
+        let (Some(local), Some(home_file)) = (
+            crate::audio_path(dir, &segment.audio_file),
+            crate::audio_path(home, &segment.audio_file),
+        ) else {
+            return Ok(false);
+        };
         let source = if local.is_file() {
             local
-        } else if audio_removed(home, &segment.audio_file)
-            || !home.join(&segment.audio_file).is_file()
-        {
+        } else if audio_removed(home, &segment.audio_file) || !home_file.is_file() {
             return Ok(false);
         } else {
-            home.join(&segment.audio_file)
+            home_file
         };
         if audio.get(&segment.audio_file) != Some(&file_digest(&source)?) {
             return Ok(false);
@@ -142,9 +146,14 @@ fn old_audio_gone(store: &SharedStore, id: &str, dir: &Path) -> Result<bool, Sta
         return Ok(false);
     };
     Ok(doc.timeline_segments().iter().any(|segment| {
-        !dir.join(&segment.audio_file).is_file()
-            && (audio_removed(home, &segment.audio_file)
-                || !home.join(&segment.audio_file).is_file())
+        // A name that can point outside the folder counts as a missing file.
+        let (Some(local), Some(home_file)) = (
+            crate::audio_path(dir, &segment.audio_file),
+            crate::audio_path(home, &segment.audio_file),
+        ) else {
+            return true;
+        };
+        !local.is_file() && (audio_removed(home, &segment.audio_file) || !home_file.is_file())
     }))
 }
 

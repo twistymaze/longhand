@@ -5,7 +5,7 @@ use session_core::folder::{
     FolderError, PendingType, ResultFlag, SegmentRecord, SummaryMeta, fingerprint,
 };
 use session_core::note_record::{
-    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, session_id_of,
+    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, session_id_of, valid_audio_name,
 };
 use session_core::recognition::ArtifactReference;
 use session_core::{SpeakerCount, Title, TitleSource};
@@ -232,6 +232,66 @@ fn a_record_whose_session_id_is_not_a_plain_note_id_does_not_parse() {
         let text = NoteRecord::new(id, wall(0)).render();
         assert!(NoteRecord::parse(&text).is_ok(), "{id:?} did not parse");
     }
+}
+
+/// The audio names that do not stay in the note folder, on any platform.
+const UNSAFE_AUDIO: [&str; 18] = [
+    "",
+    "/etc/passwd",
+    "../segment-01.opus",
+    "audio/../../segment-01.opus",
+    "audio/..",
+    "./audio/segment-01.opus",
+    "audio//segment-01.opus",
+    "audio/",
+    "audio/segment-01.opus/",
+    "audio\\segment-01.opus",
+    "..\\segment-01.opus",
+    "\\\\server\\share\\segment-01.opus",
+    "//server/share/segment-01.opus",
+    "\\\\?\\C:\\segment-01.opus",
+    "C:\\Windows\\segment-01.opus",
+    "C:segment-01.opus",
+    "audio/.. ",
+    "audio/segment-01.opus:stream",
+];
+
+#[test]
+fn a_record_whose_segment_audio_is_not_a_path_in_the_note_folder_does_not_parse() {
+    // The app joins the audio name to the note folder, for example at a
+    // scan. So an absolute path, a parent part or a Windows drive or UNC
+    // path is refused.
+    for audio in UNSAFE_AUDIO {
+        assert!(!valid_audio_name(audio), "{audio:?}");
+        let mut record = full_record();
+        record.segments[1].audio = audio.into();
+        let text = record.render();
+        // The assert does not print the result: its text holds the session id.
+        assert!(
+            matches!(
+                NoteRecord::parse(&text),
+                Err(FolderError::Yaml { file, .. }) if file == NOTE_RECORD_FILE
+            ),
+            "{audio:?}"
+        );
+        assert_eq!(session_id_of(&text), None, "{audio:?}");
+    }
+}
+
+#[test]
+fn a_record_with_the_audio_names_that_longhand_writes_parses() {
+    assert!(valid_audio_name("audio/segment-01.opus"));
+    assert!(valid_audio_name("audio/segment-100.opus"));
+    let mut record = full_record();
+    record.segments[1].audio = "audio/segment-12.opus".into();
+    let text = record.render();
+    assert_eq!(NoteRecord::parse(&text).unwrap().current(), Some(record));
+    // A newer layout is not read, so its audio names are not checked.
+    let text = "{\n  \"layout\": 9,\n  \"session_id\": \"01j8z\",\n  \"segments\": [{\"audio\": \"/etc/passwd\"}]\n}\n";
+    assert_eq!(
+        NoteRecord::parse(text).unwrap(),
+        NoteRecordRead::Newer { layout: 9 }
+    );
 }
 
 #[test]

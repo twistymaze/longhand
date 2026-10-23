@@ -133,6 +133,7 @@ impl NoteRecord {
             }
             Ok(record) => {
                 check_session_id(NOTE_RECORD_FILE, &record.session_id)?;
+                check_audio_names(NOTE_RECORD_FILE, &record.segments)?;
                 return Ok(NoteRecordRead::Current(Box::new(record)));
             }
             Err(e) => e,
@@ -214,6 +215,39 @@ pub(crate) fn check_session_id(file: &'static str, id: &str) -> Result<(), Folde
         file,
         message: format!("session_id {id:?} is not a valid note id"),
     })
+}
+
+/// Whether `audio` is a segment audio name that stays in the note folder:
+/// a relative path of one or more parts, with `/` between the parts.
+/// Longhand writes `audio/segment-<digits>.opus`. The name comes from a
+/// synced file, and the app joins it to the note folder. So an empty part,
+/// `.`, `..` and a root are refused. `\` and `:` are refused on each
+/// platform: on Windows, they give a root, a drive, a UNC path or a parent
+/// part, and the note folder syncs to each computer. A part that ends in
+/// `.` or a space is refused, because Windows removes these characters.
+pub fn valid_audio_name(audio: &str) -> bool {
+    !audio.contains(['\\', ':'])
+        && audio
+            .split('/')
+            .all(|part| !part.is_empty() && !part.ends_with(['.', ' ']))
+}
+
+/// An error for the file `file` when a segment in `segments` has an audio
+/// name that is not valid ([`valid_audio_name`]).
+pub(crate) fn check_audio_names(
+    file: &'static str,
+    segments: &[SegmentRecord],
+) -> Result<(), FolderError> {
+    match segments.iter().find(|s| !valid_audio_name(&s.audio)) {
+        None => Ok(()),
+        Some(segment) => Err(FolderError::Yaml {
+            file,
+            message: format!(
+                "segment audio {:?} is not a path in the note folder",
+                segment.audio
+            ),
+        }),
+    }
 }
 
 fn json_error(e: serde_json::Error) -> FolderError {

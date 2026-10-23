@@ -5483,6 +5483,7 @@ dependencies = [
 name = "shared-settings"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "library",
  "log",
  "models",

@@ -407,8 +407,12 @@ pub(crate) fn read_reusable(
         return Ok(None);
     }
     for segment in &doc.segments {
-        if audio.get(&segment.audio) != Some(&recognition::file_digest(&home.join(&segment.audio))?)
-        {
+        // A synced record can name any path. A name that can point outside
+        // the folder is not opened, and the saved text is not used again.
+        let Some(path) = crate::audio_path(home, &segment.audio) else {
+            return Ok(None);
+        };
+        if audio.get(&segment.audio) != Some(&recognition::file_digest(&path)?) {
             return Ok(None);
         }
     }

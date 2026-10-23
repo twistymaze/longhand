@@ -149,3 +149,64 @@ pub fn proc_file(audio_file: &str) -> String {
         .unwrap_or_else(|| audio_file.to_string());
     format!("{PROC_DIR}/{stem}.wav")
 }
+
+/// The path of the segment audio file `audio_file` in the folder `dir`, or
+/// `None` when the name can point outside `dir`. A synced note record can
+/// give any name, so each read or write of a segment audio file in a folder
+/// gets its path here. The name must be a relative path with `/` between
+/// its parts. A part must not be empty, `.` or `..`, must not end in `.` or
+/// a space, and must not have a `\` or a `:`. This refuses an absolute
+/// path and a drive or network prefix too. A caller treats `None` as a
+/// missing file.
+pub(crate) fn audio_path(dir: &std::path::Path, audio_file: &str) -> Option<std::path::PathBuf> {
+    let inside = audio_file
+        .split('/')
+        .all(|part| !part.is_empty() && !part.ends_with(['.', ' ']) && !part.contains(['\\', ':']));
+    inside.then(|| dir.join(audio_file))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::audio_path;
+
+    #[test]
+    fn an_audio_name_inside_the_folder_gives_its_path() {
+        let dir = Path::new("note");
+        for name in [
+            "audio/segment-01.opus",
+            "audio/3.opus",
+            "a.wav",
+            "unused.opus",
+            "audio/.hidden.opus",
+        ] {
+            assert_eq!(audio_path(dir, name), Some(dir.join(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn an_audio_name_that_can_point_outside_the_folder_gives_no_path() {
+        let dir = Path::new("note");
+        for name in [
+            "",
+            "/etc/passwd",
+            "../outside.opus",
+            "audio/../../outside.opus",
+            "..",
+            ".",
+            "./audio/1.opus",
+            "audio//1.opus",
+            "audio/",
+            "audio/1.opus.",
+            "audio/1.opus ",
+            "... /outside.opus",
+            "audio\\..\\..\\outside.opus",
+            "C:\\outside.opus",
+            "C:outside.opus",
+            "\\\\server\\share\\outside.opus",
+        ] {
+            assert_eq!(audio_path(dir, name), None, "{name}");
+        }
+    }
+}

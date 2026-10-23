@@ -131,10 +131,13 @@ pub fn run(
     let mut out = Vec::new();
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
+        // A synced note record gives the audio name. A name that can point
+        // outside the folder counts as a missing file.
+        let local = crate::audio_path(session_dir, &segment.audio_file);
         // A stereo segment is done only with its echo spans row too.
         if let Some(done) =
             checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
-            && session_dir.join(&segment.audio_file).exists()
+            && local.as_ref().is_some_and(|local| local.exists())
             && session_dir.join(proc_file(&segment.audio_file)).exists()
             && (segment.channels != 2 || echo::saved(store, session_id, segment.index)?.is_some())
             && (!exact
@@ -154,12 +157,12 @@ pub fn run(
                 && checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
                     .is_some()
         {
-            Some(session_dir.join(&segment.audio_file)).filter(|p| p.is_file())
+            local.filter(|p| p.is_file())
         } else {
             None
         };
         if let Some(archive) = local_archive.or_else(|| {
-            home.map(|home| home.join(&segment.audio_file))
+            home.and_then(|home| crate::audio_path(home, &segment.audio_file))
                 .filter(|archive| archive.exists())
         }) {
             control.proceed()?;
@@ -455,7 +458,8 @@ pub fn assemble_segment(
     }
     let width = usize::from(channels);
 
-    let archive = session_dir.join(&segment.audio_file);
+    let archive = crate::audio_path(session_dir, &segment.audio_file)
+        .ok_or_else(|| StageError::Failed(format!("bad audio name {}", segment.audio_file)))?;
     let processing = session_dir.join(proc_file(&segment.audio_file));
     let _temps = TempFiles(vec![
         temp_path(&archive),
@@ -1039,15 +1043,17 @@ fn archive_path(
     dir: &Path,
     segment: &Segment,
 ) -> Result<PathBuf, StageError> {
-    let local = dir.join(&segment.audio_file);
+    let absent = || StageError::Failed("recorded audio is absent".into());
+    // A name that can point outside the folder counts as absent audio.
+    let local = crate::audio_path(dir, &segment.audio_file).ok_or_else(absent)?;
     if local.is_file() {
         return Ok(local);
     }
     crate::lock(store)
         .session(id)?
         .and_then(|r| r.home_path)
-        .map(|home| Path::new(&home).join(&segment.audio_file))
-        .ok_or_else(|| StageError::Failed("recorded audio is absent".into()))
+        .and_then(|home| crate::audio_path(Path::new(&home), &segment.audio_file))
+        .ok_or_else(absent)
 }
 
 /// In-process change detection only. Exact content checks remain necessary at
