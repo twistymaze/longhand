@@ -29,6 +29,7 @@ pub const MIGRATION_SQL: &[&str] = &[
     include_str!("../migrations/0019_type_moves_and_bulk_edits.sql"),
     include_str!("../migrations/0020_segment_ends_in_pause.sql"),
     include_str!("../migrations/0021_note_app_set.sql"),
+    include_str!("../migrations/0022_note_id_columns.sql"),
 ];
 
 /// The version of migration 0002, which has a hook.
@@ -165,18 +166,18 @@ fn notes_to_documents(tx: &Transaction) -> HookResult {
             ))
         })?;
         for row in rows {
-            let (session_id, text, anchor) = row?;
+            let (note_id, text, anchor) = row?;
             let line = note_line(&text, &anchor);
             match documents.last_mut() {
-                Some((id, document)) if *id == session_id => document.push_str(&line),
-                _ => documents.push((session_id, line)),
+                Some((id, document)) if *id == note_id => document.push_str(&line),
+                _ => documents.push((note_id, line)),
             }
         }
     }
-    for (session_id, document) in documents {
+    for (note_id, document) in documents {
         tx.execute(
             "UPDATE sessions SET notes = ?2 WHERE id = ?1",
-            rusqlite::params![session_id, document],
+            rusqlite::params![note_id, document],
         )?;
     }
     tx.execute_batch("DROP TABLE notes;")?;

@@ -226,14 +226,14 @@ struct StoredMessage {
     content: String,
 }
 
-/// The pending title request of `session_id`, or `None` when no title turn
+/// The pending title request of `note_id`, or `None` when no title turn
 /// is due.
 pub fn pending_title_request(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
 ) -> Result<Option<TitleRequest>, StageError> {
     let Some(stored) =
-        checkpoint::get::<StoredTitleRequest>(store, session_id, Stage::Summarize, TITLE_REQUEST)?
+        checkpoint::get::<StoredTitleRequest>(store, note_id, Stage::Summarize, TITLE_REQUEST)?
     else {
         return Ok(None);
     };
@@ -247,7 +247,7 @@ pub fn pending_title_request(
                 "assistant" => "assistant",
                 other => {
                     return Err(StageError::Failed(format!(
-                        "the title request of {session_id} has a message with the unknown role {other:?}"
+                        "the title request of {note_id} has a message with the unknown role {other:?}"
                     )));
                 }
             };
@@ -264,10 +264,10 @@ pub fn pending_title_request(
     }))
 }
 
-/// Delete the pending title request of `session_id`. A session with no
+/// Delete the pending title request of `note_id`. A session with no
 /// request is not an error.
-pub fn delete_title_request(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
-    Ok(lock(store).delete_checkpoint(session_id, Stage::Summarize, TITLE_REQUEST)?)
+pub fn delete_title_request(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
+    Ok(lock(store).delete_checkpoint(note_id, Stage::Summarize, TITLE_REQUEST)?)
 }
 
 /// Send the title turn `request` to `endpoint` with its reply cap, and
@@ -276,7 +276,7 @@ pub fn delete_title_request(store: &SharedStore, session_id: &str) -> Result<(),
 /// (R14). Only a cancel is an outer error. `queued` is the time that the
 /// job waited for its turn in the summary queue, for the request log.
 pub fn send_title_request(
-    session_id: &str,
+    note_id: &str,
     endpoint: &SummaryEndpoint,
     request: &TitleRequest,
     control: &dyn Control,
@@ -292,13 +292,13 @@ pub fn send_title_request(
     };
     if client.crosses_network_unencrypted() {
         log::warn!(
-            "proposing a title for {session_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
+            "proposing a title for {note_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
             client.host()
         );
     }
     let runtime = Runtime::new()?;
     control.proceed()?;
-    let label = Label::note(session_id, RequestKind::Title).queued(queued);
+    let label = Label::note(note_id, RequestKind::Title).queued(queued);
     // The title turn needs its prompt and its reply cap. With no saved
     // limit, the limit of the setting applies, or none.
     let num_ctx = (endpoint.provider == Provider::Ollama).then(|| {
@@ -438,23 +438,20 @@ fn input_fingerprint(
     Ok(session_core::folder::fingerprint(&bytes))
 }
 
-/// The store row of the note `session_id`. A note that is not in the
+/// The store row of the note `note_id`. A note that is not in the
 /// store is a failure.
-pub(crate) fn note_record(
-    store: &SharedStore,
-    session_id: &str,
-) -> Result<SessionRecord, StageError> {
+pub(crate) fn note_record(store: &SharedStore, note_id: &str) -> Result<SessionRecord, StageError> {
     lock(store)
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("the note {session_id} is not in the store")))
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("the note {note_id} is not in the store")))
 }
 
 /// The note details as they are now: the type that the app shows, which
 /// can be a pending type (KTD3), the tags, and the title when the user
 /// typed it. A title that processing proposed is not a detail. A run reads
 /// them once, when it starts, and sends that copy with every call.
-fn note_details(store: &SharedStore, session_id: &str) -> Result<Details, StageError> {
-    let record = note_record(store, session_id)?;
+fn note_details(store: &SharedStore, note_id: &str) -> Result<Details, StageError> {
+    let record = note_record(store, note_id)?;
     Ok(Details {
         note_type: crate::type_move::shown_type(&record).0,
         title: record
@@ -467,9 +464,9 @@ fn note_details(store: &SharedStore, session_id: &str) -> Result<Details, StageE
 
 /// The notes document as it is now. A run reads it once, when it starts,
 /// and sends that copy with every call (R36).
-fn session_notes(store: &SharedStore, session_id: &str) -> Result<String, StageError> {
-    let notes = lock(store).notes(session_id)?;
-    if let Some(result) = crate::recognition::saved_result(store, session_id)?
+fn session_notes(store: &SharedStore, note_id: &str) -> Result<String, StageError> {
+    let notes = lock(store).notes(note_id)?;
+    if let Some(result) = crate::recognition::saved_result(store, note_id)?
         && result
             .coverage_limitations
             .iter()
@@ -522,8 +519,8 @@ pub fn clean_title(reply: &str) -> String {
 
 /// Forget a summary, its title proposal and its title request, so the
 /// stage runs again from the transcript (R19, R31).
-pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
-    Ok(lock(store).clear_checkpoints(session_id, Stage::Summarize)?)
+pub fn clear(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
+    Ok(lock(store).clear_checkpoints(note_id, Stage::Summarize)?)
 }
 
 /// The summarize stage: produce the summary and write it into the working
@@ -532,7 +529,7 @@ pub fn clear(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
     endpoint: SummaryEndpoint,
@@ -543,7 +540,7 @@ pub fn run(
 ) -> Result<(), StageError> {
     let summary = produce(
         store,
-        session_id,
+        note_id,
         session_dir,
         endpoint,
         active,
@@ -558,8 +555,8 @@ pub fn run(
     std::fs::write(&temp, summary.render_body())?;
     crate::sync_file(&temp)?;
     std::fs::rename(&temp, &path)?;
-    checkpoint::put(store, session_id, Stage::Summarize, META, &summary.meta)?;
-    checkpoint::mark_complete(store, session_id, Stage::Summarize, segments.len())
+    checkpoint::put(store, note_id, Stage::Summarize, META, &summary.meta)?;
+    checkpoint::mark_complete(store, note_id, Stage::Summarize, segments.len())
 }
 
 /// Summarize the `transcript.md` in `folder`, resuming any calls already
@@ -570,7 +567,7 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     folder: &Path,
     endpoint: SummaryEndpoint,
     active: Prompt,
@@ -578,53 +575,53 @@ pub fn produce(
     queued: Duration,
     progress: &mut dyn FnMut(SummaryStep, usize, usize),
 ) -> Result<Summary, StageError> {
-    crate::follow::follow_folder(&mut lock(store), session_id, false)?;
+    crate::follow::follow_folder(&mut lock(store), note_id, false)?;
     let transcript = read_transcript(folder)?;
     let lines = lines_of(&transcript);
     let said = lines.iter().any(|line| matches!(line, Line::Turn(_)));
-    let notes = session_notes(store, session_id)?;
-    let raw_notes = lock(store).notes(session_id)?;
+    let notes = session_notes(store, note_id)?;
+    let raw_notes = lock(store).notes(note_id)?;
     checkpoint::put(
         store,
-        session_id,
+        note_id,
         Stage::Summarize,
         "source-notes",
         &session_core::folder::fingerprint(raw_notes.as_bytes()),
     )?;
-    let details = note_details(store, session_id)?;
+    let details = note_details(store, note_id)?;
     // Cached calls stand only for the transcript, the notes and the note
     // details that they were made from. Another computer can replace
     // `transcript.md`, and the notes and the details can change, between a
     // failed run and a regeneration.
     let input = input_fingerprint(&transcript, &notes, &details)?;
-    let saved = checkpoint::get::<String>(store, session_id, Stage::Summarize, INPUT)?;
+    let saved = checkpoint::get::<String>(store, note_id, Stage::Summarize, INPUT)?;
     if saved.as_deref() != Some(input.as_str()) {
-        forget_calls(store, session_id)?;
-        checkpoint::put(store, session_id, Stage::Summarize, INPUT, &input)?;
+        forget_calls(store, note_id)?;
+        checkpoint::put(store, note_id, Stage::Summarize, INPUT, &input)?;
         // Every call runs again, so the run uses the prompt that it was
         // given, which is the prompt of the type now (KTD3).
-        checkpoint::put(store, session_id, Stage::Summarize, PROMPT, &active)?;
+        checkpoint::put(store, note_id, Stage::Summarize, PROMPT, &active)?;
     }
     let client = Client::new(client_endpoint(&endpoint))
         .map_err(|e| StageError::Failed(e.to_string()))?
         .with_retry_waits(endpoint.retry_waits.clone());
     if client.crosses_network_unencrypted() {
         log::warn!(
-            "summarizing {session_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
+            "summarizing {note_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
             client.host()
         );
     }
     let runtime = Runtime::new()?;
 
-    let prompt = match checkpoint::get::<Prompt>(store, session_id, Stage::Summarize, PROMPT)? {
+    let prompt = match checkpoint::get::<Prompt>(store, note_id, Stage::Summarize, PROMPT)? {
         Some(saved) => saved,
         None => {
             // A run from before prompts were saved can have a plan and
             // cached calls made with another prompt. Remove them, so that
             // no result goes out under the name of the active prompt. The
             // stage's completion and failure records stay.
-            forget_calls(store, session_id)?;
-            checkpoint::put(store, session_id, Stage::Summarize, PROMPT, &active)?;
+            forget_calls(store, note_id)?;
+            checkpoint::put(store, note_id, Stage::Summarize, PROMPT, &active)?;
             active
         }
     };
@@ -633,10 +630,10 @@ pub fn produce(
     // whose budget the context limit setting does not give now, is made
     // again, with its calls (KTD11).
     let source = Source::of(&client);
-    let saved = checkpoint::get::<Plan>(store, session_id, Stage::Summarize, PLAN)?;
+    let saved = checkpoint::get::<Plan>(store, note_id, Stage::Summarize, PLAN)?;
     let saved = match saved {
         Some(plan) if !plan.agrees_with(endpoint.context_limit, &source) => {
-            forget_calls(store, session_id)?;
+            forget_calls(store, note_id)?;
             None
         }
         other => other,
@@ -654,7 +651,7 @@ pub fn produce(
                     .block_on(
                         context::probe(
                             &client,
-                            &Label::note(session_id, RequestKind::Probe).queued(queued),
+                            &Label::note(note_id, RequestKind::Probe).queued(queued),
                         ),
                         control,
                     )?
@@ -662,7 +659,7 @@ pub fn produce(
             };
             let budget = context::resolve(endpoint.context_limit, probed);
             log::info!(
-                "summarizing {session_id} with {} on {}: budget {} tokens ({:?})",
+                "summarizing {note_id} with {} on {}: budget {} tokens ({:?})",
                 endpoint.model,
                 client.host(),
                 budget.limit,
@@ -673,7 +670,7 @@ pub fn produce(
                 layers: vec![Room::new(budget.limit)],
                 source: Some(source),
             };
-            checkpoint::put(store, session_id, Stage::Summarize, PLAN, &plan)?;
+            checkpoint::put(store, note_id, Stage::Summarize, PLAN, &plan)?;
             plan
         }
     };
@@ -681,7 +678,7 @@ pub fn produce(
     let mut shrinks = 0;
     let mut calls = Calls {
         store,
-        session_id,
+        note_id,
         client: &client,
         runtime: &runtime,
         control,
@@ -732,7 +729,7 @@ pub fn produce(
                     if reserve <= room.reserve {
                         // The next run asks the endpoint for its limit
                         // again: the user can raise the context length.
-                        forget_calls(store, session_id)?;
+                        forget_calls(store, note_id)?;
                         return Err(StageError::Failed(
                             "the model's replies do not fit in its context; raise its context length or choose another model".into(),
                         ));
@@ -742,7 +739,7 @@ pub fn produce(
                         client.host(),
                         room.reserve
                     );
-                    forget_layers_from(store, session_id, layer)?;
+                    forget_layers_from(store, note_id, layer)?;
                     plan.replace_from(
                         layer,
                         Room {
@@ -750,10 +747,10 @@ pub fn produce(
                             reserve,
                         },
                     );
-                    checkpoint::put(store, session_id, Stage::Summarize, PLAN, &plan)?;
+                    checkpoint::put(store, note_id, Stage::Summarize, PLAN, &plan)?;
                 }
                 Err(CutOff { .. }) => {
-                    forget_calls(store, session_id)?;
+                    forget_calls(store, note_id)?;
                     return Err(StageError::Failed(
                         "the endpoint kept cutting off replies".into(),
                     ));
@@ -767,17 +764,17 @@ pub fn produce(
     let text = match done {
         Some(done) => {
             if let Err(e) = calls.store_title_request(&done) {
-                log::warn!("could not store the title request of {session_id}: {e}");
-                if let Err(e) = delete_title_request(store, session_id) {
-                    log::warn!("could not delete the title request of {session_id}: {e}");
+                log::warn!("could not store the title request of {note_id}: {e}");
+                if let Err(e) = delete_title_request(store, note_id) {
+                    log::warn!("could not delete the title request of {note_id}: {e}");
                 }
             }
             done.reply
         }
         None => {
             // With nothing said, no title turn is due.
-            if let Err(e) = delete_title_request(store, session_id) {
-                log::warn!("could not delete the title request of {session_id}: {e}");
+            if let Err(e) = delete_title_request(store, note_id) {
+                log::warn!("could not delete the title request of {note_id}: {e}");
             }
             String::from("Nothing was transcribed in this note.")
         }
@@ -799,22 +796,18 @@ pub fn produce(
 
 /// Remove the plan, every cached call, the title proposal and the title
 /// request.
-fn forget_calls(store: &SharedStore, session_id: &str) -> Result<(), StageError> {
-    forget_layers_from(store, session_id, 0)?;
+fn forget_calls(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
+    forget_layers_from(store, note_id, 0)?;
     let guard = lock(store);
-    guard.delete_checkpoint(session_id, Stage::Summarize, PLAN)?;
-    guard.delete_checkpoint(session_id, Stage::Summarize, TITLE)?;
-    guard.delete_checkpoint(session_id, Stage::Summarize, TITLE_REQUEST)?;
+    guard.delete_checkpoint(note_id, Stage::Summarize, PLAN)?;
+    guard.delete_checkpoint(note_id, Stage::Summarize, TITLE)?;
+    guard.delete_checkpoint(note_id, Stage::Summarize, TITLE_REQUEST)?;
     Ok(())
 }
 
-fn forget_layers_from(
-    store: &SharedStore,
-    session_id: &str,
-    layer: usize,
-) -> Result<(), StageError> {
+fn forget_layers_from(store: &SharedStore, note_id: &str, layer: usize) -> Result<(), StageError> {
     let guard = lock(store);
-    for (key, _) in guard.checkpoints(session_id, Stage::Summarize)? {
+    for (key, _) in guard.checkpoints(note_id, Stage::Summarize)? {
         // The whole call is in layer 0.
         let at = if key == WHOLE {
             Some(0)
@@ -824,7 +817,7 @@ fn forget_layers_from(
                 .and_then(|l| l.parse::<usize>().ok())
         };
         if at.is_some_and(|l| l >= layer) {
-            guard.delete_checkpoint(session_id, Stage::Summarize, &key)?;
+            guard.delete_checkpoint(note_id, Stage::Summarize, &key)?;
         }
     }
     Ok(())
@@ -853,7 +846,7 @@ impl From<StageError> for Outcome {
 
 struct Calls<'a> {
     store: &'a SharedStore,
-    session_id: &'a str,
+    note_id: &'a str,
     client: &'a Client,
     runtime: &'a Runtime,
     control: &'a dyn Control,
@@ -927,7 +920,7 @@ impl<'a> Calls<'a> {
             // the endpoint again. A model with a larger context can then
             // run the same prompt.
             lock(self.store)
-                .delete_checkpoint(self.session_id, Stage::Summarize, PLAN)
+                .delete_checkpoint(self.note_id, Stage::Summarize, PLAN)
                 .map_err(StageError::from)?;
             return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
         }
@@ -1047,24 +1040,19 @@ impl<'a> Calls<'a> {
     /// the stage stores no request and the summary still completes (R14).
     fn store_title_request(&self, done: &Final) -> Result<(), StageError> {
         let proposed =
-            checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, TITLE)?
-                .is_some();
+            checkpoint::get::<String>(self.store, self.note_id, Stage::Summarize, TITLE)?.is_some();
         let (user_title, keeps_title) = {
             let guard = lock(self.store);
-            let title = guard.title(self.session_id)?;
+            let title = guard.title(self.note_id)?;
             (
                 title
                     .as_ref()
                     .is_some_and(|t| t.source == TitleSource::User),
-                title.is_some()
-                    && guard
-                        .transcribe_again_marks(self.session_id)?
-                        .model
-                        .is_some(),
+                title.is_some() && guard.transcribe_again_marks(self.note_id)?.model.is_some(),
             )
         };
         if proposed || user_title || keeps_title {
-            return delete_title_request(self.store, self.session_id);
+            return delete_title_request(self.store, self.note_id);
         }
         let messages =
             prompts::title_turn(&done.messages, &done.reply, self.title_text, self.user());
@@ -1076,14 +1064,14 @@ impl<'a> Calls<'a> {
             log::warn!(
                 "the title turn for {} leaves {cap} tokens of the context for the reply, under {}; \
                  the session keeps the title it has",
-                self.session_id,
+                self.note_id,
                 prompts::TITLE_REPLY_MIN
             );
-            return delete_title_request(self.store, self.session_id);
+            return delete_title_request(self.store, self.note_id);
         }
         checkpoint::put(
             self.store,
-            self.session_id,
+            self.note_id,
             Stage::Summarize,
             TITLE_REQUEST,
             &TitleRequest {
@@ -1134,7 +1122,7 @@ impl<'a> Calls<'a> {
         num_ctx: Option<u32>,
     ) -> Result<String, Outcome> {
         if let Some(done) =
-            checkpoint::get::<String>(self.store, self.session_id, Stage::Summarize, &key)?
+            checkpoint::get::<String>(self.store, self.note_id, Stage::Summarize, &key)?
         {
             self.report(step);
             return Ok(done);
@@ -1147,7 +1135,7 @@ impl<'a> Calls<'a> {
         } else {
             RequestKind::Merge
         };
-        let label = Label::note(self.session_id, kind).queued(self.queued);
+        let label = Label::note(self.note_id, kind).queued(self.queued);
         let reply = self.runtime.block_on(
             self.client
                 .complete(&label, messages, room.reserve, num_ctx),
@@ -1157,7 +1145,7 @@ impl<'a> Calls<'a> {
             Ok(completion) => {
                 checkpoint::put(
                     self.store,
-                    self.session_id,
+                    self.note_id,
                     Stage::Summarize,
                     &key,
                     &completion.text,

@@ -131,18 +131,18 @@ function DownArrow() {
 }
 
 export function LiveTranscript({
-  sessionId,
+  noteId,
   mode,
   scroller,
   textAfterStop = false,
 }: {
-  sessionId: string;
+  noteId: string;
   mode: LiveMode;
   /// The element that scrolls the tab.
   scroller: RefObject<HTMLElement | null>;
   textAfterStop?: boolean;
 }) {
-  const live = useLiveTranscript(sessionId);
+  const live = useLiveTranscript(noteId);
   const following = useRef(true);
   const [away, setAway] = useState(false);
   const rows = useRef<HTMLDivElement>(null);
@@ -189,16 +189,16 @@ export function LiveTranscript({
   // that show (R7: a shown number does not change, so an unchanged row plays
   // nothing).
   const [announced, setAnnounced] = useState(0);
-  const shown = useRef<{ sessionId: string; recognition: RecognitionView; items: LiveRowItem[] } | null>(null);
+  const shown = useRef<{ noteId: string; recognition: RecognitionView; items: LiveRowItem[] } | null>(null);
   useEffect(() => {
     const before = shown.current;
-    shown.current = { sessionId, recognition: live.recognition, items };
-    if (!before || before.sessionId !== sessionId) {
+    shown.current = { noteId, recognition: live.recognition, items };
+    if (!before || before.noteId !== noteId) {
       setAnnounced(0);
       return;
     }
     if (before.recognition !== live.recognition && labelsChanged(before.items, items)) setAnnounced((n) => n + 1);
-  }, [sessionId, live.recognition, items]);
+  }, [noteId, live.recognition, items]);
 
   /// Record the first visible paragraph (KTD14).
   const record = useCallback(() => {

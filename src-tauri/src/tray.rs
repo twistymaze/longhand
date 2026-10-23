@@ -138,8 +138,8 @@ pub fn set_alert(app: &AppHandle, headline: Option<&str>) {
 
 /// A session started, stopped, or resumed recording. The title shows the
 /// recording time from the next tick, and is empty after a stop.
-pub fn recording_changed(app: &AppHandle, session_id: Option<&str>) {
-    update_title(app, |title| title.recording_changed(session_id));
+pub fn recording_changed(app: &AppHandle, note_id: Option<&str>) {
+    update_title(app, |title| title.recording_changed(note_id));
 }
 
 /// The open note paused or continued. While paused, the title says
@@ -149,14 +149,14 @@ pub fn recording_paused(app: &AppHandle, paused: bool) {
 }
 
 /// A capture tick: the title shows the new recorded time once a second.
-pub fn recording_tick(app: &AppHandle, session_id: &str, recorded_ms: u64) {
-    update_title(app, |title| title.tick(session_id, recorded_ms));
+pub fn recording_tick(app: &AppHandle, note_id: &str, recorded_ms: u64) {
+    update_title(app, |title| title.tick(note_id, recorded_ms));
 }
 
 /// The main window must show the page of this session (R3).
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct ShowSession {
-    pub session_id: String,
+    pub note_id: String,
 }
 
 /// Show the main window. While a session records or is interrupted, the
@@ -178,8 +178,8 @@ fn show_recording_page(app: &AppHandle) {
     };
     match capture.status(app) {
         Ok(status) => {
-            if let Some(session_id) = status.session_id {
-                let _ = ShowSession { session_id }.emit(app);
+            if let Some(note_id) = status.note_id {
+                let _ = ShowSession { note_id }.emit(app);
             }
         }
         Err(e) => log::error!("tray open could not read the recording status: {e}"),
@@ -294,8 +294,8 @@ impl TrayTitle {
     }
 
     /// Record a start, a stop, or a resume. Returns the new title when it changed.
-    fn recording_changed(&mut self, session_id: Option<&str>) -> Option<String> {
-        match session_id {
+    fn recording_changed(&mut self, note_id: Option<&str>) -> Option<String> {
+        match note_id {
             // A resume of the same session keeps its time until the next tick.
             Some(id) if self.recording.as_ref().is_some_and(|(r, _)| r == id) => {}
             Some(id) => {
@@ -319,9 +319,9 @@ impl TrayTitle {
 
     /// Record a capture tick. Returns the new title when it changed, which
     /// is once a second while recording.
-    fn tick(&mut self, session_id: &str, recorded_ms: u64) -> Option<String> {
+    fn tick(&mut self, note_id: &str, recorded_ms: u64) -> Option<String> {
         match &mut self.recording {
-            Some((id, seconds)) if id == session_id => *seconds = Some(recorded_ms / 1000),
+            Some((id, seconds)) if id == note_id => *seconds = Some(recorded_ms / 1000),
             // A tick after a stop, or from another session, changes nothing.
             _ => return None,
         }

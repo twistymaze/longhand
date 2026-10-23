@@ -35,22 +35,22 @@ pub const PARAGRAPH_PAUSE_MS: u64 = 2_000;
 
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
 ) -> Result<Transcript, StageError> {
     let transcript = build(
         segments,
-        &results(store, session_id)?,
-        &speakers(store, session_id)?,
+        &results(store, note_id)?,
+        &speakers(store, note_id)?,
     );
-    crate::lock(store).set_found_speakers(session_id, found_speakers(&transcript))?;
+    crate::lock(store).set_found_speakers(note_id, found_speakers(&transcript))?;
     let path = session_dir.join(TRANSCRIPT_FILE);
     let temp = session_dir.join(format!("{TRANSCRIPT_FILE}.tmp"));
     std::fs::write(&temp, transcript.render())?;
     crate::sync_file(&temp)?;
     std::fs::rename(&temp, &path)?;
-    checkpoint::mark_complete(store, session_id, Stage::Join, segments.len())?;
+    checkpoint::mark_complete(store, note_id, Stage::Join, segments.len())?;
     Ok(transcript)
 }
 

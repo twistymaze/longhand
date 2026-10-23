@@ -133,7 +133,8 @@ class CompareTests(support.StorageFolderTest):
         self.write(self.read(NEWER, "notes.md") + "- An edit\n", NEWER, "notes.md")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, NOT_CHECKED, out)
-        self.assertIn("layout 2", out)
+        self.assertIn("layout 3", out)
+        self.assertIn("Update the Longhand plugin", out)
 
     def test_an_edit_of_a_note_with_an_unknown_record_key_is_not_checked(self):
         record = json.loads(self.read(BUDGET, "longhand.json"))
@@ -208,7 +209,7 @@ class CompareTests(support.StorageFolderTest):
         shutil.copytree(self.path(IDEA), self.path("2026-10-07 1300 Quick idea-2"), copy_function=shutil.copyfile)
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PROBLEM, out)
-        self.assertIn("one session_id", out)
+        self.assertIn("one note id", out)
 
     def test_a_new_file_in_a_note_folder_is_a_problem(self):
         snapshot = self.snapshot()
@@ -393,7 +394,7 @@ class ByteOrderMarkTests(support.StorageFolderTest):
 
 
 class DuplicateIdTests(support.StorageFolderTest):
-    """Two folders with one session_id from before the snapshot."""
+    """Two folders with one note id from before the snapshot."""
 
     COPY = "2026-10-07 1300 Quick idea-2"
 
@@ -406,7 +407,7 @@ class DuplicateIdTests(support.StorageFolderTest):
         self.write(BUDGET_SESSION.replace("- Finance\n", "- Finance\n- Travel\n"), BUDGET, "session.md")
         code, out, _ = self.compare(snapshot)
         self.assertEqual(code, PASS, out)
-        self.assertNotIn("one session_id", out)
+        self.assertNotIn("one note id", out)
         self.assertNotIn("moved", out)
 
     def test_an_edit_of_the_copy_is_checked_against_the_copy(self):
@@ -433,7 +434,59 @@ class DuplicateIdTests(support.StorageFolderTest):
         self.assertEqual(code, PASS, out)
         self.assertEqual(out.count("moved:"), 1, out)
         self.assertIn("moved: %s -> %s" % (IDEA, renamed), out)
-        self.assertNotIn("one session_id", out)
+        self.assertNotIn("one note id", out)
+
+
+class RecordLayoutTests(support.StorageFolderTest):
+    """Notes whose longhand.json has layout 1 (`session_id`) or layout 2
+    (`note_id`)."""
+
+    def set_record(self, note, layout, id_key):
+        record = json.loads(self.read(note, "longhand.json"))
+        note_id = record.pop("note_id", None) or record.pop("session_id")
+        record.pop("session_id", None)
+        record["layout"] = layout
+        record[id_key] = note_id
+        self.write(json.dumps(record, indent=2, sort_keys=True) + "\n", note, "longhand.json")
+
+    def edit_tags(self):
+        snapshot = self.snapshot()
+        self.write(BUDGET_SESSION.replace("- Finance\n", "- Finance\n- Travel\n"), BUDGET, "session.md")
+        return self.compare(snapshot)
+
+    def test_a_tag_edit_of_a_layout_1_note_passes_and_the_note_still_reads(self):
+        self.set_record(BUDGET, 1, "session_id")
+        code, out, _ = self.edit_tags()
+        self.assertEqual(code, PASS, out)
+        self.assertIn("changed: %s: session.md" % BUDGET, out)
+        code, out, err = self.run_script("list_notes.py", "--json", "--title", "Budget")
+        self.assertEqual(code, 0, out + err)
+        [note] = json.loads(out)
+        self.assertEqual(note["note_id"], "note-budget-review")
+        self.assertEqual(note["tags"], ["Finance", "Travel", "Team::Planning"])
+        self.assertEqual(note["state"], "ready")
+
+    def test_a_tag_edit_of_a_layout_2_note_passes(self):
+        self.set_record(BUDGET, 2, "note_id")
+        code, out, _ = self.edit_tags()
+        self.assertEqual(code, PASS, out)
+
+    def test_an_id_key_of_the_other_layout_is_a_key_that_the_skill_does_not_know(self):
+        for layout, id_key in ((1, "note_id"), (2, "session_id")):
+            with self.subTest(layout=layout):
+                self.write(BUDGET_SESSION, BUDGET, "session.md")
+                self.set_record(BUDGET, layout, id_key)
+                code, out, _ = self.edit_tags()
+                self.assertEqual(code, NOT_CHECKED, out)
+                self.assertIn("keys that this skill does not know: %s" % id_key, out)
+
+    def test_a_session_md_with_session_id_is_still_not_checked(self):
+        self.set_record(BUDGET, 1, "session_id")
+        snapshot = self.snapshot()
+        self.write(BUDGET_SESSION.replace("---\n", "---\nsession_id: note-budget-review\n", 1), BUDGET, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED, out)
+        self.assertIn("session_id", out)
 
 
 class SettingsTests(support.StorageFolderTest):

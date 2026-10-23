@@ -43,12 +43,12 @@ impl EchoSpans {
 /// stereo segment that Assemble has not finished.
 pub fn saved(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     segment: u32,
 ) -> Result<Option<EchoSpans>, StageError> {
     checkpoint::get(
         store,
-        session_id,
+        note_id,
         Stage::Assemble,
         &checkpoint::echo_key(segment),
     )

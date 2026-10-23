@@ -95,7 +95,7 @@ def main(argv=None):
             out = [
                 {
                     "path": note["path"],
-                    "session_id": note["id"],
+                    "note_id": note["id"],
                     "started": note["started"],
                     "type": note["type"] or lh.GENERAL,
                     "title": note["title"],

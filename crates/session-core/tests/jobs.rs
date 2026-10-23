@@ -1935,8 +1935,8 @@ fn forget_removes_the_row_and_its_checkpoints_and_leaves_the_folder() {
     let conn = rusqlite::Connection::open(&path).unwrap();
     let left: i64 = conn
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM checkpoints WHERE session_id = 's1')
-                  + (SELECT COUNT(*) FROM segments WHERE session_id = 's1')",
+            "SELECT (SELECT COUNT(*) FROM checkpoints WHERE note_id = 's1')
+                  + (SELECT COUNT(*) FROM segments WHERE note_id = 's1')",
             [],
             |r| r.get(0),
         )

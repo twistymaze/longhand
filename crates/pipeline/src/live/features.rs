@@ -85,7 +85,7 @@ pub fn extract(
             let is_cancelled = || cancel.is_cancelled();
             let saved = window(
                 store,
-                &config.session_id,
+                &config.note_id,
                 &dir,
                 config.segment,
                 windows,
@@ -111,7 +111,7 @@ pub fn extract(
     }
     checkpoint::put(
         store,
-        &config.session_id,
+        &config.note_id,
         Stage::Diarize,
         &key(config.segment),
         &Index {

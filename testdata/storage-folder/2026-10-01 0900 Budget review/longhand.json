@@ -1,7 +1,8 @@
 {
   "asr_model": "parakeet-unified-en-0.6b-q80",
   "found_speakers": 2,
-  "layout": 1,
+  "layout": 2,
+  "note_id": "note-budget-review",
   "recognition_artifact": {
     "filename": "recognition.jsonl",
     "sha256": "c16031189c4ac63963db8b73280491d0ff699fac4202d20444e7b22915bbbf01",
@@ -17,7 +18,6 @@
       "wall_start": "2026-10-01T09:00:00-05:00"
     }
   ],
-  "session_id": "note-budget-review",
   "started": "2026-10-01T09:00:00-05:00",
   "summary": {
     "endpoint_host": "llm.example.com",

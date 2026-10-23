@@ -164,7 +164,7 @@ pub async fn record_note(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<(), String> {
     let manager = Arc::clone(&manager);
     let processing = Arc::clone(&processing);
@@ -173,12 +173,10 @@ pub async fn record_note(
             &manager.shared_store(),
             processing.library_status(),
             processing.own_runs(),
-            &session_id,
+            &note_id,
             chrono::Local::now().fixed_offset(),
         )?;
-        manager
-            .record_session(&app, &session_id)
-            .map_err(open_error)
+        manager.record_session(&app, &note_id).map_err(open_error)
     })
     .await
 }
@@ -192,13 +190,13 @@ pub async fn resume_recording(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<String, String> {
     // Resume replaces the result of the note (KTD11).
-    crate::managers::processing::refuse_while_syncing(processing.library_status(), &session_id)?;
+    crate::managers::processing::refuse_while_syncing(processing.library_status(), &note_id)?;
     let manager = Arc::clone(&manager);
     let checks = Arc::clone(&processing);
-    let id = session_id.clone();
+    let id = note_id.clone();
     let state = blocking(move || {
         // The same refusals as Record for another computer's work (R21).
         crate::commands::session::check_resume(
@@ -216,7 +214,7 @@ pub async fn resume_recording(
     .await?;
     // Out of the queue (R20c); a stage running on it stops at its next checkpoint.
     if state == "capturing" {
-        processing.cancel(&session_id);
+        processing.cancel(&note_id);
     }
     Ok(state)
 }
@@ -232,20 +230,20 @@ pub async fn recording_status(
 }
 
 /// Change the microphone of one note from the recording page (R2). With no
-/// `session_id`, the next note uses it. `None` is "System default". Settings
+/// `note_id`, the next note uses it. `None` is "System default". Settings
 /// does not change. Returns the status after the change.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_note_microphone(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
-    session_id: Option<String>,
+    note_id: Option<String>,
     microphone: Option<MicrophoneChoice>,
 ) -> Result<RecordingStatus, String> {
     let manager = Arc::clone(&manager);
     blocking(move || {
         manager
-            .set_note_microphone(&app, session_id.as_deref(), microphone)
+            .set_note_microphone(&app, note_id.as_deref(), microphone)
             .and_then(|()| manager.status(&app))
             .map_err(|e| e.to_string())
     })
@@ -261,7 +259,7 @@ pub async fn set_note_microphone(
 pub async fn set_note_apps(
     app: AppHandle,
     manager: State<'_, Arc<CaptureManager>>,
-    session_id: String,
+    note_id: String,
     apps: Vec<ListedApp>,
 ) -> Result<RecordingStatus, String> {
     if !audio_system::apps::supported() {
@@ -270,7 +268,7 @@ pub async fn set_note_apps(
     let manager = Arc::clone(&manager);
     blocking(move || {
         let added = manager
-            .set_note_apps(&app, &session_id, apps)
+            .set_note_apps(&app, &note_id, apps)
             .map_err(|e| e.to_string())?;
         if added {
             super::settings::request_permission_if_not_asked();

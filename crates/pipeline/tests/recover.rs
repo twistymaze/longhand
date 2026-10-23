@@ -519,15 +519,11 @@ fn one_session_that_cannot_be_recovered_does_not_stop_the_others_or_the_sweep() 
     let ids: Vec<&str> = report
         .recovered
         .iter()
-        .map(|r| r.session_id.as_str())
+        .map(|r| r.note_id.as_str())
         .collect();
     assert_eq!(ids, ["b"]);
     interrupted_since(&report.recovered[0].state);
-    let failed: Vec<&str> = report
-        .failed
-        .iter()
-        .map(|f| f.session_id.as_str())
-        .collect();
+    let failed: Vec<&str> = report.failed.iter().map(|f| f.note_id.as_str()).collect();
     assert_eq!(failed, ["a"]);
     // The session that failed becomes Interrupted(crash) and keeps its
     // files, so the failed-capture alert shows at launch.

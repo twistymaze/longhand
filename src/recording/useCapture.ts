@@ -37,7 +37,7 @@ export function useCapture(): Capture {
       // Before the first tick of a note, the status holds the best known
       // time, not the time of the note before.
       const d = result.data;
-      if (d.paused || d.interruption || !d.recording || tickedSession.current !== d.session_id) {
+      if (d.paused || d.interruption || !d.recording || tickedSession.current !== d.note_id) {
         setRecordedMs(d.recorded_ms);
       }
     }
@@ -50,7 +50,7 @@ export function useCapture(): Capture {
     const unlisteners = [
       events.captureTick.listen(({ payload }) => {
         lastTickAt.current = performance.now();
-        tickedSession.current = payload.session_id;
+        tickedSession.current = payload.note_id;
         setRecordedMs(payload.recorded_ms);
         setLevels((l) => {
           const next = l.length >= HISTORY ? l.slice(l.length - HISTORY + 1) : l.slice();
@@ -60,9 +60,9 @@ export function useCapture(): Capture {
       }),
       events.recordingChanged.listen(({ payload }) => {
         lastTickAt.current = null;
-        startedAt.current = payload.session_id ? performance.now() : null;
+        startedAt.current = payload.note_id ? performance.now() : null;
         setLostReason(null);
-        if (payload.session_id) {
+        if (payload.note_id) {
           setLevels([]);
         }
         void refresh();

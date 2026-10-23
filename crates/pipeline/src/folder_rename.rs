@@ -51,12 +51,12 @@ pub enum FolderRename {
 /// or a delete holds a claim on the session now.
 pub fn rename_session(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     title: &str,
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    rename_locked(&mut lock(store), session_id, title, claimed, fs)
+    rename_locked(&mut lock(store), note_id, title, claimed, fs)
 }
 
 /// [`rename_session`] for a caller that holds the store lock: the runner
@@ -64,12 +64,12 @@ pub fn rename_session(
 /// ([`crate::move_notes::lock_unheld`]).
 pub fn rename_locked(
     guard: &mut Store,
-    session_id: &str,
+    note_id: &str,
     title: &str,
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    let renamed = retitle_locked(guard, session_id, title, TitleSource::User, claimed, fs)?;
+    let renamed = retitle_locked(guard, note_id, title, TitleSource::User, claimed, fs)?;
     Ok(renamed.expect("a user title always replaces the stored title"))
 }
 
@@ -80,46 +80,46 @@ pub fn rename_locked(
 /// also on another computer. The caller holds the store lock.
 pub fn propose_locked(
     guard: &mut Store,
-    session_id: &str,
+    note_id: &str,
     title: &str,
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<Option<FolderRename>, StageError> {
-    retitle_locked(guard, session_id, title, TitleSource::Proposed, claimed, fs)
+    retitle_locked(guard, note_id, title, TitleSource::Proposed, claimed, fs)
 }
 
 /// Bring the row up to date from its folder (KTD3), store `title` with
 /// `source`, then run the reconcile. `None` when the row keeps its title.
 fn retitle_locked(
     guard: &mut Store,
-    session_id: &str,
+    note_id: &str,
     title: &str,
     source: TitleSource,
     claimed: &dyn Fn(&str) -> bool,
     fs: &dyn Fs,
 ) -> Result<Option<FolderRename>, StageError> {
-    let claimed = claimed(session_id);
-    crate::follow::follow_folder(guard, session_id, claimed)?;
+    let claimed = claimed(note_id);
+    crate::follow::follow_folder(guard, note_id, claimed)?;
     // A title that a person or an agent wrote into `session.md` is not
     // replaced by a proposal, also before the row takes it (R5, KTD5).
     if source == TitleSource::Proposed
-        && let Some(home) = guard.session(session_id)?.and_then(|r| r.home_path)
+        && let Some(home) = guard.session(note_id)?.and_then(|r| r.home_path)
         && read_files(Path::new(&home)).is_some_and(|files| files.title_changed_outside())
     {
         return Ok(None);
     }
-    if !guard.set_title(session_id, title, source)? {
+    if !guard.set_title(note_id, title, source)? {
         return Ok(None);
     }
     // Recorded before the move, so a crash before the reconcile ends leaves
     // the rename to the next launch.
-    guard.set_rename_owed(session_id, true)?;
-    let renamed = reconcile(guard, session_id, claimed, true, fs)?;
+    guard.set_rename_owed(note_id, true)?;
+    let renamed = reconcile(guard, note_id, claimed, true, fs)?;
     // A folder that moves later, or that keeps its name because the move
     // failed, gets the title in its `session.md` now. Otherwise the next
     // library refresh reads the old title and puts it back in the row.
     if matches!(renamed, FolderRename::Later | FolderRename::Kept(_)) {
-        write_title(guard, session_id);
+        write_title(guard, note_id);
     }
     Ok(Some(renamed))
 }
@@ -131,8 +131,8 @@ fn retitle_locked(
 /// title, not the old one. A folder that is not there, or a `session.md`
 /// that cannot be read or written, is logged: the reconcile after the
 /// work writes the document.
-pub(crate) fn write_title(store: &Store, session_id: &str) {
-    let Ok(Some(record)) = store.session(session_id) else {
+pub(crate) fn write_title(store: &Store, note_id: &str) {
+    let Ok(Some(record)) = store.session(note_id) else {
         return;
     };
     let Some(home) = record.home_path.as_deref().map(Path::new) else {
@@ -140,10 +140,7 @@ pub(crate) fn write_title(store: &Store, session_id: &str) {
     };
     // An old home folder gets no write: the new early write takes the
     // title from the row ([`crate::early_home::rehoming`]).
-    if !matches!(
-        crate::early_home::rehoming(store, session_id, home),
-        Ok(false)
-    ) {
+    if !matches!(crate::early_home::rehoming(store, note_id, home), Ok(false)) {
         return;
     }
     write_title_in(&record, home);
@@ -212,35 +209,35 @@ fn read_files(folder: &Path) -> Option<NoteFiles> {
 /// `Moved` clears the record.
 pub fn reconcile(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     claimed: bool,
     check_document: bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    if not_saved_elsewhere(store, session_id, claimed)? {
+    if not_saved_elsewhere(store, note_id, claimed)? {
         // The computer that records into the note renames the folder after
         // its Save, with the title that it takes from `session.md` (KTD9).
         // This computer owes no rename.
-        store.set_rename_owed(session_id, false)?;
+        store.set_rename_owed(note_id, false)?;
         return Ok(FolderRename::Later);
     }
-    let result = reconcile_once(store, session_id, claimed, check_document, fs)?;
+    let result = reconcile_once(store, note_id, claimed, check_document, fs)?;
     let owed = matches!(result, FolderRename::Later | FolderRename::Kept(_));
-    store.set_rename_owed(session_id, owed)?;
+    store.set_rename_owed(note_id, owed)?;
     Ok(result)
 }
 
 fn reconcile_once(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     claimed: bool,
     check_document: bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    let record = require(store, session_id)?;
+    let record = require(store, note_id)?;
     // The Move puts the folder in the new storage folder first (KTD9).
     let moving = !matches!(
-        store.move_step(session_id)?,
+        store.move_step(note_id)?,
         None | Some(session_core::MoveStep::Done)
     );
     if busy(&record, claimed) || moving {
@@ -248,10 +245,10 @@ fn reconcile_once(
     }
     // An intent that an earlier failure left is settled first, so the
     // rename starts from where the folder is.
-    let record = match store.rename_intent(session_id)? {
+    let record = match store.rename_intent(note_id)? {
         Some(intent) => {
             settle(store, &record, &intent, fs)?;
-            require(store, session_id)?
+            require(store, note_id)?
         }
         None => record,
     };
@@ -260,10 +257,10 @@ fn reconcile_once(
     };
     // An old home folder is not renamed: the new early write in the
     // storage folder takes the name.
-    if crate::early_home::rehoming(store, session_id, &home)? {
+    if crate::early_home::rehoming(store, note_id, &home)? {
         return Ok(FolderRename::Later);
     }
-    let segments = store.segments(session_id)?;
+    let segments = store.segments(note_id)?;
     // The note's start time names the folder, also for a note with no
     // segment (KTD9).
     let title = record.title.as_ref().map(|t| t.text.as_str());
@@ -279,9 +276,9 @@ fn reconcile_once(
         return Ok(FolderRename::Unchanged);
     }
 
-    let renamed = rename_home::rename(&home, &name, session_id, fs, &mut |m| {
+    let renamed = rename_home::rename(&home, &name, note_id, fs, &mut |m| {
         store
-            .set_rename_intent(session_id, &to_intent(m))
+            .set_rename_intent(note_id, &to_intent(m))
             .map_err(|e| RenameError::Record(e.to_string()))
     });
     match renamed {
@@ -294,18 +291,18 @@ fn reconcile_once(
         Ok(path) => {
             finish(store, &record, &path)?;
             log::info!(
-                "renamed the folder of {session_id} from {} to {}",
+                "renamed the folder of {note_id} from {} to {}",
                 home.display(),
                 path.display()
             );
             Ok(FolderRename::Moved(path))
         }
         Err(e) => {
-            log::warn!("could not rename the folder of {session_id}: {e}");
+            log::warn!("could not rename the folder of {note_id}: {e}");
             // The error can come after the move, for example from the
             // fsync of the parent. The recorded intent tells where the
             // folder is.
-            if let Some(intent) = store.rename_intent(session_id)?
+            if let Some(intent) = store.rename_intent(note_id)?
                 && let Some(path) = settle(store, &record, &intent, fs)?
                 && path != home
             {
@@ -319,11 +316,11 @@ fn reconcile_once(
 /// [`reconcile`] for a caller that does not hold the store lock.
 pub fn reconcile_shared(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     claimed: bool,
     fs: &dyn Fs,
 ) -> Result<FolderRename, StageError> {
-    reconcile(&lock(store), session_id, claimed, true, fs)
+    reconcile(&lock(store), note_id, claimed, true, fs)
 }
 
 /// At launch, settle every rename intent that a crash left. Returns the
@@ -418,13 +415,13 @@ fn finish(store: &Store, record: &SessionRecord, path: &Path) -> Result<(), Stag
     Ok(())
 }
 
-/// Whether another computer records into the note `session_id` and has not
+/// Whether another computer records into the note `note_id` and has not
 /// saved the recording (KTD9): this computer does no work on the note (its
 /// row is Saved and idle), and the records in the home folder say
 /// "recording not saved". A folder whose files cannot be read gives
 /// `false`, and the rename goes on as before.
-fn not_saved_elsewhere(store: &Store, session_id: &str, claimed: bool) -> Result<bool, StageError> {
-    let record = require(store, session_id)?;
+fn not_saved_elsewhere(store: &Store, note_id: &str, claimed: bool) -> Result<bool, StageError> {
+    let record = require(store, note_id)?;
     if busy(&record, claimed) {
         return Ok(false);
     }
@@ -435,10 +432,10 @@ fn not_saved_elsewhere(store: &Store, session_id: &str, claimed: bool) -> Result
         .is_some_and(|files| files.doc.result_flag() == Some(ResultFlag::NotSaved)))
 }
 
-fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {
+fn require(store: &Store, note_id: &str) -> Result<SessionRecord, StageError> {
     store
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))
 }
 
 pub(crate) fn to_intent(m: &Move) -> RenameIntent {

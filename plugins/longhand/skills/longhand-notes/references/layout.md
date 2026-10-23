@@ -39,7 +39,7 @@
 | `notes.md` | The notes that the user typed. | The user and Longhand |
 | `transcript.md` | The transcript. | Longhand, then the user |
 | `summary.md` | The summary. | Longhand, then the user |
-| `longhand.json` | Longhand's records: the note id (`session_id`), the start time, the segments, the fingerprints, the result state and the summary data. | Longhand only |
+| `longhand.json` | Longhand's records: the layout number, the note id, the start time, the segments, the fingerprints, the result state and the summary data. See [The layouts of `longhand.json`](#the-layouts-of-longhandjson). | Longhand only |
 | `recognition.jsonl` | The recognition data that Transcribe Again and Resume use. | Longhand only |
 | `audio/` | The audio of each segment, and a `.removed` file for a segment whose audio Longhand removed. | Longhand only |
 | `.longhand-in-use-<run>` | An in-use marker: a computer records or processes the note now. | Longhand only |
@@ -47,6 +47,19 @@
 A note that has never recorded has only `session.md`, `notes.md` and `longhand.json`.
 
 A note can also have conflict copies from a sync service, for example `notes (1).md`. Longhand shows a notice for them. Do not merge or delete them unless the user asks.
+
+## The layouts of `longhand.json`
+
+The `layout` key of `longhand.json` tells which keys the file has. The scripts know two layouts. The two layouts have the same keys, except the key of the note id.
+
+| Layout | Key of the note id | Written by |
+|---|---|---|
+| 1 | `session_id` | Older Longhand versions |
+| 2 | `note_id` | Current Longhand versions |
+
+A storage folder can have notes in the two layouts. Longhand changes a note to layout 2 when it next writes the note's records. `list_notes.py --json` gives the note id of each layout as `note_id`.
+
+A file with a larger layout number, or with a key that its layout does not have, comes from a Longhand version that this skill does not know. A check reports such a note as not checked. Tell the user to update the Longhand plugin.
 
 ## The `.longhand` folder
 

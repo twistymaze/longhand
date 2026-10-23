@@ -21,15 +21,16 @@ use crate::recognition::ArtifactReference;
 pub const NOTE_RECORD_FILE: &str = "longhand.json";
 
 /// The layout that this build writes.
-pub const LAYOUT: u32 = 1;
+pub const LAYOUT: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteRecord {
     /// The layout of the file. A reader that finds a larger number does
     /// not use the records (see [`NoteRecordRead::Newer`]).
     pub layout: u32,
-    /// The folder identity of the note.
-    pub session_id: String,
+    /// The folder identity of the note. Layout 1 has the key `session_id`.
+    #[serde(alias = "session_id")]
+    pub note_id: String,
     pub started: DateTime<FixedOffset>,
     /// The title that Longhand last wrote into `session.md`, with its
     /// source (R5, KTD5). A `session.md` title that differs from it is the
@@ -90,10 +91,10 @@ struct LayoutOnly {
 
 impl NoteRecord {
     /// The records of a note with only the required fields.
-    pub fn new(session_id: impl Into<String>, started: DateTime<FixedOffset>) -> Self {
+    pub fn new(note_id: impl Into<String>, started: DateTime<FixedOffset>) -> Self {
         Self {
             layout: LAYOUT,
-            session_id: session_id.into(),
+            note_id: note_id.into(),
             started,
             written_title: None,
             pending_type: None,
@@ -131,9 +132,14 @@ impl NoteRecord {
                     layout: record.layout,
                 });
             }
-            Ok(record) => {
-                check_session_id(NOTE_RECORD_FILE, &record.session_id)?;
+            Ok(mut record) => {
+                check_note_id(NOTE_RECORD_FILE, &record.note_id)?;
                 check_audio_names(NOTE_RECORD_FILE, &record.segments)?;
+                // The next write of an older layout has `note_id`, so it
+                // must have this layout: an older build then reads it as a
+                // file from a newer build (KTD1). The parse does not write
+                // the file (KTD2).
+                record.layout = LAYOUT;
                 return Ok(NoteRecordRead::Current(Box::new(record)));
             }
             Err(e) => e,
@@ -159,18 +165,18 @@ impl NoteRecordRead {
     }
 }
 
-/// The `session_id` in the `longhand.json` text `text`, when the file
-/// parses. A file that a newer build wrote gives its `session_id` when it
-/// has one as text.
-pub fn session_id_of(text: &str) -> Option<String> {
+/// The note id in the `longhand.json` text `text`, when the file parses. A
+/// file that a newer build wrote gives its `note_id` when it has one as
+/// text. A layout above 2 never has the older key `session_id`.
+pub fn note_id_of(text: &str) -> Option<String> {
     match NoteRecord::parse(text).ok()? {
-        NoteRecordRead::Current(record) => Some(record.session_id),
+        NoteRecordRead::Current(record) => Some(record.note_id),
         NoteRecordRead::Newer { .. } => {
             let value: serde_json::Value = serde_json::from_str(text).ok()?;
             value
-                .get("session_id")?
+                .get("note_id")?
                 .as_str()
-                .filter(|id| valid_session_id(id))
+                .filter(|id| valid_note_id(id))
                 .map(str::to_string)
         }
     }
@@ -183,7 +189,7 @@ pub fn session_id_of(text: &str) -> Option<String> {
 /// system that ignores case gives two such ids one folder) are refused. A
 /// Windows device name is refused on each platform: no folder on Windows
 /// can have that name, and the note folder syncs to each computer.
-pub fn valid_session_id(id: &str) -> bool {
+pub fn valid_note_id(id: &str) -> bool {
     (1..=64).contains(&id.len())
         && id
             .bytes()
@@ -205,15 +211,15 @@ fn windows_device_name(id: &str) -> bool {
 }
 
 /// An error for the file `file` when `id` is not a valid note id
-/// ([`valid_session_id`]).
-pub(crate) fn check_session_id(file: &'static str, id: &str) -> Result<(), FolderError> {
-    if valid_session_id(id) {
+/// ([`valid_note_id`]).
+pub(crate) fn check_note_id(file: &'static str, id: &str) -> Result<(), FolderError> {
+    if valid_note_id(id) {
         return Ok(());
     }
     // `Yaml` is the error with a free text. It also serves a JSON file.
     Err(FolderError::Yaml {
         file,
-        message: format!("session_id {id:?} is not a valid note id"),
+        message: format!("the note id {id:?} is not valid"),
     })
 }
 

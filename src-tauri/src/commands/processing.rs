@@ -45,14 +45,13 @@ fn stopped(e: tauri::Error) -> TranscribeAgainRefusal {
 #[specta::specta]
 pub async fn check_transcribe_again(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<TranscribeAgainCheck, TranscribeAgainRefusal> {
     let processing = Arc::clone(&processing);
-    let model_id = tauri::async_runtime::spawn_blocking(move || {
-        processing.check_transcribe_again(&session_id)
-    })
-    .await
-    .map_err(stopped)??;
+    let model_id =
+        tauri::async_runtime::spawn_blocking(move || processing.check_transcribe_again(&note_id))
+            .await
+            .map_err(stopped)??;
     Ok(TranscribeAgainCheck {
         model_name: pipeline::reprocess::model_name(&model_id),
         model_id,
@@ -68,15 +67,13 @@ pub async fn check_transcribe_again(
 #[specta::specta]
 pub async fn transcribe_again(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
     model_id: String,
 ) -> Result<(), TranscribeAgainRefusal> {
     let processing = Arc::clone(&processing);
-    tauri::async_runtime::spawn_blocking(move || {
-        processing.transcribe_again(&session_id, &model_id)
-    })
-    .await
-    .map_err(stopped)??;
+    tauri::async_runtime::spawn_blocking(move || processing.transcribe_again(&note_id, &model_id))
+        .await
+        .map_err(stopped)??;
     Ok(())
 }
 
@@ -86,10 +83,10 @@ pub async fn transcribe_again(
 #[specta::specta]
 pub async fn regenerate_summary(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<String, String> {
     let processing = Arc::clone(&processing);
-    processing.regenerate_summary(&session_id).await
+    processing.regenerate_summary(&note_id).await
 }
 
 /// Retry a failed session, or one waiting for its destination, from its
@@ -99,11 +96,11 @@ pub async fn regenerate_summary(
 #[specta::specta]
 pub async fn retry_session(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
     start_over: bool,
 ) -> Result<(), String> {
     let processing = Arc::clone(&processing);
-    blocking(move || processing.retry(&session_id, start_over)).await
+    blocking(move || processing.retry(&note_id, start_over)).await
 }
 
 /// Try a blocked session's secret store again. Reading a locked keychain
@@ -112,8 +109,8 @@ pub async fn retry_session(
 #[specta::specta]
 pub async fn unblock_session(
     processing: State<'_, Arc<ProcessingManager>>,
-    session_id: String,
+    note_id: String,
 ) -> Result<(), String> {
     let processing = Arc::clone(&processing);
-    blocking(move || processing.unblock(&session_id)).await
+    blocking(move || processing.unblock(&note_id)).await
 }

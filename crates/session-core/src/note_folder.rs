@@ -14,7 +14,7 @@ use std::time::Duration;
 use crate::folder::{FolderError, SessionDoc, SessionMd, fingerprint};
 use crate::jobs::{Title, TitleSource};
 use crate::note_record::{
-    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, check_audio_names, check_session_id,
+    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, check_audio_names, check_note_id,
 };
 
 /// The name of the user file of a note folder.
@@ -70,12 +70,12 @@ impl NoteFiles {
     /// `None` is a file that is not there.
     pub fn parse(session_md: Option<&str>, record: Option<&str>) -> Result<Self, NoteFilesError> {
         if let Some(text) = session_md
-            && holds_session_id(text)
+            && holds_old_id_key(text)
         {
             // The parse of the user fields gives the line of a YAML error.
             let doc = SessionDoc::parse(text)
                 .map_err(|e| NoteFilesError::Invalid(SessionMd::parse(text).err().unwrap_or(e)))?;
-            check_session_id(SESSION_FILE, &doc.session_id).map_err(NoteFilesError::Invalid)?;
+            check_note_id(SESSION_FILE, &doc.note_id).map_err(NoteFilesError::Invalid)?;
             check_audio_names(SESSION_FILE, &doc.segments).map_err(NoteFilesError::Invalid)?;
             return Ok(Self::old(doc));
         }
@@ -151,7 +151,7 @@ impl NoteFiles {
                 _ => TitleSource::User,
             });
         let doc = SessionDoc {
-            session_id: record.session_id.clone(),
+            note_id: record.note_id.clone(),
             started: record.started,
             title: user.title,
             title_source,
@@ -245,7 +245,7 @@ pub fn read_optional(path: &Path) -> std::io::Result<Option<String>> {
 /// Whether the frontmatter of `text` has the key `session_id`: the file is
 /// an old-layout `session.md` (KTD6). A file that does not parse does not
 /// have it.
-fn holds_session_id(text: &str) -> bool {
+fn holds_old_id_key(text: &str) -> bool {
     let Some(rest) = text
         .strip_prefix("---\n")
         .or_else(|| text.strip_prefix("---\r\n"))
@@ -283,7 +283,7 @@ impl NoteRecord {
             summary_fingerprint: doc.summary_fingerprint.clone(),
             result: doc.result,
             segments: doc.segments.clone(),
-            ..Self::new(doc.session_id.clone(), doc.started)
+            ..Self::new(doc.note_id.clone(), doc.started)
         }
     }
 

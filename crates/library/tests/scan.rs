@@ -76,7 +76,7 @@ fn a_complete_folder_lists_with_nothing_waiting() {
     let found = &result.notes[0];
     assert_eq!(found.path, dir);
     assert_eq!(found.root, root.path());
-    assert_eq!(found.doc.session_id, "a1");
+    assert_eq!(found.doc.note_id, "a1");
     assert!(found.waiting.is_empty(), "{:?}", found.waiting);
     assert!(found.conflict_copies.is_empty());
     assert!(found.duplicate_folders.is_empty());
@@ -610,7 +610,7 @@ fn a_targeted_scan_reads_only_the_folders_it_names() {
     let ids: Vec<&str> = result
         .notes
         .iter()
-        .map(|n| n.doc.session_id.as_str())
+        .map(|n| n.doc.note_id.as_str())
         .collect();
     assert_eq!(ids, ["a1"]);
     assert_eq!(read, folders(&[&planning, &staging, &gone]));
@@ -653,7 +653,7 @@ fn types(result: &LibraryScan) -> Vec<(String, Option<String>)> {
     let mut types: Vec<(String, Option<String>)> = result
         .notes
         .iter()
-        .map(|n| (n.doc.session_id.clone(), n.note_type.clone()))
+        .map(|n| (n.doc.note_id.clone(), n.note_type.clone()))
         .collect();
     types.sort();
     types
@@ -1305,7 +1305,7 @@ fn a_note_takes_its_identity_from_longhand_json_and_its_title_from_session_md() 
     .unwrap();
     let result = run(root.path(), &Known::default());
     let found = &result.notes[0];
-    assert_eq!(found.doc.session_id, "a1");
+    assert_eq!(found.doc.note_id, "a1");
     assert_eq!(found.layout, session_core::note_folder::Layout::New);
     assert_eq!(found.doc.title.as_deref(), Some("Agent title"));
     assert_eq!(found.doc.tags, vec!["follow-up".to_string()]);
@@ -1388,4 +1388,25 @@ fn an_old_layout_session_md_gives_the_records_also_with_a_longhand_json() {
     assert_eq!(found.layout, session_core::note_folder::Layout::Old);
     assert_eq!(found.doc.title.as_deref(), Some("Old"));
     assert_eq!(found.waiting, [Waiting::Transcript]);
+}
+
+// Covers R4, KTD2: a `longhand.json` in layout 1, with `session_id`, lists
+// as usual, and the scan does not write it.
+#[test]
+fn a_layout_one_longhand_json_lists_and_the_scan_does_not_write_it() {
+    let root = marked_root();
+    let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
+    let record = dir.join("longhand.json");
+    let old = fs::read_to_string(&record)
+        .unwrap()
+        .replace("\"note_id\"", "\"session_id\"")
+        .replace("\"layout\": 2", "\"layout\": 1");
+    assert!(old.contains("\"session_id\": \"a1\""), "{old}");
+    fs::write(&record, &old).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes.len(), 1);
+    let found = &result.notes[0];
+    assert_eq!(found.doc.note_id, "a1");
+    assert!(found.waiting.is_empty(), "{:?}", found.waiting);
+    assert_eq!(fs::read_to_string(&record).unwrap(), old);
 }

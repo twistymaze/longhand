@@ -392,7 +392,7 @@ impl Reconciler {
                 .notes
                 .iter()
                 .filter(|note| folders.contains(&note.path))
-                .map(|note| note.doc.session_id.clone())
+                .map(|note| note.doc.note_id.clone())
                 .collect(),
             Target::Full(_) => Vec::new(),
         };
@@ -420,14 +420,14 @@ impl Reconciler {
         let found: HashSet<&str> = scan
             .notes
             .iter()
-            .map(|note| note.doc.session_id.as_str())
+            .map(|note| note.doc.note_id.as_str())
             .collect();
         self.mismatches.retain(|id, mismatch| {
             found.contains(id.as_str()) || coverage.keeps_wait(scan, &mismatch.folder)
         });
         let mut hand_edits = HashSet::new();
         for note in &scan.notes {
-            let id = &note.doc.session_id;
+            let id = &note.doc.note_id;
             let Some(key) = MismatchKey::of(note) else {
                 self.mismatches.remove(id);
                 continue;
@@ -481,7 +481,7 @@ impl Reconciler {
         let found: HashMap<&str, &NoteFolder> = scan
             .notes
             .iter()
-            .map(|note| (note.doc.session_id.as_str(), note))
+            .map(|note| (note.doc.note_id.as_str(), note))
             .collect();
         self.titles.retain(|id, wait| {
             found.contains_key(id.as_str()) || coverage.keeps_wait(scan, &wait.folder)
@@ -542,7 +542,7 @@ impl Reconciler {
         let intents = moved_here(store)?;
         let mut stale = Vec::new();
         for note in &scan.notes {
-            let id = note.doc.session_id.as_str();
+            let id = note.doc.note_id.as_str();
             if intents.contains(id) {
                 continue;
             }
@@ -585,7 +585,7 @@ impl Reconciler {
     /// only, and a later scan adopts a note whose folder cannot be read now.
     fn still_holds(&self, note: &NoteFolder) -> bool {
         scan::read_note_files(&note.path, self.read_timeout)
-            .is_some_and(|files| files.doc.session_id == note.doc.session_id)
+            .is_some_and(|files| files.doc.note_id == note.doc.note_id)
     }
 
     /// Read the folder of each stale row again. The caller does not hold
@@ -628,7 +628,7 @@ impl Reconciler {
 
         let mut changed = Vec::new();
         for note in &scan.notes {
-            let id = &note.doc.session_id;
+            let id = &note.doc.note_id;
             self.pending.remove(id);
             let updated = match records.get(id) {
                 // The scan read the folder without the lock. A delete removes
@@ -649,7 +649,7 @@ impl Reconciler {
         let present: HashSet<&str> = scan
             .notes
             .iter()
-            .map(|note| note.doc.session_id.as_str())
+            .map(|note| note.doc.note_id.as_str())
             .chain(
                 scan.unreadable
                     .iter()
@@ -806,7 +806,7 @@ fn follow(
         return Ok(false);
     }
     let contents = match &reread.contents {
-        Ok(contents) if contents.doc.session_id == id => contents,
+        Ok(contents) if contents.doc.note_id == id => contents,
         Ok(_) => return Ok(false),
         Err(e) => {
             log::warn!("library: cannot refresh {id}: {e}");
@@ -1277,7 +1277,7 @@ mod tests {
         fs::create_dir(&folder).unwrap();
         fs::write(
             folder.join("longhand.json"),
-            "{\"layout\": 9, \"session_id\": \"zz\"}\n",
+            "{\"layout\": 9, \"note_id\": \"zz\"}\n",
         )
         .unwrap();
     }

@@ -27,7 +27,7 @@ const readiness: Readiness = {
 };
 
 const idle: RecordingStatus = {
-  session_id: null,
+  note_id: null,
   state: null,
   recording: false,
   reconnecting: false,
@@ -116,7 +116,7 @@ function captureOf(over: Partial<Capture> = {}): Capture {
 
 const recordingCapture = (id: string, over: Partial<Capture> = {}) =>
   captureOf({
-    status: { ...idle, session_id: id, state: "capturing", recording: true },
+    status: { ...idle, note_id: id, state: "capturing", recording: true },
     input: "capturing",
     recordedMs: 5 * 60_000 + 7_000,
     ...over,
@@ -447,7 +447,7 @@ describe("SessionPage", () => {
     await user.keyboard("Budget review{Enter}");
     await act(async () => {});
     expect(tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args)).toEqual([
-      { sessionId: "rec", title: "Budget review" },
+      { noteId: "rec", title: "Budget review" },
     ]);
     expect(sessions.refresh).toHaveBeenCalled();
   });
@@ -464,7 +464,7 @@ describe("SessionPage", () => {
     await user.keyboard("{Enter}");
     await act(async () => {});
     expect(tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args)).toEqual([
-      { sessionId: "s", title: "" },
+      { noteId: "s", title: "" },
     ]);
     view.rerenderWith(captureOf(), sessionsOf([{ ...e, title: null }]));
     expect(title.value).toBe("");
@@ -531,7 +531,7 @@ describe("SessionPage", () => {
     renderPage({
       id: "rec",
       capture: recordingCapture("rec", {
-        status: { ...idle, session_id: "rec", state: "capturing", recording: true, microphone: "MacBook Pro Microphone" },
+        status: { ...idle, note_id: "rec", state: "capturing", recording: true, microphone: "MacBook Pro Microphone" },
       }),
       sessions: sessionsOf([rec]),
     });
@@ -546,7 +546,7 @@ describe("SessionPage", () => {
     const rec = entry("rec", { state: "capturing" });
     const withStatus = (over: Partial<RecordingStatus>) =>
       recordingCapture("rec", {
-        status: { ...idle, session_id: "rec", state: "capturing", recording: true, microphone: "MacBook Pro Microphone", ...over },
+        status: { ...idle, note_id: "rec", state: "capturing", recording: true, microphone: "MacBook Pro Microphone", ...over },
       });
     const bar = () => screen.getByRole("region", { name: "Recording" });
     const microphones = {
@@ -569,7 +569,7 @@ describe("SessionPage", () => {
       renderPage({
         id: "rec",
         capture: recordingCapture("rec", {
-          status: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true },
+          status: { ...idle, note_id: "rec", state: "capturing", recording: true, paused: true },
           input: "paused",
         }),
         sessions: sessionsOf([rec]),
@@ -604,7 +604,7 @@ describe("SessionPage", () => {
     test("choosing another microphone in the submenu calls the command with its ID", async () => {
       const tauri = mockPage(rec, {}, {
         list_microphones: () => microphones,
-        set_note_microphone: () => ({ ...idle, session_id: "rec", recording: true }),
+        set_note_microphone: () => ({ ...idle, note_id: "rec", recording: true }),
       });
       renderPage({ id: "rec", capture: withStatus({}), sessions: sessionsOf([rec]) });
       const user = userEvent.setup();
@@ -615,7 +615,7 @@ describe("SessionPage", () => {
       expect(screen.getByRole("menuitemradio", { name: "Jabra Speak 510" }).getAttribute("aria-checked")).toBe("false");
       await user.click(screen.getByRole("menuitemradio", { name: "Jabra Speak 510" }));
       const call = tauri.calls.find((c) => c.cmd === "set_note_microphone");
-      expect(call?.args).toEqual({ sessionId: "rec", microphone: { id: "usb", label: "Jabra Speak 510" } });
+      expect(call?.args).toEqual({ noteId: "rec", microphone: { id: "usb", label: "Jabra Speak 510" } });
       // The menu closes after the choice.
       expect(screen.queryByRole("menu")).toBeNull();
     });
@@ -661,7 +661,7 @@ describe("SessionPage", () => {
           { ...discord, call_app: true },
           { ...zoom, call_app: true },
         ],
-        set_note_apps: () => ({ ...idle, session_id: "rec", recording: true }),
+        set_note_apps: () => ({ ...idle, note_id: "rec", recording: true }),
       });
       renderPage({ id: "rec", capture: withStatus({ note_apps: [zoom, teams] }), sessions: sessionsOf([rec]) });
       const user = userEvent.setup();
@@ -677,7 +677,7 @@ describe("SessionPage", () => {
       ]);
       await user.click(screen.getByRole("menuitemcheckbox", { name: "Discord" }));
       expect(tauri.calls.filter((c) => c.cmd === "set_note_apps").map((c) => c.args)).toEqual([
-        { sessionId: "rec", apps: [zoom, teams, discord] },
+        { noteId: "rec", apps: [zoom, teams, discord] },
       ]);
       // The Settings list does not change.
       expect(tauri.calls.some((c) => c.cmd === "add_app")).toBe(false);
@@ -687,7 +687,7 @@ describe("SessionPage", () => {
       const tauri = mockPage(rec, {}, {
         list_microphones: () => microphones,
         list_running_apps: () => [],
-        set_note_apps: () => ({ ...idle, session_id: "rec", recording: true }),
+        set_note_apps: () => ({ ...idle, note_id: "rec", recording: true }),
       });
       renderPage({ id: "rec", capture: withStatus({ note_apps: [zoom, teams] }), sessions: sessionsOf([rec]) });
       const user = userEvent.setup();
@@ -695,7 +695,7 @@ describe("SessionPage", () => {
       await user.click(await screen.findByRole("menuitem", { name: "App Audio" }));
       await user.click(await screen.findByRole("menuitemcheckbox", { name: "Microsoft Teams (not running)" }));
       expect(tauri.calls.filter((c) => c.cmd === "set_note_apps").map((c) => c.args)).toEqual([
-        { sessionId: "rec", apps: [zoom] },
+        { noteId: "rec", apps: [zoom] },
       ]);
     });
 
@@ -714,7 +714,7 @@ describe("SessionPage", () => {
         set_note_apps: async () => {
           sent += 1;
           if (sent === 1) await first;
-          return { ...idle, session_id: "rec", recording: true };
+          return { ...idle, note_id: "rec", recording: true };
         },
       });
       renderPage({ id: "rec", capture: withStatus({ note_apps: [zoom, teams] }), sessions: sessionsOf([rec]) });
@@ -732,8 +732,8 @@ describe("SessionPage", () => {
       release();
       await waitFor(() =>
         expect(tauri.calls.filter((c) => c.cmd === "set_note_apps").map((c) => c.args)).toEqual([
-          { sessionId: "rec", apps: [zoom, teams, discord] },
-          { sessionId: "rec", apps: [zoom, discord] },
+          { noteId: "rec", apps: [zoom, teams, discord] },
+          { noteId: "rec", apps: [zoom, discord] },
         ]),
       );
     });
@@ -779,7 +779,7 @@ describe("SessionPage", () => {
     const e = entry("rec", { state: "capturing" });
     const paused = (over: Partial<Capture> = {}) =>
       recordingCapture("rec", {
-        status: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true, recorded_ms: 312_000 },
+        status: { ...idle, note_id: "rec", state: "capturing", recording: true, paused: true, recorded_ms: 312_000 },
         input: "paused",
         recordedMs: 312_000,
         ...over,
@@ -813,7 +813,7 @@ describe("SessionPage", () => {
       renderPage({
         id: "rec",
         capture: captureOf({
-          status: { ...idle, session_id: "rec", state: "interrupted", interruption: { headline: "Microphone lost", disk: false } },
+          status: { ...idle, note_id: "rec", state: "interrupted", interruption: { headline: "Microphone lost", disk: false } },
           input: "idle",
         }),
         sessions: sessionsOf([e]),
@@ -956,7 +956,7 @@ describe("SessionPage", () => {
     renderPage({ id: "f", sessions: sessionsOf([e]) });
     const retry = await screen.findByRole("button", { name: "Retry" });
     await userEvent.setup().click(retry);
-    expect(tauri.calls.find((c) => c.cmd === "retry_session")?.args).toEqual({ sessionId: "f", startOver: false });
+    expect(tauri.calls.find((c) => c.cmd === "retry_session")?.args).toEqual({ noteId: "f", startOver: false });
   });
 
   test("a second failure at the same step asks before Retry starts over", async () => {
@@ -975,7 +975,7 @@ describe("SessionPage", () => {
     expect(tauri.calls.some((c) => c.cmd === "retry_session")).toBe(false);
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Start Over" }));
-    expect(tauri.calls.find((c) => c.cmd === "retry_session")?.args).toEqual({ sessionId: "f", startOver: true });
+    expect(tauri.calls.find((c) => c.cmd === "retry_session")?.args).toEqual({ noteId: "f", startOver: true });
   });
 
   test("Back returns to Home, and the recording continues", async () => {
@@ -1014,7 +1014,7 @@ describe("SessionPage", () => {
     expect(resume.hasAttribute("disabled")).toBe(false);
     await user.click(resume);
     expect(tauri.calls.filter((c) => c.cmd === "resume_recording").map((c) => c.args)).toEqual([
-      { sessionId: "s" },
+      { noteId: "s" },
     ]);
   });
 
@@ -1030,7 +1030,7 @@ describe("SessionPage", () => {
     const confirm = screen.getByRole("alertdialog", { name: "Delete note?" });
     await user.click(within(confirm).getByRole("button", { name: "Delete" }));
     expect(tauri.calls.filter((c) => c.cmd === "delete_session").map((c) => c.args)).toEqual([
-      { sessionId: "s" },
+      { noteId: "s" },
     ]);
     expect(onBack).toHaveBeenCalled();
     expect(sessions.refresh).toHaveBeenCalled();
@@ -1149,7 +1149,7 @@ describe("SessionPage", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: "Regenerate Summary" }));
     await act(async () => {});
     expect(tauri.calls.filter((c) => c.cmd === "regenerate_summary").map((c) => c.args)).toEqual([
-      { sessionId: "s" },
+      { noteId: "s" },
     ]);
     expect(sessions.refresh).toHaveBeenCalled();
   });
@@ -1384,7 +1384,7 @@ describe("SessionPage", () => {
       expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
       await user.click(within(dialog).getByRole("button", { name: "Transcribe Again" }));
       expect(tauri.calls.filter((c) => c.cmd === "transcribe_again").map((c) => c.args)).toEqual([
-        { sessionId: "s", modelId: whisper.model_id },
+        { noteId: "s", modelId: whisper.model_id },
       ]);
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(sessions.refresh).toHaveBeenCalled();
@@ -1562,7 +1562,7 @@ describe("SessionPage", () => {
       expect(dialog.textContent).toContain("You can’t undo this.");
       expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
       await user.click(within(dialog).getByRole("button", { name: "Remove Audio" }));
-      expect(tauri.calls.filter((c) => c.cmd === "remove_audio").map((c) => c.args)).toEqual([{ sessionId: "s" }]);
+      expect(tauri.calls.filter((c) => c.cmd === "remove_audio").map((c) => c.args)).toEqual([{ noteId: "s" }]);
       await act(async () => {});
       expect(screen.queryByRole("alertdialog")).toBeNull();
       expect(sessions.refresh).toHaveBeenCalled();
@@ -1708,7 +1708,7 @@ describe("SessionPage", () => {
       await act(async () => {});
       await act(() =>
         tauri.emit("live-transcript-event", {
-          session_id: "rec",
+          note_id: "rec",
           segment: 0,
           part: 1,
           offset_ms: 0,
@@ -1724,7 +1724,7 @@ describe("SessionPage", () => {
       expect(screen.queryByText(/ready after you stop/)).toBeNull();
       await act(() =>
         tauri.emit("live-transcript-event", {
-          session_id: "rec",
+          note_id: "rec",
           segment: 0,
           part: 1,
           offset_ms: 0,
@@ -1742,7 +1742,7 @@ describe("SessionPage", () => {
       mockPage(e, { live_transcript: true, asr_model: "parakeet-unified-en-0.6b" }, { live_transcript: () => ({ ...saidSoFar, state: "behind" }) });
       renderPage({
         id: "rec",
-        capture: recordingCapture("rec", { status: { ...idle, session_id: "rec", state: "capturing", recording: true, paused: true } }),
+        capture: recordingCapture("rec", { status: { ...idle, note_id: "rec", state: "capturing", recording: true, paused: true } }),
         sessions: sessionsOf([e]),
       });
       await act(async () => {});
@@ -1754,7 +1754,7 @@ describe("SessionPage", () => {
 
     test("offline text still shows independent live speaker analysis", async () => {
       const e = entry("rec", { state: "capturing" });
-      const marker = { session_id: "rec", generation: "g", epoch: 0, key: "speakers", revision: 1, rows: [] };
+      const marker = { note_id: "rec", generation: "g", epoch: 0, key: "speakers", revision: 1, rows: [] };
       const tauri = mockPage(e, { live_transcript: false }, { live_transcript: () => ({ parts: [], current: null, state: "running", recognition: [
         { ...marker, phase: "snapshot_begin" },
         { ...marker, phase: "snapshot_batch", rows: [{ start_sample: 0, end_sample: 16000, text: null, speaker: "g:0:0:1", text_final: false, speaker_final: false }] },
@@ -1909,7 +1909,7 @@ describe("SessionPage type and tags row", () => {
     await user.click(within(typeRow()).getByRole("button", { name: "Type: General" }));
     await user.click(await screen.findByRole("menuitemradio", { name: "Pathfinder" }));
     expect(await within(typeRow()).findByRole("button", { name: "Type: Pathfinder" })).toBeTruthy();
-    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ sessionId: "p", noteType: "Pathfinder" });
+    expect(tauri.calls.find((c) => c.cmd === "set_note_type")?.args).toEqual({ noteId: "p", noteType: "Pathfinder" });
     await waitFor(() => expect(sessions.refresh).toHaveBeenCalled());
     expect(screen.queryByText(/The type changed/)).toBeNull();
     expect(screen.queryByText(/The folder moves/)).toBeNull();
@@ -2114,7 +2114,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
     expect(screen.queryByRole("tab", { name: "Transcript" })).toBeNull();
     expect(await screen.findByRole("textbox", { name: "My Notes" })).toBeTruthy();
     await userEvent.setup().click(recordButton("Record"));
-    expect(tauri.calls.filter((c) => c.cmd === "record_note").map((c) => c.args)).toEqual([{ sessionId: "n" }]);
+    expect(tauri.calls.filter((c) => c.cmd === "record_note").map((c) => c.args)).toEqual([{ noteId: "n" }]);
   });
 
   test("a note that the user just started without recording has the cursor in the editor", async () => {
@@ -2163,7 +2163,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
     await act(async () => {});
     expect(screen.queryByRole("button", { name: "Record" })).toBeNull();
     await userEvent.setup().click(recordButton("Resume"));
-    expect(tauri.calls.filter((c) => c.cmd === "resume_recording").map((c) => c.args)).toEqual([{ sessionId: "s" }]);
+    expect(tauri.calls.filter((c) => c.cmd === "resume_recording").map((c) => c.args)).toEqual([{ noteId: "s" }]);
     await openMenu();
     expect(screen.queryByRole("menuitem", { name: "Resume Recording" })).toBeNull();
   });
@@ -2242,7 +2242,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
     expect(dialog.textContent).toContain("“Planning” moves to the Trash.");
     expect(dialog.textContent).toContain("The recording that another computer did not save is lost.");
     await user.click(within(dialog).getByRole("button", { name: "Delete" }));
-    expect(tauri.calls.filter((c) => c.cmd === "delete_session").map((c) => c.args)).toEqual([{ sessionId: "s" }]);
+    expect(tauri.calls.filter((c) => c.cmd === "delete_session").map((c) => c.args)).toEqual([{ noteId: "s" }]);
   });
 
   // KTD4.
@@ -2265,7 +2265,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
     const tauri = mockPage(e, { record: { kind: "record", available: true, reason: null } }, {
       save_session_notes: () =>
         saved++ === 0
-          ? { kind: "new_note", session_id: "new", fingerprint: "f9" }
+          ? { kind: "new_note", note_id: "new", fingerprint: "f9" }
           : { kind: "saved", fingerprint: "f10" },
     });
     render(
@@ -2285,7 +2285,7 @@ describe("SessionPage: Record, Resume and other computers", () => {
       await screen.findByText("Another computer removed this note. Your notes are saved in a new note."),
     ).toBeTruthy();
     await user.type(box, "b");
-    const saveIds = () => tauri.calls.filter((c) => c.cmd === "save_session_notes").map((c) => c.args.sessionId);
+    const saveIds = () => tauri.calls.filter((c) => c.cmd === "save_session_notes").map((c) => c.args.noteId);
     await waitFor(() => expect(saveIds().length).toBeGreaterThan(1));
     const saves = saveIds();
     expect(saves[0]).toBe("old");

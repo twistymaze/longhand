@@ -82,24 +82,24 @@ pub fn cleanup_due(home: &Path, segments: &[Segment]) -> bool {
         || (present(ARTIFACT_FILE) && audio_gone(home, segments))
 }
 
-/// Delete the old result copies of the saved note `session_id`:
+/// Delete the old result copies of the saved note `note_id`:
 /// [`remove_copies_with`] with a permanent delete.
 pub fn remove_copies<F, S>(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     guard: Guard<F, S>,
 ) -> Result<Cleanup, RemoveAudioError>
 where
     F: FnOnce(&SessionRecord) -> Result<(), &'static str>,
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
 {
-    remove_copies_with(store, claims, session_id, guard, |path| {
+    remove_copies_with(store, claims, note_id, guard, |path| {
         std::fs::remove_file(path)
     })
 }
 
-/// Delete the old result copies of the saved note `session_id`, and delete
+/// Delete the old result copies of the saved note `note_id`, and delete
 /// each file with `remove`. See the module documentation.
 ///
 /// The claim, the check that the note is saved and `guard` are the same as
@@ -110,7 +110,7 @@ where
 pub fn remove_copies_with<F, S, R>(
     store: &SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     guard: Guard<F, S>,
     mut remove: R,
 ) -> Result<Cleanup, RemoveAudioError>
@@ -119,19 +119,19 @@ where
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
     R: FnMut(&Path) -> io::Result<()>,
 {
-    let _claim = delete_claim(claims, session_id)?;
+    let _claim = delete_claim(claims, note_id)?;
     // The folder check reads files, so it runs with no store lock.
-    let checked = saved_row(&lock(store), session_id)?;
+    let checked = saved_row(&lock(store), note_id)?;
     let folder_check = (guard.folder)(&checked);
     let segments = {
         let store = lock(store);
-        let record = saved_row(&store, session_id)?;
+        let record = saved_row(&store, note_id)?;
         if record.home_path != checked.home_path {
             return Err(RemoveAudioError::Busy("moving"));
         }
         (guard.store)(&store, &record).map_err(RemoveAudioError::Busy)?;
         folder_check.map_err(RemoveAudioError::Busy)?;
-        store.segments(session_id)?
+        store.segments(note_id)?
     };
     let Some(home) = checked.home_path else {
         return Err(RemoveAudioError::NoFolder);
@@ -160,7 +160,7 @@ where
             let path = home.join(name);
             if path.symlink_metadata().is_ok() {
                 log::warn!(
-                    "audio removal: {session_id} has no transcript.md or summary.md, so {} stays",
+                    "audio removal: {note_id} has no transcript.md or summary.md, so {} stays",
                     path.display()
                 );
                 step.cleanup.kept.push(path);

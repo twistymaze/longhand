@@ -55,8 +55,8 @@ const PROBE: &str = ".longhand-move-probe";
 /// Name attempts in the new folder before the Move pauses.
 const MAX_NAMES: usize = 100;
 
-pub fn staging_name(session_id: &str) -> String {
-    format!("{STAGING_PREFIX}{session_id}")
+pub fn staging_name(note_id: &str) -> String {
+    format!("{STAGING_PREFIX}{note_id}")
 }
 
 /// The copy of one note folder into a new staging folder:
@@ -183,22 +183,22 @@ pub fn library_roots(store: &Store, storage: Option<PathBuf>) -> Vec<PathBuf> {
     roots
 }
 
-/// The store lock, when the Move does not hold the note `session_id`. A
+/// The store lock, when the Move does not hold the note `note_id`. A
 /// note edit or a rename takes the lock this way, so it waits for the
 /// Move's final check and home change (KTD9). The Move takes its hold under
 /// the store lock, so it cannot start while the caller holds the lock.
 pub fn lock_unheld<'a>(
     store: &'a SharedStore,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
 ) -> MutexGuard<'a, Store> {
     loop {
         let guard = lock(store);
-        if !claims.is_held(session_id) {
+        if !claims.is_held(note_id) {
             return guard;
         }
         drop(guard);
-        claims.wait_unheld(session_id);
+        claims.wait_unheld(note_id);
     }
 }
 
@@ -241,23 +241,23 @@ fn pause_for(e: &io::Error, folder: &Path) -> MoveError {
 /// Move's marker with the note id, or it is the same note (its
 /// `longhand.json`, or an old-layout `session.md`, has the note id), so a
 /// second copy is never placed.
-fn is_ours(path: &Path, session_id: &str) -> bool {
-    moving_copy(path, session_id)
-        || NoteFiles::read(path).is_ok_and(|files| files.doc.session_id == session_id)
+fn is_ours(path: &Path, note_id: &str) -> bool {
+    moving_copy(path, note_id)
+        || NoteFiles::read(path).is_ok_and(|files| files.doc.note_id == note_id)
 }
 
 /// Whether `path` has the Move's marker with the note id: it is a copy
 /// that this Move made and has not homed yet.
-fn moving_copy(path: &Path, session_id: &str) -> bool {
-    std::fs::read_to_string(path.join(MARKER)).is_ok_and(|m| m.trim() == session_id)
+fn moving_copy(path: &Path, note_id: &str) -> bool {
+    std::fs::read_to_string(path.join(MARKER)).is_ok_and(|m| m.trim() == note_id)
 }
 
 /// The note's folder in the new folder, among the names that a rename
 /// into place can give it.
-fn find_placed(new: &Path, name: &str, session_id: &str) -> Option<PathBuf> {
+fn find_placed(new: &Path, name: &str, note_id: &str) -> Option<PathBuf> {
     (1..=MAX_NAMES)
         .map(|attempt| new.join(naming::candidate(name, attempt)))
-        .find(|path| path.is_dir() && is_ours(path, session_id))
+        .find(|path| path.is_dir() && is_ours(path, note_id))
 }
 
 /// The folder in `new` that takes the note whose folder is `source` in
@@ -299,8 +299,8 @@ fn remove_copy(dir: &Path) -> io::Result<()> {
     session_save::remove_marker_last(dir, MARKER)
 }
 
-fn write_marker(dir: &Path, session_id: &str) -> io::Result<()> {
-    std::fs::write(dir.join(MARKER), session_id)?;
+fn write_marker(dir: &Path, note_id: &str) -> io::Result<()> {
+    std::fs::write(dir.join(MARKER), note_id)?;
     fsync::sync_file(&dir.join(MARKER))?;
     fsync::sync_dir(dir)
 }

@@ -1074,7 +1074,7 @@ pub(crate) fn run_live(
     } else {
         None
     };
-    let generation = super::stages::generation(store, &config.session_id)?;
+    let generation = super::stages::generation(store, &config.note_id)?;
     let control = LiveControl(cancel.clone());
     let mut reader = crate::live::archive::ArchiveReader::new(archive.clone());
     let mut resampler = crate::resample::StreamResampler::new(archive.rate, 16000);
@@ -1108,7 +1108,7 @@ pub(crate) fn run_live(
         if !pending.is_empty() {
             if active.is_none() {
                 let replay = crate::lock(store).restart_recognition_epoch(
-                    &config.session_id,
+                    &config.note_id,
                     &generation,
                     at,
                     at + MAX_EPOCH_SAMPLES,
@@ -1129,7 +1129,7 @@ pub(crate) fn run_live(
                     helper,
                     output: Output {
                         store: store.clone(),
-                        session: config.session_id.clone(),
+                        session: config.note_id.clone(),
                         scope: replay.scope,
                         start: at,
                         turns: None,

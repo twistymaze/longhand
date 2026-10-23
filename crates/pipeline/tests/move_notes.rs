@@ -216,7 +216,7 @@ impl Folders {
         let scan = library::scan::scan(&self.roots(), &known, &ScanOptions::default());
         scan.notes
             .iter()
-            .filter(|note| note.doc.session_id == id)
+            .filter(|note| note.doc.note_id == id)
             .count()
     }
 
@@ -288,7 +288,7 @@ fn folders_of(root: &Path, id: &str) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|path| {
             session_core::note_folder::NoteFiles::read(path)
-                .is_ok_and(|files| files.doc.session_id == id)
+                .is_ok_and(|files| files.doc.note_id == id)
         })
         .collect();
     found.sort();

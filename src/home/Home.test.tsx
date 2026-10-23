@@ -339,7 +339,7 @@ describe("Home", () => {
     renderHome({
       entries: [entry("rec", { state: "capturing" })],
       recording: {
-        sessionId: "rec",
+        noteId: "rec",
         elapsedMs: 5 * 60_000 + 7_000,
         interrupted: false,
       },
@@ -361,7 +361,7 @@ describe("Home", () => {
       <Home
         entries={[entry("rec", { state: "capturing" })]}
         stages={{}}
-        recording={{ sessionId: "rec", elapsedMs: 5 * 60_000 + 12_000, interrupted: false, paused: true }}
+        recording={{ noteId: "rec", elapsedMs: 5 * 60_000 + 12_000, interrupted: false, paused: true }}
         readiness={{
           armed: true,
           microphone_authorized: true,
@@ -391,7 +391,7 @@ describe("Home", () => {
     mockTauri();
     renderHome({
       entries: [entry("rec", { state: "interrupted" })],
-      recording: { sessionId: "rec", elapsedMs: 60_000, interrupted: true, paused: false },
+      recording: { noteId: "rec", elapsedMs: 60_000, interrupted: true, paused: false },
     });
     const interrupted = row("Recording interrupted");
     expect(interrupted.textContent).toContain("Open to resume or stop");
@@ -549,7 +549,7 @@ describe("Home", () => {
       tauri.calls
         .filter((c) => c.cmd === "delete_session_permanently")
         .map((c) => c.args),
-    ).toEqual([{ sessionId: "s" }]);
+    ).toEqual([{ noteId: "s" }]);
     expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(screen.queryByRole("option", { name: /Budget review/ })).toBeNull();
   });
@@ -617,7 +617,7 @@ describe("Home", () => {
     await act(async () => {});
     expect(
       tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args),
-    ).toEqual([{ sessionId: "s", title: "Budget review" }]);
+    ).toEqual([{ noteId: "s", title: "Budget review" }]);
     expect(onChanged).toHaveBeenCalled();
   });
 
@@ -639,7 +639,7 @@ describe("Home", () => {
     await act(async () => {});
     expect(
       tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args),
-    ).toEqual([{ sessionId: "s", title: "" }]);
+    ).toEqual([{ noteId: "s", title: "" }]);
   });
 
   // The app renames the folder later without help: the user gets no message.
@@ -940,7 +940,7 @@ test("loading, initial error and pending capture do not show an empty library", 
   expect(screen.queryByText("No notes yet")).toBeNull();
   view.rerender(
     home([], {
-      recording: { sessionId: "a", elapsedMs: 0, interrupted: false },
+      recording: { noteId: "a", elapsedMs: 0, interrupted: false },
     }),
   );
   expect(screen.queryByText("No notes yet")).toBeNull();
@@ -1057,8 +1057,8 @@ test("preview revisions refresh saved summaries and late results cannot replace 
   let finishA!: (value: SessionDocument) => void;
   let text = "Beta summary.";
   mockTauri({
-    session_document: ({ sessionId }) =>
-      sessionId === "a"
+    session_document: ({ noteId }) =>
+      noteId === "a"
         ? new Promise<SessionDocument>((resolve) => {
             finishA = resolve;
           })

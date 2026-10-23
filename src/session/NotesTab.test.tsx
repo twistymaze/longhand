@@ -44,7 +44,7 @@ describe("NotesTab", () => {
         throw "the notes file cannot be read";
       },
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     expect(await screen.findByText("the notes file cannot be read")).toBeTruthy();
     expect(screen.queryByRole("textbox", { name: "My Notes" })).toBeNull();
   });
@@ -56,7 +56,7 @@ describe("NotesTab", () => {
         throw "the disk is full";
       },
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "!");
     expect(await screen.findByText("the disk is full")).toBeTruthy();
@@ -68,15 +68,15 @@ describe("NotesTab", () => {
       load_session_notes: () => notes("", "f0"),
       save_session_notes: () => saved(`f${++n}`),
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await act(async () => {});
     await typeAndSend(box, "2");
     await act(async () => {});
     expect(saves(tauri)).toEqual([
-      { sessionId: "s", markdown: "1", loadedFingerprint: "f0" },
-      { sessionId: "s", markdown: "12", loadedFingerprint: "f1" },
+      { noteId: "s", markdown: "1", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "12", loadedFingerprint: "f1" },
     ]);
   });
 
@@ -87,7 +87,7 @@ describe("NotesTab", () => {
       load_session_notes: () => notes("", "f0"),
       save_session_notes: () => (n++ === 0 ? first.promise : saved("f2")),
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await typeAndSend(box, "2");
@@ -98,8 +98,8 @@ describe("NotesTab", () => {
     await act(async () => first.resolve(saved("f1")));
     await act(async () => {});
     expect(saves(tauri)).toEqual([
-      { sessionId: "s", markdown: "1", loadedFingerprint: "f0" },
-      { sessionId: "s", markdown: "123", loadedFingerprint: "f1" },
+      { noteId: "s", markdown: "1", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "123", loadedFingerprint: "f1" },
     ]);
   });
 
@@ -110,7 +110,7 @@ describe("NotesTab", () => {
       load_session_notes: () => notes("", "f0"),
       save_session_notes: () => (n++ === 0 ? first.promise : saved("f2")),
     });
-    const view = render(<NotesTab sessionId="a" autoFocus={false} />);
+    const view = render(<NotesTab noteId="a" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await userEvent.setup().type(box, "2");
@@ -118,7 +118,7 @@ describe("NotesTab", () => {
     view.unmount();
     await act(async () => first.resolve(saved("f1")));
     await act(async () => {});
-    expect(saves(tauri).map((s) => [s.sessionId, s.markdown])).toEqual([
+    expect(saves(tauri).map((s) => [s.noteId, s.markdown])).toEqual([
       ["a", "1"],
       ["a", "12"],
     ]);
@@ -128,10 +128,10 @@ describe("NotesTab", () => {
   test("a synced change reloads the notes when no save waits", async () => {
     let file = notes("Old notes", "f0");
     mockTauri({ load_session_notes: () => file });
-    const view = render(<NotesTab sessionId="s" autoFocus={false} synced={0} />);
+    const view = render(<NotesTab noteId="s" autoFocus={false} synced={0} />);
     await screen.findByText("Old notes");
     file = notes("Notes from the other computer", "f1");
-    view.rerender(<NotesTab sessionId="s" autoFocus={false} synced={1} />);
+    view.rerender(<NotesTab noteId="s" autoFocus={false} synced={1} />);
     expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
   });
 
@@ -143,11 +143,11 @@ describe("NotesTab", () => {
       load_session_notes: () => file,
       save_session_notes: () => save.promise,
     });
-    const view = render(<NotesTab sessionId="s" autoFocus={false} synced={0} />);
+    const view = render(<NotesTab noteId="s" autoFocus={false} synced={0} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "!");
     file = notes("Notes from the other computer", "f1");
-    view.rerender(<NotesTab sessionId="s" autoFocus={false} synced={1} />);
+    view.rerender(<NotesTab noteId="s" autoFocus={false} synced={1} />);
     await act(async () => {});
     expect(box.textContent).toBe("!Old notes");
 
@@ -175,7 +175,7 @@ describe("NotesTab", () => {
         return { kind: "conflict", draft: "/n/Planning/notes (Longhand conflict 2026-09-26 1412).md" };
       },
     });
-    render(<NotesTab sessionId="s" autoFocus={false} onConflict={(d) => conflicts.push(d)} />);
+    render(<NotesTab noteId="s" autoFocus={false} onConflict={(d) => conflicts.push(d)} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "!");
     await act(async () => {});
@@ -201,7 +201,7 @@ describe("NotesTab", () => {
         return { kind: "conflict", draft: `/n/Planning/notes (Longhand conflict ${++drafts}).md` };
       },
     });
-    render(<NotesTab sessionId="s" autoFocus={false} onConflict={(d) => conflicts.push(d)} />);
+    render(<NotesTab noteId="s" autoFocus={false} onConflict={(d) => conflicts.push(d)} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     // Another computer changes the file, and the sync has not told the tab.
     file = notes("Notes from the other computer", "f1");
@@ -222,8 +222,8 @@ describe("NotesTab", () => {
     });
     expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
     expect(saves(tauri)).toEqual([
-      { sessionId: "s", markdown: "1Old notes", loadedFingerprint: "f0" },
-      { sessionId: "s", markdown: "1Old notes23", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "1Old notes", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "1Old notes23", loadedFingerprint: "f0" },
     ]);
     expect(drafts).toBe(2);
     expect(conflicts).toEqual(["notes (Longhand conflict 1).md", "notes (Longhand conflict 2).md"]);
@@ -238,7 +238,7 @@ describe("NotesTab", () => {
         return { kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" };
       },
     });
-    const view = render(<NotesTab sessionId="s" autoFocus={false} />);
+    const view = render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await act(async () => {});
@@ -247,8 +247,8 @@ describe("NotesTab", () => {
     view.unmount();
     await act(async () => {});
     expect(saves(tauri)).toEqual([
-      { sessionId: "s", markdown: "1Old notes", loadedFingerprint: "f0" },
-      { sessionId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "1Old notes", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" },
     ]);
   });
 
@@ -256,9 +256,9 @@ describe("NotesTab", () => {
     const reads = [deferred<unknown>(), deferred<unknown>()];
     let n = 0;
     mockTauri({ load_session_notes: () => reads[n++].promise });
-    const view = render(<NotesTab sessionId="s" autoFocus={false} synced={0} />);
+    const view = render(<NotesTab noteId="s" autoFocus={false} synced={0} />);
     await act(async () => {});
-    view.rerender(<NotesTab sessionId="s" autoFocus={false} synced={1} />);
+    view.rerender(<NotesTab noteId="s" autoFocus={false} synced={1} />);
     await act(async () => {});
     expect(n).toBe(2);
     await act(async () => reads[1].resolve(notes("New notes", "f1")));
@@ -271,14 +271,14 @@ describe("NotesTab", () => {
   // Covers AE7.
   test("an editor that is not editable takes no input", async () => {
     const tauri = mockTauri({ load_session_notes: () => notes("", "f0") });
-    const view = render(<NotesTab sessionId="s" autoFocus={false} editable={false} />);
+    const view = render(<NotesTab noteId="s" autoFocus={false} editable={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     expect(box.getAttribute("contenteditable")).toBe("false");
     await typeAndSend(box, "x");
     expect(box.textContent).toBe("");
     expect(saves(tauri)).toEqual([]);
 
-    view.rerender(<NotesTab sessionId="s" autoFocus={false} editable />);
+    view.rerender(<NotesTab noteId="s" autoFocus={false} editable />);
     expect(box.getAttribute("contenteditable")).toBe("true");
   });
 
@@ -295,7 +295,7 @@ describe("NotesTab", () => {
       },
     });
     const view = render(
-      <NotesTab sessionId="s" autoFocus={false} synced={0} onMarkdown={(m) => markdowns.push(m)} />,
+      <NotesTab noteId="s" autoFocus={false} synced={0} onMarkdown={(m) => markdowns.push(m)} />,
     );
     await screen.findByText("task");
     // A click on the checkbox fires no key or input event, and the editor
@@ -305,10 +305,10 @@ describe("NotesTab", () => {
     });
     file = notes("- [ ] task from the other computer", "f1");
     view.rerender(
-      <NotesTab sessionId="s" autoFocus={false} synced={1} onMarkdown={(m) => markdowns.push(m)} />,
+      <NotesTab noteId="s" autoFocus={false} synced={1} onMarkdown={(m) => markdowns.push(m)} />,
     );
     expect(await screen.findByText("task from the other computer")).toBeTruthy();
-    expect(saves(tauri)).toEqual([{ sessionId: "s", markdown: "- [x] task", loadedFingerprint: "f0" }]);
+    expect(saves(tauri)).toEqual([{ noteId: "s", markdown: "- [x] task", loadedFingerprint: "f0" }]);
     expect(drafts).toBe(1);
     // The last text that the page holds is the text that the editor shows.
     expect(markdowns[markdowns.length - 1]).toBe("- [ ] task from the other computer");
@@ -325,7 +325,7 @@ describe("NotesTab", () => {
         return { kind: "conflict", draft: "/n/Planning/notes (Longhand conflict 2).md" };
       },
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     const checkbox = () => document.querySelector(".task-checkbox")!;
     act(() => {
@@ -344,8 +344,8 @@ describe("NotesTab", () => {
     await act(async () => first.resolve({ kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" }));
     expect(await screen.findByText("task from the other computer")).toBeTruthy();
     expect(saves(tauri)).toEqual([
-      { sessionId: "s", markdown: "- [x] task", loadedFingerprint: "f0" },
-      { sessionId: "s", markdown: "- [ ] task", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "- [x] task", loadedFingerprint: "f0" },
+      { noteId: "s", markdown: "- [ ] task", loadedFingerprint: "f0" },
     ]);
   });
 
@@ -358,7 +358,7 @@ describe("NotesTab", () => {
       load_session_notes: () => file,
       save_session_notes: () => (n++ === 0 ? first.promise : later.promise),
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     // The user types on while the first save runs, then leaves the note.
@@ -369,7 +369,7 @@ describe("NotesTab", () => {
     // The running save conflicts: the waiting edit is held.
     await act(async () => first.resolve({ kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" }));
     await waitFor(() => expect(saves(tauri)).toHaveLength(2));
-    expect(saves(tauri)[1]).toEqual({ sessionId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" });
+    expect(saves(tauri)[1]).toEqual({ noteId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" });
     expect(left).toBe(false);
     await act(async () => later.resolve({ kind: "conflict", draft: "/n/Planning/notes (Longhand conflict 2).md" }));
     await leave;
@@ -387,7 +387,7 @@ describe("NotesTab", () => {
       save_session_notes: () =>
         n++ === 0 ? first.promise : saved("f2"),
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     // The user stops typing, then the save conflicts and the tab reads the
@@ -397,7 +397,7 @@ describe("NotesTab", () => {
     await act(async () => {});
     await typeAndSend(box, "2");
     await waitFor(() => expect(saves(tauri)).toHaveLength(2));
-    expect(saves(tauri)[1]).toEqual({ sessionId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" });
+    expect(saves(tauri)[1]).toEqual({ noteId: "s", markdown: "1Old notes2", loadedFingerprint: "f0" });
   });
 
   test("a leave of the note sends an edit that waits after a conflict, and waits for it", async () => {
@@ -409,7 +409,7 @@ describe("NotesTab", () => {
       save_session_notes: () =>
         n++ === 0 ? { kind: "conflict", draft: "/n/Planning/notes (Longhand conflict).md" } : later.promise,
     });
-    render(<NotesTab sessionId="s" autoFocus={false} />);
+    render(<NotesTab noteId="s" autoFocus={false} />);
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await typeAndSend(box, "1");
     await act(async () => {});
@@ -420,7 +420,7 @@ describe("NotesTab", () => {
     let left = false;
     const leave = notesSaved("s").then(() => (left = true));
     await waitFor(() => expect(saves(tauri)).toHaveLength(2));
-    expect(saves(tauri)[1]).toEqual({ sessionId: "s", markdown: "1Old notes23", loadedFingerprint: "f0" });
+    expect(saves(tauri)[1]).toEqual({ noteId: "s", markdown: "1Old notes23", loadedFingerprint: "f0" });
     await act(async () => {});
     expect(left).toBe(false);
     await act(async () => later.resolve({ kind: "conflict", draft: "/n/Planning/notes (Longhand conflict 2).md" }));

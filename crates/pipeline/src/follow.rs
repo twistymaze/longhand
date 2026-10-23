@@ -13,7 +13,7 @@ use session_core::jobs::busy;
 
 use crate::StageError;
 
-/// Bring the row `session_id` up to date from its home folder. A row with
+/// Bring the row `note_id` up to date from its home folder. A row with
 /// no home folder does not change. `claimed` tells whether other work (a
 /// summary regeneration or a delete) holds a claim on the session. A row
 /// that is busy takes only its title and notes, because a run owns its
@@ -21,12 +21,12 @@ use crate::StageError;
 /// store lock.
 pub fn follow_folder(
     store: &mut Store,
-    session_id: &str,
+    note_id: &str,
     claimed: bool,
 ) -> Result<Refresh, StageError> {
     let record = store
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))?;
     let Some(home) = record.home_path.clone() else {
         return Ok(Refresh::default());
     };
@@ -35,27 +35,24 @@ pub fn follow_folder(
     } else {
         Scope::All
     };
-    follow_scoped(store, session_id, Path::new(&home), scope)
+    follow_scoped(store, note_id, Path::new(&home), scope)
 }
 
-/// Bring the parts of the row `session_id` that `scope` names up to date
+/// Bring the parts of the row `note_id` that `scope` names up to date
 /// from the note folder `folder`. A folder that cannot be read leaves the
 /// row as it is: the writer then reports what it cannot do. Only a store
 /// error fails. The caller holds the store lock.
 pub fn follow_scoped(
     store: &mut Store,
-    session_id: &str,
+    note_id: &str,
     folder: &Path,
     scope: Scope,
 ) -> Result<Refresh, StageError> {
-    match refresh::refresh_scoped(store, session_id, folder, READ_TIMEOUT, scope) {
+    match refresh::refresh_scoped(store, note_id, folder, READ_TIMEOUT, scope) {
         Ok(refreshed) => Ok(refreshed),
         Err(e @ RefreshError::Store(_)) => Err(e.into()),
         Err(e) => {
-            log::warn!(
-                "could not update {session_id} from {}: {e}",
-                folder.display()
-            );
+            log::warn!("could not update {note_id} from {}: {e}", folder.display());
             Ok(Refresh::default())
         }
     }

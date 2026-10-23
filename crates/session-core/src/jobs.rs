@@ -195,7 +195,7 @@ impl Adoption {
         transcript_fingerprint: Option<String>,
     ) -> Self {
         Self {
-            id: doc.session_id.clone(),
+            id: doc.note_id.clone(),
             created_at: doc.started,
             speaker_count: doc.speaker_count,
             segments: doc.timeline_segments(),
@@ -440,15 +440,15 @@ pub(crate) fn stage_key(stage: Stage) -> String {
 /// Put one checkpoint row on `conn`. A caller can give a transaction.
 pub(crate) fn put_checkpoint_in(
     conn: &Connection,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
     key: &str,
     payload: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO checkpoints (session_id, stage, key, payload) \
+        "INSERT OR REPLACE INTO checkpoints (note_id, stage, key, payload) \
          VALUES (?1, ?2, ?3, ?4)",
-        params![session_id, stage_key(stage), key, payload],
+        params![note_id, stage_key(stage), key, payload],
     )?;
     Ok(())
 }
@@ -654,7 +654,7 @@ impl Store {
         let value: Option<String> = self
             .conn
             .query_row(
-                "SELECT value FROM result_state WHERE session_id = ?1 AND key = ?2",
+                "SELECT value FROM result_state WHERE note_id = ?1 AND key = ?2",
                 params![id, key],
                 |r| r.get(0),
             )
@@ -664,8 +664,8 @@ impl Store {
 
     pub fn set_result_state(&self, id: &str, key: &str, value: &serde_json::Value) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO result_state(session_id, key, value) VALUES (?1, ?2, ?3)
-            ON CONFLICT(session_id, key) DO UPDATE SET value = excluded.value",
+            "INSERT INTO result_state(note_id, key, value) VALUES (?1, ?2, ?3)
+            ON CONFLICT(note_id, key) DO UPDATE SET value = excluded.value",
             params![id, key, serde_json::to_string(value)?],
         )?;
         Ok(())
@@ -673,7 +673,7 @@ impl Store {
 
     pub fn clear_result_state(&self, id: &str, key: &str) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM result_state WHERE session_id = ?1 AND key = ?2",
+            "DELETE FROM result_state WHERE note_id = ?1 AND key = ?2",
             params![id, key],
         )?;
         Ok(())
@@ -933,10 +933,10 @@ impl Store {
     pub fn forget(&mut self, id: &str) -> Result<bool> {
         let removed = self.conn.execute(
             "DELETE FROM sessions WHERE id = ?1 AND json_extract(state, '$.state') = 'saved'
-             AND NOT EXISTS (SELECT 1 FROM rename_intents WHERE session_id = ?1)
-             AND NOT EXISTS (SELECT 1 FROM move_notes WHERE session_id = ?1
+             AND NOT EXISTS (SELECT 1 FROM rename_intents WHERE note_id = ?1)
+             AND NOT EXISTS (SELECT 1 FROM move_notes WHERE note_id = ?1
                  AND json_extract(step, '$.step') != 'done')
-             AND NOT EXISTS (SELECT 1 FROM result_state WHERE session_id = ?1
+             AND NOT EXISTS (SELECT 1 FROM result_state WHERE note_id = ?1
                  AND key = ?2 AND json_extract(value, '$.step') != 'done')",
             params![id, EARLY_HOME],
         )?;
@@ -1035,13 +1035,13 @@ impl Store {
         for stage in RECOGNITION_STAGES {
             for key in [stage_key(stage), previous_key(stage)] {
                 tx.execute(
-                    "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                    "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
                     params![id, key],
                 )?;
             }
         }
-        tx.execute("DELETE FROM recognition_output WHERE session_id=?1", [id])?;
-        tx.execute("DELETE FROM recognition_epochs WHERE session_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_output WHERE note_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_epochs WHERE note_id=?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -1055,12 +1055,12 @@ impl Store {
         let tx = self.conn.transaction()?;
         for stage in START_OVER_STAGES {
             tx.execute(
-                "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
                 params![id, stage_key(stage)],
             )?;
         }
-        tx.execute("DELETE FROM recognition_output WHERE session_id=?1", [id])?;
-        tx.execute("DELETE FROM recognition_epochs WHERE session_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_output WHERE note_id=?1", [id])?;
+        tx.execute("DELETE FROM recognition_epochs WHERE note_id=?1", [id])?;
         tx.commit()?;
         Ok(())
     }
@@ -1132,12 +1132,12 @@ impl Store {
             ("replacement-base", baseline),
         ] {
             tx.execute(
-                "DELETE FROM result_state WHERE session_id = ?1 AND key = ?2",
+                "DELETE FROM result_state WHERE note_id = ?1 AND key = ?2",
                 params![id, key],
             )?;
             if let Some(value) = value {
                 tx.execute(
-                    "INSERT INTO result_state(session_id, key, value) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO result_state(note_id, key, value) VALUES (?1, ?2, ?3)",
                     params![id, key, serde_json::to_string(value)?],
                 )?;
             }
@@ -1172,7 +1172,7 @@ impl Store {
              WHERE id = ?1",
             params![id, error],
         )?;
-        tx.execute("DELETE FROM result_state WHERE session_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
+        tx.execute("DELETE FROM result_state WHERE note_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
         tx.commit()?;
         Ok(next)
     }
@@ -1236,8 +1236,8 @@ impl Store {
         if matches!(event, Event::UserResume { .. }) {
             tx.execute(
                 "UPDATE segments SET ends_in_pause = 0
-                 WHERE session_id = ?1 AND idx =
-                   (SELECT idx FROM segments WHERE session_id = ?1
+                 WHERE note_id = ?1 AND idx =
+                   (SELECT idx FROM segments WHERE note_id = ?1
                     ORDER BY offset_ms DESC LIMIT 1)",
                 [id],
             )?;
@@ -1276,17 +1276,17 @@ impl Store {
 
     // ------------------------------------------------------------ segments
 
-    pub fn put_segment(&self, session_id: &str, segment: &Segment) -> Result<()> {
-        insert_segment(&self.conn, session_id, segment)
+    pub fn put_segment(&self, note_id: &str, segment: &Segment) -> Result<()> {
+        insert_segment(&self.conn, note_id, segment)
     }
 
-    pub fn segments(&self, session_id: &str) -> Result<Vec<Segment>> {
+    pub fn segments(&self, note_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self.conn.prepare(
             "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
                ends_in_pause
-             FROM segments WHERE session_id = ?1 ORDER BY offset_ms",
+             FROM segments WHERE note_id = ?1 ORDER BY offset_ms",
         )?;
-        let rows = stmt.query_map([session_id], |r| {
+        let rows = stmt.query_map([note_id], |r| {
             Ok((
                 r.get::<_, u32>(0)?,
                 r.get::<_, i64>(1)?,
@@ -1321,8 +1321,8 @@ impl Store {
         self.require(id)?;
         let changed = self.conn.execute(
             "UPDATE segments SET ends_in_pause = 1
-             WHERE session_id = ?1 AND idx =
-               (SELECT idx FROM segments WHERE session_id = ?1
+             WHERE note_id = ?1 AND idx =
+               (SELECT idx FROM segments WHERE note_id = ?1
                 ORDER BY offset_ms DESC LIMIT 1)",
             [id],
         )?;
@@ -1332,21 +1332,21 @@ impl Store {
     /// The audio files of the note's segments whose audio was removed: the
     /// folder has their removal markers (KTD9 of the audio removal plan).
     /// Sorted.
-    pub fn removed_audio(&self, session_id: &str) -> Result<Vec<String>> {
+    pub fn removed_audio(&self, note_id: &str) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT audio_file FROM segments
-             WHERE session_id = ?1 AND audio_removed = 1 ORDER BY audio_file",
+             WHERE note_id = ?1 AND audio_removed = 1 ORDER BY audio_file",
         )?;
-        let rows = stmt.query_map([session_id], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map([note_id], |r| r.get::<_, String>(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Set the removed flag of each segment of the note whose audio file is
     /// in `audio`, and clear it for the others. The flags then match the
     /// removal markers of the note folder. Returns whether a flag changed.
-    pub fn set_removed_audio(&self, session_id: &str, audio: &[String]) -> Result<bool> {
-        self.require(session_id)?;
-        Ok(update_removed_audio(&self.conn, session_id, audio)? > 0)
+    pub fn set_removed_audio(&self, note_id: &str, audio: &[String]) -> Result<bool> {
+        self.require(note_id)?;
+        Ok(update_removed_audio(&self.conn, note_id, audio)? > 0)
     }
 
     /// The index of the note's first stereo segment: the stereo mark
@@ -1414,7 +1414,7 @@ impl Store {
     pub fn set_rename_intent(&self, id: &str, intent: &RenameIntent) -> Result<()> {
         self.require(id)?;
         self.conn.execute(
-            "INSERT OR REPLACE INTO rename_intents (session_id, from_path, to_path, temp_path)
+            "INSERT OR REPLACE INTO rename_intents (note_id, from_path, to_path, temp_path)
              VALUES (?1, ?2, ?3, ?4)",
             params![id, intent.from, intent.to, intent.temp],
         )?;
@@ -1425,7 +1425,7 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT from_path, to_path, temp_path FROM rename_intents WHERE session_id = ?1",
+                "SELECT from_path, to_path, temp_path FROM rename_intents WHERE note_id = ?1",
                 [id],
                 read_intent,
             )
@@ -1435,8 +1435,8 @@ impl Store {
     /// Every recorded intent, with its session id.
     pub fn rename_intents(&self) -> Result<Vec<(String, RenameIntent)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, from_path, to_path, temp_path FROM rename_intents
-             ORDER BY session_id",
+            "SELECT note_id, from_path, to_path, temp_path FROM rename_intents
+             ORDER BY note_id",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -1455,7 +1455,7 @@ impl Store {
 
     pub fn clear_rename_intent(&self, id: &str) -> Result<()> {
         self.conn
-            .execute("DELETE FROM rename_intents WHERE session_id = ?1", [id])?;
+            .execute("DELETE FROM rename_intents WHERE note_id = ?1", [id])?;
         Ok(())
     }
 
@@ -1467,12 +1467,12 @@ impl Store {
         self.require(id)?;
         if owed {
             self.conn.execute(
-                "INSERT OR IGNORE INTO owed_renames (session_id) VALUES (?1)",
+                "INSERT OR IGNORE INTO owed_renames (note_id) VALUES (?1)",
                 [id],
             )?;
         } else {
             self.conn
-                .execute("DELETE FROM owed_renames WHERE session_id = ?1", [id])?;
+                .execute("DELETE FROM owed_renames WHERE note_id = ?1", [id])?;
         }
         Ok(())
     }
@@ -1481,7 +1481,7 @@ impl Store {
     pub fn owed_renames(&self) -> Result<Vec<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT session_id FROM owed_renames ORDER BY session_id")?;
+            .prepare("SELECT note_id FROM owed_renames ORDER BY note_id")?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
@@ -1505,7 +1505,7 @@ impl Store {
         self.require(id)?;
         self.conn.execute(
             "INSERT OR REPLACE INTO type_moves
-             (session_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
+             (note_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
               field_written)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
@@ -1523,7 +1523,7 @@ impl Store {
 
     pub fn type_move(&self, id: &str) -> Result<Option<TypeMove>> {
         Ok(self
-            .type_moves_where("WHERE session_id = ?1", [id])?
+            .type_moves_where("WHERE note_id = ?1", [id])?
             .pop()
             .map(|(_, type_move)| type_move))
     }
@@ -1539,9 +1539,9 @@ impl Store {
         values: P,
     ) -> Result<Vec<(String, TypeMove)>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT session_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
+            "SELECT note_id, to_type, from_type, changed_at, taken_over_at, remove_empty_from,
                  field_written
-             FROM type_moves {filter} ORDER BY session_id"
+             FROM type_moves {filter} ORDER BY note_id"
         ))?;
         let rows = stmt
             .query_map(values, |r| {
@@ -1577,7 +1577,7 @@ impl Store {
 
     pub fn clear_type_move(&self, id: &str) -> Result<()> {
         self.conn
-            .execute("DELETE FROM type_moves WHERE session_id = ?1", [id])?;
+            .execute("DELETE FROM type_moves WHERE note_id = ?1", [id])?;
         Ok(())
     }
 
@@ -1747,7 +1747,7 @@ impl Store {
     pub fn move_notes(&self) -> Result<Vec<(String, MoveStep)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT session_id, step FROM move_notes ORDER BY session_id")?;
+            .prepare("SELECT note_id, step FROM move_notes ORDER BY note_id")?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1762,7 +1762,7 @@ impl Store {
         let step = self
             .conn
             .query_row(
-                "SELECT step FROM move_notes WHERE session_id = ?1",
+                "SELECT step FROM move_notes WHERE note_id = ?1",
                 [id],
                 |r| r.get::<_, String>(0),
             )
@@ -1774,8 +1774,8 @@ impl Store {
     /// library reconcile skips them, as it skips a rename intent.
     pub fn moving_notes(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id FROM move_notes
-             WHERE json_extract(step, '$.step') != 'done' ORDER BY session_id",
+            "SELECT note_id FROM move_notes
+             WHERE json_extract(step, '$.step') != 'done' ORDER BY note_id",
         )?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
@@ -1791,7 +1791,7 @@ impl Store {
 
     pub fn set_move_step(&self, id: &str, step: &MoveStep) -> Result<()> {
         self.conn.execute(
-            "UPDATE move_notes SET step = ?2 WHERE session_id = ?1",
+            "UPDATE move_notes SET step = ?2 WHERE note_id = ?1",
             params![id, serde_json::to_string(step)?],
         )?;
         Ok(())
@@ -1807,7 +1807,7 @@ impl Store {
             params![id, path.to_string_lossy()],
         )?;
         tx.execute(
-            "UPDATE move_notes SET step = ?2 WHERE session_id = ?1",
+            "UPDATE move_notes SET step = ?2 WHERE note_id = ?1",
             params![id, serde_json::to_string(step)?],
         )?;
         tx.commit()?;
@@ -1817,7 +1817,7 @@ impl Store {
     /// Remove the Move's row for `id`: its source is gone.
     pub fn drop_move_note(&self, id: &str) -> Result<()> {
         self.conn
-            .execute("DELETE FROM move_notes WHERE session_id = ?1", [id])?;
+            .execute("DELETE FROM move_notes WHERE note_id = ?1", [id])?;
         Ok(())
     }
 
@@ -1987,7 +1987,7 @@ impl Store {
         // with no claim is never taken back at launch.
         self.apply_with(&id, &Event::Dequeued, |tx| {
             tx.execute(
-                "UPDATE jobs SET claim_owner = ?2, claimed_at = ?3, heartbeat_at = ?3 WHERE session_id = ?1",
+                "UPDATE jobs SET claim_owner = ?2, claimed_at = ?3, heartbeat_at = ?3 WHERE note_id = ?1",
                 params![id, owner, now.to_rfc3339()],
             )?;
             Ok(())
@@ -2007,48 +2007,43 @@ impl Store {
         Ok(ids)
     }
 
-    pub fn claim_owner(&self, session_id: &str) -> Result<Option<String>> {
+    pub fn claim_owner(&self, note_id: &str) -> Result<Option<String>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT claim_owner FROM jobs WHERE session_id = ?1",
-                [session_id],
+                "SELECT claim_owner FROM jobs WHERE note_id = ?1",
+                [note_id],
                 |r| r.get(0),
             )
             .optional()?
             .flatten())
     }
 
-    pub fn set_stage(&self, session_id: &str, stage: Stage) -> Result<()> {
+    pub fn set_stage(&self, note_id: &str, stage: Stage) -> Result<()> {
         self.conn.execute(
-            "UPDATE jobs SET stage = ?2 WHERE session_id = ?1",
-            params![session_id, stage_key(stage)],
+            "UPDATE jobs SET stage = ?2 WHERE note_id = ?1",
+            params![note_id, stage_key(stage)],
         )?;
         Ok(())
     }
 
     /// The stage a processing session last started, if it has a job.
-    pub fn current_stage(&self, session_id: &str) -> Result<Option<Stage>> {
+    pub fn current_stage(&self, note_id: &str) -> Result<Option<Stage>> {
         let stage: Option<String> = self
             .conn
             .query_row(
-                "SELECT stage FROM jobs WHERE session_id = ?1",
-                [session_id],
+                "SELECT stage FROM jobs WHERE note_id = ?1",
+                [note_id],
                 |r| r.get(0),
             )
             .optional()?;
         Ok(stage.and_then(|s| serde_json::from_value(serde_json::Value::String(s)).ok()))
     }
 
-    pub fn heartbeat(
-        &self,
-        session_id: &str,
-        owner: &str,
-        now: DateTime<FixedOffset>,
-    ) -> Result<()> {
+    pub fn heartbeat(&self, note_id: &str, owner: &str, now: DateTime<FixedOffset>) -> Result<()> {
         self.conn.execute(
-            "UPDATE jobs SET heartbeat_at = ?3 WHERE session_id = ?1 AND claim_owner = ?2",
-            params![session_id, owner, now.to_rfc3339()],
+            "UPDATE jobs SET heartbeat_at = ?3 WHERE note_id = ?1 AND claim_owner = ?2",
+            params![note_id, owner, now.to_rfc3339()],
         )?;
         Ok(())
     }
@@ -2066,7 +2061,7 @@ impl Store {
         liveness: Liveness,
     ) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
-            "SELECT session_id, heartbeat_at FROM jobs
+            "SELECT note_id, heartbeat_at FROM jobs
              WHERE claim_owner IS NOT NULL AND claim_owner != ?1",
         )?;
         let claims: Vec<(String, Option<String>)> = stmt
@@ -2095,7 +2090,7 @@ impl Store {
                 reclaimed.push(id);
             } else {
                 self.conn.execute(
-                    "UPDATE jobs SET claim_owner = NULL, claimed_at = NULL WHERE session_id = ?1",
+                    "UPDATE jobs SET claim_owner = NULL, claimed_at = NULL WHERE note_id = ?1",
                     [&id],
                 )?;
             }
@@ -2127,53 +2122,53 @@ impl Store {
 
     pub fn put_checkpoint(
         &self,
-        session_id: &str,
+        note_id: &str,
         stage: Stage,
         key: &str,
         payload: &str,
     ) -> Result<()> {
-        put_checkpoint_in(&self.conn, session_id, stage, key, payload)
+        put_checkpoint_in(&self.conn, note_id, stage, key, payload)
     }
 
     pub fn checkpoint_value(
         &self,
-        session_id: &str,
+        note_id: &str,
         stage: Stage,
         key: &str,
     ) -> Result<Option<String>> {
         Ok(self
             .conn
             .query_row(
-                "SELECT payload FROM checkpoints WHERE session_id=?1 AND stage=?2 AND key=?3",
-                params![session_id, stage_key(stage), key],
+                "SELECT payload FROM checkpoints WHERE note_id=?1 AND stage=?2 AND key=?3",
+                params![note_id, stage_key(stage), key],
                 |r| r.get(0),
             )
             .optional()?)
     }
-    pub fn checkpoints(&self, session_id: &str, stage: Stage) -> Result<Vec<(String, String)>> {
+    pub fn checkpoints(&self, note_id: &str, stage: Stage) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT key, payload FROM checkpoints WHERE session_id = ?1 AND stage = ?2 ORDER BY key",
+            "SELECT key, payload FROM checkpoints WHERE note_id = ?1 AND stage = ?2 ORDER BY key",
         )?;
         let rows = stmt
-            .query_map(params![session_id, stage_key(stage)], |r| {
+            .query_map(params![note_id, stage_key(stage)], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })?
             .collect::<rusqlite::Result<_>>()?;
         Ok(rows)
     }
 
-    pub fn clear_checkpoints(&self, session_id: &str, stage: Stage) -> Result<()> {
+    pub fn clear_checkpoints(&self, note_id: &str, stage: Stage) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
-            params![session_id, stage_key(stage)],
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
+            params![note_id, stage_key(stage)],
         )?;
         Ok(())
     }
 
-    pub fn delete_checkpoint(&self, session_id: &str, stage: Stage, key: &str) -> Result<()> {
+    pub fn delete_checkpoint(&self, note_id: &str, stage: Stage, key: &str) -> Result<()> {
         self.conn.execute(
-            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2 AND key = ?3",
-            params![session_id, stage_key(stage), key],
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2 AND key = ?3",
+            params![note_id, stage_key(stage), key],
         )?;
         Ok(())
     }
@@ -2183,26 +2178,26 @@ impl Store {
 /// Returns the number of rows that it added.
 fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
     Ok(conn.execute(
-        "INSERT OR IGNORE INTO move_notes (session_id, step) VALUES (?1, ?2)",
+        "INSERT OR IGNORE INTO move_notes (note_id, step) VALUES (?1, ?2)",
         params![id, serde_json::to_string(&MoveStep::Pending)?],
     )?)
 }
 
 /// Write `segment`. A segment that the row already has keeps its removed
 /// flag: only the scan, the refresh and the adopt set it.
-fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Result<()> {
+fn insert_segment(conn: &Connection, note_id: &str, segment: &Segment) -> Result<()> {
     conn.execute(
         "INSERT INTO segments
-         (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
+         (note_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
           ends_in_pause)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
-         ON CONFLICT (session_id, idx) DO UPDATE SET
+         ON CONFLICT (note_id, idx) DO UPDATE SET
            offset_ms = excluded.offset_ms, duration_ms = excluded.duration_ms,
            wall_start = excluded.wall_start, wall_end = excluded.wall_end,
            audio_file = excluded.audio_file, channels = excluded.channels,
            ends_in_pause = excluded.ends_in_pause",
         params![
-            session_id,
+            note_id,
             segment.index,
             segment.offset_ms as i64,
             segment.duration_ms as i64,
@@ -2216,15 +2211,15 @@ fn insert_segment(conn: &Connection, session_id: &str, segment: &Segment) -> Res
     Ok(())
 }
 
-/// Set the removed flag of each segment of `session_id` whose audio file is
+/// Set the removed flag of each segment of `note_id` whose audio file is
 /// in `audio`, and clear it for the others. Returns the number of segments
 /// whose flag changed.
-fn update_removed_audio(conn: &Connection, session_id: &str, audio: &[String]) -> Result<usize> {
+fn update_removed_audio(conn: &Connection, note_id: &str, audio: &[String]) -> Result<usize> {
     Ok(conn.execute(
         "UPDATE segments SET audio_removed = (audio_file IN (SELECT value FROM json_each(?2)))
-         WHERE session_id = ?1
+         WHERE note_id = ?1
            AND audio_removed != (audio_file IN (SELECT value FROM json_each(?2)))",
-        params![session_id, serde_json::to_string(audio)?],
+        params![note_id, serde_json::to_string(audio)?],
     )?)
 }
 
@@ -2325,11 +2320,11 @@ fn restore_previous(tx: &Transaction, id: &str, stage: Stage) -> Result<()> {
 /// stored under `from`.
 fn move_checkpoints(tx: &Transaction, id: &str, from: &str, to: &str) -> Result<()> {
     tx.execute(
-        "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+        "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
         params![id, to],
     )?;
     tx.execute(
-        "UPDATE checkpoints SET stage = ?3 WHERE session_id = ?1 AND stage = ?2",
+        "UPDATE checkpoints SET stage = ?3 WHERE note_id = ?1 AND stage = ?2",
         params![id, from, to],
     )?;
     Ok(())
@@ -2372,7 +2367,7 @@ fn delete_previous(tx: &Transaction, id: &str) -> Result<()> {
     )?;
     for stage in AGAIN_STAGES {
         tx.execute(
-            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
             params![id, previous_key(stage)],
         )?;
     }
@@ -2395,7 +2390,7 @@ fn cancel_transcribe_again(tx: &Transaction, id: &str) -> Result<()> {
     drop_run_generation(tx, id)?;
     for stage in AGAIN_STAGES {
         tx.execute(
-            "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
             params![id, stage_key(stage)],
         )?;
     }
@@ -2406,7 +2401,7 @@ fn cancel_transcribe_again(tx: &Transaction, id: &str) -> Result<()> {
         "UPDATE sessions SET transcribe_again_model = NULL WHERE id = ?1",
         [id],
     )?;
-    tx.execute("DELETE FROM result_state WHERE session_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
+    tx.execute("DELETE FROM result_state WHERE note_id = ?1 AND key IN ('pending-snapshot', 'replacement-base')", [id])?;
     Ok(())
 }
 
@@ -2427,13 +2422,13 @@ fn apply_queue_effects(
                 [id],
             )?;
             tx.execute(
-                "INSERT OR REPLACE INTO jobs (session_id, stage) VALUES (?1, ?2)",
+                "INSERT OR REPLACE INTO jobs (note_id, stage) VALUES (?1, ?2)",
                 params![id, stage_key(Stage::Assemble)],
             )?;
         }
         SessionState::Queued { .. } => {
             tx.execute(
-                "UPDATE jobs SET claim_owner = NULL, claimed_at = NULL WHERE session_id = ?1",
+                "UPDATE jobs SET claim_owner = NULL, claimed_at = NULL WHERE note_id = ?1",
                 [id],
             )?;
         }
@@ -2443,9 +2438,9 @@ fn apply_queue_effects(
         SessionState::Capturing if before.is_stopped() => {
             cancel_transcribe_again(tx, id)?;
             tx.execute("UPDATE sessions SET queue_seq = NULL WHERE id = ?1", [id])?;
-            tx.execute("DELETE FROM jobs WHERE session_id = ?1", [id])?;
+            tx.execute("DELETE FROM jobs WHERE note_id = ?1", [id])?;
             tx.execute(
-                "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
                 params![id, stage_key(Stage::Summarize)],
             )?;
         }
@@ -2462,14 +2457,14 @@ fn apply_queue_effects(
                 Stage::Save,
             ] {
                 tx.execute(
-                    "DELETE FROM checkpoints WHERE session_id = ?1 AND stage = ?2",
+                    "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
                     params![id, stage_key(stage)],
                 )?;
             }
         }
         SessionState::Saved | SessionState::Discarded => {
             tx.execute("UPDATE sessions SET queue_seq = NULL WHERE id = ?1", [id])?;
-            tx.execute("DELETE FROM jobs WHERE session_id = ?1", [id])?;
+            tx.execute("DELETE FROM jobs WHERE note_id = ?1", [id])?;
         }
         _ => {}
     }
@@ -2493,7 +2488,7 @@ pub enum DeleteError {
         message: String,
     },
     /// The id is not in the form that Longhand writes
-    /// ([`crate::note_record::valid_session_id`]): the working directory
+    /// ([`crate::note_record::valid_note_id`]): the working directory
     /// that the caller joins to it can be outside the working root.
     /// Nothing changed.
     #[error("the note id is not valid")]
@@ -2555,8 +2550,8 @@ struct ClaimSet {
 }
 
 impl ClaimSet {
-    fn has(ids: &[String], session_id: &str) -> bool {
-        ids.iter().any(|id| id == session_id)
+    fn has(ids: &[String], note_id: &str) -> bool {
+        ids.iter().any(|id| id == note_id)
     }
 }
 
@@ -2584,7 +2579,7 @@ pub enum RegenerateRefusal {
 /// fails or its future is dropped.
 pub struct Claim {
     claims: Claims,
-    session_id: String,
+    note_id: String,
     kind: ClaimKind,
 }
 
@@ -2598,115 +2593,115 @@ impl Claims {
     /// refuses the regeneration: another regeneration of the session runs
     /// or waits for its turn (R9), a delete runs on it, or the Move holds
     /// it.
-    pub fn regenerate(&self, session_id: &str) -> std::result::Result<Claim, RegenerateRefusal> {
+    pub fn regenerate(&self, note_id: &str) -> std::result::Result<Claim, RegenerateRefusal> {
         let mut set = self.set();
-        if ClaimSet::has(&set.regenerating, session_id) {
+        if ClaimSet::has(&set.regenerating, note_id) {
             return Err(RegenerateRefusal::Regenerating);
         }
-        if ClaimSet::has(&set.deleting, session_id) {
+        if ClaimSet::has(&set.deleting, note_id) {
             return Err(RegenerateRefusal::Deleting);
         }
-        if ClaimSet::has(&set.holding, session_id) {
+        if ClaimSet::has(&set.holding, note_id) {
             return Err(RegenerateRefusal::Held);
         }
-        set.regenerating.push(session_id.to_string());
-        Ok(self.claim(session_id, ClaimKind::Regenerate))
+        set.regenerating.push(note_id.to_string());
+        Ok(self.claim(note_id, ClaimKind::Regenerate))
     }
 
     /// Claim the session for a delete. The error is the name of the work
     /// that refuses the delete: "regenerating" while its summary is
     /// regenerated or waits to be, "moving" while the Move works on it.
-    pub fn delete(&self, session_id: &str) -> std::result::Result<Claim, &'static str> {
+    pub fn delete(&self, note_id: &str) -> std::result::Result<Claim, &'static str> {
         let mut set = self.set();
-        if ClaimSet::has(&set.regenerating, session_id) {
+        if ClaimSet::has(&set.regenerating, note_id) {
             return Err("regenerating");
         }
-        if ClaimSet::has(&set.moving, session_id) || ClaimSet::has(&set.holding, session_id) {
+        if ClaimSet::has(&set.moving, note_id) || ClaimSet::has(&set.holding, note_id) {
             return Err("moving");
         }
-        set.deleting.push(session_id.to_string());
-        Ok(self.claim(session_id, ClaimKind::Delete))
+        set.deleting.push(note_id.to_string());
+        Ok(self.claim(note_id, ClaimKind::Delete))
     }
 
     /// Claim the note for a step of the Move. None while its summary is
     /// regenerated or a delete runs on it: the note moves later.
-    pub fn moving(&self, session_id: &str) -> Option<Claim> {
+    pub fn moving(&self, note_id: &str) -> Option<Claim> {
         let mut set = self.set();
-        if ClaimSet::has(&set.regenerating, session_id)
-            || ClaimSet::has(&set.deleting, session_id)
-            || ClaimSet::has(&set.moving, session_id)
+        if ClaimSet::has(&set.regenerating, note_id)
+            || ClaimSet::has(&set.deleting, note_id)
+            || ClaimSet::has(&set.moving, note_id)
         {
             return None;
         }
-        set.moving.push(session_id.to_string());
-        Some(self.claim(session_id, ClaimKind::Move))
+        set.moving.push(note_id.to_string());
+        Some(self.claim(note_id, ClaimKind::Move))
     }
 
     /// Hold the note for the Move's final check and home change. None while
     /// its summary is regenerated or a delete runs on it. The caller holds
     /// the store lock, so an edit that holds that lock ends first.
-    pub fn hold(&self, session_id: &str) -> Option<Claim> {
+    pub fn hold(&self, note_id: &str) -> Option<Claim> {
         let mut set = self.set();
-        if ClaimSet::has(&set.regenerating, session_id)
-            || ClaimSet::has(&set.deleting, session_id)
-            || ClaimSet::has(&set.holding, session_id)
+        if ClaimSet::has(&set.regenerating, note_id)
+            || ClaimSet::has(&set.deleting, note_id)
+            || ClaimSet::has(&set.holding, note_id)
         {
             return None;
         }
-        set.holding.push(session_id.to_string());
-        Some(self.claim(session_id, ClaimKind::Hold))
+        set.holding.push(note_id.to_string());
+        Some(self.claim(note_id, ClaimKind::Hold))
     }
 
-    fn claim(&self, session_id: &str, kind: ClaimKind) -> Claim {
+    fn claim(&self, note_id: &str, kind: ClaimKind) -> Claim {
         Claim {
             claims: self.clone(),
-            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
             kind,
         }
     }
 
     /// True while the session's summary is regenerated or waits to be.
-    pub fn is_regenerating(&self, session_id: &str) -> bool {
-        ClaimSet::has(&self.set().regenerating, session_id)
+    pub fn is_regenerating(&self, note_id: &str) -> bool {
+        ClaimSet::has(&self.set().regenerating, note_id)
     }
 
     /// True while a delete holds a claim on the session. Record and Resume
     /// are then refused.
-    pub fn is_deleting(&self, session_id: &str) -> bool {
-        ClaimSet::has(&self.set().deleting, session_id)
+    pub fn is_deleting(&self, note_id: &str) -> bool {
+        ClaimSet::has(&self.set().deleting, note_id)
     }
 
     /// True while a regeneration or a delete holds a claim on the session.
     /// The Move then waits, and Transcribe Again is refused.
-    pub fn is_regenerating_or_deleting(&self, session_id: &str) -> bool {
+    pub fn is_regenerating_or_deleting(&self, note_id: &str) -> bool {
         let set = self.set();
-        ClaimSet::has(&set.regenerating, session_id) || ClaimSet::has(&set.deleting, session_id)
+        ClaimSet::has(&set.regenerating, note_id) || ClaimSet::has(&set.deleting, note_id)
     }
 
     /// True while the Move holds the note (see [`Claims::hold`]).
-    pub fn is_held(&self, session_id: &str) -> bool {
-        ClaimSet::has(&self.set().holding, session_id)
+    pub fn is_held(&self, note_id: &str) -> bool {
+        ClaimSet::has(&self.set().holding, note_id)
     }
 
     /// Return when the Move does not hold the note. The caller must not
     /// hold the store lock.
-    pub fn wait_unheld(&self, session_id: &str) {
+    pub fn wait_unheld(&self, note_id: &str) {
         let mut set = self.set();
-        while ClaimSet::has(&set.holding, session_id) {
+        while ClaimSet::has(&set.holding, note_id) {
             set = self.released.wait(set).unwrap_or_else(|e| e.into_inner());
         }
     }
 
     /// True while a regeneration, a delete or the Move holds a claim on the
     /// session. A folder rename then waits (KTD8).
-    pub fn busy(&self, session_id: &str) -> bool {
+    pub fn busy(&self, note_id: &str) -> bool {
         let set = self.set();
         set.regenerating
             .iter()
             .chain(&set.deleting)
             .chain(&set.moving)
             .chain(&set.holding)
-            .any(|id| id == session_id)
+            .any(|id| id == note_id)
     }
 }
 
@@ -2719,7 +2714,7 @@ impl Drop for Claim {
             ClaimKind::Move => &mut set.moving,
             ClaimKind::Hold => &mut set.holding,
         };
-        if let Some(i) = ids.iter().position(|id| *id == self.session_id) {
+        if let Some(i) = ids.iter().position(|id| *id == self.note_id) {
             ids.swap_remove(i);
         }
         if self.kind == ClaimKind::Hold {
@@ -2749,7 +2744,7 @@ pub fn delete_session<R>(
 where
     R: FnMut(&Path) -> std::result::Result<(), String>,
 {
-    if !crate::note_record::valid_session_id(id) {
+    if !crate::note_record::valid_note_id(id) {
         return Err(DeleteError::InvalidId);
     }
     let lock = || store.lock().unwrap_or_else(|e| e.into_inner());

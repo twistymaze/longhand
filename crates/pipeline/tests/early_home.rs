@@ -109,7 +109,7 @@ fn a_recording_note_gets_a_home_folder_with_its_notes_and_the_pending_flag() {
     let doc = session_core::note_folder::NoteFiles::read(&path)
         .map(|files| files.doc)
         .unwrap();
-    assert_eq!(doc.session_id, "s");
+    assert_eq!(doc.note_id, "s");
     assert_eq!(doc.result, Some(ResultFlag::NotSaved));
     assert!(doc.segments.is_empty());
     assert_eq!(doc.started, at(0));
@@ -124,7 +124,7 @@ fn a_recording_note_gets_a_home_folder_with_its_notes_and_the_pending_flag() {
     // the records, and `session.md` has only a frontmatter.
     let files = session_core::note_folder::NoteFiles::read(&path).unwrap();
     assert_eq!(files.layout, session_core::note_folder::Layout::New);
-    assert_eq!(files.record.session_id, "s");
+    assert_eq!(files.record.note_id, "s");
     assert_eq!(
         std::fs::read_to_string(path.join("session.md")).unwrap(),
         "---\n---\n"
@@ -302,7 +302,7 @@ fn a_crash_while_the_staging_folder_is_partly_written_completes_it_in_one_folder
         session_core::note_folder::NoteFiles::read(&path)
             .map(|files| files.doc)
             .unwrap()
-            .session_id,
+            .note_id,
         "s"
     );
     assert_eq!(
@@ -312,7 +312,7 @@ fn a_crash_while_the_staging_folder_is_partly_written_completes_it_in_one_folder
 }
 
 #[test]
-fn a_crash_after_the_rename_and_before_its_record_finds_the_folder_by_session_id() {
+fn a_crash_after_the_rename_and_before_its_record_finds_the_folder_by_note_id() {
     let dest = tempfile::tempdir().unwrap();
     let store = store();
     recording_note(&store, "s", "");
@@ -418,7 +418,7 @@ fn a_folder_of_another_note_at_the_name_is_not_taken_for_this_one() {
         session_core::note_folder::NoteFiles::read(&other)
             .map(|files| files.doc)
             .unwrap()
-            .session_id,
+            .note_id,
         "other"
     );
 }
@@ -1149,7 +1149,7 @@ fn a_note_of_a_type_gets_its_home_folder_in_the_type_folder() {
         session_core::note_folder::NoteFiles::read(&path)
             .map(|files| files.doc)
             .unwrap()
-            .session_id,
+            .note_id,
         "s"
     );
     assert_eq!(home(&store, "s"), Some(path.clone()));
@@ -1362,7 +1362,7 @@ fn leave_them_puts_the_folder_of_a_note_that_is_not_saved_in_the_new_storage_fol
     let doc = session_core::note_folder::NoteFiles::read(&path)
         .map(|files| files.doc)
         .unwrap();
-    assert_eq!(doc.session_id, "s");
+    assert_eq!(doc.note_id, "s");
     assert_eq!(doc.result, Some(ResultFlag::NotSaved));
     // The early home folder in the old storage folder is gone, and the row no
     // longer records it.

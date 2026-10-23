@@ -48,11 +48,11 @@ const none: State = { parts: [], open: [], current: null, state: null, loaded: f
 const numberMaps = new Map<string, NumberMap>();
 
 /// The shown speaker numbers of a note. The same note always gets the same map.
-export function liveNumbers(sessionId: string): NumberMap {
-  let numbers = numberMaps.get(sessionId);
+export function liveNumbers(noteId: string): NumberMap {
+  let numbers = numberMaps.get(noteId);
   if (!numbers) {
     numbers = new Map();
-    numberMaps.set(sessionId, numbers);
+    numberMaps.set(noteId, numbers);
   }
   return numbers;
 }
@@ -141,16 +141,16 @@ function applyChanges(live: State, changes: Change[]): State {
   return next;
 }
 
-export function useLiveTranscript(sessionId: string): LiveView {
+export function useLiveTranscript(noteId: string): LiveView {
   // The state records its note. Before the effect of a new note resets it,
   // a render shows no state of the earlier note.
-  const [held, setHeld] = useState<{ id: string; live: State }>({ id: sessionId, live: none });
-  const live = held.id === sessionId ? held.live : none;
+  const [held, setHeld] = useState<{ id: string; live: State }>({ id: noteId, live: none });
+  const live = held.id === noteId ? held.live : none;
 
   useEffect(() => {
     const setLive = (change: (l: State) => State) =>
-      setHeld((h) => ({ id: sessionId, live: change(h.id === sessionId ? h.live : none) }));
-    setHeld({ id: sessionId, live: none });
+      setHeld((h) => ({ id: noteId, live: change(h.id === noteId ? h.live : none) }));
+    setHeld({ id: noteId, live: none });
     let open = true;
     // Null after the catch-up: recognition events then apply once per frame.
     let waiting: Change[] | null = [];
@@ -182,22 +182,22 @@ export function useLiveTranscript(sessionId: string): LiveView {
     };
     const unlisteners = [
       events.liveRecognitionEvent.listen(({ payload }) => {
-        if (payload.session_id === sessionId) take({ kind: "recognition", data: payload });
+        if (payload.note_id === noteId) take({ kind: "recognition", data: payload });
       }),
       events.liveTranscriptEvent.listen(({ payload }) => {
-        if (payload.session_id === sessionId) take({ kind: "text", data: payload });
+        if (payload.note_id === noteId) take({ kind: "text", data: payload });
       }),
       events.livePartSaved.listen(({ payload }) => {
-        if (payload.session_id === sessionId) take({ kind: "saved", data: payload });
+        if (payload.note_id === noteId) take({ kind: "saved", data: payload });
       }),
       events.liveTranscriptStatus.listen(({ payload }) => {
-        if (payload.session_id === sessionId) take({ kind: "status", data: payload });
+        if (payload.note_id === noteId) take({ kind: "status", data: payload });
       }),
     ];
     // Listen first, then read: no event falls between the two.
     void Promise.all(unlisteners).then(async () => {
       try {
-        const result = await commands.liveTranscript(sessionId);
+        const result = await commands.liveTranscript(noteId);
         if (!open) return;
         const queued = waiting ?? [];
         waiting = null;
@@ -223,7 +223,7 @@ export function useLiveTranscript(sessionId: string): LiveView {
       pending = [];
       for (const u of unlisteners) void u.then((f) => f());
     };
-  }, [sessionId]);
+  }, [noteId]);
 
-  return useMemo(() => ({ ...live, numbers: liveNumbers(sessionId) }), [live, sessionId]);
+  return useMemo(() => ({ ...live, numbers: liveNumbers(noteId) }), [live, noteId]);
 }

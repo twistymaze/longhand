@@ -56,9 +56,9 @@ function MainWindow() {
   useEffect(() => {
     const unlisteners = [
       events.recordingChanged.listen(({ payload }) => {
-        if (payload.session_id && payload.opened) setRequested(payload.session_id);
+        if (payload.note_id && payload.opened) setRequested(payload.note_id);
       }),
-      events.showSession.listen(({ payload }) => requestStarted(payload.session_id)),
+      events.showSession.listen(({ payload }) => requestStarted(payload.note_id)),
       events.shortcutFailed.listen(({ payload }) =>
         setShortcutNotice({ text: payload.text, view: shownView.current }),
       ),
@@ -107,7 +107,7 @@ function MainWindow() {
 
   const known =
     requested !== null &&
-    (capture.status?.session_id === requested || sessions.entries.some((e) => e.id === requested));
+    (capture.status?.note_id === requested || sessions.entries.some((e) => e.id === requested));
   useEffect(() => {
     if (requested === null || !known) return;
     setView({ kind: "session", id: requested, started: started.current === requested });
@@ -115,10 +115,10 @@ function MainWindow() {
     setRequested(null);
   }, [requested, known]);
 
-  const open = capture.status?.session_id ?? null;
+  const open = capture.status?.note_id ?? null;
   const recording = open
     ? {
-        sessionId: open,
+        noteId: open,
         elapsedMs: capture.recordedMs,
         interrupted: capture.status?.interruption != null,
         paused: capture.status?.paused ?? false,

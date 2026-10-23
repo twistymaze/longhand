@@ -121,7 +121,7 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
     let started = at("2026-10-01T09:00:00-05:00");
     NoteRecord {
         layout: LAYOUT,
-        session_id: format!("note-{}", dir.file_name().unwrap().to_string_lossy()),
+        note_id: format!("note-{}", dir.file_name().unwrap().to_string_lossy()),
         started,
         written_title: Some(Title {
             text: "Drift check".to_string(),

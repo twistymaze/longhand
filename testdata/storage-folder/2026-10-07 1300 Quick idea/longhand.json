@@ -1,8 +1,8 @@
 {
-  "layout": 1,
+  "layout": 2,
+  "note_id": "note-quick-idea",
   "result": "none",
   "segments": [],
-  "session_id": "note-quick-idea",
   "started": "2026-10-07T13:00:00-05:00",
   "written_title": {
     "source": "user",

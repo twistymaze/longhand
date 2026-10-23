@@ -600,10 +600,9 @@ async fn toggle(app: AppHandle) {
         ShortcutAction::NewNote => {
             leave_shown(&app, &manager);
             match manager.open_note(&app, default_type(&app).as_deref()) {
-                Ok(session_id) => {
+                Ok(note_id) => {
                     crate::window::show_main_window(&app);
-                    let _ =
-                        tauri_specta::Event::emit(&crate::tray::ShowSession { session_id }, &app);
+                    let _ = tauri_specta::Event::emit(&crate::tray::ShowSession { note_id }, &app);
                 }
                 Err(e) => {
                     log::error!("shortcut new note failed: {e}");

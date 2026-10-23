@@ -22,7 +22,7 @@ import { folderName } from "../settings/ui";
 /// A sync reloads the notes only after this long with no input.
 export const RELOAD_AFTER_INPUT_MS = 2000;
 export function NotesTab({
-  sessionId,
+  noteId,
   autoFocus,
   editable = true,
   synced = 0,
@@ -30,7 +30,7 @@ export function NotesTab({
   onConflict,
   onNewNote,
 }: {
-  sessionId: string;
+  noteId: string;
   autoFocus: boolean;
   /// False while the notes wait for the sync or the storage folder is
   /// unavailable: the editor then takes no input.
@@ -76,8 +76,8 @@ export function NotesTab({
   // A sync changed the notes while a save waited or the user typed.
   const stale = useRef(false);
   const retry = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const current = useRef(sessionId);
-  current.current = sessionId;
+  const current = useRef(noteId);
+  current.current = noteId;
   const reload = useRef<() => void>(() => {});
 
   // After a save conflicts, later saves of the same session wait here, since
@@ -166,13 +166,13 @@ export function NotesTab({
   useEffect(() => {
     fingerprint.current = null;
     setLoaded(null);
-    void read(sessionId, true);
+    void read(noteId, true);
     return () => {
       clearTimeout(retry.current);
       sendHeld();
       held.current = null;
     };
-  }, [sessionId, read]);
+  }, [noteId, read]);
 
   useEffect(() => {
     open.current = true;
@@ -235,13 +235,13 @@ export function NotesTab({
       s.busy = false;
       let next = s.next;
       s.next = null;
-      if (r.status === "ok" && r.data.kind === "new_note") moved.current.set(id, r.data.session_id);
+      if (r.status === "ok" && r.data.kind === "new_note") moved.current.set(id, r.data.note_id);
       if (id === current.current) {
         setError(r.status === "error" ? r.error : null);
         if (r.status === "ok" && r.data.kind === "saved") fingerprint.current = r.data.fingerprint;
         if (r.status === "ok" && r.data.kind === "new_note") {
           fingerprint.current = r.data.fingerprint;
-          onNewNoteRef.current?.(r.data.session_id);
+          onNewNoteRef.current?.(r.data.note_id);
         }
         if (r.status === "ok" && r.data.kind === "conflict") {
           // The file keeps the other computer's text: the editor shows it
@@ -264,7 +264,7 @@ export function NotesTab({
 
   const send = (next: string) => {
     onMarkdown?.(next);
-    save(sessionId, next);
+    save(noteId, next);
   };
 
   return (
@@ -277,7 +277,7 @@ export function NotesTab({
       {loaded !== null && (
         <NoteEditor
           ref={editor}
-          key={`${sessionId}:${loaded.generation}`}
+          key={`${noteId}:${loaded.generation}`}
           markdown={loaded.markdown}
           onChange={send}
           autoFocus={autoFocus && loaded.generation === 1}

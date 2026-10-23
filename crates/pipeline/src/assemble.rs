@@ -59,15 +59,14 @@ pub struct Assembled {
 /// space; `None` when unknown, which passes.
 pub fn check_space(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     segments: &[Segment],
     available: Option<u64>,
 ) -> Result<(), StageError> {
     let mut needed = 0;
     for segment in segments {
         let key = checkpoint::segment_key(segment.index);
-        if checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?.is_none()
-        {
+        if checkpoint::get::<AssembledSegment>(store, note_id, Stage::Assemble, &key)?.is_none() {
             let seconds = segment.duration_ms.div_ceil(1_000);
             needed += recorder::storage::processing_bytes_per_second(segment.channels) * seconds;
         }
@@ -92,21 +91,19 @@ fn gigabytes(bytes: u64) -> String {
 /// back from that archive.
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
     home: Option<&Path>,
     control: &dyn Control,
 ) -> Result<Vec<AssembledSegment>, StageError> {
-    let exact = crate::lock(store)
-        .recognition_snapshot(session_id)?
-        .is_some();
+    let exact = crate::lock(store).recognition_snapshot(note_id)?.is_some();
     let recovery = session_dir.join(RECOVERY_DIR);
     // A crash while capturing leaves a `.part` open; close it from its length.
     recorder::recover_partial_chunks(&recovery)?;
     check_space(
         store,
-        session_id,
+        note_id,
         segments,
         recorder::storage::available_space(session_dir),
     )?;
@@ -133,17 +130,12 @@ pub fn run(
         let local = crate::audio_path(session_dir, &segment.audio_file);
         // A stereo segment is done only with its echo spans row too.
         if let Some(done) =
-            checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
+            checkpoint::get::<AssembledSegment>(store, note_id, Stage::Assemble, &key)?
             && local.as_ref().is_some_and(|local| local.exists())
             && session_dir.join(proc_file(&segment.audio_file)).exists()
-            && (segment.channels != 2 || echo::saved(store, session_id, segment.index)?.is_some())
+            && (segment.channels != 2 || echo::saved(store, note_id, segment.index)?.is_some())
             && (!exact
-                || provenance_valid(
-                    store,
-                    session_id,
-                    session_dir,
-                    std::slice::from_ref(segment),
-                )?)
+                || provenance_valid(store, note_id, session_dir, std::slice::from_ref(segment))?)
         {
             out.push(done);
             continue;
@@ -151,7 +143,7 @@ pub fn run(
         let copied = old_state(segment) == Some(crate::old_audio::CopyState::Copied);
         let local_archive = if copied
             || exact
-                && checkpoint::get::<AssembledSegment>(store, session_id, Stage::Assemble, &key)?
+                && checkpoint::get::<AssembledSegment>(store, note_id, Stage::Assemble, &key)?
                     .is_some()
         {
             local.filter(|p| p.is_file())
@@ -172,14 +164,14 @@ pub fn run(
             }
             record(
                 store,
-                session_id,
+                note_id,
                 session_dir,
                 segment,
                 Some(&archive),
                 &assembled,
             )?;
             log::info!(
-                "decoded segment {} of {session_id} from {}",
+                "decoded segment {} of {note_id} from {}",
                 segment.index,
                 archive.display()
             );
@@ -208,16 +200,16 @@ pub fn run(
         }
         control.proceed()?;
         let assembled = assemble_segment(&recovery, session_dir, segment, control)?;
-        record(store, session_id, session_dir, segment, None, &assembled)?;
+        record(store, note_id, session_dir, segment, None, &assembled)?;
         log::info!(
-            "assembled segment {} of {session_id}: {} samples at {} Hz",
+            "assembled segment {} of {note_id}: {} samples at {} Hz",
             segment.index,
             assembled.segment.native_samples,
             assembled.segment.native_rate
         );
         out.push(assembled.segment);
     }
-    checkpoint::mark_complete(store, session_id, Stage::Assemble, segments.len())?;
+    checkpoint::mark_complete(store, note_id, Stage::Assemble, segments.len())?;
     Ok(out)
 }
 
@@ -226,7 +218,7 @@ pub fn run(
 /// the row.
 fn record(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     dir: &Path,
     segment: &Segment,
     archive: Option<&Path>,
@@ -236,7 +228,7 @@ fn record(
     if let Some(echo) = &assembled.echo {
         checkpoint::put(
             store,
-            session_id,
+            note_id,
             Stage::Assemble,
             &checkpoint::echo_key(index),
             echo,
@@ -244,14 +236,14 @@ fn record(
     }
     checkpoint::put(
         store,
-        session_id,
+        note_id,
         Stage::Assemble,
         &provenance_key(index),
-        &audio_provenance_at(store, session_id, dir, segment, archive)?,
+        &audio_provenance_at(store, note_id, dir, segment, archive)?,
     )?;
     checkpoint::put(
         store,
-        session_id,
+        note_id,
         Stage::Assemble,
         &checkpoint::segment_key(index),
         &assembled.segment,

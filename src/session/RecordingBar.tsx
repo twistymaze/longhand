@@ -258,7 +258,7 @@ export function RecordingBar({
   };
 
   const items = warnings(capture, readiness);
-  const id = status?.session_id ?? null;
+  const id = status?.note_id ?? null;
 
   return (
     <section

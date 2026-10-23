@@ -15,6 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 
 use chrono::{DateTime, FixedOffset, Local};
 use library::scan::{
@@ -64,6 +65,15 @@ const PROMPT_TEXT_LIMIT: usize = 4_000;
 
 fn checked_in() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/storage-folder")
+}
+
+/// The tests of this file run in parallel. With `UPDATE` set, one test
+/// writes the checked-in folder again, so each test that reads the folder
+/// holds this lock for reading, and the writer holds it for writing.
+static CHECKED_IN: RwLock<()> = RwLock::new(());
+
+fn read_checked_in() -> RwLockReadGuard<'static, ()> {
+    CHECKED_IN.read().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn at(text: &str) -> DateTime<FixedOffset> {
@@ -514,7 +524,17 @@ fn write_files(root: &Path, files: &BTreeMap<String, Vec<u8>>) {
 /// marker. The files of the copy have new file times.
 fn copy_with_fresh_marker() -> tempfile::TempDir {
     let copy = tempfile::tempdir().unwrap();
-    write_files(copy.path(), &files(&checked_in()));
+    if std::env::var_os(UPDATE).is_some() {
+        // The checked-in folder is about to change: use what the writers
+        // make now, which is what the folder gets.
+        generate(copy.path());
+    } else {
+        let checked_in_files = {
+            let _read = read_checked_in();
+            files(&checked_in())
+        };
+        write_files(copy.path(), &checked_in_files);
+    }
     let busy = copy.path().join("2026-10-03 1000 Design review");
     assert!(in_use_marker::write_marker(&busy, BUSY_RUN, Local::now().fixed_offset()).unwrap());
     copy
@@ -526,12 +546,16 @@ fn the_checked_in_folder_matches_what_the_writers_make() {
     generate(made.path());
     let expected = files(made.path());
     if std::env::var_os(UPDATE).is_some() {
+        let _write = CHECKED_IN.write().unwrap_or_else(PoisonError::into_inner);
         if checked_in().exists() {
             fs::remove_dir_all(checked_in()).unwrap();
         }
         write_files(&checked_in(), &expected);
     }
-    let actual = files(&checked_in());
+    let actual = {
+        let _read = read_checked_in();
+        files(&checked_in())
+    };
     let expected_names: BTreeSet<&String> = expected.keys().collect();
     let actual_names: BTreeSet<&String> = actual.keys().collect();
     assert_eq!(
@@ -601,7 +625,7 @@ fn the_scan_reads_each_note_of_the_test_folder_with_its_state() {
     }
 
     let budget = notes["2026-10-01 0900 Budget review"];
-    assert_eq!(budget.doc.session_id, "note-budget-review");
+    assert_eq!(budget.doc.note_id, "note-budget-review");
     assert_eq!(budget.note_type, None);
     assert_eq!(budget.remote, None);
     assert_eq!(budget.doc.title.as_deref(), Some("Budget review"));
@@ -702,6 +726,7 @@ fn the_scan_reads_each_note_of_the_test_folder_with_its_state() {
 fn the_checked_in_busy_marker_is_not_fresh() {
     // The marker has a fixed time. Only a copy with a refreshed marker
     // shows the note as busy.
+    let _read = read_checked_in();
     let marker = checked_in()
         .join("2026-10-03 1000 Design review")
         .join(in_use_marker::marker_name(BUSY_RUN));

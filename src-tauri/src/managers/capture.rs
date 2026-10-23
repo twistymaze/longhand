@@ -118,7 +118,7 @@ pub enum CaptureError {
 /// arrival, so their absence is what a stalled input looks like.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct CaptureTick {
-    pub session_id: String,
+    pub note_id: String,
     /// The microphone's peak, 0.0 to 1.0.
     pub peak: f32,
     /// The app audio peak of a stereo segment, 0.0 to 1.0. `None` while
@@ -137,7 +137,7 @@ pub struct CaptureTick {
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct RecordingChanged {
     /// The session now recording; `None` once nothing is.
-    pub session_id: Option<String>,
+    pub note_id: Option<String>,
     /// A segment opened for the session: a start, or a resume after a
     /// stop, a pause or an interruption. The main window then shows the
     /// note. A pause, a device switch or a restart gives `false`.
@@ -147,7 +147,7 @@ pub struct RecordingChanged {
 #[derive(Serialize, Clone, Type, Debug)]
 pub struct RecordingStatus {
     /// The open session: recording, or interrupted and resumable.
-    pub session_id: Option<String>,
+    pub note_id: Option<String>,
     pub state: Option<String>,
     /// A note is open: a segment records, a restart reopens the
     /// microphone, or the note is paused.
@@ -216,7 +216,7 @@ pub struct Interruption {
 /// Interruption handling (U14, U15) consumes it.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct CaptureEnded {
-    pub session_id: String,
+    pub note_id: String,
     pub reason: String,
 }
 
@@ -225,22 +225,22 @@ pub struct CaptureEnded {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StopOutcome {
     /// The note kept audio and waits for processing.
-    Recorded { session_id: String },
+    Recorded { note_id: String },
     /// No segment was kept: every segment was under a second. The note
     /// stays as a note with no audio, because it existed before this
     /// recording or its notes have text.
-    NotesOnly { session_id: String },
+    NotesOnly { note_id: String },
     /// No segment was kept, the note started with this recording, and its
     /// notes have no text. The note is a note with no audio now; the check
     /// of empty notes removes it when the user leaves it (U6).
-    EmptyNote { session_id: String },
+    EmptyNote { note_id: String },
     /// The Stop cancelled the microphone open of a new note. No note was
     /// made, and no note stopped.
     Cancelled,
     /// Some audio could not be added to the note, so the note is
     /// Interrupted with its audio, and a later Stop or launch tries again.
     /// The failed-capture alert tells the user: the page shows nothing.
-    Interrupted { session_id: String },
+    Interrupted { note_id: String },
 }
 
 /// Stop the note `id` in the store at `at`: queued for processing when it
@@ -252,7 +252,7 @@ fn stop_note(
     id: &str,
     at: DateTime<FixedOffset>,
 ) -> Result<StopOutcome, CaptureError> {
-    let session_id = id.to_string();
+    let note_id = id.to_string();
     if !store.segments(id)?.is_empty() {
         store.apply(
             id,
@@ -261,15 +261,15 @@ fn stop_note(
                 retained_audio: true,
             },
         )?;
-        return Ok(StopOutcome::Recorded { session_id });
+        return Ok(StopOutcome::Recorded { note_id });
     }
     store.apply(id, &Event::RecordingDropped)?;
     let existed = store.result_state(id, RECORDED_INTO)?.is_some();
     let text = !store.notes(id)?.trim().is_empty();
     Ok(if existed || text {
-        StopOutcome::NotesOnly { session_id }
+        StopOutcome::NotesOnly { note_id }
     } else {
-        StopOutcome::EmptyNote { session_id }
+        StopOutcome::EmptyNote { note_id }
     })
 }
 
@@ -517,7 +517,7 @@ fn open_with_no_segments(store: &Store, held: &[String]) -> Vec<String> {
 }
 
 struct ActiveSegment {
-    session_id: String,
+    note_id: String,
     segment: u32,
     stop: CancellationToken,
     outcome: std_mpsc::Receiver<SegmentOutcome>,
@@ -796,7 +796,7 @@ async fn first_sound(stream: &mut CaptureStream, cancel: &CancellationToken) -> 
 
 /// What [`CaptureManager::open_segment`] opens.
 struct Opening<'a> {
-    session_id: &'a str,
+    note_id: &'a str,
     segment: u32,
     offset_ms: u64,
     /// The model of a note in live mode (U6).
@@ -821,13 +821,13 @@ struct Opening<'a> {
 
 fn opening_recognition(
     store: &pipeline::SharedStore,
-    session_id: &str,
+    note_id: &str,
     initial: Option<&models::recognition::ExecutionSpec>,
 ) -> Result<Option<models::recognition::ExecutionSpec>, CaptureError> {
     if let Some(spec) = initial {
         return Ok(Some(spec.clone()));
     }
-    pipeline::recognition::snapshot(store, session_id)
+    pipeline::recognition::snapshot(store, note_id)
         .map_err(|error| CaptureError::Other(error.to_string()))
 }
 
@@ -871,7 +871,7 @@ struct Prepared {
 
 /// The session whose timeline this process has been measuring.
 struct Clock {
-    session_id: String,
+    note_id: String,
     timeline: Timeline,
     /// The monotonic origin of the timeline, while this process holds it.
     epoch: Instant,
@@ -881,9 +881,9 @@ struct Clock {
 }
 
 impl Clock {
-    fn new(session_id: &str, timeline: Timeline, epoch: Instant) -> Self {
+    fn new(note_id: &str, timeline: Timeline, epoch: Instant) -> Self {
         Self {
-            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
             timeline,
             epoch,
             restarts: RestartTracker::new(),
@@ -893,14 +893,14 @@ impl Clock {
 
 /// Background work on a session's behalf that a user action supersedes.
 struct Pending {
-    session_id: String,
+    note_id: String,
     cancel: CancellationToken,
 }
 
 impl Pending {
-    fn new(session_id: &str) -> Self {
+    fn new(note_id: &str) -> Self {
         Self {
-            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
             cancel: CancellationToken::new(),
         }
     }
@@ -1133,7 +1133,7 @@ fn stop_result(
         Err(CaptureError::Unregistered { interrupted: true }) => (
             true,
             Ok(StopOutcome::Interrupted {
-                session_id: id.to_string(),
+                note_id: id.to_string(),
             }),
         ),
         outcome => (false, outcome),
@@ -1227,7 +1227,7 @@ impl Inner {
         self.reset_app_audio_checks();
         self.recovering.take().map(|p| {
             p.cancel.cancel();
-            p.session_id
+            p.note_id
         })
     }
 
@@ -1250,8 +1250,8 @@ impl Inner {
     /// Whether the note `id` is open here: its segment records, its lost
     /// segment restarts, or it is paused.
     fn holds(&self, id: &str) -> bool {
-        self.active.as_ref().is_some_and(|a| a.session_id == id)
-            || self.recovering.as_ref().is_some_and(|p| p.session_id == id)
+        self.active.as_ref().is_some_and(|a| a.note_id == id)
+            || self.recovering.as_ref().is_some_and(|p| p.note_id == id)
             || self.paused.as_deref() == Some(id)
     }
 
@@ -1304,7 +1304,7 @@ enum PauseStep {
 fn pause_step(inner: &Inner) -> PauseStep {
     match &inner.active {
         Some(active) if inner.recovering.is_none() && inner.paused.is_none() => {
-            PauseStep::Close(active.session_id.clone())
+            PauseStep::Close(active.note_id.clone())
         }
         _ => PauseStep::Nothing,
     }
@@ -1356,7 +1356,7 @@ fn stop_target(
     reconnecting: Option<String>,
 ) -> Result<String, CaptureError> {
     if let Some(active) = inner.active.take() {
-        let id = active.session_id.clone();
+        let id = active.note_id.clone();
         if let Err(e) = close_segment_in(store, working_root, inner, active, false) {
             log::error!("closing {id} for a stop failed: {e}");
         }
@@ -1746,7 +1746,7 @@ fn watch_step(inner: &Inner, id: &str) -> WatchStep {
         return WatchStep::Wait;
     }
     match &inner.active {
-        Some(active) if active.session_id == id => {
+        Some(active) if active.note_id == id => {
             let move_back = active.fallback;
             let speaker = speaker_needs_watch(active, inner.permission);
             if move_back || speaker {
@@ -1791,7 +1791,7 @@ fn next_watch(inner: &mut Inner, id: &str, cancel: &CancellationToken) -> NextWa
 /// a segment that records does. During Interrupted, restart backoff or a
 /// sleep pause, the next segment reads the stored choice.
 fn change_reopens(inner: &Inner, id: &str) -> bool {
-    inner.recovering.is_none() && inner.active.as_ref().is_some_and(|a| a.session_id == id)
+    inner.recovering.is_none() && inner.active.as_ref().is_some_and(|a| a.note_id == id)
 }
 
 /// Close the timeline's open segment. At a switch, a short segment is kept
@@ -2097,8 +2097,8 @@ impl CaptureManager {
         &self.working_root
     }
 
-    pub fn session_dir(&self, session_id: &str) -> PathBuf {
-        self.working_root.join(session_id)
+    pub fn session_dir(&self, note_id: &str) -> PathBuf {
+        self.working_root.join(note_id)
     }
 
     /// At launch, before anything records: sessions a dead process left
@@ -2112,25 +2112,25 @@ impl CaptureManager {
                 for failed in report.failed {
                     log::error!(
                         "crash recovery of {} at launch failed: {}",
-                        failed.session_id,
+                        failed.note_id,
                         failed.error
                     );
                     self.recovery_failed
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .push(failed.session_id);
+                        .push(failed.note_id);
                 }
                 for session in report.recovered {
                     log::warn!(
                         "recovered {} after a crash: {}",
-                        session.session_id,
+                        session.note_id,
                         session.state.name()
                     );
                     if session.state == SessionState::Saved {
                         self.recovered_without_audio
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .push(session.session_id);
+                            .push(session.note_id);
                     }
                 }
             }
@@ -2270,7 +2270,7 @@ impl CaptureManager {
             ended = Some(paused);
         }
         if let Some(active) = inner.active.take() {
-            let other = active.session_id.clone();
+            let other = active.note_id.clone();
             // The note stops below in any case (KTD5).
             if let Err(e) = self.close_segment(&mut inner, active, false) {
                 log::error!("closing {other} for a start failed: {e}");
@@ -2286,7 +2286,7 @@ impl CaptureManager {
         let live = model.live_transcript.then_some(model.asr_model.as_str());
         let choice = mic_of(&capture);
         let opening = Opening {
-            session_id: &id,
+            note_id: &id,
             segment: index,
             offset_ms: 0,
             live,
@@ -2319,7 +2319,7 @@ impl CaptureManager {
         let mut emptied = Vec::new();
         for other in open {
             match self.stop_in_store(app, &other) {
-                Ok(StopOutcome::EmptyNote { session_id }) => emptied.push(session_id),
+                Ok(StopOutcome::EmptyNote { note_id }) => emptied.push(note_id),
                 Ok(_) => {}
                 Err(e) => log::error!("stopping {other} failed: {e}"),
             }
@@ -2772,7 +2772,7 @@ impl CaptureManager {
         let held = inner
             .clock
             .take()
-            .filter(|c| c.session_id == id)
+            .filter(|c| c.note_id == id)
             .map(|c| (c.timeline, Some(c.epoch)));
         let (mut timeline, epoch) = match held {
             Some(held) => held,
@@ -2808,7 +2808,7 @@ impl CaptureManager {
         let capture = self.note_capture(id);
         let choice = mic_of(&capture);
         let opening = Opening {
-            session_id: id,
+            note_id: id,
             segment: index,
             offset_ms: offset,
             live: live.as_deref(),
@@ -2905,13 +2905,13 @@ impl CaptureManager {
             return;
         }
         let store = Arc::clone(&self.store);
-        let session_id = id.to_string();
+        let note_id = id.to_string();
         let spawned = std::thread::Builder::new()
             .name("old-audio-copy".into())
             .spawn(
-                move || match pipeline::old_audio::copy_for(&store, &session_id, &working) {
-                    Ok(()) => log::info!("the old audio copy of {session_id} ended"),
-                    Err(e) => log::warn!("the old audio copy of {session_id} failed: {e}"),
+                move || match pipeline::old_audio::copy_for(&store, &note_id, &working) {
+                    Ok(()) => log::info!("the old audio copy of {note_id} ended"),
+                    Err(e) => log::warn!("the old audio copy of {note_id} failed: {e}"),
                 },
             );
         if let Err(e) = spawned {
@@ -2997,7 +2997,7 @@ impl CaptureManager {
             _ => None,
         };
         Ok(RecordingStatus {
-            session_id: open.as_ref().map(|(id, _)| id.clone()),
+            note_id: open.as_ref().map(|(id, _)| id.clone()),
             state: open.as_ref().map(|(_, state)| state.name().to_string()),
             recording,
             paused,
@@ -3104,7 +3104,7 @@ impl CaptureManager {
                 let apps = {
                     let inner = manager.inner();
                     match inner.active.as_ref() {
-                        Some(a) if a.session_id == id && a.segment == segment => a.apps.clone(),
+                        Some(a) if a.note_id == id && a.segment == segment => a.apps.clone(),
                         _ => return,
                     }
                 };
@@ -3113,9 +3113,10 @@ impl CaptureManager {
                         .audio
                         .open_apps(rate, (rate / FRAMES_PER_SECOND) as usize, apps);
                 let mut inner = manager.inner();
-                let ours = inner.active.as_ref().is_some_and(|a| {
-                    a.session_id == id && a.segment == segment && a.records_apps()
-                });
+                let ours = inner
+                    .active
+                    .as_ref()
+                    .is_some_and(|a| a.note_id == id && a.segment == segment && a.records_apps());
                 if !ours {
                     return;
                 }
@@ -3138,7 +3139,7 @@ impl CaptureManager {
         if let Some(active) = inner
             .active
             .as_mut()
-            .filter(|a| a.session_id == id && a.channels == 1 && a.records_apps())
+            .filter(|a| a.note_id == id && a.channels == 1 && a.records_apps())
         {
             self.start_watch_of(app, active, reopen);
         }
@@ -3159,7 +3160,7 @@ impl CaptureManager {
             shared: Arc::clone(&shared),
         });
         let watch = WatchStream {
-            id: active.session_id.clone(),
+            id: active.note_id.clone(),
             segment: active.segment,
             rate: active.rate,
             apps: active.apps.clone(),
@@ -3200,7 +3201,7 @@ impl CaptureManager {
             !cancel.is_cancelled()
                 && inner.recovering.is_none()
                 && inner.active.as_ref().is_some_and(|a| {
-                    a.session_id == id
+                    a.note_id == id
                         && a.segment == segment
                         && a.watch
                             .as_ref()
@@ -3301,7 +3302,7 @@ impl CaptureManager {
     }
 
     /// Change the microphone of one note from the recording page (R2, KTD2).
-    /// Settings does not change. With no `session_id`, the choice is held
+    /// Settings does not change. With no `note_id`, the choice is held
     /// for the next note and written with its row. For a note, the stored
     /// choice changes, and a segment that records now closes and the next
     /// one opens on the new choice (AE8). During Interrupted, restart
@@ -3309,11 +3310,11 @@ impl CaptureManager {
     pub fn set_note_microphone(
         self: &Arc<Self>,
         app: &AppHandle,
-        session_id: Option<&str>,
+        note_id: Option<&str>,
         microphone: Option<MicrophoneChoice>,
     ) -> Result<(), CaptureError> {
         check_microphone(microphone.as_ref()).map_err(CaptureError::Other)?;
-        let Some(id) = session_id else {
+        let Some(id) = note_id else {
             log::info!("the next note uses the microphone {microphone:?}");
             self.inner().held_microphone = Some(microphone);
             // Resolve it off the start path (R3).
@@ -3392,7 +3393,7 @@ impl CaptureManager {
         if inner
             .capture_watch
             .as_ref()
-            .is_some_and(|w| w.session_id == id && !w.cancel.is_cancelled())
+            .is_some_and(|w| w.note_id == id && !w.cancel.is_cancelled())
         {
             return;
         }
@@ -3512,7 +3513,7 @@ impl CaptureManager {
             }
             let ours = inner.recovering.is_none()
                 && inner.active.as_ref().is_some_and(|a| {
-                    a.session_id == id && a.segment == reopen.segment && a.records_apps()
+                    a.note_id == id && a.segment == reopen.segment && a.records_apps()
                 });
             if ours {
                 attach_opened(&mut inner, opened, true);
@@ -3523,8 +3524,8 @@ impl CaptureManager {
     }
 
     /// A session's notes document, in any state (R20).
-    pub fn session_notes(&self, session_id: &str) -> Result<String, CaptureError> {
-        Ok(self.store().notes(session_id)?)
+    pub fn session_notes(&self, note_id: &str) -> Result<String, CaptureError> {
+        Ok(self.store().notes(note_id)?)
     }
 
     /// Replace a session's notes document (KTD5), and check the `notes.md`
@@ -3538,13 +3539,13 @@ impl CaptureManager {
     /// `claims` are the processing claims.
     pub fn save_session_notes(
         &self,
-        session_id: &str,
+        note_id: &str,
         document: &str,
         loaded: Option<&str>,
         claims: &session_core::jobs::Claims,
     ) -> Result<pipeline::save::NotesSave, CaptureError> {
-        let mut store = pipeline::move_notes::lock_unheld(&self.store, claims, session_id);
-        pipeline::save::save_notes(&mut store, session_id, document, loaded)
+        let mut store = pipeline::move_notes::lock_unheld(&self.store, claims, note_id);
+        pipeline::save::save_notes(&mut store, note_id, document, loaded)
             .map_err(|e| CaptureError::Other(e.to_string()))
     }
 
@@ -3574,7 +3575,7 @@ impl CaptureManager {
             let ours = inner
                 .active
                 .as_ref()
-                .is_some_and(|a| a.session_id == id && a.segment == segment);
+                .is_some_and(|a| a.note_id == id && a.segment == segment);
             // Already stopped, or replaced by a new session.
             if !ours {
                 return;
@@ -3617,12 +3618,12 @@ impl CaptureManager {
         // device watch carries on through the sleep.
         let reconnecting = inner.recovering.take().map(|p| {
             p.cancel.cancel();
-            p.session_id
+            p.note_id
         });
         inner.stop_capture_watch();
         let id = match inner.active.take() {
             Some(active) => {
-                let id = active.session_id.clone();
+                let id = active.note_id.clone();
                 if let Err(e) = self.close_segment(&mut inner, active, false) {
                     log::error!("closing {id} for sleep failed: {e}");
                 }
@@ -3668,7 +3669,7 @@ impl CaptureManager {
                     clock.epoch = epoch;
                 }
             }
-            let id = clock.session_id.clone();
+            let id = clock.note_id.clone();
             // A paused note stays paused after a wake.
             if inner.note_open() {
                 return;
@@ -3744,7 +3745,7 @@ impl CaptureManager {
             return;
         }
         inner.recovering = None;
-        if let Some(clock) = inner.clock.as_mut().filter(|c| c.session_id == id) {
+        if let Some(clock) = inner.clock.as_mut().filter(|c| c.note_id == id) {
             clock.restarts = restarts;
         }
         match recovery {
@@ -3781,7 +3782,7 @@ impl CaptureManager {
         // In this order: the surface clears the reason on a change.
         changed(app, None);
         let _ = CaptureEnded {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             reason: reason.clone(),
         }
         .emit(app);
@@ -3899,7 +3900,7 @@ impl CaptureManager {
             let clock = inner
                 .clock
                 .as_mut()
-                .filter(|c| c.session_id == id)
+                .filter(|c| c.note_id == id)
                 .ok_or_else(|| CaptureError::Other("the session's timeline is not held".into()))?;
             let last_end = clock.timeline.segments().last().map_or(0, |s| s.end_ms());
             let offset = reopen_offset(clock.epoch.elapsed().as_millis() as u64, last_end);
@@ -3913,7 +3914,7 @@ impl CaptureManager {
             None => AppSet::new(self.note_app_ids(id)),
         };
         let opening = Opening {
-            session_id: id,
+            note_id: id,
             segment: index,
             offset_ms: offset,
             live: live.as_deref(),
@@ -4002,7 +4003,7 @@ impl CaptureManager {
         opening: Opening<'_>,
     ) -> Result<ActiveSegment, CaptureError> {
         let Opening {
-            session_id,
+            note_id,
             segment,
             offset_ms,
             live,
@@ -4021,14 +4022,14 @@ impl CaptureManager {
         let speaker = early_speaker_at(speaker, rate);
         let at_open = app_stream_at_open(channels, !apps.get().is_empty(), speaker.is_some());
         log::info!(
-            "segment {segment} of {session_id} records from '{}' (fallback: {}, channels: {channels})",
+            "segment {segment} of {note_id} records from '{}' (fallback: {}, channels: {channels})",
             prepared.input.name,
             prepared.fallback
         );
-        let recorded_before = recorded_ms(&self.store().segments(session_id)?);
+        let recorded_before = recorded_ms(&self.store().segments(note_id)?);
         let capture_started_at = chrono::Utc::now().timestamp_millis().max(0) as u64;
         let writer = ChunkedWriter::create(SegmentArgs {
-            dir: self.session_dir(session_id).join(RECOVERY_DIR),
+            dir: self.session_dir(note_id).join(RECOVERY_DIR),
             segment,
             capture_started_at,
             offset_ms,
@@ -4051,7 +4052,7 @@ impl CaptureManager {
         {
             link.attach(stream, false);
         }
-        let snapshot = opening_recognition(&self.store, session_id, recognition)?;
+        let snapshot = opening_recognition(&self.store, note_id, recognition)?;
         let selected = snapshot
             .as_ref()
             .filter(|spec| spec.enabled_live_transcription || spec.enabled_live_speaker_analysis)
@@ -4060,18 +4061,11 @@ impl CaptureManager {
             .map(str::to_string);
         let live = selected.map(|model| {
             let app = app.clone();
-            let archive = self.session_dir(session_id).join(RECOVERY_DIR);
-            let session_id = session_id.to_string();
+            let archive = self.session_dir(note_id).join(RECOVERY_DIR);
+            let note_id = note_id.to_string();
             DeferredLive::new(move || {
                 app.state::<Arc<LiveManager>>().start(
-                    &app,
-                    &session_id,
-                    segment,
-                    &model,
-                    rate,
-                    archive,
-                    offset_ms,
-                    snapshot,
+                    &app, &note_id, segment, &model, rate, archive, offset_ms, snapshot,
                 )
             })
         });
@@ -4081,7 +4075,7 @@ impl CaptureManager {
         let (tx, outcome) = std_mpsc::channel();
         let thread_stop = stop.clone();
         let thread_app = app.clone();
-        let thread_session = session_id.to_string();
+        let thread_session = note_id.to_string();
         // The loss report reads the generation of the stream that ended.
         let lost_shared = link.as_ref().map(|l| Arc::clone(&l.shared));
         let spawned = std::thread::Builder::new()
@@ -4114,7 +4108,7 @@ impl CaptureManager {
                         let recorded_ms = recorded_before + tick.segment_ms;
                         crate::tray::recording_tick(&tick_app, &tick_session, recorded_ms);
                         let _ = CaptureTick {
-                            session_id: tick_session.clone(),
+                            note_id: tick_session.clone(),
                             peak: tick.peak,
                             speaker_peak: tick.speaker_peak,
                             position_ms: tick.position_ms,
@@ -4186,10 +4180,10 @@ impl CaptureManager {
         if at_open == AppStreamAtOpen::OpenLater {
             // The caller holds the inner lock and records the segment as
             // active before it lets go, so the open finds it.
-            self.open_speaker_later(app, session_id, segment, rate);
+            self.open_speaker_later(app, note_id, segment, rate);
         }
         let mut active = ActiveSegment {
-            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
             segment,
             stop,
             outcome,
@@ -4239,7 +4233,7 @@ fn close_segment_in(
     at_switch: bool,
 ) -> Result<bool, CaptureError> {
     let ActiveSegment {
-        session_id,
+        note_id,
         segment,
         stop,
         outcome,
@@ -4260,11 +4254,11 @@ fn close_segment_in(
     let outcome = outcome.recv();
     let _ = thread.join();
     // From here no writer runs on the folder.
-    let session_dir = working_root.join(&session_id);
+    let session_dir = working_root.join(&note_id);
     let dir = session_dir.join(RECOVERY_DIR);
     // The open segment's own index names its audio: never an earlier
     // segment's, whose chunks a discard would otherwise remove.
-    let index = clock_of(inner, &session_id)
+    let index = clock_of(inner, &note_id)
         .and_then(|clock| clock.timeline.open_segment())
         .map_or(segment, |open| open.index);
     let keep = at_switch || opened_at_switch;
@@ -4277,7 +4271,7 @@ fn close_segment_in(
             }
             Err(_) => segment_end(&dir, segment)?,
         };
-        let Some(clock) = clock_of(inner, &session_id) else {
+        let Some(clock) = clock_of(inner, &note_id) else {
             return Err(CaptureError::Other(
                 "segment closed without its timeline".into(),
             ));
@@ -4294,27 +4288,25 @@ fn close_segment_in(
         match closed {
             Closed::Kept(segment) => {
                 end_live(LiveEnd::Keep);
-                write_kept(&pipeline::lock(store), &session_id, &segment)?;
+                write_kept(&pipeline::lock(store), &note_id, &segment)?;
             }
             Closed::Discarded => {
                 end_live(LiveEnd::Discard);
                 recorder::remove_segment(&dir, index).map_err(recorder::RecorderError::from)?;
-                log::info!("segment {index} of {session_id} was under a second and was dropped");
+                log::info!("segment {index} of {note_id} was under a second and was dropped");
             }
         }
         Ok(kept)
     })();
     match closed {
         Ok(kept) => Ok(kept),
-        Err(e) => {
-            rebuild_after_failed_close(store, &session_dir, inner, &session_id, index, keep, e)
-        }
+        Err(e) => rebuild_after_failed_close(store, &session_dir, inner, &note_id, index, keep, e),
     }
 }
 
 /// The clock of the note `id`, when `inner` holds it.
 fn clock_of<'a>(inner: &'a mut Inner, id: &str) -> Option<&'a mut Clock> {
-    inner.clock.as_mut().filter(|c| c.session_id == id)
+    inner.clock.as_mut().filter(|c| c.note_id == id)
 }
 
 /// The close of segment `index` of the note `id` failed with `error` after
@@ -4453,8 +4445,8 @@ mod faults {
 }
 
 /// The capture state changed, and no segment opened for a note.
-fn changed(app: &AppHandle, session_id: Option<&str>) {
-    emit_changed(app, session_id, false);
+fn changed(app: &AppHandle, note_id: Option<&str>) {
+    emit_changed(app, note_id, false);
 }
 
 /// A segment opened for the note `id`: a start or a resume.
@@ -4462,14 +4454,14 @@ fn opened(app: &AppHandle, id: &str) {
     emit_changed(app, Some(id), true);
 }
 
-fn emit_changed(app: &AppHandle, session_id: Option<&str>, opened: bool) {
-    crate::tray::recording_changed(app, session_id);
+fn emit_changed(app: &AppHandle, note_id: Option<&str>, opened: bool) {
+    crate::tray::recording_changed(app, note_id);
     // A request only: some callers hold the capture lock here (KTD1).
     crate::widget::request(app, crate::widget::Request::Sync);
     // A recording start closes the update window at once (AE2).
     crate::managers::updates::recording_changed(app);
     let _ = RecordingChanged {
-        session_id: session_id.map(str::to_string),
+        note_id: note_id.map(str::to_string),
         opened,
     }
     .emit(app);
@@ -4517,7 +4509,7 @@ fn lose_if_current(inner: &Inner, id: &str, segment: u32, generation: u64) -> bo
     let Some(link) = inner
         .active
         .as_ref()
-        .filter(|a| a.session_id == id && a.segment == segment && a.records_apps())
+        .filter(|a| a.note_id == id && a.segment == segment && a.records_apps())
         .and_then(|a| a.speaker.as_ref())
         .filter(|link| link.loss_is_current(generation))
     else {
@@ -4579,7 +4571,7 @@ fn begin_restart(inner: &mut Inner, id: &str) -> (CancellationToken, RestartTrac
     let pending = Pending::new(id);
     let cancel = pending.cancel.clone();
     inner.recovering = Some(pending);
-    let restarts = match inner.clock.as_mut().filter(|c| c.session_id == id) {
+    let restarts = match inner.clock.as_mut().filter(|c| c.note_id == id) {
         Some(clock) => std::mem::take(&mut clock.restarts),
         None => RestartTracker::new(),
     };
@@ -5152,7 +5144,7 @@ mod tests {
     fn active(id: &str, fallback: bool) -> ActiveSegment {
         let (_tx, outcome) = std_mpsc::channel();
         ActiveSegment {
-            session_id: id.into(),
+            note_id: id.into(),
             segment: 0,
             stop: CancellationToken::new(),
             outcome,
@@ -6113,7 +6105,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert_eq!(store.session("s").unwrap().unwrap().state.name(), "queued");
@@ -6128,7 +6120,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::NotesOnly {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         let record = store.session("s").unwrap().unwrap();
@@ -6148,7 +6140,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::EmptyNote {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert_eq!(
@@ -6186,7 +6178,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::NotesOnly {
-                session_id: "n".into()
+                note_id: "n".into()
             }
         );
         let record = store.session("n").unwrap().unwrap();
@@ -6527,7 +6519,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert_eq!(store.session("s").unwrap().unwrap().state.name(), "queued");
@@ -6703,7 +6695,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert_eq!(segment_rows(&store, "s"), vec![0]);
@@ -6749,7 +6741,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert_eq!(segment_rows(&store, "s"), vec![0]);
@@ -6823,7 +6815,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert_eq!(segment_rows(&store, "s"), vec![0]);
@@ -6919,7 +6911,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         assert!(matches!(state_of(&store, "s"), SessionState::Queued { .. }));
@@ -7047,7 +7039,7 @@ mod tests {
         assert_eq!(
             outcome.unwrap(),
             StopOutcome::Recorded {
-                session_id: "a".into()
+                note_id: "a".into()
             }
         );
         assert!(matches!(state_of(&store, "a"), SessionState::Queued { .. }));
@@ -7069,7 +7061,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
     }
@@ -7163,7 +7155,7 @@ mod tests {
         assert_eq!(
             step,
             StopStep::Done(StopOutcome::Recorded {
-                session_id: "a".into()
+                note_id: "a".into()
             })
         );
     }
@@ -7263,7 +7255,7 @@ mod tests {
         assert_eq!(
             outcome,
             StopOutcome::Recorded {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
     }
@@ -7312,7 +7304,7 @@ mod tests {
         assert_eq!(
             first.unwrap(),
             StopOutcome::Interrupted {
-                session_id: "s".into()
+                note_id: "s".into()
             }
         );
         // The note is already Interrupted: no second alert. The page shows

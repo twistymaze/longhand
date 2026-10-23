@@ -586,6 +586,57 @@ fn a_note_in_the_old_layout_gets_no_publication_and_no_write() {
     assert_eq!(read(&home, SESSION_FILE), session_md);
 }
 
+/// Write the `longhand.json` of `home` in layout 1, as an older Longhand
+/// wrote it: the note id has the key `session_id`.
+fn write_layout_one_record(home: &Path) {
+    let text = read(home, NOTE_RECORD_FILE)
+        .replace("\"note_id\"", "\"session_id\"")
+        .replace("\"layout\": 2", "\"layout\": 1");
+    assert!(text.contains("\"session_id\": \"s\""), "{text}");
+    std::fs::write(home.join(NOTE_RECORD_FILE), text).unwrap();
+}
+
+// Covers R4, KTD1, KTD3: an older build recorded a publication and stopped.
+// The new build loads the record, rolls forward, and writes `longhand.json`
+// with `note_id` in layout 2.
+#[test]
+fn a_publication_that_an_older_build_recorded_rolls_forward_into_layout_two() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    write_layout_one_record(&home);
+    publication.record(&local).unwrap();
+    let recorded = read(&local, publication::RECORD);
+    let old = recorded
+        .replace("\"note_id\":", "\"session_id\":")
+        .replace("\"layout\":2", "\"layout\":1");
+    assert_eq!(old.matches("\"session_id\":\"s\"").count(), 2, "{old}");
+    assert!(old.contains("\"layout\":1"), "{old}");
+    std::fs::write(local.join(publication::RECORD), old).unwrap();
+
+    let loaded = Publication::load(&local).unwrap().expect("the record");
+    assert_eq!(
+        loaded.publish(&home, &local, || ()).unwrap(),
+        Outcome::Committed
+    );
+    let text = read(&home, NOTE_RECORD_FILE);
+    assert!(text.contains("\"note_id\": \"s\""), "{text}");
+    assert!(text.contains("\"layout\": 2"), "{text}");
+    assert!(!text.contains("session_id"), "{text}");
+    assert_eq!(
+        records(&home).transcript_fingerprint,
+        Some(fingerprint(b"new transcript"))
+    );
+}
+
+#[test]
+fn a_publication_for_another_note_id_is_refused() {
+    let (_root, home, local, _) = fixture(WriteSet::Result);
+    write_layout_one_record(&home);
+    let mut after = result_record(&local);
+    after.note_id = "t".into();
+    assert!(Publication::new(&home, after, WriteSet::Result).is_err());
+    assert!(Publication::new(&home, result_record(&local), WriteSet::Result).is_ok());
+}
+
 #[test]
 fn a_folder_with_no_record_has_no_publication() {
     let (_root, _home, local, _) = fixture(WriteSet::Result);

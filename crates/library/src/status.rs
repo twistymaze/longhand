@@ -175,7 +175,7 @@ fn apply_old_layout(inner: &mut Inner, scan: &LibraryScan, coverage: &Coverage) 
     let found: HashSet<&str> = scan
         .notes
         .iter()
-        .map(|note| note.doc.session_id.as_str())
+        .map(|note| note.doc.note_id.as_str())
         .collect();
     inner
         .old_layout
@@ -184,7 +184,7 @@ fn apply_old_layout(inner: &mut Inner, scan: &LibraryScan, coverage: &Coverage) 
         if note.layout == Layout::Old {
             inner
                 .old_layout
-                .insert(note.doc.session_id.clone(), note.path.clone());
+                .insert(note.doc.note_id.clone(), note.path.clone());
         }
     }
     if inner.old_layout_notes() != before {
@@ -409,7 +409,7 @@ impl LibraryStatus {
         let mut found: HashMap<String, (PathBuf, NoteStatus)> = HashMap::new();
         let mut seen = HashMap::new();
         for note in &scan.notes {
-            let id = &note.doc.session_id;
+            let id = &note.doc.note_id;
             let before = inner.seen.get(id).map(|(_, versions)| versions);
             let versions = track(note, moving.contains(id), before, &unread, now);
             let status = NoteStatus {

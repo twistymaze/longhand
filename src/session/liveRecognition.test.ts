@@ -7,7 +7,7 @@ const row = (start: number, speaker: string | null = "one"): LiveRecognitionRow 
   speaker, text_final: true, speaker_final: true,
 });
 const event = (rows: LiveRecognitionRow[], overrides: Partial<LiveRecognitionEvent> = {}): LiveRecognitionEvent => ({
-  session_id: "test", generation: "g", epoch: 0, key: "text", phase: "patch", revision: 1, rows, ...overrides,
+  note_id: "test", generation: "g", epoch: 0, key: "text", phase: "patch", revision: 1, rows, ...overrides,
 });
 function snapshot(view: RecognitionView, rows: LiveRecognitionRow[], epoch = 0, revision = 1) {
   for (const phase of ["snapshot_begin", "snapshot_batch", "snapshot_end"] as const)

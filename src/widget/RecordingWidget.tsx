@@ -26,7 +26,7 @@ import { formatPosition } from "../lib/timeline";
 type Mode = "recording" | "paused" | "interrupted";
 
 function modeOf(status: RecordingStatus | null): Mode | null {
-  if (!status?.session_id) return null;
+  if (!status?.note_id) return null;
   if (status.interruption) return "interrupted";
   if (status.paused) return "paused";
   return status.recording ? "recording" : null;
@@ -173,7 +173,7 @@ export function RecordingWidget() {
             data-hover={hovered === "hide"}
             onClick={(event) => {
               event.stopPropagation();
-              if (status?.session_id) void commands.widgetHide(status.session_id);
+              if (status?.note_id) void commands.widgetHide(status.note_id);
             }}
             className={`ml-[2px] flex size-6 items-center justify-center rounded-full bg-fill text-label-secondary opacity-0 data-[visible=true]:opacity-100 ${
               isMac

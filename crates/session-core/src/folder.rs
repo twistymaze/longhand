@@ -118,7 +118,8 @@ fn yaml_error(file: &'static str) -> impl Fn(serde_yaml::Error) -> FolderError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionDoc {
-    pub session_id: String,
+    #[serde(rename = "session_id")]
+    pub note_id: String,
     pub started: DateTime<FixedOffset>,
     /// `None` until processing proposes a title or the user sets one (R28).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -264,43 +265,38 @@ impl SessionDoc {
     /// The document of a note that starts at its first segment. `None`
     /// when the note has no segment.
     pub fn new(
-        session_id: impl Into<String>,
+        note_id: impl Into<String>,
         speaker_count: Option<SpeakerCount>,
         segments: &[Segment],
     ) -> Option<Self> {
         let first = segments.first()?;
-        Some(Self::at(
-            session_id,
-            first.wall_start,
-            speaker_count,
-            segments,
-        ))
+        Some(Self::at(note_id, first.wall_start, speaker_count, segments))
     }
 
     /// The document of a note that never recorded: `started` is the time
     /// the note opened (R16), and the flag is
     /// [`ResultFlag::NoRecording`] (R6).
     pub fn without_audio(
-        session_id: impl Into<String>,
+        note_id: impl Into<String>,
         started: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
     ) -> Self {
         Self {
             result: Some(ResultFlag::NoRecording),
-            ..Self::at(session_id, started, speaker_count, &[])
+            ..Self::at(note_id, started, speaker_count, &[])
         }
     }
 
     /// The document of a note that starts at `started`, with no result
     /// flag. A note opened before it records keeps its open time (R16).
     pub fn at(
-        session_id: impl Into<String>,
+        note_id: impl Into<String>,
         started: DateTime<FixedOffset>,
         speaker_count: Option<SpeakerCount>,
         segments: &[Segment],
     ) -> Self {
         Self {
-            session_id: session_id.into(),
+            note_id: note_id.into(),
             started,
             title: None,
             title_source: None,

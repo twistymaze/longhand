@@ -204,7 +204,7 @@ fn a_jobs_row_is_one_job() {
     let work = work_after(|_, conn| {
         add_session(conn, "a", r#"{"state":"saved"}"#);
         conn.execute(
-            "INSERT INTO jobs (session_id, stage) VALUES ('a', 'transcribe')",
+            "INSERT INTO jobs (note_id, stage) VALUES ('a', 'transcribe')",
             [],
         )
         .unwrap();
@@ -261,7 +261,7 @@ fn a_move_notes_row_is_an_open_move() {
     let work = work_after(|_, conn| {
         add_session(conn, "a", r#"{"state":"saved"}"#);
         conn.execute(
-            "INSERT INTO move_notes (session_id, step) VALUES ('a', '\"pending\"')",
+            "INSERT INTO move_notes (note_id, step) VALUES ('a', '\"pending\"')",
             [],
         )
         .unwrap();
@@ -274,7 +274,7 @@ fn a_rename_intents_row_is_one_rename() {
     let work = work_after(|_, conn| {
         add_session(conn, "a", r#"{"state":"saved"}"#);
         conn.execute(
-            "INSERT INTO rename_intents (session_id, from_path, to_path)
+            "INSERT INTO rename_intents (note_id, from_path, to_path)
              VALUES ('a', '/x', '/y')",
             [],
         )
@@ -294,7 +294,7 @@ fn a_summary_publication_row_is_one_publication() {
     let work = work_after(|_, conn| {
         add_session(conn, "a", r#"{"state":"saved"}"#);
         conn.execute(
-            "INSERT INTO result_state (session_id, key, value)
+            "INSERT INTO result_state (note_id, key, value)
              VALUES ('a', 'summary-publication', '\"/x\"'),
                     ('a', 'some-other-key', '1')",
             [],

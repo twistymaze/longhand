@@ -25,7 +25,7 @@ const BOTTOM_OFFSET: f64 = 12.0;
 /// relaunch forgets it (R16).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    pub session_id: String,
+    pub note_id: String,
     /// Whether the pill shows for this note.
     pub shown: bool,
     /// The display of the pill, from its first show for this note (R5).
@@ -38,9 +38,9 @@ pub struct Entry {
 pub fn next_entry(open: Option<&str>, entry: Option<Entry>, switch: bool) -> Option<Entry> {
     let id = open?;
     match entry {
-        Some(entry) if entry.session_id == id => Some(entry),
+        Some(entry) if entry.note_id == id => Some(entry),
         _ => Some(Entry {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             shown: switch,
             display: None,
         }),
@@ -91,8 +91,8 @@ pub fn step(
     let mut entry = next_entry(open, entry, switch)?;
     let action = press_action(Some(&entry));
     match request {
-        Request::Hide(id) if id == entry.session_id => entry.shown = false,
-        Request::Toggle(id) if id == entry.session_id => {
+        Request::Hide(id) if id == entry.note_id => entry.shown = false,
+        Request::Toggle(id) if id == entry.note_id => {
             entry.shown = action == PressAction::Show;
         }
         _ => {}
@@ -133,7 +133,7 @@ pub fn toggle_open_note(app: &AppHandle) {
     };
     match capture.status(app) {
         Ok(status) => {
-            if let Some(id) = status.session_id {
+            if let Some(id) = status.note_id {
                 request(app, Request::Toggle(id));
             }
         }
@@ -206,7 +206,7 @@ fn sync(
         return entry;
     };
     let open = match capture.status(app) {
-        Ok(status) => status.session_id,
+        Ok(status) => status.note_id,
         Err(e) => {
             log::warn!("the recording widget could not read the recording status: {e}");
             return entry;
@@ -737,7 +737,7 @@ mod tests {
 
     fn entry(id: &str, shown: bool) -> Option<Entry> {
         Some(Entry {
-            session_id: id.into(),
+            note_id: id.into(),
             shown,
             display: None,
         })
@@ -776,7 +776,7 @@ mod tests {
         let kept = next_entry(
             Some("a"),
             Some(Entry {
-                session_id: "a".into(),
+                note_id: "a".into(),
                 shown: true,
                 display,
             }),

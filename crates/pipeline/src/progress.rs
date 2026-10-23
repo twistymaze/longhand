@@ -24,16 +24,16 @@ pub struct Snapshot {
     pub speakers: Option<SpeakerProgress>,
 }
 
-pub fn snapshot(store: &SharedStore, session_id: &str) -> Result<Snapshot, StageError> {
-    let segments = lock(store).segments(session_id)?.len();
+pub fn snapshot(store: &SharedStore, note_id: &str) -> Result<Snapshot, StageError> {
+    let segments = lock(store).segments(note_id)?.len();
     let mut done = Vec::new();
     for &stage in STAGES {
-        if checkpoint::is_complete(store, session_id, stage, segments)? {
+        if checkpoint::is_complete(store, note_id, stage, segments)? {
             done.push(stage);
         }
     }
-    let current = lock(store).current_stage(session_id)?;
-    let rows = checkpoint::all(store, session_id, Stage::Transcribe)?;
+    let current = lock(store).current_stage(note_id)?;
+    let rows = checkpoint::all(store, note_id, Stage::Transcribe)?;
     let mut planned = 0;
     let mut finished = 0;
     for (key, payload) in &rows {
@@ -48,10 +48,10 @@ pub fn snapshot(store: &SharedStore, session_id: &str) -> Result<Snapshot, Stage
     let speakers = if current == Some(Stage::Diarize)
         && !done.contains(&Stage::Diarize)
         && matches!(
-            lock(store).session(session_id)?.map(|record| record.state),
+            lock(store).session(note_id)?.map(|record| record.state),
             Some(session_core::SessionState::Processing { .. })
         ) {
-        speakers(store, session_id)?
+        speakers(store, note_id)?
     } else {
         None
     };
@@ -66,19 +66,19 @@ pub fn snapshot(store: &SharedStore, session_id: &str) -> Result<Snapshot, Stage
 /// Remember why `stage` stopped, for a view opened later.
 pub fn record_error(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
     message: &str,
 ) -> Result<(), StageError> {
-    checkpoint::put(store, session_id, stage, ERROR, &message)
+    checkpoint::put(store, note_id, stage, ERROR, &message)
 }
 
 pub fn error(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     stage: Stage,
 ) -> Result<Option<String>, StageError> {
-    checkpoint::get(store, session_id, stage, ERROR)
+    checkpoint::get(store, note_id, stage, ERROR)
 }
 
 /// Under `Stage::Diarize`: the speaker stage's last progress, for a view
@@ -201,11 +201,8 @@ impl<'a> SpeakerMeter<'a> {
 }
 
 /// The last progress that the speaker stage saved, if any.
-pub fn speakers(
-    store: &SharedStore,
-    session_id: &str,
-) -> Result<Option<SpeakerProgress>, StageError> {
-    checkpoint::get(store, session_id, Stage::Diarize, SPEAKER_KEY)
+pub fn speakers(store: &SharedStore, note_id: &str) -> Result<Option<SpeakerProgress>, StageError> {
+    checkpoint::get(store, note_id, Stage::Diarize, SPEAKER_KEY)
 }
 
 #[cfg(test)]

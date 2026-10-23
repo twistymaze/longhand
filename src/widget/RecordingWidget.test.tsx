@@ -7,7 +7,7 @@ import { mockTauri } from "../test/tauri";
 import { RecordingWidget } from "./RecordingWidget";
 
 const idle: RecordingStatus = {
-  session_id: null,
+  note_id: null,
   state: null,
   recording: false,
   reconnecting: false,
@@ -25,7 +25,7 @@ const idle: RecordingStatus = {
   recorded_ms: 0,
 };
 
-const recording: RecordingStatus = { ...idle, session_id: "s1", state: "capturing", recording: true, recorded_ms: 0 };
+const recording: RecordingStatus = { ...idle, note_id: "s1", state: "capturing", recording: true, recorded_ms: 0 };
 const paused: RecordingStatus = { ...recording, paused: true, recorded_ms: 754_000 };
 const interrupted: RecordingStatus = {
   ...recording,
@@ -91,7 +91,7 @@ describe("the pill", () => {
     const { tauri } = open(() => recording);
     await screen.findByRole("button", { name: "Pause" });
     await act(async () => {
-      await tauri.emit("capture-tick", { session_id: "s1", peak: 0.8, speaker_peak: null, recorded_ms: 95_000 });
+      await tauri.emit("capture-tick", { note_id: "s1", peak: 0.8, speaker_peak: null, recorded_ms: 95_000 });
     });
     expect(screen.getByText("00:01:35")).toBeTruthy();
     const bars = [...document.querySelectorAll<HTMLElement>("[data-bar]")];
@@ -158,7 +158,7 @@ describe("the pill", () => {
     const hide = screen.getByRole("button", { name: "Hide" });
     expect(hide.dataset.visible).toBe("true");
     await user.click(hide);
-    expect(tauri.calls.filter((c) => c.cmd === "widget_hide").map((c) => c.args)).toEqual([{ sessionId: "s1" }]);
+    expect(tauri.calls.filter((c) => c.cmd === "widget_hide").map((c) => c.args)).toEqual([{ noteId: "s1" }]);
     expect(called(tauri, "widget_open_note")).toBe(0);
   });
 

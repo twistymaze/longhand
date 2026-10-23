@@ -13,13 +13,13 @@ use sha2::{Digest, Sha256};
 use crate::fsync::{sync_dir, sync_file};
 
 /// The copy of the save's Copying step: [`copy_verified`], with the
-/// marker of `session_id` written into `to` first. A copy that stops part
+/// marker of `note_id` written into `to` first. A copy that stops part
 /// way, and whose removal fails, then still names its session, so the next
 /// save can remove it.
-pub fn copy_staging(from: &Path, to: &Path, session_id: &str, skip: &[&str]) -> io::Result<u64> {
+pub fn copy_staging(from: &Path, to: &Path, note_id: &str, skip: &[&str]) -> io::Result<u64> {
     std::fs::create_dir(to)?;
     let marker = to.join(crate::MARKER);
-    std::fs::write(&marker, session_id)?;
+    std::fs::write(&marker, note_id)?;
     sync_file(&marker)?;
     let skip: Vec<&str> = skip.iter().copied().chain([crate::MARKER]).collect();
     let mut bytes = 0;

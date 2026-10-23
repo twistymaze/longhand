@@ -22,10 +22,10 @@ fn add_session(conn: &Connection, id: &str) {
     .unwrap();
 }
 
-fn add_note(conn: &Connection, session_id: Option<&str>, text: &str, anchor: &str) {
+fn add_note(conn: &Connection, note_id: Option<&str>, text: &str, anchor: &str) {
     conn.execute(
         "INSERT INTO notes (session_id, text, anchor) VALUES (?1, ?2, ?3)",
-        params![session_id, text, anchor],
+        params![note_id, text, anchor],
     )
     .unwrap();
 }
@@ -211,7 +211,7 @@ fn migration_six_gives_existing_segments_one_channel_and_no_capture_choice() {
     let conn = Connection::open(&path).unwrap();
     let channels: i64 = conn
         .query_row(
-            "SELECT channels FROM segments WHERE session_id = 's1'",
+            "SELECT channels FROM segments WHERE note_id = 's1'",
             [],
             |r| r.get(0),
         )
@@ -677,4 +677,244 @@ fn migration_twenty_one_gives_existing_notes_an_empty_app_set() {
             }),
         }
     );
+}
+
+// ------------------------------------------------ migration 0022: note_id
+
+/// The tables that had a `session_id` column at version 21.
+const NOTE_ID_TABLES: [&str; 10] = [
+    "segments",
+    "jobs",
+    "checkpoints",
+    "rename_intents",
+    "owed_renames",
+    "recognition_output",
+    "recognition_epochs",
+    "result_state",
+    "move_notes",
+    "type_moves",
+];
+
+/// The hashes that builds with 21 migrations recorded. An applied migration
+/// must not change: `inspect` compares these rows with the build hashes.
+const VERSION_21_HASHES: [&str; 21] = [
+    "bcf965daa09d177a7d11ab5102cf3b191b0182f9ed1ff3a7695ff4bee102b757",
+    "5765eb8b34146e3f7048a003cabab84b087532ab94ee810420f2443f928566c0",
+    "5b1b1b75f35a9d23bc470c2c27001e084579624b2fe807078a292dab717b90bd",
+    "b41e7dccc79bf380dc6a59e2d9f500ae60791258272ffb5aa8a99bc2792d65ef",
+    "653542d83cee9fe2276a5a634c72993d7a3bc3ae71aabe4e18b3a5c71e5a7b0f",
+    "e7c16f194350697bf915d42619f54586d6f5639e4cbc7a914915b26a38dfe087",
+    "5c12d00b83f7f3adf118844c16773c646c9447054b7c15d9f833a448a03e8e3b",
+    "2fc87df29e508ef2ceb0472542fd3247f79a09aeaa41eb95f7942246afe9bf8f",
+    "94a10f12e6280ec10fd6c7e58a3d3f170ede9fa817c42daa1000a749325a4275",
+    "5b03f2ca9145368fd5e104e08540e6c7a55e5be1e369ecdbf623a0cc6d138fe1",
+    "26509e63a8cfd020e3a0b790b84034d035421b2bfc97f52b158eb890b6803b41",
+    "58ab795e83a0ba808ef4425425e545cd82f2500a9656470601e9a7295f7089b0",
+    "0b9165d809580bcd9251b5b42974ca7eeb7215f4e32375556c36cfbebd826d82",
+    "64cf24b97fa28f96e55a6c6c72ae1c8f5fa31411a541f1c5cf14c7ab0f7fb589",
+    "6f5a3c4533602a45171e3309d5279d54fc3f2af584c1ae8bd2778ab049c5ff15",
+    "8b1703d315ae28105ddd0f5a1d30a08756f2b094081619ed2ef3a92dcc05333f",
+    "9f8f41e6ff367db227adb42d130d4203524b42797e89e8ddc3c14209217cdd64",
+    "324bda22e9d6d731116c7561242b4c701614e2462e08dd943a8895068623a7eb",
+    "08fe9888edc0af2cfadc3e5e758cd20f62e40546d54b9fe3cb4bd3b777d68dd9",
+    "72e7924113bd19e371e4bada50463a38f890e5d9d8800f052ca89bc5580cca56",
+    "28ec11769db91f0e1d8804f576356c2725d19433c674a2edbbde6a5678596bae",
+];
+
+/// A database as the app audio work left it: migrations 0001 to 0021
+/// applied.
+fn version_twenty_one(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 21)
+        .unwrap();
+    conn
+}
+
+/// A recognition block that `validate` accepts.
+fn recognition_block() -> session_core::recognition::OutputBlock {
+    use session_core::recognition::{Coverage, OutputBlock, SampleRange, SpeakerScope};
+    let range = SampleRange {
+        start: 0,
+        end: 16000,
+    };
+    OutputBlock {
+        key: "window-0".into(),
+        scope: SpeakerScope {
+            generation: "g".into(),
+            epoch: 1,
+        },
+        revision: 1,
+        coverage: Coverage {
+            received: Some(range),
+            computed: Some(range),
+            provisional: None,
+            committed: Some(range),
+        },
+        rows: vec![],
+        speakers: vec![],
+    }
+}
+
+/// Add the note `id` and one row for it in each table of [`NOTE_ID_TABLES`],
+/// with the version-21 column name.
+fn add_a_row_in_each_table(conn: &Connection, id: &str) {
+    add_session(conn, id);
+    let statements = [
+        "INSERT INTO segments
+         (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file)
+         VALUES (?1, 0, 0, 60000, '2026-09-22T10:00:00-05:00',
+                 '2026-09-22T10:01:00-05:00', 'audio/segment-01.opus')",
+        "INSERT INTO jobs (session_id, stage) VALUES (?1, 'transcribe')",
+        "INSERT INTO checkpoints (session_id, stage, key, payload)
+         VALUES (?1, 'transcribe', 'w1', '{}')",
+        "INSERT INTO rename_intents (session_id, from_path, to_path) VALUES (?1, '/a', '/b')",
+        "INSERT INTO owed_renames (session_id) VALUES (?1)",
+        "INSERT INTO recognition_epochs (session_id, generation, next_epoch) VALUES (?1, 'g', 1)",
+        "INSERT INTO result_state (session_id, key, value) VALUES (?1, 'k', '1')",
+        "INSERT INTO move_notes (session_id, step) VALUES (?1, '{\"step\":\"pending\"}')",
+        "INSERT INTO type_moves (session_id, to_type, changed_at)
+         VALUES (?1, 'Interview', '2026-09-22T10:00:00-05:00')",
+    ];
+    for sql in statements {
+        conn.execute(sql, [id]).unwrap();
+    }
+    conn.execute(
+        "INSERT INTO recognition_output (session_id, generation, key, revision, payload)
+         VALUES (?1, 'g', 'window-0', 1, ?2)",
+        params![id, serde_json::to_string(&recognition_block()).unwrap()],
+    )
+    .unwrap();
+}
+
+/// The number of rows for `id` in all tables of [`NOTE_ID_TABLES`], after
+/// migration 0022.
+fn rows_of(conn: &Connection, id: &str) -> i64 {
+    NOTE_ID_TABLES
+        .iter()
+        .map(|table| {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE note_id = ?1"),
+                [id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        })
+        .sum()
+}
+
+#[test]
+fn migration_twenty_two_keeps_the_rows_of_each_table_with_their_note_id() {
+    use session_core::Stage;
+    use session_core::jobs::{MoveStep, RenameIntent};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    add_a_row_in_each_table(&version_twenty_one(&path), "s1");
+
+    let mut store = Store::open(&path).unwrap();
+    let segments = store.segments("s1").unwrap();
+    assert_eq!(segments.len(), 1);
+    assert_eq!(segments[0].audio_file, "audio/segment-01.opus");
+    assert_eq!(store.current_stage("s1").unwrap(), Some(Stage::Transcribe));
+    assert_eq!(
+        store
+            .checkpoint_value("s1", Stage::Transcribe, "w1")
+            .unwrap(),
+        Some("{}".to_string())
+    );
+    assert_eq!(
+        store.rename_intent("s1").unwrap(),
+        Some(RenameIntent {
+            from: "/a".into(),
+            to: "/b".into(),
+            temp: None,
+        })
+    );
+    assert_eq!(store.owed_renames().unwrap(), ["s1"]);
+    assert_eq!(
+        store.recognition_block("s1", "g", "window-0").unwrap(),
+        Some(recognition_block())
+    );
+    assert_eq!(
+        store.result_state("s1", "k").unwrap(),
+        Some(serde_json::json!(1))
+    );
+    assert_eq!(store.move_step("s1").unwrap(), Some(MoveStep::Pending));
+    assert_eq!(
+        store.type_move("s1").unwrap().map(|m| m.to),
+        Some(Some("Interview".to_string()))
+    );
+    // The stored next epoch is 1, so a restart gives epoch 2.
+    let replay = store.restart_recognition_epoch("s1", "g", 0, 0).unwrap();
+    assert_eq!(replay.scope.epoch, 2);
+    drop(store);
+    assert_eq!(user_version(&path), 22);
+}
+
+#[test]
+fn after_migration_twenty_two_no_table_has_the_old_id_column() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    drop(Store::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.name, p.name FROM sqlite_master AS m, pragma_table_info(m.name) AS p
+             WHERE m.type = 'table' AND p.name IN ('session_id', 'note_id')
+             ORDER BY m.name",
+        )
+        .unwrap();
+    let columns: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let mut expected: Vec<(String, String)> = NOTE_ID_TABLES
+        .iter()
+        .map(|table| (table.to_string(), "note_id".to_string()))
+        .collect();
+    expected.sort();
+    assert_eq!(columns, expected);
+}
+
+#[test]
+fn after_migration_twenty_two_a_deleted_note_still_deletes_its_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_one(&path);
+        add_a_row_in_each_table(&conn, "s1");
+        add_a_row_in_each_table(&conn, "s2");
+    }
+    drop(Store::open(&path).unwrap());
+    let conn = Connection::open(&path).unwrap();
+    conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+    assert_eq!(rows_of(&conn, "s1"), NOTE_ID_TABLES.len() as i64);
+    conn.execute("DELETE FROM sessions WHERE id = 's1'", [])
+        .unwrap();
+    assert_eq!(rows_of(&conn, "s1"), 0);
+    assert_eq!(rows_of(&conn, "s2"), NOTE_ID_TABLES.len() as i64);
+}
+
+/// A database that a build with 21 migrations made is Longhand's own before
+/// and after migration 0022, because migrations 1 to 21 keep their hashes.
+#[test]
+fn migrations_one_to_twenty_one_keep_their_hashes() {
+    use session_core::inspect::{Inspection, inspect};
+    use session_core::schema;
+    assert_eq!(schema::migration_hashes()[..21], VERSION_21_HASHES);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_one(&path);
+        let recorded: Vec<String> = VERSION_21_HASHES.iter().map(|h| h.to_string()).collect();
+        schema::record_applied_migrations(&conn, &recorded).unwrap();
+        add_session(&conn, "s1");
+    }
+    assert_eq!(inspect(dir.path()), Inspection::Own);
+    drop(Store::open(&path).unwrap());
+    assert_eq!(applied_rows(&path), build_rows());
+    assert_eq!(user_version(&path), 22);
+    assert_eq!(inspect(dir.path()), Inspection::Own);
 }

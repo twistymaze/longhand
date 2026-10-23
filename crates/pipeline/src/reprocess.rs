@@ -241,16 +241,16 @@ fn language_name(code: &str) -> String {
         .map_or_else(|| code.to_string(), |(_, name)| (*name).to_string())
 }
 
-/// Check if a Transcribe Again run can start on `session_id` now, and give
+/// Check if a Transcribe Again run can start on `note_id` now, and give
 /// its execution. This is read-only: the row does not follow its folder.
 pub fn check(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     guards: Guards,
     settings: &RecognitionConfig,
     ready: &dyn Fn(&ExecutionSpec) -> Readiness,
 ) -> Result<ExecutionSpec, Refusal> {
-    resolve_run(store, session_id, guards, settings, None, ready).map(|(spec, _)| spec)
+    resolve_run(store, note_id, guards, settings, None, ready).map(|(spec, _)| spec)
 }
 
 /// Queue a saved note for a Transcribe Again run (R15, KTD14). The row
@@ -261,16 +261,16 @@ pub fn check(
 /// caller holds the store lock.
 pub fn queue(
     store: &mut Store,
-    session_id: &str,
+    note_id: &str,
     guards: Guards,
     settings: &RecognitionConfig,
     model_id: &str,
     ready: &dyn Fn(&ExecutionSpec) -> Readiness,
 ) -> Result<ExecutionSpec, Refusal> {
     if !guards.regenerating {
-        crate::follow::follow_folder(store, session_id, false)?;
+        crate::follow::follow_folder(store, note_id, false)?;
     }
-    let (spec, home) = resolve_run(store, session_id, guards, settings, Some(model_id), ready)?;
+    let (spec, home) = resolve_run(store, note_id, guards, settings, Some(model_id), ready)?;
     // The save compares the records of the note with this value (KTD4). A
     // change to the records that another computer makes during the run then
     // keeps the previous result. An edit of a `.md` file, a title proposal
@@ -283,7 +283,7 @@ pub fn queue(
         None => None,
     };
     store.begin_reprocess(
-        session_id,
+        note_id,
         &spec.config.asr_model,
         &Event::UserTranscribeAgain {
             at: chrono::Local::now().fixed_offset(),
@@ -302,15 +302,15 @@ pub fn queue(
 /// folder of the note.
 fn resolve_run(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     guards: Guards,
     settings: &RecognitionConfig,
     model_id: Option<&str>,
     ready: &dyn Fn(&ExecutionSpec) -> Readiness,
 ) -> Result<(ExecutionSpec, Option<String>), Refusal> {
     let record = store
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))?;
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))?;
     if guards.regenerating {
         return Err(Cause::Regenerating.into());
     }
@@ -318,14 +318,12 @@ fn resolve_run(
         return Err(Cause::Recording.into());
     }
     if record.state != SessionState::Saved {
-        return Err(
-            if store.transcribe_again_marks(session_id)?.model.is_some() {
-                Cause::AlreadyQueued
-            } else {
-                Cause::NotSaved
-            }
-            .into(),
-        );
+        return Err(if store.transcribe_again_marks(note_id)?.model.is_some() {
+            Cause::AlreadyQueued
+        } else {
+            Cause::NotSaved
+        }
+        .into());
     }
     // A note in the old layout waits for the conversion (KTD6).
     if record
@@ -337,7 +335,7 @@ fn resolve_run(
     }
     // Removed audio does not come back, so its reason differs from the
     // reason for audio that the sync can still deliver (R14).
-    match save::audio_state(store, session_id)? {
+    match save::audio_state(store, note_id)? {
         save::AudioState::Present => {}
         save::AudioState::Removed => return Err(Cause::RemovedAudio.into()),
         save::AudioState::Waiting => return Err(Cause::MissingAudio.into()),

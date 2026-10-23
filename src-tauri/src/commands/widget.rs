@@ -5,12 +5,12 @@ use tauri::AppHandle;
 use crate::widget::{self, Request};
 
 /// The × on the pill: hide it until the note stops (R12). The note does not
-/// change. `session_id` is the note that the pill showed when the user
+/// change. `note_id` is the note that the pill showed when the user
 /// clicked, so a click does not hide the pill of a later note.
 #[tauri::command]
 #[specta::specta]
-pub fn widget_hide(app: AppHandle, session_id: String) {
-    widget::request(&app, Request::Hide(session_id));
+pub fn widget_hide(app: AppHandle, note_id: String) {
+    widget::request(&app, Request::Hide(note_id));
 }
 
 /// A click on the pill outside its controls: show the main window with the

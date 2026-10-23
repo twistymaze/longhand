@@ -14,8 +14,8 @@ export type Notice = { tone: "caution" | "negative"; text: string; settings?: bo
 /// only an error. A folder that keeps its old name for now gets no
 /// notice, because the app renames it later without help (CLAUDE.md, UI
 /// design).
-export async function commitTitle(sessionId: string, title: string): Promise<Notice | null> {
-  const result = await commands.renameSession(sessionId, title);
+export async function commitTitle(noteId: string, title: string): Promise<Notice | null> {
+  const result = await commands.renameSession(noteId, title);
   if (result.status === "error") return { tone: "negative", text: sentence(result.error) };
   return null;
 }
@@ -25,14 +25,14 @@ export type TitleFieldHandle = { edit: () => void };
 export const TitleField = forwardRef<
   TitleFieldHandle,
   {
-    sessionId: string;
+    noteId: string;
     title: string | null;
     /// The start time, shown while the session has no title.
     placeholder: string;
     /// The rename completed, with a notice for the user or null.
     onRenamed: (notice: Notice | null) => void;
   }
->(function TitleField({ sessionId, title, placeholder, onRenamed }, ref) {
+>(function TitleField({ noteId, title, placeholder, onRenamed }, ref) {
   const [draft, setDraft] = useState(title ?? "");
   const input = useRef<HTMLInputElement>(null);
   const cancelled = useRef(false);
@@ -62,7 +62,7 @@ export const TitleField = forwardRef<
     const text = draft.trim();
     setDraft(text);
     if (text === (title ?? "")) return;
-    onRenamed(await commitTitle(sessionId, text));
+    onRenamed(await commitTitle(noteId, text));
   };
 
   return (

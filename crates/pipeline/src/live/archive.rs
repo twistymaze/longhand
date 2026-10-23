@@ -195,7 +195,7 @@ pub fn save_proof(
     let guard = crate::lock(store);
     let previous: Option<SourceProof> = guard
         .checkpoint_value(
-            &config.session_id,
+            &config.note_id,
             session_core::Stage::Transcribe,
             &key(config.segment),
         )?
@@ -203,14 +203,14 @@ pub fn save_proof(
         .transpose()?;
     if previous.is_none_or(|old| old.samples <= proof.samples) {
         guard.put_checkpoint(
-            &config.session_id,
+            &config.note_id,
             session_core::Stage::Transcribe,
             &key(config.segment),
             &serde_json::to_string(&proof)?,
         )?;
         if let Some(spec) = &config.snapshot {
             guard.put_checkpoint(
-                &config.session_id,
+                &config.note_id,
                 session_core::Stage::Transcribe,
                 &format!("live-snapshot-{:08}", config.segment),
                 &serde_json::to_string(spec)?,

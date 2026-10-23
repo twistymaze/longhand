@@ -22,8 +22,19 @@ class ListNotesTests(support.StorageFolderTest):
         )
         self.assertEqual(notes[HIRING]["type"], "Meetings")
         self.assertEqual(notes[BUDGET]["type"], "General")
-        self.assertEqual(notes[BUDGET]["session_id"], "note-budget-review")
+        self.assertEqual(notes[BUDGET]["note_id"], "note-budget-review")
         self.assertEqual(notes[BUDGET]["tags"], ["Finance", "Team::Planning"])
+        self.assertEqual(notes[BUDGET]["state"], "ready")
+
+    def test_a_layout_1_record_with_session_id_is_listed_with_its_note_id(self):
+        record = json.loads(self.read(BUDGET, "longhand.json"))
+        record.pop("note_id", None)
+        record["layout"] = 1
+        record["session_id"] = "note-budget-review"
+        self.write(json.dumps(record, indent=2, sort_keys=True) + "\n", BUDGET, "longhand.json")
+        notes = {note["path"]: note for note in self.listed()}
+        self.assertEqual(notes[BUDGET]["note_id"], "note-budget-review")
+        self.assertNotIn("session_id", notes[BUDGET])
         self.assertEqual(notes[BUDGET]["state"], "ready")
 
     def test_a_session_md_with_a_byte_order_mark_is_not_ready(self):

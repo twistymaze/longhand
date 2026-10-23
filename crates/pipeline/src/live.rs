@@ -96,7 +96,7 @@ impl LiveRow {
 /// Save `live` as part `part` of `segment`.
 pub fn save_part(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     segment: u32,
     part: u32,
     live: &LivePart,
@@ -110,7 +110,7 @@ pub fn save_part(
     };
     checkpoint::put(
         store,
-        session_id,
+        note_id,
         Stage::Transcribe,
         &checkpoint::live_key(segment, part),
         &row,
@@ -119,9 +119,9 @@ pub fn save_part(
 }
 
 /// Every live row of a session, in segment and part order.
-pub fn rows(store: &SharedStore, session_id: &str) -> Result<Vec<LiveRow>, StageError> {
+pub fn rows(store: &SharedStore, note_id: &str) -> Result<Vec<LiveRow>, StageError> {
     let mut out = Vec::new();
-    for (key, payload) in checkpoint::all(store, session_id, Stage::Transcribe)? {
+    for (key, payload) in checkpoint::all(store, note_id, Stage::Transcribe)? {
         if key.contains("-live-") {
             out.push(serde_json::from_str::<LiveRow>(&payload)?);
         }
@@ -133,10 +133,10 @@ pub fn rows(store: &SharedStore, session_id: &str) -> Result<Vec<LiveRow>, Stage
 /// The live rows of one segment, in part order.
 pub fn segment_rows(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     segment: u32,
 ) -> Result<Vec<LiveRow>, StageError> {
-    let mut out = rows(store, session_id)?;
+    let mut out = rows(store, note_id)?;
     out.retain(|r| r.segment == segment);
     Ok(out)
 }
@@ -145,29 +145,29 @@ pub fn segment_rows(
 /// rows it deleted.
 pub fn delete_segment(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     segment: u32,
 ) -> Result<usize, StageError> {
     let prefix = checkpoint::live_prefix(segment);
     let guard = lock(store);
     let keys: Vec<String> = guard
-        .checkpoints(session_id, Stage::Transcribe)?
+        .checkpoints(note_id, Stage::Transcribe)?
         .into_iter()
         .map(|(k, _)| k)
         .filter(|k| k.starts_with(&prefix))
         .collect();
     for key in &keys {
-        guard.delete_checkpoint(session_id, Stage::Transcribe, key)?;
+        guard.delete_checkpoint(note_id, Stage::Transcribe, key)?;
     }
     Ok(keys.len())
 }
 
 /// The number of the next part of `segment`.
-fn next_part(store: &SharedStore, session_id: &str, segment: u32) -> u32 {
-    match segment_rows(store, session_id, segment) {
+fn next_part(store: &SharedStore, note_id: &str, segment: u32) -> u32 {
+    match segment_rows(store, note_id, segment) {
         Ok(rows) => rows.last().map_or(0, |r| r.part + 1),
         Err(e) => {
-            log::warn!("could not read the live rows of {session_id}: {e}");
+            log::warn!("could not read the live rows of {note_id}: {e}");
             0
         }
     }
@@ -338,7 +338,7 @@ impl LiveSink for Silent {}
 /// One segment's live worker.
 #[derive(Debug, Clone)]
 pub struct LiveConfig {
-    pub session_id: String,
+    pub note_id: String,
     pub segment: u32,
     /// The note's model (KTD2).
     pub model: String,
@@ -362,9 +362,9 @@ impl LiveConfig {
         self
     }
 
-    pub fn new(session_id: &str, segment: u32, model: &str, sample_rate: u32) -> Self {
+    pub fn new(note_id: &str, segment: u32, model: &str, sample_rate: u32) -> Self {
         Self {
-            session_id: session_id.to_string(),
+            note_id: note_id.to_string(),
             segment,
             model: model.to_string(),
             sample_rate: sample_rate.max(1),
@@ -417,7 +417,7 @@ pub fn run(
     inputs: &Inputs,
     sink: &mut dyn LiveSink,
 ) {
-    let id = &config.session_id;
+    let id = &config.note_id;
     sink.status(LiveStatus::Starting);
     let mut guard = match engine.hold_config(config) {
         Ok(Some(guard)) => guard,
@@ -489,17 +489,17 @@ fn wait_end(inputs: &Inputs) -> Option<LiveEnd> {
 }
 
 fn discard(store: &SharedStore, config: &LiveConfig) {
-    match delete_segment(store, &config.session_id, config.segment) {
+    match delete_segment(store, &config.note_id, config.segment) {
         Ok(0) => {}
         Ok(n) => log::info!(
             "deleted {n} live part(s) of the discarded segment {} of {}",
             config.segment,
-            config.session_id
+            config.note_id
         ),
         Err(e) => log::warn!(
             "could not delete the live parts of segment {} of {}: {e}",
             config.segment,
-            config.session_id
+            config.note_id
         ),
     }
 }
@@ -872,7 +872,7 @@ impl<'a> Work<'a> {
         if part.end_ms <= part.start_ms {
             return;
         }
-        let id = &self.config.session_id;
+        let id = &self.config.note_id;
         match save_part(self.store, id, self.config.segment, self.part, &part) {
             Ok(row) => {
                 self.part += 1;
@@ -1076,7 +1076,7 @@ impl Workers {
                             let message = error.to_string();
                             let _ = checkpoint::put(
                                 native_store,
-                                &native_config.session_id,
+                                &native_config.note_id,
                                 Stage::Transcribe,
                                 &format!("live-failure-{:08}", native_config.segment),
                                 &message,

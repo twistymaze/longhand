@@ -39,20 +39,20 @@ pub const LOW_COVERAGE: &str = "low-coverage";
 /// Save or remove the low-coverage mark of a note.
 pub(crate) fn mark_low_coverage(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     low: bool,
 ) -> Result<(), StageError> {
     if low {
-        checkpoint::put(store, session_id, Stage::Verify, LOW_COVERAGE, &true)
+        checkpoint::put(store, note_id, Stage::Verify, LOW_COVERAGE, &true)
     } else {
-        lock(store).delete_checkpoint(session_id, Stage::Verify, LOW_COVERAGE)?;
+        lock(store).delete_checkpoint(note_id, Stage::Verify, LOW_COVERAGE)?;
         Ok(())
     }
 }
 
 /// The last verification found too little text for the voiced time.
-pub fn low_coverage(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
-    Ok(checkpoint::get::<bool>(store, session_id, Stage::Verify, LOW_COVERAGE)?.unwrap_or(false))
+pub fn low_coverage(store: &SharedStore, note_id: &str) -> Result<bool, StageError> {
+    Ok(checkpoint::get::<bool>(store, note_id, Stage::Verify, LOW_COVERAGE)?.unwrap_or(false))
 }
 
 /// What verification found in one segment.
@@ -93,16 +93,16 @@ pub struct VerifyFailure {
 
 pub fn run(
     store: &SharedStore,
-    session_id: &str,
+    note_id: &str,
     session_dir: &Path,
     segments: &[Segment],
 ) -> Result<(), StageError> {
-    let windows = results(store, session_id)?;
+    let windows = results(store, note_id)?;
     let mut failing = Vec::new();
     for segment in segments {
         let plan: WindowPlan = checkpoint::get(
             store,
-            session_id,
+            note_id,
             Stage::Transcribe,
             &checkpoint::plan_key(segment.index),
         )?
@@ -126,7 +126,7 @@ pub fn run(
         let coverage = measure(segment.index, &speech, &text);
         let judged = judge(segment.index, &speech, &text, &refilled_spans(&own));
         log::info!(
-            "coverage of {session_id} segment {}: {:.1}% of {} s voiced, worst gap {} s, \
+            "coverage of {note_id} segment {}: {:.1}% of {} s voiced, worst gap {} s, \
              {} s of sound without words after a gap fill",
             segment.index,
             coverage.ratio() * 100.0,
@@ -139,7 +139,7 @@ pub fn run(
         }
         checkpoint::put(
             store,
-            session_id,
+            note_id,
             Stage::Verify,
             &checkpoint::segment_key(segment.index),
             &coverage,
@@ -150,12 +150,12 @@ pub fn run(
     // words is better than a note that does not finish.
     if !failing.is_empty() {
         log::warn!(
-            "{session_id}: {}; the note is saved with the text that it has",
+            "{note_id}: {}; the note is saved with the text that it has",
             describe(&failing, segments)
         );
     }
-    mark_low_coverage(store, session_id, !failing.is_empty())?;
-    checkpoint::mark_complete(store, session_id, Stage::Verify, segments.len())
+    mark_low_coverage(store, note_id, !failing.is_empty())?;
+    checkpoint::mark_complete(store, note_id, Stage::Verify, segments.len())
 }
 
 /// The spans carrying decoded text, within the segment: only timestamped
@@ -380,26 +380,26 @@ fn clock(ms: u64) -> String {
 /// speech, and the completion of every stage after them, so the runner
 /// re-transcribes only those windows, joins again and verifies again. The
 /// live rows stay (KTD7): only window rows are deleted.
-pub fn prepare_retry(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
-    let Some(failure) = checkpoint::get::<VerifyFailure>(store, session_id, Stage::Verify, FAILED)?
+pub fn prepare_retry(store: &SharedStore, note_id: &str) -> Result<bool, StageError> {
+    let Some(failure) = checkpoint::get::<VerifyFailure>(store, note_id, Stage::Verify, FAILED)?
     else {
         return Ok(false);
     };
     let guard = lock(store);
     for (segment, window) in &failure.redo {
         guard.delete_checkpoint(
-            session_id,
+            note_id,
             Stage::Transcribe,
             &checkpoint::window_key(*segment, *window),
         )?;
         guard.delete_checkpoint(
-            session_id,
+            note_id,
             Stage::Transcribe,
             &checkpoint::segment_done_key(*segment),
         )?;
     }
-    guard.delete_checkpoint(session_id, Stage::Transcribe, checkpoint::DONE)?;
-    guard.delete_checkpoint(session_id, Stage::Join, checkpoint::DONE)?;
-    guard.clear_checkpoints(session_id, Stage::Verify)?;
+    guard.delete_checkpoint(note_id, Stage::Transcribe, checkpoint::DONE)?;
+    guard.delete_checkpoint(note_id, Stage::Join, checkpoint::DONE)?;
+    guard.clear_checkpoints(note_id, Stage::Verify)?;
     Ok(true)
 }

@@ -74,15 +74,15 @@ const START_OVER_STAGES: [Stage; 4] = [
 /// True when a Retry continued from the checkpoints and the same stage
 /// failed again. The next Retry then starts over from the recorded audio,
 /// so that a checkpoint the run cannot use does not stop the note forever.
-pub fn retry_starts_over(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
+pub fn retry_starts_over(store: &SharedStore, note_id: &str) -> Result<bool, StageError> {
     let store = lock(store);
     let Some(SessionState::ProcessingFailed { stage, .. }) =
-        store.session(session_id)?.map(|r| r.state)
+        store.session(note_id)?.map(|r| r.state)
     else {
         return Ok(false);
     };
     Ok(START_OVER_STAGES.contains(&stage)
-        && store.result_state(session_id, RETRIED_STAGE)? == Some(serde_json::to_value(stage)?))
+        && store.result_state(note_id, RETRIED_STAGE)? == Some(serde_json::to_value(stage)?))
 }
 
 const POLL: Duration = Duration::from_secs(2);
@@ -172,7 +172,7 @@ pub struct Environment {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RunnerEvent {
     StageStarted {
-        session_id: String,
+        note_id: String,
         stage: Stage,
     },
     /// What the note waits for changed (KTD10). `Some` when the note
@@ -182,14 +182,14 @@ pub enum RunnerEvent {
     /// again. A `StageStarted` event also ends a wait. [`Runner::waits`]
     /// gives the current wait of each note.
     Waits {
-        session_id: String,
+        note_id: String,
         wait: Option<Wait>,
     },
     /// Per window of the transcribe stage, and per call of the summarize
     /// stage. `summary_step` is the step of a summary in parts, and `None`
     /// for the transcribe stage.
     Progress {
-        session_id: String,
+        note_id: String,
         stage: Stage,
         segment: u32,
         summary_step: Option<summarize::SummaryStep>,
@@ -199,65 +199,65 @@ pub enum RunnerEvent {
     /// The speaker stage's progress over the whole note (KTD1). A new
     /// attempt replaces the progress of an earlier one.
     SpeakerProgress {
-        session_id: String,
+        note_id: String,
         progress: crate::progress::SpeakerProgress,
     },
     StageFailed {
-        session_id: String,
+        note_id: String,
         stage: Stage,
         message: String,
     },
     Cancelled {
-        session_id: String,
+        note_id: String,
     },
     /// Diarization failed; the transcript goes ahead without speaker marks.
     SpeakersUnavailable {
-        session_id: String,
+        note_id: String,
         message: String,
     },
     /// The credential store is locked; the session waits for the user.
     Blocked {
-        session_id: String,
+        note_id: String,
         message: String,
     },
     /// A model is missing; the session keeps its place in the queue.
     Waiting {
-        session_id: String,
+        note_id: String,
         what: String,
     },
     /// Summarization failed; the session is saved with a stub summary (KD13).
     SummaryUnavailable {
-        session_id: String,
+        note_id: String,
         message: String,
     },
     /// The destination cannot take the session; it waits, whole, in the
     /// working location (R22b).
     AwaitingDestination {
-        session_id: String,
+        note_id: String,
         problem: String,
     },
     /// In the destination under its final name. `copied` when the volumes
     /// differed and the session was copied rather than moved in one step.
     Saved {
-        session_id: String,
+        note_id: String,
         path: PathBuf,
         copied: bool,
     },
     /// A Transcribe Again run failed before its save. The session is saved
     /// with its previous transcript and summary (R19).
     TranscribeAgainFailed {
-        session_id: String,
+        note_id: String,
         stage: Stage,
         message: String,
     },
     /// Every stage has run.
     Finished {
-        session_id: String,
+        note_id: String,
     },
     /// The title job gave the saved note a proposed title (KTD13). Its
     /// folder has the new name, or takes it when the work on it ends.
     TitleProposed {
-        session_id: String,
+        note_id: String,
         title: String,
     },
 }
@@ -406,10 +406,10 @@ fn held<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Tell the app the wait of `session_id` (KTD10). `None` ends the wait.
-fn tell_wait(env: &Environment, session_id: &str, wait: Option<Wait>) {
+/// Tell the app the wait of `note_id` (KTD10). `None` ends the wait.
+fn tell_wait(env: &Environment, note_id: &str, wait: Option<Wait>) {
     (env.events)(RunnerEvent::Waits {
-        session_id: session_id.to_string(),
+        note_id: note_id.to_string(),
         wait,
     });
 }
@@ -421,7 +421,7 @@ fn tell_wait(env: &Environment, session_id: &str, wait: Option<Wait>) {
 struct StageControl {
     cancel: CancellationToken,
     env: Arc<Environment>,
-    session_id: String,
+    note_id: String,
     power: ActivePower,
     /// True for an audio stage: the stage waits while capture is active.
     pause: bool,
@@ -432,7 +432,7 @@ impl StageControl {
     /// work on it stops at the next boundary even without a `cancel`.
     fn taken_back(&self) -> bool {
         !matches!(
-            lock(&self.env.store).session(&self.session_id),
+            lock(&self.env.store).session(&self.note_id),
             Ok(Some(record)) if matches!(record.state, SessionState::Processing { .. })
         )
     }
@@ -441,7 +441,7 @@ impl StageControl {
 impl Control for StageControl {
     fn proceed(&self) -> Result<(), StageError> {
         // The app shows the pause and its end (KTD10).
-        let tell = |wait| tell_wait(&self.env, &self.session_id, wait);
+        let tell = |wait| tell_wait(&self.env, &self.note_id, wait);
         let mut paused = false;
         loop {
             if self.cancel.is_cancelled() || self.taken_back() {
@@ -527,11 +527,11 @@ impl Runner {
         self.wake.notify_one();
     }
 
-    /// Stop work on `session_id` at its next checkpoint (a resume took it
+    /// Stop work on `note_id` at its next checkpoint (a resume took it
     /// back), also while it waits for the summary queue. Completed
     /// checkpoints stand.
-    pub fn cancel(&self, session_id: &str) {
-        if let Some(token) = held(&self.current).get(session_id) {
+    pub fn cancel(&self, note_id: &str) {
+        if let Some(token) = held(&self.current).get(note_id) {
             token.cancel();
         }
     }
@@ -541,36 +541,36 @@ impl Runner {
     /// the windows that missed speech, so only those are transcribed again.
     /// With `start_over`, the recognition work is removed first and the run
     /// starts again from the recorded audio (see [`retry_starts_over`]).
-    pub fn retry(&self, session_id: &str, start_over: bool) -> Result<(), StageError> {
-        let failed = lock(&self.env.store).session(session_id)?.map(|r| r.state);
+    pub fn retry(&self, note_id: &str, start_over: bool) -> Result<(), StageError> {
+        let failed = lock(&self.env.store).session(note_id)?.map(|r| r.state);
         if let Some(SessionState::ProcessingFailed { stage, .. }) = failed
             && START_OVER_STAGES.contains(&stage)
         {
             let mut store = lock(&self.env.store);
             if start_over {
                 log::info!(
-                    "{session_id} starts over from the recorded audio after {stage:?} failed again"
+                    "{note_id} starts over from the recorded audio after {stage:?} failed again"
                 );
-                store.start_over(session_id)?;
-                store.clear_result_state(session_id, RETRIED_STAGE)?;
+                store.start_over(note_id)?;
+                store.clear_result_state(note_id, RETRIED_STAGE)?;
             } else {
-                store.set_result_state(session_id, RETRIED_STAGE, &serde_json::to_value(stage)?)?;
+                store.set_result_state(note_id, RETRIED_STAGE, &serde_json::to_value(stage)?)?;
             }
         }
         if !start_over
             && let Some(SessionState::ProcessingFailed { stage, .. }) = failed
             && stage == Stage::Verify
         {
-            if crate::recognition::snapshot(&self.env.store, session_id)?.is_some() {
-                crate::recognition::prepare_retry(&self.env.store, session_id)?;
+            if crate::recognition::snapshot(&self.env.store, note_id)?.is_some() {
+                crate::recognition::prepare_retry(&self.env.store, note_id)?;
             } else {
-                verify::prepare_retry(&self.env.store, session_id)?;
+                verify::prepare_retry(&self.env.store, note_id)?;
             }
         }
         {
             let mut store = lock(&self.env.store);
-            store.apply(session_id, &Event::Retry)?;
-            store.apply(session_id, &Event::ClaimLost)?;
+            store.apply(note_id, &Event::Retry)?;
+            store.apply(note_id, &Event::ClaimLost)?;
         }
         self.wake();
         Ok(())
@@ -578,13 +578,13 @@ impl Runner {
 
     /// The secret store is available again: a blocked session goes back to
     /// its place in line and resumes at its checkpoints (R20b).
-    pub fn unblock(&self, session_id: &str) -> Result<(), StageError> {
+    pub fn unblock(&self, note_id: &str) -> Result<(), StageError> {
         let blocked = matches!(
-            lock(&self.env.store).session(session_id)?.map(|r| r.state),
+            lock(&self.env.store).session(note_id)?.map(|r| r.state),
             Some(SessionState::Blocked { .. })
         );
         if blocked {
-            lock(&self.env.store).apply(session_id, &Event::ClaimLost)?;
+            lock(&self.env.store).apply(note_id, &Event::ClaimLost)?;
             self.wake();
         }
         Ok(())
@@ -605,16 +605,16 @@ impl Runner {
     /// AE17). Takes its turn in the summary queue (KTD1). The title job of
     /// the new summary is queued after the regeneration releases its claim
     /// and its turn (R16).
-    pub async fn regenerate_summary(&self, session_id: &str) -> Result<PathBuf, StageError> {
+    pub async fn regenerate_summary(&self, note_id: &str) -> Result<PathBuf, StageError> {
         let started = Instant::now();
         let mut waited = Duration::ZERO;
-        let regenerated = self.regenerate_claimed(session_id, &mut waited).await;
+        let regenerated = self.regenerate_claimed(note_id, &mut waited).await;
         // One log line for each regeneration (R14).
         let took = started.elapsed().saturating_sub(waited);
-        let (level, line) = regeneration_end(session_id, waited, took, &regenerated);
+        let (level, line) = regeneration_end(note_id, waited, took, &regenerated);
         log::log!(level, "{line}");
         if regenerated.is_ok() {
-            self.queue_title_if_pending(session_id);
+            self.queue_title_if_pending(note_id);
         }
         regenerated
     }
@@ -623,14 +623,14 @@ impl Runner {
     /// waited for its turn in the summary queue.
     async fn regenerate_claimed(
         &self,
-        session_id: &str,
+        note_id: &str,
         waited: &mut Duration,
     ) -> Result<PathBuf, StageError> {
         // While the Move holds the note for its final check, the
         // regeneration waits (KTD9). A second regeneration of the note is
         // refused at once (R9, KTD8).
         let _claim = loop {
-            match self.claims.regenerate(session_id) {
+            match self.claims.regenerate(note_id) {
                 Ok(claim) => break claim,
                 Err(RegenerateRefusal::Regenerating) => {
                     return Err(StageError::Failed(REGENERATING.into()));
@@ -647,12 +647,12 @@ impl Runner {
         };
         // A note that is not saved is refused before the wait for a turn
         // (R10). `save::regenerate_summary` checks again after the wait.
-        save::require_saved(&lock(&self.env.store), session_id)?;
+        save::require_saved(&lock(&self.env.store), note_id)?;
         // The regeneration writes the note folder, so it takes a turn in
         // the summary queue (KTD1). A quit stops the wait.
         let cancel = self.shutdown.child_token();
         let _turn = {
-            let _waits = WaitMark::new(self, session_id, Wait::SummaryTurn);
+            let _waits = WaitMark::new(self, note_id, Wait::SummaryTurn);
             let started = Instant::now();
             let turn = tokio::select! {
                 turn = self.summary.acquire(Class::Regeneration) => Ok(turn),
@@ -663,7 +663,7 @@ impl Runner {
         };
         let queued = *waited;
         let env = Arc::clone(&self.env);
-        let id = session_id.to_string();
+        let id = note_id.to_string();
         let power = self.power.clone();
         tokio::task::spawn_blocking(move || {
             let control = Unattended {
@@ -673,7 +673,7 @@ impl Runner {
             control.proceed()?;
             // The regeneration has its turn (KTD10).
             (env.events)(RunnerEvent::StageStarted {
-                session_id: id.clone(),
+                note_id: id.clone(),
                 stage: Stage::Summarize,
             });
             let endpoint = endpoint(&env)?;
@@ -694,7 +694,7 @@ impl Runner {
                 queued,
                 &mut |step, done, total| {
                     (env.events)(RunnerEvent::Progress {
-                        session_id: id.clone(),
+                        note_id: id.clone(),
                         stage: Stage::Summarize,
                         segment: 0,
                         summary_step: Some(step),
@@ -714,12 +714,12 @@ impl Runner {
     /// `ready` tells if the artifacts of the run are on disk.
     pub fn check_transcribe_again(
         &self,
-        session_id: &str,
+        note_id: &str,
         settings: &models::recognition::RecognitionConfig,
         ready: &dyn Fn(&models::recognition::ExecutionSpec) -> Readiness,
     ) -> Result<models::recognition::ExecutionSpec, Refusal> {
-        let guards = self.guards(session_id);
-        reprocess::check(&lock(&self.env.store), session_id, guards, settings, ready)
+        let guards = self.guards(note_id);
+        reprocess::check(&lock(&self.env.store), note_id, guards, settings, ready)
     }
 
     /// The user's Transcribe Again on a saved note (R15, KTD14): queue it
@@ -729,22 +729,22 @@ impl Runner {
     /// the user confirmed.
     pub fn transcribe_again(
         &self,
-        session_id: &str,
+        note_id: &str,
         settings: &models::recognition::RecognitionConfig,
         model_id: &str,
         ready: &dyn Fn(&models::recognition::ExecutionSpec) -> Readiness,
     ) -> Result<(), Refusal> {
-        let guards = self.guards(session_id);
+        let guards = self.guards(note_id);
         let spec = reprocess::queue(
             &mut lock(&self.env.store),
-            session_id,
+            note_id,
             guards,
             settings,
             model_id,
             ready,
         )?;
         log::info!(
-            "{session_id} is queued to be transcribed again with '{}'",
+            "{note_id} is queued to be transcribed again with '{}'",
             spec.config.asr_model
         );
         self.wake();
@@ -754,9 +754,9 @@ impl Runner {
     /// The state outside the store that refuses a Transcribe Again run.
     /// Call this before the store lock. `suspended` locks the capture state,
     /// and the capture manager locks its state and then the store.
-    fn guards(&self, session_id: &str) -> Guards {
+    fn guards(&self, note_id: &str) -> Guards {
         Guards {
-            regenerating: self.claims.is_regenerating_or_deleting(session_id),
+            regenerating: self.claims.is_regenerating_or_deleting(note_id),
             capture_active: (self.env.suspended)(),
         }
     }
@@ -771,18 +771,18 @@ impl Runner {
             || !held(&self.current).is_empty()
     }
 
-    /// True while the runner works on `session_id` now: a stage of the note
+    /// True while the runner works on `note_id` now: a stage of the note
     /// runs, or waits for its turn in the summary queue. A note that waits
     /// in the durable queue does not count.
-    pub fn runs(&self, session_id: &str) -> bool {
-        held(&self.current).contains_key(session_id)
+    pub fn runs(&self, note_id: &str) -> bool {
+        held(&self.current).contains_key(note_id)
     }
 
-    /// True while `session_id` waits for its turn in the summary queue:
+    /// True while `note_id` waits for its turn in the summary queue:
     /// after its audio stages, or for a regeneration of its summary
     /// (KTD10). A title job that waits does not count.
-    pub fn waits_to_summarize(&self, session_id: &str) -> bool {
-        held(&self.marks).get(session_id) == Some(&Wait::SummaryTurn)
+    pub fn waits_to_summarize(&self, note_id: &str) -> bool {
+        held(&self.marks).get(note_id) == Some(&Wait::SummaryTurn)
     }
 
     /// The waits of the notes now (KTD10). This reads the capture state,
@@ -798,20 +798,20 @@ impl Runner {
         }
     }
 
-    /// Mark that `session_id` waits for `wait`, and tell the app.
-    fn mark(&self, session_id: &str, wait: Wait) {
-        held(&self.marks).insert(session_id.to_string(), wait);
-        tell_wait(&self.env, session_id, Some(wait));
+    /// Mark that `note_id` waits for `wait`, and tell the app.
+    fn mark(&self, note_id: &str, wait: Wait) {
+        held(&self.marks).insert(note_id.to_string(), wait);
+        tell_wait(&self.env, note_id, Some(wait));
     }
 
-    /// Remove the wait mark of `session_id`. Returns whether it had one.
-    fn unmark(&self, session_id: &str) -> bool {
-        held(&self.marks).remove(session_id).is_some()
+    /// Remove the wait mark of `note_id`. Returns whether it had one.
+    fn unmark(&self, note_id: &str) -> bool {
+        held(&self.marks).remove(note_id).is_some()
     }
 
-    /// True while `session_id` has its summary regenerated or waits to.
-    pub fn is_regenerating(&self, session_id: &str) -> bool {
-        self.claims.is_regenerating(session_id)
+    /// True while `note_id` has its summary regenerated or waits to.
+    pub fn is_regenerating(&self, note_id: &str) -> bool {
+        self.claims.is_regenerating(note_id)
     }
 
     /// The claims that a delete takes (R8): see
@@ -820,25 +820,25 @@ impl Runner {
         &self.claims
     }
 
-    /// Queue the title job of `session_id` when it has a pending title
+    /// Queue the title job of `note_id` when it has a pending title
     /// request (KTD13), and wake the runner.
-    fn queue_title_if_pending(&self, session_id: &str) {
-        match has_title_request(&self.env.store, session_id) {
+    fn queue_title_if_pending(&self, note_id: &str) {
+        match has_title_request(&self.env.store, note_id) {
             Ok(true) => {}
             Ok(false) => return,
             Err(e) => {
-                log::warn!("could not read the title request of {session_id}: {e}");
+                log::warn!("could not read the title request of {note_id}: {e}");
                 return;
             }
         }
-        self.queue_title(session_id);
+        self.queue_title(note_id);
     }
 
-    fn queue_title(&self, session_id: &str) {
+    fn queue_title(&self, note_id: &str) {
         {
             let mut titles = self.titles.lock().unwrap_or_else(|e| e.into_inner());
-            if !titles.iter().any(|id| id == session_id) {
-                titles.push_back(session_id.to_string());
+            if !titles.iter().any(|id| id == note_id) {
+                titles.push_back(note_id.to_string());
             }
         }
         self.wake();
@@ -899,8 +899,8 @@ impl Runner {
     /// The job holds no claim while it waits or while the title turn runs,
     /// so a delete or a Move of the note is not refused. A delete, a Move
     /// or a regeneration stops the job and deletes the request instead.
-    async fn title_job(&self, session_id: &str) -> TitleJob {
-        if let Some(job) = title_gate(&lock(&self.env.store), &self.claims, session_id) {
+    async fn title_job(&self, note_id: &str) -> TitleJob {
+        if let Some(job) = title_gate(&lock(&self.env.store), &self.claims, note_id) {
             return job;
         }
         // The title job can rename the note folder, so it takes a turn in
@@ -915,24 +915,24 @@ impl Runner {
         let queued = started.elapsed();
         let env = Arc::clone(&self.env);
         let claims = self.claims.clone();
-        let id = session_id.to_string();
+        let id = note_id.to_string();
         let control = TitleControl {
             cancel,
             env: Arc::clone(&self.env),
             claims: self.claims.clone(),
-            session_id: id.clone(),
+            note_id: id.clone(),
             power: ActivePower::new(self.power.clone()),
         };
         let job =
             tokio::task::spawn_blocking(move || send_title(&env, &claims, &id, &control, queued))
                 .await
                 .unwrap_or_else(|e| {
-                    log::error!("the title job of {session_id} stopped unexpectedly: {e}");
+                    log::error!("the title job of {note_id} stopped unexpectedly: {e}");
                     TitleJob::Skipped
                 });
         if let TitleJob::Proposed(title) = &job {
             (self.env.events)(RunnerEvent::TitleProposed {
-                session_id: session_id.to_string(),
+                note_id: note_id.to_string(),
                 title: title.clone(),
             });
         }
@@ -942,16 +942,12 @@ impl Runner {
     /// The user's rename (R9): the title changes at once, and a saved, idle
     /// session's folder takes the new name now. A busy session's folder
     /// takes it when the work ends.
-    pub fn rename_session(
-        &self,
-        session_id: &str,
-        title: &str,
-    ) -> Result<FolderRename, StageError> {
+    pub fn rename_session(&self, note_id: &str, title: &str) -> Result<FolderRename, StageError> {
         // The rename waits while the Move holds the note (KTD9).
-        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, session_id);
+        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, note_id);
         folder_rename::rename_locked(
             &mut store,
-            session_id,
+            note_id,
             title,
             &|id| self.claims.busy(id),
             &session_save::RealFs,
@@ -965,15 +961,15 @@ impl Runner {
     /// effective list.
     pub fn change_note_type(
         &self,
-        session_id: &str,
+        note_id: &str,
         to: Option<&str>,
         own_runs: &[String],
     ) -> Result<TypeChange, StageError> {
         // The change waits while the Move holds the note (KTD9).
-        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, session_id);
+        let mut store = crate::move_notes::lock_unheld(&self.env.store, &self.claims, note_id);
         type_move::change_type_locked(
             &mut store,
-            session_id,
+            note_id,
             to,
             false,
             &self.type_context(own_runs, &session_save::RealFs),
@@ -1014,11 +1010,11 @@ impl Runner {
     /// [`crate::tags::set_note_tags`]. Returns the tags of the note.
     pub fn set_note_tags(
         &self,
-        session_id: &str,
+        note_id: &str,
         add: &[String],
         remove: &[String],
     ) -> Result<Vec<String>, StageError> {
-        crate::tags::set_note_tags(&self.env.store, &self.claims, session_id, add, remove)
+        crate::tags::set_note_tags(&self.env.store, &self.claims, note_id, add, remove)
     }
 
     /// One pass of a tag rename or delete over the recorded notes `notes`
@@ -1400,7 +1396,7 @@ impl Runner {
                         log::error!("could not record the summary failure of {id}: {e}");
                     }
                     emit(RunnerEvent::SummaryUnavailable {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         message,
                     });
                 }
@@ -1424,7 +1420,7 @@ impl Runner {
                         log::warn!("could not mark {id} awaiting its destination: {e}");
                     }
                     emit(RunnerEvent::AwaitingDestination {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         problem: problem.clone(),
                     });
                     return Outcome::AwaitingDestination { problem };
@@ -1443,7 +1439,7 @@ impl Runner {
                         log::error!("could not record the diarization failure of {id}: {e}");
                     }
                     emit(RunnerEvent::SpeakersUnavailable {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         message,
                     });
                 }
@@ -1455,7 +1451,7 @@ impl Runner {
                         log::warn!("could not return {id} to the queue: {e}");
                     }
                     emit(RunnerEvent::Waiting {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         what: what.clone(),
                     });
                     return Outcome::Waiting;
@@ -1471,7 +1467,7 @@ impl Runner {
                         log::warn!("could not mark {id} blocked: {e}");
                     }
                     emit(RunnerEvent::Blocked {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         message,
                     });
                     return Outcome::Blocked;
@@ -1479,7 +1475,7 @@ impl Runner {
                 Err(StageError::Cancelled) => {
                     log::info!("processing of {id} stopped at a checkpoint");
                     emit(RunnerEvent::Cancelled {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                     });
                     return Outcome::Cancelled;
                 }
@@ -1494,7 +1490,7 @@ impl Runner {
             log::warn!("could not clear the retried stage of {id}: {e}");
         }
         emit(RunnerEvent::Finished {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
         });
         // The note is saved with its summary; its title turn comes after
         // (R16).
@@ -1592,7 +1588,7 @@ impl Runner {
         }
         self.drop_removed_old_audio(id);
         (self.env.events)(RunnerEvent::StageFailed {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             stage,
             message: message.clone(),
         });
@@ -1617,7 +1613,7 @@ impl Runner {
             Err(e) => log::warn!("could not return {id} to its saved state: {e}"),
         }
         (self.env.events)(RunnerEvent::TranscribeAgainFailed {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             stage,
             message: message.clone(),
         });
@@ -1670,7 +1666,7 @@ impl Runner {
         let control = StageControl {
             cancel,
             env: Arc::clone(&self.env),
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             power: ActivePower::new(self.power.clone()),
             pause: audio,
         };
@@ -1726,7 +1722,7 @@ impl Runner {
         }
         lock(&self.env.store).set_stage(id, stage)?;
         (self.env.events)(RunnerEvent::StageStarted {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             stage,
         });
 
@@ -1793,7 +1789,7 @@ fn execute(
             &mut speakers,
             &mut |p| {
                 (env.events)(RunnerEvent::Progress {
-                    session_id: id.into(),
+                    note_id: id.into(),
                     stage,
                     segment: p.segment,
                     summary_step: None,
@@ -1857,7 +1853,7 @@ fn execute(
                 control,
                 &mut |p| {
                     (env.events)(RunnerEvent::Progress {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         stage,
                         segment: p.segment,
                         summary_step: None,
@@ -1891,7 +1887,7 @@ fn execute(
                 queued,
                 &mut |step, done, total| {
                     (env.events)(RunnerEvent::Progress {
-                        session_id: id.to_string(),
+                        note_id: id.to_string(),
                         stage,
                         segment: 0,
                         summary_step: Some(step),
@@ -1922,7 +1918,7 @@ fn execute(
                 }
             );
             (env.events)(RunnerEvent::Saved {
-                session_id: id.to_string(),
+                note_id: id.to_string(),
                 path: saved.path,
                 copied: saved.copied,
             });
@@ -1955,7 +1951,7 @@ fn speaker_sink<'a>(env: &'a Environment, id: &'a str) -> impl FnMut(SpeakerWork
             log::warn!("could not save the speaker progress of {id}: {e}");
         }
         (env.events)(RunnerEvent::SpeakerProgress {
-            session_id: id.to_string(),
+            note_id: id.to_string(),
             progress,
         });
     }
@@ -1968,27 +1964,27 @@ fn endpoint(env: &Environment) -> Result<SummaryEndpoint, StageError> {
     })
 }
 
-fn has_title_request(store: &SharedStore, session_id: &str) -> Result<bool, StageError> {
+fn has_title_request(store: &SharedStore, note_id: &str) -> Result<bool, StageError> {
     Ok(checkpoint::get::<serde_json::Value>(
         store,
-        session_id,
+        note_id,
         Stage::Summarize,
         summarize::TITLE_REQUEST,
     )?
     .is_some())
 }
 
-/// Whether the title job of `session_id` can send its request now. The
+/// Whether the title job of `note_id` can send its request now. The
 /// caller holds the store lock.
-fn title_due(store: &session_core::Store, claims: &Claims, session_id: &str) -> TitleDue {
-    if claims.busy(session_id) {
+fn title_due(store: &session_core::Store, claims: &Claims, note_id: &str) -> TitleDue {
+    if claims.busy(note_id) {
         return TitleDue::Dropped;
     }
-    let record = match store.session(session_id) {
+    let record = match store.session(note_id) {
         Ok(Some(record)) => record,
         Ok(None) => return TitleDue::No,
         Err(e) => {
-            log::warn!("could not read {session_id} for its title job: {e}");
+            log::warn!("could not read {note_id} for its title job: {e}");
             return TitleDue::No;
         }
     };
@@ -1997,51 +1993,50 @@ fn title_due(store: &session_core::Store, claims: &Claims, session_id: &str) -> 
     }
     // The Move puts the note in the new storage folder (KTD9).
     if !matches!(
-        store.move_step(session_id),
+        store.move_step(note_id),
         Ok(None | Some(session_core::MoveStep::Done))
     ) {
         return TitleDue::Dropped;
     }
-    match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE_REQUEST) {
+    match store.checkpoint_value(note_id, Stage::Summarize, summarize::TITLE_REQUEST) {
         Ok(Some(_)) => {}
         Ok(None) => return TitleDue::No,
         Err(e) => {
-            log::warn!("could not read the title request of {session_id}: {e}");
+            log::warn!("could not read the title request of {note_id}: {e}");
             return TitleDue::No;
         }
     }
     // A stop between the title checkpoint and the delete of the request
     // leaves a request whose title is already proposed.
-    match store.checkpoint_value(session_id, Stage::Summarize, summarize::TITLE) {
+    match store.checkpoint_value(note_id, Stage::Summarize, summarize::TITLE) {
         Ok(None) => TitleDue::Yes,
         Ok(Some(_)) => TitleDue::Dropped,
         Err(e) => {
-            log::warn!("could not read the title proposal of {session_id}: {e}");
+            log::warn!("could not read the title proposal of {note_id}: {e}");
             TitleDue::No
         }
     }
 }
 
-/// `None` when the title job of `session_id` can send its request now.
+/// `None` when the title job of `note_id` can send its request now.
 /// Otherwise the result of the job, after the request is deleted when the
 /// note dropped it. The caller holds the store lock.
-fn title_gate(store: &session_core::Store, claims: &Claims, session_id: &str) -> Option<TitleJob> {
-    match title_due(store, claims, session_id) {
+fn title_gate(store: &session_core::Store, claims: &Claims, note_id: &str) -> Option<TitleJob> {
+    match title_due(store, claims, note_id) {
         TitleDue::Yes => None,
         TitleDue::No => Some(TitleJob::Skipped),
         TitleDue::Dropped => {
-            drop_title_request(store, session_id);
+            drop_title_request(store, note_id);
             Some(TitleJob::Skipped)
         }
     }
 }
 
-/// Delete the title request of `session_id`. An error is logged: the note
+/// Delete the title request of `note_id`. An error is logged: the note
 /// keeps its title in every case. The caller holds the store lock.
-fn drop_title_request(store: &session_core::Store, session_id: &str) {
-    if let Err(e) = store.delete_checkpoint(session_id, Stage::Summarize, summarize::TITLE_REQUEST)
-    {
-        log::warn!("could not delete the title request of {session_id}: {e}");
+fn drop_title_request(store: &session_core::Store, note_id: &str) {
+    if let Err(e) = store.delete_checkpoint(note_id, Stage::Summarize, summarize::TITLE_REQUEST) {
+        log::warn!("could not delete the title request of {note_id}: {e}");
     }
 }
 
@@ -2050,20 +2045,20 @@ fn drop_title_request(store: &session_core::Store, session_id: &str) {
 fn send_title(
     env: &Environment,
     claims: &Claims,
-    session_id: &str,
+    note_id: &str,
     control: &TitleControl,
     queued: Duration,
 ) -> TitleJob {
     // The job can wait long for its turn.
-    if let Some(job) = title_gate(&lock(&env.store), claims, session_id) {
+    if let Some(job) = title_gate(&lock(&env.store), claims, note_id) {
         return job;
     }
     let kept = |why: &str| {
-        log::warn!("proposing a title for {session_id} failed: {why}; the note keeps its title");
-        drop_title_request(&lock(&env.store), session_id);
+        log::warn!("proposing a title for {note_id} failed: {why}; the note keeps its title");
+        drop_title_request(&lock(&env.store), note_id);
         TitleJob::Kept
     };
-    let request = match summarize::pending_title_request(&env.store, session_id) {
+    let request = match summarize::pending_title_request(&env.store, note_id) {
         Ok(Some(request)) => request,
         Ok(None) => return TitleJob::Skipped,
         Err(e) => return kept(&e.to_string()),
@@ -2072,35 +2067,34 @@ fn send_title(
         Ok(endpoint) => endpoint,
         // The request stays, and the next launch sends it (R20b).
         Err(EndpointProblem::Locked(message)) => {
-            log::info!("the title job of {session_id} waits for the secret store: {message}");
+            log::info!("the title job of {note_id} waits for the secret store: {message}");
             return TitleJob::Skipped;
         }
         // The summary had an endpoint moments ago. A title is not worth a
         // wait for the settings.
         Err(EndpointProblem::Unconfigured(message)) => return kept(&message),
     };
-    let title =
-        match summarize::send_title_request(session_id, &endpoint, &request, control, queued) {
-            Ok(Ok(title)) => title,
-            Ok(Err(why)) => return kept(&why),
-            Err(StageError::Cancelled) => {
-                // A quit leaves the request for the next launch. A delete, a
-                // Move or a regeneration deletes it.
-                // One guard for the check and the drop: a second lock in
-                // the same thread waits for ever.
-                let store = lock(&env.store);
-                if let TitleDue::Dropped = title_due(&store, claims, session_id) {
-                    drop_title_request(&store, session_id);
-                }
-                return TitleJob::Skipped;
+    let title = match summarize::send_title_request(note_id, &endpoint, &request, control, queued) {
+        Ok(Ok(title)) => title,
+        Ok(Err(why)) => return kept(&why),
+        Err(StageError::Cancelled) => {
+            // A quit leaves the request for the next launch. A delete, a
+            // Move or a regeneration deletes it.
+            // One guard for the check and the drop: a second lock in
+            // the same thread waits for ever.
+            let store = lock(&env.store);
+            if let TitleDue::Dropped = title_due(&store, claims, note_id) {
+                drop_title_request(&store, note_id);
             }
-            Err(e) => return kept(&e.to_string()),
-        };
+            return TitleJob::Skipped;
+        }
+        Err(e) => return kept(&e.to_string()),
+    };
 
     // The title changes as a rename does: it waits while the Move holds
     // the note, and the folder takes the name under the same lock.
-    let mut guard = crate::move_notes::lock_unheld(&env.store, claims, session_id);
-    if let Some(job) = title_gate(&guard, claims, session_id) {
+    let mut guard = crate::move_notes::lock_unheld(&env.store, claims, note_id);
+    if let Some(job) = title_gate(&guard, claims, note_id) {
         return job;
     }
     let proposed = if title.is_empty() {
@@ -2108,7 +2102,7 @@ fn send_title(
     } else {
         folder_rename::propose_locked(
             &mut guard,
-            session_id,
+            note_id,
             &title,
             &|id| claims.busy(id),
             &session_save::RealFs,
@@ -2121,34 +2115,29 @@ fn send_title(
             let recorded = serde_json::to_string(&title)
                 .map_err(StageError::from)
                 .and_then(|text| {
-                    Ok(guard.put_checkpoint(
-                        session_id,
-                        Stage::Summarize,
-                        summarize::TITLE,
-                        &text,
-                    )?)
+                    Ok(guard.put_checkpoint(note_id, Stage::Summarize, summarize::TITLE, &text)?)
                 });
             if let Err(e) = recorded {
-                log::warn!("could not record the title proposal of {session_id}: {e}");
+                log::warn!("could not record the title proposal of {note_id}: {e}");
             }
             match renamed {
                 Some(FolderRename::Kept(why)) => {
-                    log::warn!("the folder of {session_id} keeps its name: {why}");
+                    log::warn!("the folder of {note_id} keeps its name: {why}");
                     TitleJob::Proposed(title)
                 }
                 Some(_) => TitleJob::Proposed(title),
                 None => {
-                    log::info!("{session_id} keeps its title: the title turn gave no new title");
+                    log::info!("{note_id} keeps its title: the title turn gave no new title");
                     TitleJob::Kept
                 }
             }
         }
         Err(e) => {
-            log::warn!("could not propose a title for {session_id}: {e}; the note keeps its title");
+            log::warn!("could not propose a title for {note_id}: {e}; the note keeps its title");
             TitleJob::Kept
         }
     };
-    drop_title_request(&guard, session_id);
+    drop_title_request(&guard, note_id);
     job
 }
 
@@ -2161,7 +2150,7 @@ struct TitleControl {
     cancel: CancellationToken,
     env: Arc<Environment>,
     claims: Claims,
-    session_id: String,
+    note_id: String,
     power: ActivePower,
 }
 
@@ -2169,7 +2158,7 @@ impl TitleControl {
     fn stopped(&self) -> bool {
         self.cancel.is_cancelled()
             || !matches!(
-                title_due(&lock(&self.env.store), &self.claims, &self.session_id),
+                title_due(&lock(&self.env.store), &self.claims, &self.note_id),
                 TitleDue::Yes
             )
     }
@@ -2292,13 +2281,13 @@ impl Drop for WaitMark<'_> {
 /// note, the time that the regeneration waited for its turn, the time
 /// that it took after that, and the path of the summary or the error.
 fn regeneration_end(
-    session_id: &str,
+    note_id: &str,
     waited: Duration,
     took: Duration,
     result: &Result<PathBuf, StageError>,
 ) -> (log::Level, String) {
     let head = format!(
-        "regeneration end: note {session_id}, {} ms waiting for its turn, {} ms",
+        "regeneration end: note {note_id}, {} ms waiting for its turn, {} ms",
         waited.as_millis(),
         took.as_millis()
     );

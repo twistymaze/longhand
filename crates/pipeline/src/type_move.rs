@@ -92,7 +92,7 @@ pub fn shown_type(record: &SessionRecord) -> (Option<String>, bool) {
     }
 }
 
-/// The user changes the type of the note `session_id` to `to`, or to "No
+/// The user changes the type of the note `note_id` to `to`, or to "No
 /// type" for `None` (R5). The caller checks that `to` is a type of the
 /// effective list, and holds the store lock while the Move does not hold
 /// the note ([`crate::move_notes::lock_unheld`]). `remove_empty_from` is
@@ -100,7 +100,7 @@ pub fn shown_type(record: &SessionRecord) -> (Option<String>, bool) {
 /// last note leaves it (KTD7).
 pub fn change_type_locked(
     store: &mut Store,
-    session_id: &str,
+    note_id: &str,
     to: Option<&str>,
     remove_empty_from: bool,
     ctx: &Context,
@@ -109,18 +109,18 @@ pub fn change_type_locked(
         .map(check_type_name)
         .transpose()
         .map_err(|e| StageError::Failed(e.to_string()))?;
-    let claimed = ctx.claims.busy(session_id);
-    crate::follow::follow_folder(store, session_id, claimed)?;
-    let record = require(store, session_id)?;
+    let claimed = ctx.claims.busy(note_id);
+    crate::follow::follow_folder(store, note_id, claimed)?;
+    let record = require(store, note_id)?;
     // A type change before the early write is done changes only the row
     // (U7 of the note types and tags plan). This is also true while a new
     // early write replaces an old home folder: that folder gets no write.
     let home = match record.home_path.as_deref().map(PathBuf::from) {
-        Some(home) if !crate::early_home::rehoming(store, session_id, &home)? => Some(home),
+        Some(home) if !crate::early_home::rehoming(store, note_id, &home)? => Some(home),
         _ => None,
     };
     let Some(home) = home else {
-        store.set_note_type(session_id, to.as_deref())?;
+        store.set_note_type(note_id, to.as_deref())?;
         return Ok(TypeChange::NoFolder);
     };
     // A note in the old layout waits for the conversion, and nothing
@@ -134,14 +134,14 @@ pub fn change_type_locked(
     if same_optional_type(&to, &from) {
         // The note has the type, or a change goes back to the type of the
         // folder: the waiting change goes (KTD3).
-        store.clear_type_move(session_id)?;
+        store.clear_type_move(note_id)?;
         if record.pending_type.is_some() {
-            clear_pending(store, session_id, &home)?;
+            clear_pending(store, note_id, &home)?;
         }
         return Ok(TypeChange::Unchanged);
     }
     store.set_type_move(
-        session_id,
+        note_id,
         &TypeMove {
             to,
             from,
@@ -151,7 +151,7 @@ pub fn change_type_locked(
             field_written: false,
         },
     )?;
-    settle(store, session_id, ctx, true)
+    settle(store, note_id, ctx, true)
 }
 
 /// On each launch and each library scan: run each move that this computer
@@ -201,27 +201,27 @@ pub fn run_owed(store: &SharedStore, ctx: &Context) -> Result<Vec<String>, Stage
     Ok(changed)
 }
 
-/// Run the type move that this computer owes for `session_id`, when no
+/// Run the type move that this computer owes for `note_id`, when no
 /// computer works on the note. With `claim`, the user changed the type on
 /// this computer now: the pending type names this computer, also when it
 /// named another computer.
 fn settle(
     store: &mut Store,
-    session_id: &str,
+    note_id: &str,
     ctx: &Context,
     claim: bool,
 ) -> Result<TypeChange, StageError> {
-    let Some(mut owed) = store.type_move(session_id)? else {
+    let Some(mut owed) = store.type_move(note_id)? else {
         return Ok(TypeChange::Unchanged);
     };
-    let Some(mut record) = store.session(session_id)? else {
+    let Some(mut record) = store.session(note_id)? else {
         return Ok(TypeChange::Unchanged);
     };
     // A move that a crash stopped is settled first, so the move starts
     // from where the folder is.
-    if let Some(intent) = store.rename_intent(session_id)? {
+    if let Some(intent) = store.rename_intent(note_id)? {
         folder_rename::settle(store, &record, &intent, ctx.fs)?;
-        record = require(store, session_id)?;
+        record = require(store, note_id)?;
     }
     let me = store.computer_id()?;
     let pending = PendingType {
@@ -235,30 +235,30 @@ fn settle(
     };
     // An old home folder gets no write: the move waits for the new early
     // write.
-    if crate::early_home::rehoming(store, session_id, &home)? {
+    if crate::early_home::rehoming(store, note_id, &home)? {
         return Ok(TypeChange::Later);
     }
     let Some(place) = scan::storage_place(&home) else {
         // The storage folder is not available: the move waits (KTD6). The
         // app shows the new type.
         if claim {
-            store.set_pending_type(session_id, Some(&pending))?;
+            store.set_pending_type(note_id, Some(&pending))?;
         }
         return Ok(TypeChange::Later);
     };
     if !rename_home::exists_exactly(&home) {
         log::warn!(
-            "the folder of {session_id} is gone, so its type move is dropped: {}",
+            "the folder of {note_id} is gone, so its type move is dropped: {}",
             home.display()
         );
-        store.clear_type_move(session_id)?;
+        store.clear_type_move(note_id)?;
         return Ok(TypeChange::Unchanged);
     }
     let Some(files) = read_files(&home) else {
         // The files cannot be read now: the move waits. The app shows the
         // new type, and a later pass writes it into the files.
         if claim {
-            store.set_pending_type(session_id, Some(&pending))?;
+            store.set_pending_type(note_id, Some(&pending))?;
         }
         return Ok(TypeChange::Later);
     };
@@ -266,16 +266,16 @@ fn settle(
         match &files.record.pending_type {
             Some(field) if field.by != me => {
                 log::info!(
-                    "the type move of {session_id} is now the move of computer {}",
+                    "the type move of {note_id} is now the move of computer {}",
                     field.by
                 );
-                store.clear_type_move(session_id)?;
+                store.clear_type_move(note_id)?;
                 return Ok(TypeChange::Unchanged);
             }
             None if owed.field_written => {
-                log::info!("the type change of {session_id} was cleared on another computer");
-                store.clear_type_move(session_id)?;
-                store.set_pending_type(session_id, None)?;
+                log::info!("the type change of {note_id} was cleared on another computer");
+                store.clear_type_move(note_id)?;
+                store.set_pending_type(note_id, None)?;
                 return Ok(TypeChange::Unchanged);
             }
             _ => {}
@@ -285,16 +285,16 @@ fn settle(
         // The move is done, or a person moved the folder: the folder wins
         // (KTD3, R29).
         if files.record.pending_type.is_some() {
-            clear_pending(store, session_id, &home)?;
+            clear_pending(store, note_id, &home)?;
         }
-        store.set_pending_type(session_id, None)?;
-        store.set_note_type(session_id, place.note_type.as_deref())?;
-        store.clear_type_move(session_id)?;
+        store.set_pending_type(note_id, None)?;
+        store.set_note_type(note_id, place.note_type.as_deref())?;
+        store.clear_type_move(note_id)?;
         if same_optional_type(&place.note_type, &owed.to) {
             return Ok(TypeChange::Moved(home));
         }
         log::info!(
-            "the folder of {session_id} is in another type folder now, so its type move is dropped"
+            "the folder of {note_id} is in another type folder now, so its type move is dropped"
         );
         return Ok(TypeChange::Unchanged);
     }
@@ -304,7 +304,7 @@ fn settle(
         return Ok(TypeChange::Later);
     }
     if !free(store, &record, &home, &files.doc, ctx)? {
-        write_pending(store, session_id, &home, files, &pending, &mut owed)?;
+        write_pending(store, note_id, &home, files, &pending, &mut owed)?;
         return Ok(TypeChange::Later);
     }
     let parent = match &owed.to {
@@ -316,21 +316,21 @@ fn settle(
             .file_name()
             .and_then(|n| n.to_str())
             .ok_or_else(|| RenameError::Missing(home.clone()))?;
-        rename_home::rename_into(&home, &parent, name, session_id, ctx.fs, &mut |m| {
+        rename_home::rename_into(&home, &parent, name, note_id, ctx.fs, &mut |m| {
             store
-                .set_rename_intent(session_id, &folder_rename::to_intent(m))
+                .set_rename_intent(note_id, &folder_rename::to_intent(m))
                 .map_err(|e| RenameError::Record(e.to_string()))
         })
     });
     match moved {
         Ok(path) if path == home => {
-            store.clear_rename_intent(session_id)?;
+            store.clear_rename_intent(note_id)?;
             Ok(TypeChange::Unchanged)
         }
         Ok(path) => {
-            finish(store, session_id, &path, &place, &owed)?;
+            finish(store, note_id, &path, &place, &owed)?;
             log::info!(
-                "moved the folder of {session_id} from {} to {}",
+                "moved the folder of {note_id} from {} to {}",
                 home.display(),
                 path.display()
             );
@@ -340,18 +340,18 @@ fn settle(
             // The error can come after the move, for example from the
             // fsync of the parent. The recorded intent tells where the
             // folder is.
-            if let Some(intent) = store.rename_intent(session_id)?
+            if let Some(intent) = store.rename_intent(note_id)?
                 && let Some(path) = folder_rename::settle(store, &record, &intent, ctx.fs)?
                 && path != home
             {
-                finish(store, session_id, &path, &place, &owed)?;
+                finish(store, note_id, &path, &place, &owed)?;
                 return Ok(TypeChange::Moved(path));
             }
-            log::warn!("could not move the folder of {session_id}: {e}");
+            log::warn!("could not move the folder of {note_id}: {e}");
             if let Some(files) = read_files(&home) {
-                write_pending(store, session_id, &home, files, &pending, &mut owed)?;
+                write_pending(store, note_id, &home, files, &pending, &mut owed)?;
             } else if claim {
-                store.set_pending_type(session_id, Some(&pending))?;
+                store.set_pending_type(note_id, Some(&pending))?;
             }
             Ok(TypeChange::Kept(e.to_string()))
         }
@@ -364,17 +364,17 @@ fn settle(
 /// else (KTD7).
 fn finish(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     path: &Path,
     place: &Place,
     owed: &TypeMove,
 ) -> Result<(), StageError> {
-    store.set_home_path(session_id, &path.to_string_lossy())?;
-    store.clear_rename_intent(session_id)?;
+    store.set_home_path(note_id, &path.to_string_lossy())?;
+    store.clear_rename_intent(note_id)?;
     let note_type = scan::storage_place(path).and_then(|p| p.note_type);
-    store.set_note_type(session_id, note_type.as_deref())?;
-    clear_pending(store, session_id, path)?;
-    store.clear_type_move(session_id)?;
+    store.set_note_type(note_id, note_type.as_deref())?;
+    clear_pending(store, note_id, path)?;
+    store.clear_type_move(note_id)?;
     if owed.remove_empty_from
         && let Some(from) = &owed.from
     {
@@ -410,13 +410,13 @@ fn free(
 /// new type. A write that fails is logged, and the next scan tries again.
 fn write_pending(
     store: &Store,
-    session_id: &str,
+    note_id: &str,
     home: &Path,
     files: NoteFiles,
     pending: &PendingType,
     owed: &mut TypeMove,
 ) -> Result<(), StageError> {
-    store.set_pending_type(session_id, Some(pending))?;
+    store.set_pending_type(note_id, Some(pending))?;
     if files.record.pending_type.as_ref() != Some(pending) {
         let mut record = files.record;
         record.pending_type = Some(pending.clone());
@@ -430,15 +430,15 @@ fn write_pending(
     }
     if !owed.field_written {
         owed.field_written = true;
-        store.set_type_move(session_id, owed)?;
+        store.set_type_move(note_id, owed)?;
     }
     Ok(())
 }
 
 /// Remove the pending type from `longhand.json` in `home` and from the row. A
 /// write that fails is logged: the folder decides the type (KTD3).
-fn clear_pending(store: &Store, session_id: &str, home: &Path) -> Result<(), StageError> {
-    store.set_pending_type(session_id, None)?;
+fn clear_pending(store: &Store, note_id: &str, home: &Path) -> Result<(), StageError> {
+    store.set_pending_type(note_id, None)?;
     let Some(files) = read_files(home) else {
         return Ok(());
     };
@@ -469,17 +469,17 @@ fn write_records(home: &Path, layout: Layout, record: &NoteRecord) -> io::Result
 /// that this computer owes when the folder is still in `from`, so the row
 /// comes back. Otherwise the pending type is stale and goes. Returns
 /// whether the row of the note changed.
-fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool, StageError> {
-    if store.type_move(session_id)?.is_some() {
+fn own_field(store: &mut Store, note_id: &str, ctx: &Context) -> Result<bool, StageError> {
+    if store.type_move(note_id)?.is_some() {
         return Ok(false);
     }
-    let Some(record) = store.session(session_id)? else {
+    let Some(record) = store.session(note_id)? else {
         return Ok(false);
     };
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         return Ok(false);
     };
-    if crate::early_home::rehoming(store, session_id, &home)? {
+    if crate::early_home::rehoming(store, note_id, &home)? {
         return Ok(false);
     }
     let Some(place) = scan::storage_place(&home) else {
@@ -492,9 +492,9 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
         return Ok(false);
     }
     if same_optional_type(&place.note_type, &field.from) {
-        log::info!("this computer owes the type move of {session_id} again");
+        log::info!("this computer owes the type move of {note_id} again");
         store.set_type_move(
-            session_id,
+            note_id,
             &TypeMove {
                 to: field.to,
                 from: field.from,
@@ -504,10 +504,10 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
                 field_written: true,
             },
         )?;
-        let moved = settle(store, session_id, ctx, false)?;
+        let moved = settle(store, note_id, ctx, false)?;
         return Ok(matches!(moved, TypeChange::Moved(_)));
     }
-    clear_pending(store, session_id, &home)?;
+    clear_pending(store, note_id, &home)?;
     Ok(true)
 }
 
@@ -515,11 +515,11 @@ fn own_field(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
 /// old and no computer works on the note (KTD13, R35): write this computer
 /// into `by` and record the move. The move itself waits for
 /// [`TAKEOVER_WAIT`]. Returns whether the row of the note changed.
-fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool, StageError> {
-    if store.type_move(session_id)?.is_some() {
+fn take_over(store: &mut Store, note_id: &str, ctx: &Context) -> Result<bool, StageError> {
+    if store.type_move(note_id)?.is_some() {
         return Ok(false);
     }
-    let Some(record) = store.session(session_id)? else {
+    let Some(record) = store.session(note_id)? else {
         return Ok(false);
     };
     let Some(seen) = record.pending_type.clone() else {
@@ -531,7 +531,7 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let Some(home) = record.home_path.as_deref().map(PathBuf::from) else {
         return Ok(false);
     };
-    if crate::early_home::rehoming(store, session_id, &home)? {
+    if crate::early_home::rehoming(store, note_id, &home)? {
         return Ok(false);
     }
     let Some(place) = scan::storage_place(&home) else {
@@ -557,7 +557,7 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
         && check_type_name(to).as_deref() != Ok(to.as_str())
     {
         log::warn!(
-            "the pending type of {session_id} is not a valid type name, so it is not taken over"
+            "the pending type of {note_id} is not a valid type name, so it is not taken over"
         );
         return Ok(false);
     }
@@ -573,7 +573,7 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     // The row comes first: a crash after it finds another computer in
     // `by` and drops the row.
     store.set_type_move(
-        session_id,
+        note_id,
         &TypeMove {
             to: seen.to.clone(),
             from: seen.from.clone(),
@@ -586,13 +586,13 @@ fn take_over(store: &mut Store, session_id: &str, ctx: &Context) -> Result<bool,
     let mut taken_record = files.record;
     taken_record.pending_type = Some(taken.clone());
     if let Err(e) = write_records(&home, files.layout, &taken_record) {
-        log::warn!("could not take over the type move of {session_id}: {e}");
-        store.clear_type_move(session_id)?;
+        log::warn!("could not take over the type move of {note_id}: {e}");
+        store.clear_type_move(note_id)?;
         return Ok(false);
     }
-    store.set_pending_type(session_id, Some(&taken))?;
+    store.set_pending_type(note_id, Some(&taken))?;
     log::info!(
-        "took over the type move of {session_id} from computer {}",
+        "took over the type move of {note_id} from computer {}",
         seen.by
     );
     Ok(true)
@@ -937,8 +937,8 @@ fn read_files(folder: &Path) -> Option<NoteFiles> {
     read_note_files(folder, READ_TIMEOUT)
 }
 
-fn require(store: &Store, session_id: &str) -> Result<SessionRecord, StageError> {
+fn require(store: &Store, note_id: &str) -> Result<SessionRecord, StageError> {
     store
-        .session(session_id)?
-        .ok_or_else(|| StageError::Failed(format!("no session {session_id}")))
+        .session(note_id)?
+        .ok_or_else(|| StageError::Failed(format!("no session {note_id}")))
 }

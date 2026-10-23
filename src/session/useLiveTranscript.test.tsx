@@ -7,8 +7,8 @@ import { useLiveTranscript } from "./useLiveTranscript";
 const word = (i: number, text = `w${i}`): LiveWord => ({ start_ms: i * 100, end_ms: i * 100 + 80, text });
 const words = (from: number, to: number) => Array.from({ length: to - from }, (_, i) => word(from + i));
 
-const text = (segment: number, part: number, word_start: number, sent: LiveWord[], session_id = "rec") => ({
-  session_id,
+const text = (segment: number, part: number, word_start: number, sent: LiveWord[], note_id = "rec") => ({
+  note_id,
   segment,
   part,
   offset_ms: segment * 60_000,
@@ -18,8 +18,8 @@ const text = (segment: number, part: number, word_start: number, sent: LiveWord[
   words: sent,
 });
 
-const saved = (segment: number, part: number, sent: LiveWord[], session_id = "rec") => ({
-  session_id,
+const saved = (segment: number, part: number, sent: LiveWord[], note_id = "rec") => ({
+  note_id,
   segment,
   part,
   offset_ms: segment * 60_000,
@@ -31,7 +31,7 @@ const saved = (segment: number, part: number, sent: LiveWord[], session_id = "re
 
 async function mounted(catchup: Catchup = { recognition: [], parts: [], current: null, state: "running" }, id = "rec") {
   const tauri = mockTauri({ live_transcript: () => catchup });
-  const hook = renderHook(({ sessionId }) => useLiveTranscript(sessionId), { initialProps: { sessionId: id } });
+  const hook = renderHook(({ noteId }) => useLiveTranscript(noteId), { initialProps: { noteId: id } });
   await waitFor(() => expect(hook.result.current.loaded).toBe(true));
   return { tauri, hook };
 }
@@ -109,7 +109,7 @@ describe("useLiveTranscript", () => {
   test("a different session starts with an empty number map", async () => {
     const { hook } = await mounted(undefined, "one");
     hook.result.current.numbers.set("g:0:0:1", 1);
-    hook.rerender({ sessionId: "two" });
+    hook.rerender({ noteId: "two" });
     await waitFor(() => expect(hook.result.current.loaded).toBe(true));
     expect(hook.result.current.numbers.size).toBe(0);
     // The view of the new session shows no state of the old one.
@@ -120,7 +120,7 @@ describe("useLiveTranscript", () => {
     const { tauri, hook } = await mounted(undefined, "a");
     await act(() => tauri.emit("live-transcript-event", text(0, 0, 0, words(0, 2), "a")));
     expect(hook.result.current.open).toHaveLength(1);
-    hook.rerender({ sessionId: "b" });
+    hook.rerender({ noteId: "b" });
     expect(hook.result.current.open).toEqual([]);
     expect(hook.result.current.current).toBeNull();
   });
