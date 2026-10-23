@@ -217,10 +217,10 @@ pub fn apply_scoped(
     contents: &FolderContents,
     scope: Scope,
 ) -> Result<Refresh, RefreshError> {
-    if contents.doc.session_id != id {
+    if contents.doc.note_id != id {
         return Err(RefreshError::OtherNote {
             expected: id.to_string(),
-            found: contents.doc.session_id.clone(),
+            found: contents.doc.note_id.clone(),
         });
     }
     // While the note waits for the sync, the speaker data of a new

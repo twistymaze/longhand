@@ -223,10 +223,10 @@ fn write_file(
         NoteRead::Invalid(invalid) => return Err(unavailable(invalid.reason)),
         NoteRead::Unreadable(why) => return Err(unavailable(why)),
     };
-    if files.doc.session_id != session_id {
+    if files.doc.note_id != session_id {
         return Err(unavailable(format!(
             "the files are of the note {}",
-            files.doc.session_id
+            files.doc.note_id
         )));
     }
     let tags = unique(edit(&files.doc.tags));

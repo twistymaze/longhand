@@ -1,7 +1,8 @@
 {
   "asr_model": "parakeet-unified-en-0.6b-q80",
   "found_speakers": 2,
-  "layout": 1,
+  "layout": 2,
+  "note_id": "note-design-review",
   "segments": [
     {
       "audio": "audio/segment-01.opus",
@@ -12,7 +13,6 @@
       "wall_start": "2026-10-03T10:00:00-05:00"
     }
   ],
-  "session_id": "note-design-review",
   "started": "2026-10-03T10:00:00-05:00",
   "summary": {
     "endpoint_host": "llm.example.com",

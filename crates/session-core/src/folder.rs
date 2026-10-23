@@ -118,7 +118,8 @@ fn yaml_error(file: &'static str) -> impl Fn(serde_yaml::Error) -> FolderError {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionDoc {
-    pub session_id: String,
+    #[serde(rename = "session_id")]
+    pub note_id: String,
     pub started: DateTime<FixedOffset>,
     /// `None` until processing proposes a title or the user sets one (R28).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -300,7 +301,7 @@ impl SessionDoc {
         segments: &[Segment],
     ) -> Self {
         Self {
-            session_id: session_id.into(),
+            note_id: session_id.into(),
             started,
             title: None,
             title_source: None,

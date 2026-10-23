@@ -243,7 +243,7 @@ fn pause_for(e: &io::Error, folder: &Path) -> MoveError {
 /// second copy is never placed.
 fn is_ours(path: &Path, session_id: &str) -> bool {
     moving_copy(path, session_id)
-        || NoteFiles::read(path).is_ok_and(|files| files.doc.session_id == session_id)
+        || NoteFiles::read(path).is_ok_and(|files| files.doc.note_id == session_id)
 }
 
 /// Whether `path` has the Move's marker with the note id: it is a copy

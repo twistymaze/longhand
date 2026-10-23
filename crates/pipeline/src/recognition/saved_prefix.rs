@@ -193,7 +193,7 @@ fn candidate(
         || segments
             .windows(2)
             .any(|pair| pair[0].end_ms() > pair[1].offset_ms || pair[0].index >= pair[1].index)
-        || doc.session_id != id
+        || doc.note_id != id
         || doc.recognition_snapshot.as_ref() != Some(&serde_json::to_value(spec)?)
         || doc.speaker_count != record.speaker_count
     {

@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use session_core::SpeakerCount;
 use session_core::folder::fingerprint;
 use session_core::note_folder::SESSION_FILE;
-use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
+use session_core::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord};
 use session_core::recognition::{ARTIFACT_FILE, ArtifactReference};
 use std::collections::BTreeMap;
 use std::io;
@@ -67,7 +67,9 @@ impl WriteSet {
 /// between two writes is not a conflict.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResultFields {
-    pub session_id: String,
+    /// An older build wrote the key `session_id`.
+    #[serde(alias = "session_id")]
+    pub note_id: String,
     pub transcript_fingerprint: Option<String>,
     pub summary_fingerprint: Option<String>,
     pub recognition_artifact: Option<ArtifactReference>,
@@ -79,7 +81,7 @@ pub struct ResultFields {
 impl ResultFields {
     pub fn of(record: &NoteRecord) -> Self {
         Self {
-            session_id: record.session_id.clone(),
+            note_id: record.note_id.clone(),
             transcript_fingerprint: record.transcript_fingerprint.clone(),
             summary_fingerprint: record.summary_fingerprint.clone(),
             recognition_artifact: record.recognition_artifact.clone(),
@@ -143,7 +145,7 @@ impl Publication {
     /// old layout gives an error, and nothing is written.
     pub fn new(home: &Path, after: NoteRecord, set: WriteSet) -> io::Result<Self> {
         let before = ResultFields::of(&note_files::new_layout_record(home)?);
-        if before.session_id != after.session_id {
+        if before.note_id != after.note_id {
             return Err(conflict());
         }
         Ok(Self { before, after, set })
@@ -158,7 +160,13 @@ impl Publication {
     /// The record in `local`, or `None` when `local` has none.
     pub fn load(local: &Path) -> io::Result<Option<Self>> {
         match std::fs::read(local.join(RECORD)) {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Ok(bytes) => {
+                let mut publication: Self = serde_json::from_slice(&bytes)?;
+                // An older build recorded its layout. The roll-forward
+                // writes `note_id`, so it writes this layout (KTD1).
+                publication.after.layout = publication.after.layout.max(LAYOUT);
+                Ok(Some(publication))
+            }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }

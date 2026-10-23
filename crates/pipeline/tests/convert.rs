@@ -111,7 +111,10 @@ fn write_old_layout(home: &Path) -> NoteFiles {
     .render();
     doc.summary_fingerprint = Some(fingerprint(old_summary.as_bytes()));
     fs::write(home.join("summary.md"), &old_summary).unwrap();
-    fs::write(home.join("session.md"), old_session_md(&doc)).unwrap();
+    let session_md = old_session_md(&doc);
+    // An older Longhand wrote the note id with the key `session_id`.
+    assert!(session_md.contains("\nsession_id: "), "{session_md}");
+    fs::write(home.join("session.md"), session_md).unwrap();
     fs::remove_file(home.join(NOTE_RECORD_FILE)).unwrap();
     files
 }
@@ -144,8 +147,9 @@ fn convert_all(store: &SharedStore, notes: &[(&str, &Path)]) -> ConvertReport {
     convert::convert_notes(store, &notes, &[], &never_claimed)
 }
 
-// Covers R10: the conversion keeps every record, the tags, the title, the
-// body and a key that an agent added.
+// Covers R10, AE3: the conversion keeps every record, the tags, the title,
+// the body and a key that an agent added. The new `longhand.json` has
+// `note_id` and layout 2.
 #[test]
 fn a_saved_note_converts_with_every_record_its_tags_title_and_body() {
     let (_dir, root) = storage();
@@ -172,6 +176,10 @@ fn a_saved_note_converts_with_every_record_its_tags_title_and_body() {
     let session_md = fs::read_to_string(home.join("session.md")).unwrap();
     assert!(!session_md.contains("session_id"), "{session_md}");
     assert!(!session_md.contains("segments"), "{session_md}");
+    let record = fs::read_to_string(home.join(NOTE_RECORD_FILE)).unwrap();
+    assert!(record.contains("\"note_id\": \"n\""), "{record}");
+    assert!(record.contains("\"layout\": 2"), "{record}");
+    assert!(!record.contains("session_id"), "{record}");
     assert!(
         session_md.starts_with("---\nsource: agent\n"),
         "{session_md}"

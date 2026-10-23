@@ -391,7 +391,7 @@ def compare_notes(report, before_state, after_state, longhand_works):
         for note in extra:
             first = next(n for n in news if n is not note)
             report.problems.append(
-                "%s and %s have one session_id. Do not copy a note folder." % (first["path"], note["path"])
+                "%s and %s have one note id. Do not copy a note folder." % (first["path"], note["path"])
             )
 
 

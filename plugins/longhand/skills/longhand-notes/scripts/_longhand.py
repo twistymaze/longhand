@@ -51,13 +51,8 @@ RECOGNITION_FILE = "recognition.jsonl"
 AUDIO_FOLDER = "audio"
 IN_USE_PREFIX = ".longhand-in-use-"
 
-# The layout of `longhand.json` that these scripts know.
-LAYOUT = 1
-
-# The keys of a `longhand.json` in LAYOUT. A file with another key comes
-# from a Longhand that these scripts do not know, so a check reports it as
-# not checked.
-RECORD_KEYS = frozenset(
+# The keys that each layout of `longhand.json` shares.
+_SHARED_RECORD_KEYS = frozenset(
     [
         "asr_model",
         "found_speakers",
@@ -68,7 +63,6 @@ RECORD_KEYS = frozenset(
         "recognition_snapshot",
         "result",
         "segments",
-        "session_id",
         "speaker_count",
         "started",
         "summary",
@@ -77,6 +71,18 @@ RECORD_KEYS = frozenset(
         "written_title",
     ]
 )
+
+# The layouts of `longhand.json` that these scripts know, each with the key
+# that holds the note id. Layout 1 holds the note id in `session_id`, and
+# layout 2 holds it in `note_id`. The other keys are the same.
+RECORD_ID_KEYS = {1: "session_id", 2: "note_id"}
+
+# The keys of a `longhand.json` in each known layout. A file with another
+# key comes from a Longhand that these scripts do not know, so a check
+# reports it as not checked.
+RECORD_KEYS = {
+    layout: _SHARED_RECORD_KEYS | {id_key} for layout, id_key in RECORD_ID_KEYS.items()
+}
 
 # The keys of `.longhand/settings.json` that these scripts know, with the
 # schema version.
@@ -439,20 +445,35 @@ def read_record(folder):
     layout = record.get("layout")
     if not isinstance(layout, int) or isinstance(layout, bool):
         return None, "%s has no layout number" % NOTE_RECORD_FILE
-    if layout != LAYOUT:
+    if layout not in RECORD_KEYS:
         return record, (
-            "%s has layout %d, and this skill knows layout %d. Update the Longhand plugin."
-            % (NOTE_RECORD_FILE, layout, LAYOUT)
+            "%s has layout %d, and this skill knows layouts %s. Update the Longhand plugin."
+            % (NOTE_RECORD_FILE, layout, " and ".join(str(known) for known in sorted(RECORD_KEYS)))
         )
-    unknown = sorted(set(record) - RECORD_KEYS)
+    unknown = sorted(set(record) - RECORD_KEYS[layout])
     if unknown:
         return record, (
             "%s has keys that this skill does not know: %s. Update the Longhand plugin."
             % (NOTE_RECORD_FILE, ", ".join(unknown))
         )
-    if not isinstance(record.get("session_id"), str) or parse_time(record.get("started")) is None:
-        return record, "%s has no valid session_id or started time" % NOTE_RECORD_FILE
+    if record_id(record) is None or parse_time(record.get("started")) is None:
+        return record, "%s has no valid note id or started time" % NOTE_RECORD_FILE
     return record, "ok"
+
+
+def record_id(record):
+    """The note id in a `longhand.json`, or None. A known layout gives the
+    key. For a layout that this skill does not know, the id is in the key
+    of a known layout, so that a check can find the note after a move."""
+    layout = record.get("layout")
+    if isinstance(layout, int) and not isinstance(layout, bool) and layout in RECORD_ID_KEYS:
+        keys = [RECORD_ID_KEYS[layout]]
+    else:
+        keys = [RECORD_ID_KEYS[known] for known in sorted(RECORD_ID_KEYS, reverse=True)]
+    for key in keys:
+        if isinstance(record.get(key), str):
+            return record[key]
+    return None
 
 
 # ---------------------------------------------------------------- frontmatter
@@ -753,8 +774,8 @@ def read_note(root, relative, note_type, at=None):
         "session_md_bom": False,
         "busy": [],
     }
-    if record is not None and isinstance(record.get("session_id"), str):
-        note["id"] = record["session_id"]
+    if record is not None:
+        note["id"] = record_id(record)
     if record is not None and isinstance(record.get("started"), str):
         note["started"] = record["started"]
     session_path = os.path.join(folder, SESSION_FILE)

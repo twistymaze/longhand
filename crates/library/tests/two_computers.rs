@@ -2607,7 +2607,7 @@ fn a_longhand_json_of_a_newer_layout_keeps_the_row_and_shows_a_notice_at_once() 
 
     fs::write(
         folder.join("longhand.json"),
-        "{\"layout\": 2, \"session_id\": \"n1\", \"records\": {}}\n",
+        "{\"layout\": 3, \"note_id\": \"n1\", \"records\": {}}\n",
     )
     .unwrap();
     assert!(b.sync_at(&root, start).notices);

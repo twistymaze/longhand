@@ -289,7 +289,7 @@ fn storage(root: &Path, e: io::Error) -> StageError {
 /// file gives [`NoteAt::Unknown`].
 fn note_at(path: &Path, id: &str) -> NoteAt {
     match scan::read_note(path, READ_TIMEOUT) {
-        NoteRead::Note(files) if files.doc.session_id == id => NoteAt::Yes,
+        NoteRead::Note(files) if files.doc.note_id == id => NoteAt::Yes,
         NoteRead::Unreadable(why) => NoteAt::Unknown(why),
         _ => NoteAt::No,
     }
@@ -685,7 +685,7 @@ fn write_flag(
     // A note in the old layout gets no write: its records stay in
     // `session.md` until the conversion (KTD6).
     if files.layout != Layout::New
-        || files.record.session_id != id
+        || files.record.note_id != id
         || files.record.result == Some(flag)
     {
         return Ok(());
@@ -810,7 +810,7 @@ pub(crate) fn locate(store: &SharedStore, id: &str, home: &Path) -> Result<Locat
     }
     // A folder that holds the note shows where it is, also when the
     // folder of another note cannot be read.
-    if let Some(note) = found.notes.iter().find(|note| note.doc.session_id == id) {
+    if let Some(note) = found.notes.iter().find(|note| note.doc.note_id == id) {
         let guard = lock(store);
         guard.set_home_path(id, &note.path.to_string_lossy())?;
         guard.set_note_type(id, note.note_type.as_deref())?;
@@ -959,8 +959,7 @@ pub(crate) fn rehome_guarded(
     // can hold a file that does not download.
     match scan::read_note(&home, READ_TIMEOUT) {
         NoteRead::Note(files)
-            if files.record.session_id == id
-                && files.record.result == Some(ResultFlag::NotSaved) => {}
+            if files.record.note_id == id && files.record.result == Some(ResultFlag::NotSaved) => {}
         NoteRead::Unreadable(why) => {
             log::warn!(
                 "the home folder of {id} outside the storage folder cannot be read, so it stays for now: {why}"

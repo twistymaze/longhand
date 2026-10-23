@@ -5,7 +5,7 @@ use session_core::folder::{
     FolderError, PendingType, ResultFlag, SegmentRecord, SummaryMeta, fingerprint,
 };
 use session_core::note_record::{
-    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, session_id_of, valid_audio_name,
+    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, note_id_of, valid_audio_name,
 };
 use session_core::recognition::ArtifactReference;
 use session_core::{SpeakerCount, Title, TitleSource};
@@ -18,7 +18,7 @@ fn wall(minutes: i64) -> DateTime<FixedOffset> {
 fn full_record() -> NoteRecord {
     NoteRecord {
         layout: LAYOUT,
-        session_id: "01j8z".into(),
+        note_id: "01j8z".into(),
         started: wall(0),
         written_title: Some(Title {
             text: "Budget review: Q3 \"plan\"".into(),
@@ -87,9 +87,9 @@ fn keys_at(text: &str, indent: usize) -> Vec<String> {
 }
 
 #[test]
-fn the_file_name_has_no_leading_dot_and_the_layout_is_one() {
+fn the_file_name_has_no_leading_dot_and_the_layout_is_two() {
     assert_eq!(NOTE_RECORD_FILE, "longhand.json");
-    assert_eq!(LAYOUT, 1);
+    assert_eq!(LAYOUT, 2);
 }
 
 #[test]
@@ -114,13 +114,13 @@ fn a_record_with_every_field_round_trips_and_two_writes_give_the_same_bytes() {
             "asr_model",
             "found_speakers",
             "layout",
+            "note_id",
             "pending_type",
             "recognition_artifact",
             "recognition_audio",
             "recognition_snapshot",
             "result",
             "segments",
-            "session_id",
             "speaker_count",
             "started",
             "summary",
@@ -143,7 +143,7 @@ fn a_record_with_every_field_round_trips_and_two_writes_give_the_same_bytes() {
             .any(|w| w == summary_keys.map(String::from)),
         "{text}"
     );
-    assert!(text.contains("\"layout\": 1"), "{text}");
+    assert!(text.contains("\"layout\": 2"), "{text}");
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn a_record_with_only_the_required_fields_round_trips() {
     let text = record.render();
     assert_eq!(
         keys_at(&text, 2),
-        ["layout", "segments", "session_id", "started"]
+        ["layout", "note_id", "segments", "started"]
     );
     assert_eq!(
         NoteRecord::parse(&text).unwrap(),
@@ -162,10 +162,10 @@ fn a_record_with_only_the_required_fields_round_trips() {
 
 #[test]
 fn a_record_with_a_newer_layout_parses_as_newer_not_as_an_error() {
-    let text = "{\n  \"layout\": 2,\n  \"something_new\": [1, 2]\n}\n";
+    let text = "{\n  \"layout\": 3,\n  \"something_new\": [1, 2]\n}\n";
     assert_eq!(
         NoteRecord::parse(text).unwrap(),
-        NoteRecordRead::Newer { layout: 2 }
+        NoteRecordRead::Newer { layout: 3 }
     );
 }
 
@@ -196,7 +196,7 @@ fn a_record_with_a_wrong_field_type_gives_the_line() {
 }
 
 #[test]
-fn a_record_whose_session_id_is_not_a_plain_note_id_does_not_parse() {
+fn a_record_whose_note_id_is_not_a_plain_note_id_does_not_parse() {
     // The id becomes a folder name under the working root, so a path, a
     // parent reference, an empty id, uppercase (file systems that ignore
     // case) or a long id is refused.
@@ -221,7 +221,7 @@ fn a_record_whose_session_id_is_not_a_plain_note_id_does_not_parse() {
     ] {
         let text = NoteRecord::new(id, wall(0)).render();
         assert!(NoteRecord::parse(&text).is_err(), "{id:?} parsed");
-        assert_eq!(session_id_of(&text), None, "{id:?}");
+        assert_eq!(note_id_of(&text), None, "{id:?}");
     }
     for id in [
         "s1",
@@ -274,7 +274,7 @@ fn a_record_whose_segment_audio_is_not_a_path_in_the_note_folder_does_not_parse(
             ),
             "{audio:?}"
         );
-        assert_eq!(session_id_of(&text), None, "{audio:?}");
+        assert_eq!(note_id_of(&text), None, "{audio:?}");
     }
 }
 
@@ -287,7 +287,7 @@ fn a_record_with_the_audio_names_that_longhand_writes_parses() {
     let text = record.render();
     assert_eq!(NoteRecord::parse(&text).unwrap().current(), Some(record));
     // A newer layout is not read, so its audio names are not checked.
-    let text = "{\n  \"layout\": 9,\n  \"session_id\": \"01j8z\",\n  \"segments\": [{\"audio\": \"/etc/passwd\"}]\n}\n";
+    let text = "{\n  \"layout\": 9,\n  \"note_id\": \"01j8z\",\n  \"segments\": [{\"audio\": \"/etc/passwd\"}]\n}\n";
     assert_eq!(
         NoteRecord::parse(text).unwrap(),
         NoteRecordRead::Newer { layout: 9 }
@@ -295,7 +295,61 @@ fn a_record_with_the_audio_names_that_longhand_writes_parses() {
 }
 
 #[test]
-fn a_newer_record_with_a_bad_session_id_gives_no_id() {
-    let text = "{\n  \"layout\": 9,\n  \"session_id\": \"../..\"\n}\n";
-    assert_eq!(session_id_of(text), None);
+fn a_newer_record_with_a_bad_note_id_gives_no_id() {
+    let text = "{\n  \"layout\": 9,\n  \"note_id\": \"../..\"\n}\n";
+    assert_eq!(note_id_of(text), None);
+}
+
+/// A `longhand.json` in layout 1, as an older Longhand wrote it: the note
+/// id has the key `session_id`.
+const LAYOUT_ONE: &str = "{\n  \"layout\": 1,\n  \"segments\": [],\n  \"session_id\": \"01j8z\",\n  \"started\": \"2026-09-22T09:00:00-05:00\"\n}\n";
+
+// Covers AE1, R4, KTD1: a layout-1 file reads as the current layout. Its
+// next write has `note_id` and layout 2, so an older build reads it as a
+// file from a newer build.
+#[test]
+fn a_layout_one_record_with_the_old_id_key_parses_and_renders_as_layout_two() {
+    let record = NoteRecord::parse(LAYOUT_ONE)
+        .unwrap()
+        .current()
+        .expect("a current record");
+    assert_eq!(record.note_id, "01j8z");
+    assert_eq!(record.layout, 2);
+    assert_eq!(record, NoteRecord::new("01j8z", wall(0)));
+    let text = record.render();
+    assert_eq!(
+        keys_at(&text, 2),
+        ["layout", "note_id", "segments", "started"]
+    );
+    assert!(text.contains("\"layout\": 2"), "{text}");
+    assert!(!text.contains("session_id"), "{text}");
+    assert_eq!(note_id_of(LAYOUT_ONE).as_deref(), Some("01j8z"));
+}
+
+#[test]
+fn a_layout_two_record_with_note_id_renders_the_same_bytes() {
+    let text = "{\n  \"layout\": 2,\n  \"note_id\": \"01j8z\",\n  \"segments\": [],\n  \"started\": \"2026-09-22T09:00:00-05:00\"\n}\n";
+    let record = NoteRecord::parse(text).unwrap().current().unwrap();
+    assert_eq!(record.render(), text);
+}
+
+#[test]
+fn a_layout_one_record_whose_old_id_key_is_not_valid_gives_the_same_error() {
+    let text = LAYOUT_ONE.replace("\"01j8z\"", "\"../..\"");
+    // The assert does not print the result: its text holds the note id.
+    assert!(matches!(
+        NoteRecord::parse(&text),
+        Err(FolderError::Yaml { file, .. }) if file == NOTE_RECORD_FILE
+    ));
+    assert_eq!(note_id_of(&text), None);
+}
+
+#[test]
+fn a_layout_three_record_is_newer_and_gives_its_note_id() {
+    let text = "{\n  \"layout\": 3,\n  \"note_id\": \"01j8z\",\n  \"something_new\": true\n}\n";
+    assert_eq!(
+        NoteRecord::parse(text).unwrap(),
+        NoteRecordRead::Newer { layout: 3 }
+    );
+    assert_eq!(note_id_of(text).as_deref(), Some("01j8z"));
 }

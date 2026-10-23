@@ -1157,7 +1157,7 @@ mod tests {
         std::fs::create_dir(&newer).unwrap();
         std::fs::write(
             newer.join("longhand.json"),
-            "{\"layout\": 9, \"session_id\": \"zz\"}\n",
+            "{\"layout\": 9, \"note_id\": \"zz\"}\n",
         )
         .unwrap();
         let both = vec![first.path().to_path_buf(), second.path().to_path_buf()];

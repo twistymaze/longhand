@@ -369,7 +369,7 @@ mod tests {
     fn record_keys_cover_each_record_of_session_md() {
         let at = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
         let doc = SessionDoc {
-            session_id: "s".into(),
+            note_id: "s".into(),
             started: at,
             title: Some("Budget".into()),
             title_source: Some(TitleSource::User),

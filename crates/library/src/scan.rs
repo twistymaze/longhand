@@ -28,7 +28,7 @@ use std::time::{Duration, SystemTime};
 use chrono::{Local, TimeDelta};
 use session_core::folder::{self, ResultFlag, SessionDoc, fingerprint};
 use session_core::note_folder::{Layout, NoteFiles, NoteFilesError, SESSION_FILE};
-use session_core::note_record::{NOTE_RECORD_FILE, session_id_of};
+use session_core::note_record::{NOTE_RECORD_FILE, note_id_of};
 use session_core::{SessionRecord, Title};
 use session_save::in_use_marker;
 
@@ -488,7 +488,7 @@ pub fn scan_folders(
     let ids: Vec<String> = reads
         .notes
         .iter()
-        .map(|note| note.doc.session_id.clone())
+        .map(|note| note.doc.note_id.clone())
         .collect();
     for id in ids {
         let Some(home) = known.home_of(&id) else {
@@ -826,7 +826,7 @@ fn record_id(dir: &Path, timeout: Duration) -> Option<String> {
     let Read::Bytes(bytes) = read_timed(dir.join(NOTE_RECORD_FILE), timeout) else {
         return None;
     };
-    session_id_of(std::str::from_utf8(&bytes).ok()?)
+    note_id_of(std::str::from_utf8(&bytes).ok()?)
 }
 
 fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
@@ -1022,7 +1022,7 @@ fn exists(path: &Path) -> bool {
 fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
     let mut by_id: BTreeMap<String, Vec<Found>> = BTreeMap::new();
     for f in found {
-        by_id.entry(f.doc.session_id.clone()).or_default().push(f);
+        by_id.entry(f.doc.note_id.clone()).or_default().push(f);
     }
     let mut notes: Vec<NoteFolder> = by_id
         .into_iter()
