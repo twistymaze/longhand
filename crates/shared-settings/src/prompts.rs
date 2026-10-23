@@ -29,16 +29,17 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io;
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
 use crate::file::{
     FileRead, SaveError, SettingsFile, SharedFields, SharedValue, Unavailable, check_root,
-    longhand_folder, read_prefix, read_settings, save_settings, write_new,
+    longhand_folder, read_settings, save_settings, write_new,
 };
-use crate::inside::{check_write_folder, inside_file};
+use crate::inside::{check_write_folder, inside_file, open_checked, read_checked};
 
 /// The folder in the hidden Longhand folder that holds the prompt files.
 pub const PROMPTS_FOLDER: &str = "prompts";
@@ -579,10 +580,12 @@ fn read_entry(root: &Path, folder: &Path, file_name: String) -> Found {
         return Found::Other;
     }
     let too_large = meta.len() > MAX_FILE_BYTES;
+    // A sync can put a link in place after the check. The read does not
+    // follow such a link.
     let read = if too_large {
-        read_head(&path)
+        open_checked(root, &path).and_then(read_head)
     } else {
-        std::fs::read(&path)
+        read_checked(root, &path)
     };
     let bytes = match read {
         Ok(bytes) => bytes,
@@ -632,9 +635,11 @@ fn read_entry(root: &Path, folder: &Path, file_name: String) -> Found {
     })
 }
 
-/// The first [`HEAD_BYTES`] of the file at `path`.
-fn read_head(path: &Path) -> io::Result<Vec<u8>> {
-    read_prefix(path, HEAD_BYTES)
+/// The first [`HEAD_BYTES`] of `file`.
+fn read_head(file: File) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(HEAD_BYTES).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 /// The summary text and the title text of the file of `prompt`. For a file
@@ -656,9 +661,11 @@ fn full_texts(root: &Path, prompt: &PromptFile) -> Result<(String, String), Prom
 
 /// The bytes of the prompt file `file_name` of the storage folder `root`. A
 /// change of a prompt reads the file again, so the file can be a link
-/// now: the read follows a link only to a file in the storage folder.
+/// now: the read follows a link only to a file in the storage folder. The
+/// read does not follow a link that a sync puts in place after the check.
 fn read_prompt_file(root: &Path, file_name: &str) -> io::Result<Vec<u8>> {
-    std::fs::read(inside_file(root, &prompts_folder(root).join(file_name))?)
+    let path = inside_file(root, &prompts_folder(root).join(file_name))?;
+    read_checked(root, &path)
 }
 
 /// Give each file its id (KTD5), join the files with one id and the same
@@ -1001,7 +1008,7 @@ pub fn delete_prompt(root: &Path, id: &str) -> Result<Option<SettingsFile>, Prom
     settle_copies(root, &scan, id)?;
     let folder = prompts_folder(root);
     for file_name in std::iter::once(&prompt.file_name).chain(&prompt.duplicates) {
-        remove_if_present(&folder.join(file_name))?;
+        remove_if_present(root, &folder, file_name)?;
     }
     session_save::fsync::sync_dir(&folder)?;
     Ok(settings)
@@ -1150,9 +1157,12 @@ fn rewrite(
         Err(e) => return Err(e.into()),
     };
     let contents = render(&prompt.id, name, &extra, text, title_text);
+    // A sync can make the prompt folder a link after the scan. Examine it
+    // again just before the write.
+    check_write_folder(root, folder)?;
     session_save::home_write::write_atomic(folder, &prompt.file_name, contents.as_bytes())?;
     for duplicate in &prompt.duplicates {
-        remove_if_present(&folder.join(duplicate))?;
+        remove_if_present(root, folder, duplicate)?;
     }
     Ok(())
 }
@@ -1203,8 +1213,11 @@ fn has_exact_name(folder: &Path, name: &str) -> io::Result<bool> {
     Ok(false)
 }
 
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match std::fs::remove_file(path) {
+/// Remove `folder/file_name` when it exists. A sync can make `folder` a
+/// link after the scan, so the remove examines `folder` again first.
+fn remove_if_present(root: &Path, folder: &Path, file_name: &str) -> io::Result<()> {
+    check_write_folder(root, folder)?;
+    match std::fs::remove_file(folder.join(file_name)) {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
         _ => Ok(()),
     }
@@ -1260,6 +1273,31 @@ mod tests {
             ..prompt
         };
         assert!(full_texts(root.path(), &large).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_remove_refuses_a_prompt_folder_that_links_outside_after_the_scan() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = prompts_folder(root.path());
+        std::fs::create_dir_all(longhand_folder(root.path())).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("Recap.md");
+        std::fs::write(&target, "Outside text.").unwrap();
+        std::os::unix::fs::symlink(outside.path(), &folder).unwrap();
+        assert!(remove_if_present(root.path(), &folder, "Recap.md").is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "Outside text.");
+    }
+
+    #[test]
+    fn a_remove_in_the_prompt_folder_removes_the_file() {
+        let root = tempfile::tempdir().unwrap();
+        let folder = prompts_folder(root.path());
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("Recap.md"), "Recap text.").unwrap();
+        remove_if_present(root.path(), &folder, "Recap.md").unwrap();
+        assert!(!folder.join("Recap.md").exists());
+        remove_if_present(root.path(), &folder, "Recap.md").unwrap();
     }
 
     #[test]

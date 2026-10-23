@@ -337,6 +337,70 @@ fn an_old_segment_removed_before_its_copy_fails_assembly_with_the_removal() {
     assert!(!dir.join(&segment.audio_file).exists(), "no copy is kept");
 }
 
+// ------------------------------------------------- an unsafe audio name
+
+/// A synced note record can give a segment any audio name. A name that
+/// points outside the home folder is not read: assembly fails as for a
+/// missing file in the home folder.
+#[test]
+fn an_audio_name_outside_the_home_folder_is_not_read() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("s5");
+    let segment = write_segment(&dir, 0, 0, 48_000, &tone(48_000, 5.0), false);
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s5", at(0), None).unwrap();
+        s.put_segment("s5", &segment).unwrap();
+    }
+    let slice = std::slice::from_ref(&segment);
+    assemble::run(&store, "s5", &dir, slice, None, &Unattended).unwrap();
+    // A real archive next to the home folder, not in it.
+    let outside = root.path().join("outside.opus");
+    std::fs::rename(dir.join(&segment.audio_file), &outside).unwrap();
+    std::fs::remove_dir_all(&dir).unwrap();
+    let home = root.path().join("folder");
+    std::fs::create_dir_all(home.join("audio")).unwrap();
+
+    for name in [
+        "../outside.opus".to_string(),
+        outside.to_string_lossy().into_owned(),
+    ] {
+        let named = session_core::Segment {
+            audio_file: name.clone(),
+            ..segment.clone()
+        };
+        let slice = std::slice::from_ref(&named);
+        let error = assemble::run(&store, "s5", &dir, slice, Some(&home), &Unattended).unwrap_err();
+        assert!(
+            error.to_string().contains("missing or incomplete"),
+            "{name}: {error}"
+        );
+        assert!(!dir.join(proc_file(&name)).exists(), "{name} was decoded");
+    }
+}
+
+/// A name that points outside the working directory gets no archive.
+#[test]
+fn an_audio_name_outside_the_working_directory_gets_no_archive() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("s6");
+    let segment = session_core::Segment {
+        audio_file: "../escape.opus".into(),
+        ..write_segment(&dir, 0, 0, 48_000, &tone(48_000, 5.0), false)
+    };
+    let store = store();
+    {
+        let mut s = store.lock().unwrap();
+        s.create_session("s6", at(0), None).unwrap();
+        s.put_segment("s6", &segment).unwrap();
+    }
+    let slice = std::slice::from_ref(&segment);
+    let error = assemble::run(&store, "s6", &dir, slice, None, &Unattended).unwrap_err();
+    assert!(error.to_string().contains("bad audio name"), "{error}");
+    assert!(!root.path().join("escape.opus").exists());
+}
+
 // ------------------------------------------------------- a missing chunk
 
 /// A ramp from 0.1 to 0.9 over `secs`, so that each time has its own level.

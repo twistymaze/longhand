@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 pub use summarize::prompts::BACKGROUND_TEXT_LIMIT;
 
 use crate::file::{FileRead, Unavailable, check_root, longhand_folder, read_settings, write_new};
-use crate::inside::{OUTSIDE_FILE, check_write_folder, inside_file};
+use crate::inside::{OUTSIDE_FILE, check_write_folder, inside_file, read_checked};
 use crate::prompts::format_count;
 
 /// The name of the Background file in the hidden Longhand folder.
@@ -130,7 +130,9 @@ pub fn read_background(root: &Path) -> BackgroundRead {
     if meta.len() > MAX_FILE_BYTES {
         return BackgroundRead::NotAvailable(BackgroundUnavailable::TooLong);
     }
-    let bytes = match std::fs::read(&path) {
+    // A sync can put a link in place after the check. The read does not
+    // follow such a link.
+    let bytes = match read_checked(root, &path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return BackgroundRead::Missing,
         Err(e) => return unreadable(e.to_string()),

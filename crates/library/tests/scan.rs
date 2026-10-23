@@ -242,6 +242,26 @@ fn a_folder_whose_id_is_a_path_is_not_a_note() {
 }
 
 #[test]
+fn a_folder_whose_segment_audio_is_outside_the_note_folder_is_not_a_note() {
+    // The scan joins the audio name to the note folder and asks whether
+    // the file exists. A name that leaves the folder must not be used.
+    let root = marked_root();
+    let outside = tempfile::tempdir().unwrap();
+    let audio = outside.path().join("segment-01.opus");
+    fs::write(&audio, b"opus").unwrap();
+    let dir = note(root.path(), "Planning", "a1");
+    for name in [audio.to_str().unwrap(), "../Other/audio/segment-01.opus"] {
+        let mut doc = doc("a1");
+        doc.segments[0].audio = name.into();
+        session_save::note_files::write_doc(&dir, &doc).unwrap();
+        let result = run(root.path(), &Known::default());
+        assert!(result.notes.is_empty(), "{name}");
+        assert_eq!(result.invalid.len(), 1, "{name}");
+        assert_eq!(result.invalid[0].path, dir, "{name}");
+    }
+}
+
+#[test]
 fn hidden_folders_and_files_are_skipped() {
     let root = marked_root();
     note(root.path(), &session_save::naming::staging_name("s1"), "s1");

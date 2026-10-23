@@ -897,3 +897,128 @@ fn a_settings_file_just_under_the_size_limit_reads() {
     );
     assert!(matches!(read_settings(root.path()), FileRead::Parsed(_)));
 }
+
+/// A folder outside the storage folder with a settings file that holds a
+/// value that must not go into the storage folder.
+#[cfg(unix)]
+fn outside_settings() -> (tempfile::TempDir, std::path::PathBuf, Vec<u8>) {
+    let outside = tempfile::tempdir().unwrap();
+    let path = outside.path().join(SETTINGS_FILE);
+    let bytes = serde_json::to_vec_pretty(&json!({
+        "schema_version": 1,
+        "live_transcript": true,
+        "outside_value": "outside text"
+    }))
+    .unwrap();
+    fs::write(&path, &bytes).unwrap();
+    (outside, path, bytes)
+}
+
+#[cfg(unix)]
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path).unwrap().file_type().is_symlink()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_settings_file_that_links_outside_the_folder_is_not_read_and_a_save_writes_nothing() {
+    let root = folder();
+    let (_outside, target, bytes) = outside_settings();
+    let link = root.path().join(".longhand").join(SETTINGS_FILE);
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    match read_settings(root.path()) {
+        FileRead::NotAvailable(Unavailable::DoesNotParse(error)) => assert_eq!(error.line, None),
+        other => panic!("expected a file that is not available, got {other:?}"),
+    }
+    assert!(matches!(
+        save_settings(root.path(), &[SharedValue::LiveTranscript(false)]),
+        Err(SaveError::NotAvailable(Unavailable::DoesNotParse(_)))
+    ));
+    assert!(is_link(&link));
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    // The settings come from the defaults and are read-only. The text of
+    // the file outside goes into no view and no cache.
+    let loaded = load(root.path(), None);
+    assert!(!loaded.view.writable());
+    assert_eq!(loaded.view.parse_error().map(|e| e.line), Some(None));
+    assert!(loaded.view.files_writable);
+    assert!(!loaded.view.raw.contains_key("outside_value"));
+    assert!(loaded.cache.is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_settings_file_that_links_to_a_file_in_the_folder_reads() {
+    let root = folder();
+    let target = root.path().join("settings copy.json");
+    fs::write(
+        &target,
+        br#"{"schema_version": 1, "live_transcript": false}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&target, root.path().join(".longhand").join(SETTINGS_FILE)).unwrap();
+    assert_eq!(
+        parsed(root.path()).fields.live_transcript,
+        Field::Known(false)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_longhand_folder_that_links_outside_is_not_available_and_a_save_writes_nothing() {
+    let root = tempfile::tempdir().unwrap();
+    let (outside, target, bytes) = outside_settings();
+    std::os::unix::fs::symlink(outside.path(), root.path().join(".longhand")).unwrap();
+    assert!(matches!(
+        read_settings(root.path()),
+        FileRead::NotAvailable(Unavailable::Unreadable(_))
+    ));
+    assert!(save_settings(root.path(), &[SharedValue::LiveTranscript(false)]).is_err());
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    let names: Vec<_> = fs::read_dir(outside.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(names, [SETTINGS_FILE]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_join_does_not_fill_a_longhand_folder_that_links_outside() {
+    use shared_settings::join::{JoinKind, join};
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), root.path().join(".longhand")).unwrap();
+    assert!(join(root.path(), None, JoinKind::ChangeOfFolder).is_err());
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_settings_link_outside_the_folder_leaves_the_background_and_the_prompts_writable() {
+    use shared_settings::background::{background_path, save_background};
+    use shared_settings::prompts::{create_prompt, delete_prompt, prompts_folder};
+    let root = folder();
+    let (_outside, target, bytes) = outside_settings();
+    let link = root.path().join(".longhand").join(SETTINGS_FILE);
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    save_background(root.path(), "New text.").unwrap();
+    assert_eq!(
+        fs::read_to_string(background_path(root.path())).unwrap(),
+        "New text."
+    );
+    let kept = create_prompt(root.path(), "Recap", "Recap text.").unwrap();
+    let gone = create_prompt(root.path(), "Standup", "Standup text.").unwrap();
+    assert!(prompts_folder(root.path()).join(&kept.file_name).is_file());
+    // A delete changes no setting, because it cannot read the settings.
+    assert!(delete_prompt(root.path(), &gone.id).unwrap().is_none());
+    assert!(!prompts_folder(root.path()).join(&gone.file_name).exists());
+    // No change wrote the settings file.
+    assert!(is_link(&link));
+    assert_eq!(fs::read(&target).unwrap(), bytes);
+    let view = load(root.path(), None).view;
+    assert_eq!(view.background, "New text.");
+    assert!(view.background_writable());
+    assert!(view.prompts.iter().any(|p| p.id == kept.id));
+    assert!(view.prompts.iter().all(|p| p.id != gone.id));
+}
