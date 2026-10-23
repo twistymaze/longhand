@@ -282,22 +282,10 @@ function AppsGroup({ settings, onSettings, readiness, onRefresh }: PaneProps) {
       header="App Audio"
       footer="Each new note records the sound of these apps with the microphone, such as the other people on a call. A change applies from the next note."
     >
-      {listed.map((app) => (
-        <div key={app.id} className="settings-row px-4">
-          <div className="settings-row-content flex min-h-[2.75rem] items-center gap-3 py-2">
-            <ListedAppIcon path={app.path} />
-            <div className="min-w-0 flex-1">
-              <div className="truncate font-medium">{app.name}</div>
-              {isWindows() && app.id === WINDOWS_TEAMS_ID && (
-                <div className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">{WINDOWS_TEAMS_NOTE}</div>
-              )}
-            </div>
-            <Button label={`Remove ${app.name}`} disabled={busy || unavailable} onClick={() => void change(() => commands.removeApp(app.id))}>
-              Remove
-            </Button>
-          </div>
-        </div>
-      ))}
+      {/* The order of the steps: access, Add apps, then the list, so the Add
+          buttons keep their place when the list grows. The access row shows
+          also before the first add, so the user can allow access first. */}
+      {isMac() && <SystemAudioAccessRow permission={readiness.system_audio} onRefresh={onRefresh} />}
       <Row label="Add apps" detail={addReason ?? callReason ?? "Choose from the apps that are running now"}>
         <span className="relative inline-flex" title={addReason ?? undefined}>
           <Button
@@ -327,9 +315,22 @@ function AppsGroup({ settings, onSettings, readiness, onRefresh }: PaneProps) {
           </Button>
         </span>
       </Row>
-      {isMac() && listed.length > 0 && (
-        <SystemAudioAccessRow permission={readiness.system_audio} onRefresh={onRefresh} />
-      )}
+      {listed.map((app) => (
+        <div key={app.id} className="settings-row px-4">
+          <div className="settings-row-content flex min-h-[2.75rem] items-center gap-3 py-2">
+            <ListedAppIcon path={app.path} />
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium">{app.name}</div>
+              {isWindows() && app.id === WINDOWS_TEAMS_ID && (
+                <div className="mt-0.5 text-[0.85rem] leading-[1.4] text-label-secondary">{WINDOWS_TEAMS_NOTE}</div>
+              )}
+            </div>
+            <Button label={`Remove ${app.name}`} disabled={busy || unavailable} onClick={() => void change(() => commands.removeApp(app.id))}>
+              Remove
+            </Button>
+          </div>
+        </div>
+      ))}
       {error && <ErrorText>{error}</ErrorText>}
     </Group>
   );

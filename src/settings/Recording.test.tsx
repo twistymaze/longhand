@@ -387,7 +387,7 @@ describe("Recording pane", () => {
       delete (navigator as { userAgent?: string }).userAgent;
     });
 
-    test("Covers R1. An empty list shows no rows and no message", async () => {
+    test("Covers R1. An empty list shows no app rows and no message", async () => {
       const { mock } = await open({ running: [chrome] });
       await waitFor(() => expect(addButton().disabled).toBe(false));
       expect(within(group()).queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
@@ -482,11 +482,21 @@ describe("Recording pane", () => {
       expect((within(group()).getByRole("button", { name: "Remove Discord" }) as HTMLButtonElement).disabled).toBe(true);
     });
 
-    test("Covers R15. On macOS, the access row shows below a list that is not empty", async () => {
+    test("Covers R15. On macOS, the rows are access, Add apps, then the list", async () => {
       Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Mac OS X)", configurable: true });
-      await open({ ready: { system_audio: "not_asked" }, extra: { apps: [entryOf(zoom)] } });
+      await open({ ready: { system_audio: "allowed" }, extra: { apps: [entryOf(zoom)] } });
+      const labels = Array.from(group().querySelectorAll(".settings-row")).map((row) =>
+        ["App audio access", "Add apps", "zoom.us"].find((label) => row.textContent?.includes(label)),
+      );
+      expect(labels).toEqual(["App audio access", "Add apps", "zoom.us"]);
+    });
+
+    test("Covers R15. On macOS, an empty list shows the access row with Allow", async () => {
+      Object.defineProperty(navigator, "userAgent", { value: "Mozilla/5.0 (Macintosh; Mac OS X)", configurable: true });
+      await open({ ready: { system_audio: "not_asked" } });
       const row = within(group()).getByText("App audio access").closest(".settings-row") as HTMLElement;
       expect(row.textContent).toContain("Not allowed yet");
+      expect(within(row).getByRole("button", { name: "Allow…" })).toBeTruthy();
     });
 
     test("a running-apps reply that arrives after a newer reply is dropped", async () => {
