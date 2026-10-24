@@ -44,7 +44,7 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 - **A watched-folder note gets the default note type and no tags.** Governs R5. (session-settled: user-directed — chosen over a type and tags on the folder setting, and over holding the summary until the user confirms.)
 - **The file name gives only the first title.** Governs R15. (session-settled: user-directed — the summary sets the final title, as for a recording.)
 - **The audio becomes normal note audio, and a file's identity is its content.** Governs R12, R17. (session-settled: user-approved — proposed in the scoping synthesis with the alternatives of keeping the original file and identifying by name; the user accepted.)
-- **A cheap check comes before the content.** Content identity alone would download each online-only file of an archive only to skip it. Governs R12b. (session-settled: user-directed — chosen over content identity for every file: a skipped file that is renamed and synced again can come back as new, which is acceptable.)
+- **Content identity for every file, also when that downloads a skipped archive.** A user who chooses a folder wants Longhand to read the files in it, so the downloads are expected. Governs R12b. (session-settled: user-directed — chosen over a check by name, size and date for skipped files: that check avoids downloads, but a skipped file that is renamed could come back as new.)
 - **The watched folder includes its subfolders.** Some recorder apps save into dated subfolders. Governs R5. (session-settled: user-directed — chosen over the top level only: a user who chooses a broad folder sees the count in the R6 question.)
 
 ### Requirements
@@ -70,7 +70,7 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 
 - R11. Each import is recorded in two places: in the note, which records its source file, and in a plain-file import record in the hidden `.longhand` folder of the storage folder. A Move to a new storage folder takes the import record with the notes.
 - R12. The watcher never imports a file that the import record holds, also after the user deletes the note. A file's identity is its content, so a file that was renamed or saved again with the same content is the same file.
-- R12b. Longhand first compares a file's name, size and date with the import record, and it reads the content only of a file that looks new. A skipped file (R6) is recorded by name, size and date only, so skipping an archive downloads nothing.
+- R12b. Every file in the import record, also a skipped file (R6), is identified by its content. Longhand downloads an online-only file to read it, also when the user chose to skip it.
 - R12a. A file that cannot be read goes into the import record as failed. The watcher tries it again only when its content changes.
 - R13. Before it imports a file, a computer reads the shared import record, so it does not import a file that another computer already imported and whose record has synced. Two computers that watch one folder can still import one file twice before the record syncs (see Dependencies / Assumptions).
 
@@ -108,7 +108,7 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 - AE1. **Covers R12.** **Given** a note made from `Team sync.m4a` in the watched folder, **when** the user deletes the note and the file stays in the folder, **then** Longhand makes no new note from it, also after a relaunch.
 - AE2. **Covers R3, R12.** **Given** the same deleted note, **when** the user drags `Team sync.m4a` onto Home, **then** Longhand makes a new note.
 - AE3. **Covers R12.** **Given** an imported file, **when** the user renames it in the folder, **then** Longhand makes no new note.
-- AE4. **Covers R6, R12b.** **Given** an iCloud folder with 40 old recordings that are online only, **when** the user chooses it and selects "only new files", **then** no note is made for the 40 files, none of them is downloaded, and a 41st file that arrives later becomes a note.
+- AE4. **Covers R6, R12b.** **Given** an iCloud folder with 40 old recordings that are online only, **when** the user chooses it and selects "only new files", **then** Longhand downloads and records the 40 files as skipped, makes no note for them, and a 41st file that arrives later becomes a note.
 - AE5. **Covers R8.** **Given** a new file in an iCloud folder that is still online only or still syncing, **when** the watcher sees it, **then** Longhand waits and makes the note only from the complete file.
 - AE6. **Covers R13.** **Given** two computers that share a storage folder, where computer A watches a folder and imported a file, **when** the user also turns on watching of the same folder on computer B after the import record synced, **then** computer B does not import that file again.
 - AE7. **Covers R15.** **Given** an imported note that is processing, **when** the user renames it before the summary finishes, **then** the summary does not change the user's title.
