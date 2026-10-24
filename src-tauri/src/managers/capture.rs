@@ -56,7 +56,7 @@ use session_core::{
     SessionState, SpeakerCount, Store, Timeline,
 };
 use specta::Type;
-use supervisor::{RestartTracker, SOURCE_RESTART_BUDGET};
+use supervisor::{SOURCE_RESTART_BUDGET, SourceRestarts};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event as _;
 use tokio_util::sync::CancellationToken;
@@ -877,7 +877,9 @@ struct Clock {
     epoch: Instant,
     /// Restarts after a loss, across the session: a microphone that keeps
     /// dropping runs the budget out rather than resetting it at each drop.
-    restarts: RestartTracker,
+    /// The budget is full again once capture recorded for 30 s after it
+    /// came back.
+    restarts: SourceRestarts,
 }
 
 impl Clock {
@@ -886,7 +888,7 @@ impl Clock {
             note_id: note_id.to_string(),
             timeline,
             epoch,
-            restarts: RestartTracker::new(),
+            restarts: SourceRestarts::new(),
         }
     }
 }
@@ -3694,7 +3696,7 @@ impl CaptureManager {
                 return;
             }
             if let Some(clock) = inner.clock.as_mut() {
-                clock.restarts = RestartTracker::new();
+                clock.restarts = SourceRestarts::new();
             }
             let (cancel, restarts) = begin_restart(&mut inner, &id);
             (id, cancel, restarts)
@@ -3717,7 +3719,7 @@ impl CaptureManager {
         app: &AppHandle,
         id: &str,
         cancel: CancellationToken,
-        mut restarts: RestartTracker,
+        mut restarts: SourceRestarts,
         loss: Loss,
         resumes: bool,
     ) {
@@ -3859,7 +3861,7 @@ impl CaptureManager {
                 break;
             }
             if let Some(clock) = inner.clock.as_mut() {
-                clock.restarts = RestartTracker::new();
+                clock.restarts = SourceRestarts::new();
             }
             inner.watching = None;
             drop(inner);
@@ -4566,14 +4568,14 @@ fn position_after_wake(elapsed_ms: u64, last_end_ms: u64, away_ms: u64) -> u64 {
 /// Mark the session as restarting and hand out its budget. A restart stops
 /// the capture watcher; the reopened segment starts it again when it needs
 /// one (KTD3).
-fn begin_restart(inner: &mut Inner, id: &str) -> (CancellationToken, RestartTracker) {
+fn begin_restart(inner: &mut Inner, id: &str) -> (CancellationToken, SourceRestarts) {
     inner.stop_capture_watch();
     let pending = Pending::new(id);
     let cancel = pending.cancel.clone();
     inner.recovering = Some(pending);
     let restarts = match inner.clock.as_mut().filter(|c| c.note_id == id) {
         Some(clock) => std::mem::take(&mut clock.restarts),
-        None => RestartTracker::new(),
+        None => SourceRestarts::new(),
     };
     (cancel, restarts)
 }
