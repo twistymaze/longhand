@@ -146,6 +146,26 @@ class CompareTests(support.StorageFolderTest):
         self.assertEqual(code, NOT_CHECKED, out)
         self.assertIn("future_record", out)
 
+    def test_a_tag_edit_of_an_imported_note_passes(self):
+        self.assertIn('"import"', self.read(HIRING, "longhand.json"))
+        snapshot = self.snapshot()
+        self.write(self.read(HIRING, "session.md").replace("- Hiring\n", "- Hiring\n- Travel\n", 1),
+                   HIRING, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertIn("changed: %s: session.md" % HIRING, out)
+
+    def test_an_import_key_in_a_layout_1_record_is_a_key_that_the_skill_does_not_know(self):
+        record = json.loads(self.read(HIRING, "longhand.json"))
+        record["layout"] = 1
+        record["session_id"] = record.pop("note_id")
+        self.write(json.dumps(record, indent=2, sort_keys=True) + "\n", HIRING, "longhand.json")
+        snapshot = self.snapshot()
+        self.write(self.read(HIRING, "notes.md") + "- An edit\n", HIRING, "notes.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, NOT_CHECKED, out)
+        self.assertIn("keys that this skill does not know: import", out)
+
     def test_an_edit_of_a_note_that_waits_for_its_records_is_not_checked(self):
         snapshot = self.snapshot()
         self.write(self.read(RETRO, "notes.md") + "- An edit\n", RETRO, "notes.md")
@@ -245,6 +265,23 @@ class CompareTests(support.StorageFolderTest):
         self.assertEqual(code, PROBLEM, out)
         self.assertIn(".longhand/.notes is a new file", out)
         self.assertNotIn(".tmp", out)
+
+    def test_writes_of_the_import_record_are_not_changes(self):
+        # Longhand writes the import record at any time, also while an
+        # agent edits: a new entry, a changed entry and the staged file of
+        # a write.
+        [identity] = os.listdir(self.path(".longhand/imports"))
+        [entry] = os.listdir(self.path(".longhand/imports", identity))
+        snapshot = self.snapshot()
+        self.write(self.read(".longhand/imports", identity, entry).replace('"imported"', '"skipped"'),
+                   ".longhand/imports", identity, entry)
+        os.makedirs(self.path(".longhand/imports", "b" * 64))
+        self.write("{}\n", ".longhand/imports", "b" * 64, "0" * 32 + ".json")
+        self.write("{}\n", ".longhand/imports", "b" * 64, ".0123456789abcdef.new")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertIn("Changes: none", out)
+        self.assertNotIn("imports", out)
 
     def test_agent_files_finder_files_and_write_probes_at_the_root_pass(self):
         snapshot = self.snapshot()

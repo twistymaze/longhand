@@ -8,6 +8,9 @@
     background.md                the Background
     prompts/
       Weekly review.md           one file for each summary prompt
+    imports/
+      <sha256>/
+        <computer id>.json       the import record of one audio file
   2026-10-01 0900 Budget review/ a note of the type General
     session.md
     notes.md
@@ -39,7 +42,7 @@
 | `notes.md` | The notes that the user typed. | The user and Longhand |
 | `transcript.md` | The transcript. | Longhand, then the user |
 | `summary.md` | The summary. | Longhand, then the user |
-| `longhand.json` | Longhand's records: the layout number, the note id, the start time, the segments, the fingerprints, the result state and the summary data. See [The layouts of `longhand.json`](#the-layouts-of-longhandjson). | Longhand only |
+| `longhand.json` | Longhand's records: the layout number, the note id, the start time, the segments, the fingerprints, the result state, the summary data and, for an imported note, the source file. See [The layouts of `longhand.json`](#the-layouts-of-longhandjson). | Longhand only |
 | `recognition.jsonl` | The recognition data that Transcribe Again and Resume use. | Longhand only |
 | `audio/` | The audio of each segment, and a `.removed` file for a segment whose audio Longhand removed. | Longhand only |
 | `.longhand-in-use-<run>` | An in-use marker: a computer records or processes the note now. | Longhand only |
@@ -50,12 +53,14 @@ A note can also have conflict copies from a sync service, for example `notes (1)
 
 ## The layouts of `longhand.json`
 
-The `layout` key of `longhand.json` tells which keys the file has. The scripts know two layouts. The two layouts have the same keys, except the key of the note id.
+The `layout` key of `longhand.json` tells which keys the file has. The scripts know two layouts. The two layouts have the same keys, except the key of the note id and the `import` key.
 
-| Layout | Key of the note id | Written by |
-|---|---|---|
-| 1 | `session_id` | Older Longhand versions |
-| 2 | `note_id` | Current Longhand versions |
+| Layout | Key of the note id | `import` key | Written by |
+|---|---|---|---|
+| 1 | `session_id` | No | Older Longhand versions |
+| 2 | `note_id` | Optional | Current Longhand versions |
+
+An imported note has the `import` key: the audio file that Longhand imported, as `source_name` (the file name) and `sha256` (the SHA-256 of the file). The key is optional. A note that Longhand recorded does not have it. An older Longhand version removes the key when it writes the records of the note, so a note can lose it. To find which files Longhand imported, do not use this key. Read the import record (see [The `.longhand` folder](#the-longhand-folder)).
 
 A storage folder can have notes in the two layouts. Longhand changes a note to layout 2 when it next writes the note's records. `list_notes.py --json` gives the note id of each layout as `note_id`.
 
@@ -69,5 +74,8 @@ A file with a larger layout number, or with a key that its layout does not have,
 | `settings.json` | The shared settings: one JSON object. See `settings.md`. |
 | `background.md` | The Background: plain text that each summary uses. See `settings.md`. |
 | `prompts/*.md` | One file for each custom summary prompt. See `prompts.md`. |
+| `imports/<sha256>/<computer id>.json` | The import record: one folder for each audio file that a computer imported, skipped or did not decode, and in it one file for each computer. Only Longhand writes it. |
 
 Each computer that uses the storage folder reads these files. A change in them has an effect on every computer.
+
+The import record is Longhand's own. Never edit, move or delete a file in `imports/`. You can read it. The `state` of an entry is `imported`, `skipped` or `failed`. Each entry also has `source_name`, `size`, `computer_id` and `time`. A `failed` entry also has `longhand_version`, `decoder_name` and `decoder_version`. When the entries of one file have different states, `imported` has priority over `skipped`, and `skipped` has priority over `failed`.

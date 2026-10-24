@@ -15,6 +15,8 @@ thiserror.workspace = true
 
 [dev-dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# The import record of the test storage folder.
+import-record = { path = "../import-record" }
 # The two-computer tests save notes through the real save stage (KTD8).
 pipeline = { path = "../pipeline" }
 # The recognition settings of a Transcribe Again run.

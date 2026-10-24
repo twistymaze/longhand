@@ -1,6 +1,10 @@
 {
   "asr_model": "parakeet-unified-en-0.6b-q80",
   "found_speakers": 2,
+  "import": {
+    "sha256": "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592",
+    "source_name": "Hiring sync.m4a"
+  },
   "layout": 2,
   "note_id": "note-hiring-sync",
   "segments": [

@@ -42,6 +42,7 @@ LIBRARY_MARKER = "library"
 SETTINGS_FILE = "settings.json"
 BACKGROUND_FILE = "background.md"
 PROMPTS_FOLDER = "prompts"
+IMPORTS_FOLDER = "imports"
 NOTE_RECORD_FILE = "longhand.json"
 SESSION_FILE = "session.md"
 NOTES_FILE = "notes.md"
@@ -74,14 +75,19 @@ _SHARED_RECORD_KEYS = frozenset(
 
 # The layouts of `longhand.json` that these scripts know, each with the key
 # that holds the note id. Layout 1 holds the note id in `session_id`, and
-# layout 2 holds it in `note_id`. The other keys are the same.
+# layout 2 holds it in `note_id`.
 RECORD_ID_KEYS = {1: "session_id", 2: "note_id"}
+
+# The keys that only one layout has, other than the note id. Layout 2 has
+# the optional key `import`: the source file of an imported note.
+_LAYOUT_RECORD_KEYS = {1: frozenset(), 2: frozenset(["import"])}
 
 # The keys of a `longhand.json` in each known layout. A file with another
 # key comes from a Longhand that these scripts do not know, so a check
 # reports it as not checked.
 RECORD_KEYS = {
-    layout: _SHARED_RECORD_KEYS | {id_key} for layout, id_key in RECORD_ID_KEYS.items()
+    layout: _SHARED_RECORD_KEYS | {id_key} | _LAYOUT_RECORD_KEYS[layout]
+    for layout, id_key in RECORD_ID_KEYS.items()
 }
 
 # The keys of `.longhand/settings.json` that these scripts know, with the
@@ -118,6 +124,13 @@ PROTECTED_NOTE_PATTERNS = (
     IN_USE_PREFIX + "*",
 )
 PROTECTED_STORAGE_PATTERNS = (LONGHAND_FOLDER + "/" + LIBRARY_MARKER,)
+
+# The files that only Longhand writes, as patterns in the storage folder.
+# Longhand writes them at any time, also while an agent edits. An agent
+# must never edit them. A check does not compare them, so a write of
+# Longhand is not a change of the agent. `references/files.md` names each
+# of these patterns.
+LONGHAND_ONLY_STORAGE_PATTERNS = (LONGHAND_FOLDER + "/" + IMPORTS_FOLDER + "/*",)
 
 # The files that an agent can edit, with the steps in the references.
 EDITABLE_NOTE_PATTERNS = (SESSION_FILE, NOTES_FILE, TRANSCRIPT_FILE, SUMMARY_FILE)

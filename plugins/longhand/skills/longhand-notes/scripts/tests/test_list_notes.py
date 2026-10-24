@@ -25,6 +25,9 @@ class ListNotesTests(support.StorageFolderTest):
         self.assertEqual(notes[BUDGET]["note_id"], "note-budget-review")
         self.assertEqual(notes[BUDGET]["tags"], ["Finance", "Team::Planning"])
         self.assertEqual(notes[BUDGET]["state"], "ready")
+        # An imported note has an `import` record, and it reads as any
+        # other note.
+        self.assertEqual(notes[HIRING]["state"], "ready")
 
     def test_a_layout_1_record_with_session_id_is_listed_with_its_note_id(self):
         record = json.loads(self.read(BUDGET, "longhand.json"))

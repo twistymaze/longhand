@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use chrono::{DateTime, FixedOffset};
+use import_record::{ComputerId, Entry, Identity, State};
 use library::scan::write_marker;
 use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
 use session_core::folder::{
@@ -23,7 +24,7 @@ use session_core::folder::{
 };
 use session_core::jobs::{Title, TitleSource};
 use session_core::note_folder::SESSION_FILE;
-use session_core::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord};
+use session_core::note_record::{ImportSource, LAYOUT, NOTE_RECORD_FILE, NoteRecord};
 use session_core::recognition::ArtifactReference;
 use session_save::home_write::write_atomic;
 use session_save::naming::folder_name;
@@ -162,10 +163,32 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
             prompt_name: Some("Topic summary".to_string()),
             prompt_id: Some("topic-summary".to_string()),
         }),
-        // The skill learns the `import` field in U9 of the audio import
-        // plan.
-        import: None,
+        import: Some(ImportSource {
+            source_name: "Drift check.m4a".to_string(),
+            sha256: Some(IMPORTED.to_string()),
+        }),
     }
+}
+
+/// The identity of the imported file of the edited note.
+const IMPORTED: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// The id of the computer that writes the import entries.
+const COMPUTER: &str = "0123456789abcdef0123456789abcdef";
+
+/// Write the import entry of this computer for the file `identity`, as the
+/// import worker writes it.
+fn write_import_entry(root: &Path, identity: &str, state: State, source_name: &str) {
+    let identity = Identity::parse(identity).unwrap();
+    let computer = ComputerId::parse(COMPUTER).unwrap();
+    let entry = Entry::new(
+        state,
+        source_name,
+        1_024,
+        computer,
+        at("2026-10-01T09:30:00-05:00"),
+    );
+    import_record::write(root, &identity, &entry).unwrap();
 }
 
 /// The parsed field of each shared setting. The match has no `_` arm, so a
@@ -343,6 +366,7 @@ fn storage_folder() -> tempfile::TempDir {
     )
     .unwrap();
     write_record(&dir, &full_record(&dir, None)).unwrap();
+    write_import_entry(root, IMPORTED, State::Imported, "Drift check.m4a");
 
     // A busy note: its move to another type waits.
     let busy = root
@@ -432,6 +456,9 @@ fn check_passes_a_tag_and_a_settings_edit_on_a_folder_that_the_writers_made() {
 
     add_tag(&root.join(EDITED));
     edit_settings(root, "show_recording_widget", false.into());
+    // Longhand imports a file while the agent works. The import record is
+    // not a change of the agent.
+    write_import_entry(root, &"b".repeat(64), State::Skipped, "Phone memo.m4a");
     // The id that the prompt scan gives a file with no id. `check.py`
     // must make the same id, or it refuses the setting.
     let scan = scan_prompts(root).unwrap();
@@ -463,6 +490,7 @@ fn check_passes_a_tag_and_a_settings_edit_on_a_folder_that_the_writers_made() {
         "{}",
         result.out
     );
+    assert!(!result.out.contains("imports"), "{}", result.out);
 }
 
 #[test]
