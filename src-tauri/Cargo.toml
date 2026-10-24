@@ -74,8 +74,10 @@ tokio-util = "0.7"
 uuid.workspace = true
 trash = "5"
 # The library watcher (managers/library.rs), as anarlog's notify plugin uses them.
+# notify-debouncer-full is 0.7, newer than anarlog's 0.5: 0.7 gives one call
+# for events that come in the same timeout.
 notify = "8"
-notify-debouncer-full = "0.5"
+notify-debouncer-full = "0.7"
 # The update manager (managers/updates.rs). The archive check uses the
 # same signature crates as the updater plugin.
 tauri-plugin-updater = "2.14"

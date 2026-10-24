@@ -29,5 +29,5 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 tempfile = "3"
 # The soak reads its own resident memory; a storage test compares the
 # free-space figure with the mount list.
-sysinfo = { version = "0.38", default-features = false, features = ["disk", "system"] }
+sysinfo = { version = "0.39", default-features = false, features = ["disk", "system"] }
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
