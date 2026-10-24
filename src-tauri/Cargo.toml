@@ -55,7 +55,7 @@ asr = { path = "../crates/asr" }
 # metadata (`DEP_TRANSCRIBE_CPP_RUNTIME_DIR`) to direct dependents alone, and
 # build.rs needs it to stage the Windows runtime libraries. Features come from
 # `asr`'s per-platform declarations.
-transcribe-cpp = { version = "0.2.4", default-features = false }
+transcribe-cpp = { version = "0.4.1", default-features = false }
 pipeline = { path = "../crates/pipeline" }
 library = { path = "../crates/library" }
 session-save = { path = "../crates/session-save" }

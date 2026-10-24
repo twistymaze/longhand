@@ -168,13 +168,10 @@ impl Engine {
             message: e.to_string(),
         };
         let model = Model::load_with(path, &ModelOptions::default()).map_err(load_error)?;
+        let capabilities = model.capabilities().map_err(load_error)?;
         let is_whisper = model.arch().to_ascii_lowercase().contains("whisper");
-        let streaming = streams(
-            model_id,
-            catalog_streaming,
-            model.capabilities().supports_streaming,
-        );
-        let native_timing = native_timing_kind(model.capabilities().max_timestamp_kind);
+        let streaming = streams(model_id, catalog_streaming, capabilities.supports_streaming);
+        let native_timing = native_timing_kind(capabilities.max_timestamp_kind);
         log::info!(
             "loaded {model_id} ({} on {})",
             model.arch(),
@@ -259,7 +256,8 @@ fn tokens_from_parts(
 }
 
 /// The text that a NeMo model gives for a character outside its vocabulary.
-/// transcribe-cpp 0.2.4 keeps it in all output; it is not speech.
+/// transcribe-cpp 0.3.0 and later remove it; the removal here stays as a
+/// guard. It is not speech.
 const UNKNOWN: &str = "<unk>";
 
 /// `text` without the unknown marker. Where a marker is removed, each run of

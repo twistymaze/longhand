@@ -1,11 +1,14 @@
 mod error;
 pub use error::*;
 
+use std::sync::OnceLock;
+
 use ort::{
     Result,
+    environment::Environment,
     session::{
         Session,
-        builder::{GraphOptimizationLevel, SessionBuilder},
+        builder::{AutoDevicePolicy, GraphOptimizationLevel, SessionBuilder},
     },
 };
 
@@ -126,8 +129,35 @@ pub fn load_model_with_backend(bytes: &[u8]) -> Result<BackendSession<Session>, 
     }
 }
 
+// One environment for the process. Telemetry is off: the pyke binaries send
+// none, but a Microsoft build of ONNX Runtime would. Only one thread builds
+// it: ort keeps a link to the first environment built, and a second one that
+// is dropped would leave that link empty.
+fn environment() -> Result<&'static Environment, Error> {
+    static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+    static BUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let _guard = BUILD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let environment = ort::init()
+        .with_name("longhand")
+        .with_telemetry(false)
+        .build()?;
+    Ok(ENVIRONMENT.get_or_init(|| environment))
+}
+
+// ort selects AutoDevicePolicy::MaxEfficiency by default, which adds Core ML
+// on macOS to each session. PreferCPU adds no provider, so a plain session and
+// the CPU fallback stay on CPU. commit_accelerated adds Core ML explicitly.
 fn session_builder() -> Result<SessionBuilder, Error> {
-    Ok(Session::builder()?
+    Ok(Session::builder(environment()?)?
+        .with_auto_device(AutoDevicePolicy::PreferCPU)?
         .with_intra_threads(1)?
         .with_inter_threads(1)?
         .with_optimization_level(GraphOptimizationLevel::Level3)?)
@@ -166,9 +196,9 @@ fn clear_accelerator_cache() -> bool {
 
 #[cfg(all(feature = "coreml", target_os = "macos"))]
 fn commit_accelerated(bytes: &[u8]) -> Result<Session, Error> {
-    use ort::execution_providers::{
-        CoreMLExecutionProvider,
-        coreml::{CoreMLComputeUnits, CoreMLModelFormat},
+    use ort::ep::{
+        CoreML,
+        coreml::{ComputeUnits, ModelFormat},
     };
 
     // MLProgram cannot bound the unbounded input dims these models declare (the
@@ -176,11 +206,11 @@ fn commit_accelerated(bytes: &[u8]) -> Result<Session, Error> {
     // non-finite output instead of refusing the graph; the GPU unit fails to
     // resize dynamically. NeuralNetwork on the ANE is the one combination that
     // both compiles and matches CPU output, and it runs ~10x faster than CPU.
-    let provider = CoreMLExecutionProvider::default()
-        .with_model_format(CoreMLModelFormat::NeuralNetwork)
-        .with_compute_units(CoreMLComputeUnits::CPUAndNeuralEngine)
+    let provider = CoreML::default()
+        .with_model_format(ModelFormat::NeuralNetwork)
+        .with_compute_units(ComputeUnits::CPUAndNeuralEngine)
         .with_model_cache_dir(accelerator_cache_dir().to_string_lossy());
-    let builder =
+    let mut builder =
         session_builder()?.with_execution_providers([provider.build().error_on_failure()])?;
 
     let _guard = COREML_COMPILE_LOCK

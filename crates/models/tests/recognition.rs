@@ -242,3 +242,49 @@ fn live_nemotron_without_a_nemo_speaker_model_keeps_the_transcribe_route() {
         assert!(!spec.capabilities.live_attributed_text);
     }
 }
+
+#[test]
+fn a_note_from_the_previous_runtime_is_accepted_and_an_unknown_one_is_not() {
+    use models::recognition::{ONNX_RUNTIME_REVISION, TRANSCRIBE_REVISION, runtime_accepted};
+
+    assert!(runtime_accepted("transcribe.cpp", TRANSCRIBE_REVISION));
+    assert!(runtime_accepted(
+        "transcribe.cpp",
+        "4807edaf210d0d7e8a6f7fb2a44b65966a2797f0"
+    ));
+    assert!(runtime_accepted("onnx-runtime", ONNX_RUNTIME_REVISION));
+    assert!(runtime_accepted("onnx-runtime", "1.22.0"));
+    assert!(!runtime_accepted("transcribe.cpp", "historic-runtime"));
+    assert!(!runtime_accepted("onnx-runtime", "1.21.0"));
+    // An earlier revision of one runtime is not valid for another.
+    assert!(!runtime_accepted(
+        "onnx-runtime",
+        "4807edaf210d0d7e8a6f7fb2a44b65966a2797f0"
+    ));
+    assert!(!runtime_accepted("unknown-runtime", "1.22.0"));
+}
+
+#[test]
+fn a_new_note_records_the_current_runtimes() {
+    use models::recognition::{ONNX_RUNTIME_REVISION, TRANSCRIBE_REVISION};
+
+    let spec = resolve(&RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..Default::default()
+    })
+    .unwrap();
+    let revision = |name: &str| {
+        spec.runtimes
+            .iter()
+            .find(|r| r.name == name)
+            .map(|r| r.revision.clone())
+    };
+    assert_eq!(
+        revision("transcribe.cpp").as_deref(),
+        Some(TRANSCRIBE_REVISION)
+    );
+    assert_eq!(
+        revision("onnx-runtime").as_deref(),
+        Some(ONNX_RUNTIME_REVISION)
+    );
+}

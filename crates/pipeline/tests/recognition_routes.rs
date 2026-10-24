@@ -372,6 +372,22 @@ fn terminal_native_time_point_keeps_text_without_inventing_duration() {
     assert!(validate_result(&invalid, &invalid.coverage).is_err());
 }
 #[test]
+fn a_note_from_the_previous_runtimes_still_resolves() {
+    let mut spec = resolve(&RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..Default::default()
+    })
+    .unwrap();
+    for runtime in &mut spec.runtimes {
+        runtime.revision = match runtime.name.as_str() {
+            "transcribe.cpp" => "4807edaf210d0d7e8a6f7fb2a44b65966a2797f0".into(),
+            "onnx-runtime" => "1.22.0".into(),
+            _ => unreachable!(),
+        };
+    }
+    assert!(TaskGraph::resolve(&spec).is_ok());
+}
+#[test]
 fn historic_runtime_and_unimplemented_internal_combination_fail_explicitly() {
     let mut spec = resolve(&RecognitionConfig {
         speaker_source: SpeakerSource::Off,

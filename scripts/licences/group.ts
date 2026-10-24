@@ -346,18 +346,18 @@ export function cargoAboutProblems(stderr: string): string[] {
 }
 
 /**
- * Fails when ort-sys's dist.txt names an ONNX Runtime version other than the
+ * Fails when ort-sys's dist.tsv names an ONNX Runtime version other than the
  * one whose licence files the manifest records (KTD3).
  */
 export function checkOnnxRuntimeVersion(distText: string, manifestVersion: string): void {
   const versions = [...new Set([...distText.matchAll(/ms@(\d+\.\d+\.\d+)/g)].map((m) => m[1]))].sort(compare);
   if (versions.length === 0) {
-    throw new Error("ort-sys dist.txt names no ONNX Runtime version (expected 'ms@<version>').");
+    throw new Error("ort-sys dist.tsv names no ONNX Runtime version (expected 'ms@<version>').");
   }
   if (versions.length > 1 || versions[0] !== manifestVersion) {
     throw new Error(
       `ONNX Runtime version mismatch: licences/manifest.json names ${manifestVersion}, ` +
-        `but ort-sys dist.txt names ${versions.join(", ")}. ` +
+        `but ort-sys dist.tsv names ${versions.join(", ")}. ` +
         "Fetch the LICENSE and ThirdPartyNotices.txt of that version into licences/sources/ and update the manifest.",
     );
   }

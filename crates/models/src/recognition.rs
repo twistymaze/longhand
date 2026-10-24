@@ -3,8 +3,36 @@ use crate::{DEFAULT_ASR_MODEL, ModelKind, model};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-pub const TRANSCRIBE_REVISION: &str = "4807edaf210d0d7e8a6f7fb2a44b65966a2797f0";
+pub const TRANSCRIBE_REVISION: &str = "4d7c1ccefd39e5a9ea36cca5f8fefc6dcc14b99b";
 pub const NEMO_REVISION: &str = "97a15afa5caa9bce5baaa86c1184103877af4101";
+pub const ONNX_RUNTIME_REVISION: &str = "1.31.0";
+
+/// Runtime revisions of earlier releases that this build still runs. A note
+/// records its revisions when the recording starts, so a note that is queued
+/// or interrupted when Longhand updates names the previous ones. These
+/// updates do not change the model files, so the note can process.
+const EARLIER_REVISIONS: &[(&str, &str)] = &[
+    ("transcribe.cpp", "4807edaf210d0d7e8a6f7fb2a44b65966a2797f0"),
+    ("onnx-runtime", "1.22.0"),
+];
+
+/// The revision of `runtime` in this build, or `None` for a runtime that this
+/// build does not have.
+pub fn current_revision(runtime: &str) -> Option<&'static str> {
+    match runtime {
+        "transcribe.cpp" => Some(TRANSCRIBE_REVISION),
+        "NeMo-Speech.cpp" => Some(NEMO_REVISION),
+        "onnx-runtime" => Some(ONNX_RUNTIME_REVISION),
+        _ => None,
+    }
+}
+
+/// Whether this build can process a note that names `revision` of `runtime`.
+pub fn runtime_accepted(runtime: &str, revision: &str) -> bool {
+    current_revision(runtime).is_some_and(|current| {
+        revision == current || EARLIER_REVISIONS.contains(&(runtime, revision))
+    })
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -191,7 +219,7 @@ fn resolve_transcribe(config: &RecognitionConfig) -> Result<ExecutionSpec, Resol
             selected.push(model("wespeaker-voxceleb-resnet34-lm").expect("catalog embedding"));
             runtimes.push(RuntimeSpec {
                 name: "onnx-runtime".into(),
-                revision: "1.22.0".into(),
+                revision: ONNX_RUNTIME_REVISION.into(),
             });
         }
         SpeakerSource::Sortformer | SpeakerSource::Nemotron => {

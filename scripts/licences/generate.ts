@@ -165,8 +165,8 @@ function checkNpmVersions(manifest: Manifest): void {
 function checkOrtVersion(about: CargoAboutOutput, manifest: Manifest): void {
   const ortSys = about.crates.find((c) => c.package.name === "ort-sys");
   if (!ortSys) fail("ort-sys is not in the cargo-about output; review the ONNX Runtime entries in licences/manifest.json");
-  const distFile = join(dirname(ortSys.package.manifest_path), "dist.txt");
-  if (!existsSync(distFile)) fail(`ort-sys ${ortSys.package.version} has no dist.txt`);
+  const distFile = join(dirname(ortSys.package.manifest_path), "build", "download", "dist.tsv");
+  if (!existsSync(distFile)) fail(`ort-sys ${ortSys.package.version} has no build/download/dist.tsv`);
   try {
     checkOnnxRuntimeVersion(readFileSync(distFile, "utf8"), manifest.onnxRuntimeVersion);
   } catch (error) {

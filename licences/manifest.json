@@ -1,5 +1,5 @@
 {
-  "onnxRuntimeVersion": "1.22.0",
+  "onnxRuntimeVersion": "1.31.0",
   "entries": [
     {
       "name": "Rust standard library",
@@ -21,21 +21,21 @@
     },
     {
       "name": "ONNX Runtime",
-      "version": "1.22.0",
+      "version": "1.31.0",
       "part": "native",
       "note": "linked through ort-sys",
       "platforms": ["macos", "windows"],
       "files": ["licences/sources/onnxruntime-LICENSE.txt"],
-      "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.22.0/LICENSE"
+      "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.31.0/LICENSE"
     },
     {
       "name": "ONNX Runtime",
-      "version": "1.22.0",
+      "version": "1.31.0",
       "part": "native",
       "note": "third-party notices",
       "platforms": ["macos", "windows"],
       "files": ["licences/sources/onnxruntime-ThirdPartyNotices.txt"],
-      "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.22.0/ThirdPartyNotices.txt"
+      "source": "https://raw.githubusercontent.com/microsoft/onnxruntime/v1.31.0/ThirdPartyNotices.txt"
     },
     {
       "name": "Vulkan Runtime loader",
@@ -160,7 +160,7 @@
     }
   },
   "crateNotes": {
-    "transcribe-cpp-sys": "includes ggml and miniz",
+    "transcribe-cpp-sys": "includes ggml, miniz and code translated from Silero VAD",
     "knf-rs-sys": "includes kaldi-native-fbank",
     "opusic-sys": "includes libopus",
     "libsqlite3-sys": "includes SQLite",
