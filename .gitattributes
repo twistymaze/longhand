@@ -10,6 +10,12 @@ crates/*/tests/golden/** text eol=lf
 # script tests read the same bytes on Windows as on macOS (KTD13).
 testdata/** eol=lf
 
+# The audio test files of the import are binary. `eol` sets `text`, which
+# would change their bytes, so this rule turns it off for them.
+testdata/audio-import/*.m4a binary
+testdata/audio-import/*.mp3 binary
+testdata/audio-import/*.wav binary
+
 # The skill's copy of the built-in prompts keeps LF line ends, so the skill
 # drift test compares the same bytes on Windows as on macOS.
 plugins/longhand/skills/longhand-notes/references/built-in-prompts.md text eol=lf

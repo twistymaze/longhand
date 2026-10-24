@@ -25,12 +25,21 @@ ignore-transitive-dependencies = false
 private = { ignore = true }
 
 # The MPL-2.0 exceptions in deny.toml, by name: Servo's CSS parser (through
-# tauri-utils and wry) and `dirs`.
+# tauri-utils and wry), `dirs`, and the Symphonia decoders of the audio import.
 cssparser = { accepted = ["MPL-2.0"] }
 cssparser-macros = { accepted = ["MPL-2.0"] }
 dtoa-short = { accepted = ["MPL-2.0"] }
 selectors = { accepted = ["MPL-2.0"] }
 option-ext = { accepted = ["MPL-2.0"] }
+symphonia = { accepted = ["MPL-2.0"] }
+symphonia-bundle-mp3 = { accepted = ["MPL-2.0"] }
+symphonia-codec-aac = { accepted = ["MPL-2.0"] }
+symphonia-codec-pcm = { accepted = ["MPL-2.0"] }
+symphonia-common = { accepted = ["MPL-2.0"] }
+symphonia-core = { accepted = ["MPL-2.0"] }
+symphonia-format-isomp4 = { accepted = ["MPL-2.0"] }
+symphonia-format-riff = { accepted = ["MPL-2.0"] }
+symphonia-metadata = { accepted = ["MPL-2.0"] }
 
 
 # Native code vendored inside -sys crates. Each clarify entry names the licence
