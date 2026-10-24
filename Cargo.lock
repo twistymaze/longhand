@@ -3147,6 +3147,7 @@ dependencies = [
  "dispatch2",
  "fern",
  "futures-util",
+ "import-record",
  "library",
  "log",
  "minisign-verify",

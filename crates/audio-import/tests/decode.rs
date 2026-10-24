@@ -128,6 +128,20 @@ fn the_hash_with_no_copy_equals_the_hash_of_the_copy() {
     assert_eq!(hash_file(&source).unwrap(), copied.sha256);
 }
 
+// The watched folder tells a slow download from a stalled one by the bytes
+// that the hash has read (KTD8).
+#[test]
+fn the_counted_hash_equals_the_hash_and_counts_every_byte() {
+    let source = sample("tone.wav");
+    let read = std::sync::atomic::AtomicU64::new(0);
+    let hash = audio_import::hash_file_counted(&source, &read).unwrap();
+    assert_eq!(hash, sha256_hex(&source));
+    assert_eq!(
+        read.load(std::sync::atomic::Ordering::SeqCst),
+        std::fs::metadata(&source).unwrap().len()
+    );
+}
+
 #[test]
 fn a_decode_that_the_caller_stops_gives_stopped_after_the_first_block() {
     let mut blocks = Vec::new();

@@ -10,7 +10,7 @@ mod copy;
 mod decode;
 mod metadata;
 
-pub use copy::{Copied, copy_with_hash, hash_file};
+pub use copy::{Copied, copy_with_hash, hash_file, hash_file_counted};
 pub use decode::{DecodeError, DecodeInfo, decode_mono, decode_mono_until};
 pub use metadata::recording_time;
 

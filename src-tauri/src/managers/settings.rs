@@ -432,6 +432,9 @@ pub struct LocalSettings {
     /// sound (R9). Local to this computer (KTD1).
     pub alert_sound: bool,
     pub hide_from_dock: bool,
+    /// The watched folder of this computer (R4), or `None` when it is off.
+    /// It is never written to the shared settings.
+    pub watched_folder: Option<String>,
 }
 
 impl Default for LocalSettings {
@@ -688,6 +691,9 @@ pub struct Settings {
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
+    /// The watched folder of this computer (R4), or `None` when it is off
+    /// (the default). Each new audio file in it becomes a note (R5).
+    pub watched_folder: Option<String>,
     /// A shared setting. Whether a new note shows the recording widget: the
     /// pill that is on screen while a note is open (R11). On by default. A
     /// change applies to the next note (R14).
@@ -905,6 +911,7 @@ impl Default for Settings {
             new_note_records: true,
             alert_sound: true,
             hide_from_dock: false,
+            watched_folder: None,
             show_recording_widget: true,
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
@@ -960,6 +967,7 @@ impl Settings {
             new_note_records: known_or(&fields.new_note_records, defaults.new_note_records),
             alert_sound: local.alert_sound,
             hide_from_dock: local.hide_from_dock,
+            watched_folder: local.watched_folder,
             show_recording_widget: known_or(
                 &fields.show_recording_widget,
                 defaults.show_recording_widget,
@@ -1024,6 +1032,7 @@ impl Settings {
             apps: self.apps.clone(),
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
+            watched_folder: self.watched_folder.clone(),
         }
     }
 
@@ -2680,6 +2689,33 @@ mod tests {
         });
         let (settings, _) = migrated(&stored);
         assert!(!settings.check_updates_automatically);
+    }
+
+    // R4: the watched folder is a setting of this computer, off by default.
+    #[test]
+    fn the_watched_folder_is_a_local_setting_that_is_off_by_default() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "shortcut": "kept",
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert_eq!(settings.watched_folder, None);
+        assert_eq!(Settings::default().watched_folder, None);
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "watched_folder": "/Users/me/Recordings",
+        });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(
+            settings.watched_folder.as_deref(),
+            Some("/Users/me/Recordings")
+        );
+        let before = Settings::default();
+        let mut after = before.clone();
+        after.watched_folder = Some("/Users/me/Recordings".into());
+        assert!(shared_patch(&before, &after).is_empty());
+        assert_eq!(after.local().watched_folder, after.watched_folder);
     }
 
     #[test]

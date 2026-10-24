@@ -13,3 +13,4 @@ pub mod secrets;
 pub mod settings;
 pub mod shared;
 pub mod updates;
+pub mod watched_folder;

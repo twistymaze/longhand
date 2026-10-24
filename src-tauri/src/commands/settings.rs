@@ -25,6 +25,7 @@ use crate::managers::settings::{
     SummaryPromptList,
 };
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager, StorageFolders};
+use crate::managers::{destination, watched_folder};
 use summarize::Provider;
 
 #[derive(Serialize, Type)]
@@ -1022,12 +1023,21 @@ pub enum OldNotes {
 /// (KTD11): no Move runs or is paused, and the new folder can be the
 /// storage folder. The error is the cause, as Settings shows it. Returns
 /// the new folder.
-fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf, String> {
+fn check_change(
+    current: &str,
+    folder: &str,
+    move_open: bool,
+    watched: Option<&str>,
+) -> Result<PathBuf, String> {
     if move_open {
         return Err(crate::managers::processing::MOVE_OPEN.into());
     }
     let folder = PathBuf::from(folder);
     crate::managers::destination::check_new_folder(Path::new(current), &folder)?;
+    // R9: the storage folder and the watched folder stay apart.
+    if let Some(watched) = watched {
+        destination::check_storage_beside_watched(&folder, Path::new(watched))?;
+    }
     Ok(folder)
 }
 
@@ -1089,9 +1099,15 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     static CHANGE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _one_at_a_time = CHANGE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let processing = app.try_state::<Arc<ProcessingManager>>();
-    let current = settings::get_settings(app).storage_folder;
+    let before = settings::get_settings(app);
+    let current = before.storage_folder;
     let move_open = processing.as_ref().is_some_and(|p| p.move_open());
-    let new = check_change(&current, folder, move_open)?;
+    let new = check_change(
+        &current,
+        folder,
+        move_open,
+        before.watched_folder.as_deref(),
+    )?;
     let moving = old_notes == OldNotes::Move;
     if !moving && let Some(processing) = &processing {
         check_leave(processing.shared_store(), &current, &|id| {
@@ -1151,6 +1167,145 @@ fn change_folder(app: &AppHandle, folder: &str, old_notes: OldNotes) -> Result<(
     }
     settings::emit_settings_changed(app);
     Ok(())
+}
+
+/// Pick the watched folder with the system dialog and return its path
+/// (R4). Nothing changes: the surface reads the preview, asks about the
+/// files in the folder, and calls [`set_watched_folder`] (F3). `None` when
+/// the user closes the dialog.
+#[tauri::command]
+#[specta::specta]
+pub async fn pick_watched_folder(app: AppHandle) -> Result<Option<String>, String> {
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        app.dialog()
+            .file()
+            .set_title("Choose a folder for new recordings")
+            .blocking_pick_folder()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some(picked) = picked else {
+        return Ok(None);
+    };
+    let path = picked.into_path().map_err(|e| e.to_string())?;
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+/// Whether `folder` can be the watched folder of this computer (R9). The
+/// error is the cause, as Settings shows it.
+fn check_watched(app: &AppHandle, folder: &Path) -> Result<(), String> {
+    let storage = settings::get_settings(app).storage_folder;
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let home = app.path().home_dir().ok();
+    destination::check_watched_folder(
+        folder,
+        &destination::WatchLimits {
+            storage: Path::new(&storage),
+            app_data: &app_data,
+            home: home.as_deref(),
+        },
+    )
+}
+
+/// The audio files of `folder`, or the cause, as Settings shows it, when
+/// the folder cannot be read.
+fn list_watched(folder: &Path) -> Result<Vec<watched_folder::Listed>, String> {
+    watched_folder::list(folder).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => {
+            "Longhand doesn’t have permission to read this folder.".to_string()
+        }
+        _ => format!("Longhand can’t read this folder: {e}"),
+    })
+}
+
+/// The count and the total size of the audio files in `folder` that the
+/// import record does not hold by name and size (R6, KTD12). It reads only
+/// the folder list, so no file downloads. Refused for a folder that cannot
+/// be the watched folder (R9).
+#[tauri::command]
+#[specta::specta]
+pub async fn watched_folder_preview(
+    app: AppHandle,
+    folder: String,
+) -> Result<watched_folder::WatchedFolderPreview, String> {
+    blocking(move || {
+        let folder = PathBuf::from(folder);
+        check_watched(&app, &folder)?;
+        let listed = list_watched(&folder)?;
+        let storage = settings::get_settings(&app).storage_folder();
+        Ok(watched_folder::preview(&listed, storage.as_deref()))
+    })
+    .await
+}
+
+/// What the watched folder does with the audio files that are in it when
+/// the user chooses it (R6).
+#[derive(Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExistingFiles {
+    /// Each file that the import record does not hold becomes a note.
+    Import,
+    /// The files go into the import record as skipped. Only files that
+    /// arrive later become notes.
+    Skip,
+}
+
+/// Make `folder` the watched folder of this computer, or turn the watched
+/// folder off with `None` (R4, R10). With [`ExistingFiles::Skip`], the
+/// files in the folder now are held from import and recorded as skipped
+/// in the background (R6, KTD12). Turning off makes no change to the notes
+/// that the folder made.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_watched_folder(
+    app: AppHandle,
+    folder: Option<String>,
+    existing: ExistingFiles,
+) -> Result<Settings, String> {
+    blocking(move || {
+        let skip = match &folder {
+            Some(folder) => {
+                let path = PathBuf::from(folder);
+                check_watched(&app, &path)?;
+                match existing {
+                    ExistingFiles::Skip => list_watched(&path)?
+                        .iter()
+                        .map(watched_folder::Held::from)
+                        .collect(),
+                    ExistingFiles::Import => Vec::new(),
+                }
+            }
+            None => Vec::new(),
+        };
+        let updated = settings::update_settings(&app, |s| {
+            s.watched_folder = folder.clone();
+            Ok(())
+        })?;
+        if let Some(processing) = app.try_state::<Arc<ProcessingManager>>() {
+            processing.watched_folder_changed(skip);
+        }
+        Ok(updated)
+    })
+    .await
+}
+
+/// The state of the watched folder: off, watched, or not available after
+/// several scans (R4).
+#[tauri::command]
+#[specta::specta]
+pub async fn watched_folder_status(
+    app: AppHandle,
+) -> Result<watched_folder::WatchedFolderStatus, String> {
+    blocking(move || {
+        Ok(match app.try_state::<Arc<ProcessingManager>>() {
+            Some(processing) => processing.watched_folder_status(),
+            None => match settings::get_settings(&app).watched_folder {
+                Some(path) => watched_folder::WatchedFolderStatus::Watching { path },
+                None => watched_folder::WatchedFolderStatus::Off,
+            },
+        })
+    })
+    .await
 }
 
 /// The Move of the notes to the storage folder, or `None` when no Move
@@ -1592,10 +1747,13 @@ mod tests {
         std::fs::create_dir_all(&new).unwrap();
         let (current, new) = (current.to_str().unwrap(), new.to_str().unwrap());
         assert_eq!(
-            check_change(current, new, true),
+            check_change(current, new, true, None),
             Err(crate::managers::processing::MOVE_OPEN.to_string())
         );
-        assert_eq!(check_change(current, new, false), Ok(PathBuf::from(new)));
+        assert_eq!(
+            check_change(current, new, false, None),
+            Ok(PathBuf::from(new))
+        );
     }
 
     /// KTD17: Show in Finder opens only a storage folder that exists.
@@ -1619,8 +1777,36 @@ mod tests {
         let current = dir.path().join("Notes");
         std::fs::create_dir_all(&current).unwrap();
         let current = current.to_str().unwrap();
-        let cause = check_change(current, current, false).unwrap_err();
+        let cause = check_change(current, current, false, None).unwrap_err();
         assert!(cause.contains("already the storage folder"), "{cause}");
+    }
+
+    // R9 at a change of the storage folder: the new storage folder cannot
+    // be the watched folder, be inside it or contain it.
+    #[test]
+    fn a_change_of_folder_keeps_clear_of_the_watched_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let current = dir.path().join("Notes");
+        let watched = dir.path().join("Recordings");
+        let inside = watched.join("Notes");
+        let other = dir.path().join("Disk");
+        for folder in [&current, &inside, &other] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let current = current.to_str().unwrap();
+        let watched = Some(watched.to_str().unwrap());
+        let refused = |new: &Path| check_change(current, new.to_str().unwrap(), false, watched);
+        assert!(
+            refused(&inside)
+                .unwrap_err()
+                .contains("inside the watched folder")
+        );
+        assert!(
+            refused(dir.path().join("Recordings").as_path())
+                .unwrap_err()
+                .contains("is the watched folder")
+        );
+        assert_eq!(refused(&other), Ok(other.clone()));
     }
 
     #[test]

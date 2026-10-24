@@ -5,6 +5,7 @@
 //! keeps unknown fields and never lowers the schema version, a link outside
 //! the storage folder is refused, and a read has a size limit.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -203,6 +204,39 @@ pub fn lookup(root: &Path, identity: &Identity) -> Lookup {
             State::Failed => Lookup::Failed(entry),
         },
     }
+}
+
+/// The source file name and the size of each entry in the import record of
+/// `root`, in any state. The first-pick question of the watched folder
+/// counts the files that match none of them (R6, KTD12). The read follows
+/// the same rules as [`lookup`]: only identity folders and exact entry
+/// names, and an entry that cannot be read or does not parse gives
+/// nothing. It never writes.
+pub fn names_and_sizes(root: &Path) -> HashSet<(String, u64)> {
+    let mut found = HashSet::new();
+    let Ok(folders) = fs::read_dir(imports_folder(root)) else {
+        return found;
+    };
+    for folder in folders.flatten() {
+        let name = folder.file_name();
+        let Some(identity) = name.to_str().and_then(Identity::parse) else {
+            continue;
+        };
+        let folder = identity_folder(root, &identity);
+        let Ok(items) = fs::read_dir(&folder) else {
+            continue;
+        };
+        for item in items.flatten() {
+            let name = item.file_name();
+            if name.to_str().and_then(ComputerId::of_file_name).is_none() {
+                continue;
+            }
+            if let EntryRead::Parsed(entry, _) = read_entry(root, &folder.join(&name)) {
+                found.insert((entry.source_name, entry.size));
+            }
+        }
+    }
+    found
 }
 
 /// The entry of the computer `computer` for `identity`, when its file

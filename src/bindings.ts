@@ -601,6 +601,61 @@ async moveStatus() : Promise<MoveStatus | null> {
     return await TAURI_INVOKE("move_status");
 },
 /**
+ * Pick the watched folder with the system dialog and return its path
+ * (R4). Nothing changes: the surface reads the preview, asks about the
+ * files in the folder, and calls [`set_watched_folder`] (F3). `None` when
+ * the user closes the dialog.
+ */
+async pickWatchedFolder() : Promise<Result<string | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pick_watched_folder") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The count and the total size of the audio files in `folder` that the
+ * import record does not hold by name and size (R6, KTD12). It reads only
+ * the folder list, so no file downloads. Refused for a folder that cannot
+ * be the watched folder (R9).
+ */
+async watchedFolderPreview(folder: string) : Promise<Result<WatchedFolderPreview, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("watched_folder_preview", { folder }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Make `folder` the watched folder of this computer, or turn the watched
+ * folder off with `None` (R4, R10). With [`ExistingFiles::Skip`], the
+ * files in the folder now are held from import and recorded as skipped
+ * in the background (R6, KTD12). Turning off makes no change to the notes
+ * that the folder made.
+ */
+async setWatchedFolder(folder: string | null, existing: ExistingFiles) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_watched_folder", { folder, existing }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * The state of the watched folder: off, watched, or not available after
+ * several scans (R4).
+ */
+async watchedFolderStatus() : Promise<Result<WatchedFolderStatus, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("watched_folder_status") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Continue a paused Move (R10, AE13).
  */
 async retryMove() : Promise<Result<null, string>> {
@@ -1393,6 +1448,7 @@ settingsPaneRequested: SettingsPaneRequested,
 shortcutFailed: ShortcutFailed,
 showSession: ShowSession,
 updateStateChanged: UpdateStateChanged,
+watchedFolderChanged: WatchedFolderChanged,
 widgetPointer: WidgetPointer,
 widgetShown: WidgetShown
 }>({
@@ -1414,6 +1470,7 @@ settingsPaneRequested: "settings-pane-requested",
 shortcutFailed: "shortcut-failed",
 showSession: "show-session",
 updateStateChanged: "update-state-changed",
+watchedFolderChanged: "watched-folder-changed",
 widgetPointer: "widget-pointer",
 widgetShown: "widget-shown"
 })
@@ -1657,6 +1714,20 @@ provider: Provider; host: string; model: string;
  */
 encrypted: boolean }
 export type ExecutionSpec = { schema_version: number; catalog_revision: string; config: RecognitionConfig; artifacts: ArtifactSpec[]; runtimes: RuntimeSpec[]; capabilities: Capabilities; enabled_live_transcription: boolean; enabled_live_speaker_analysis: boolean; preprocessing_revision: string }
+/**
+ * What the watched folder does with the audio files that are in it when
+ * the user chooses it (R6).
+ */
+export type ExistingFiles = 
+/**
+ * Each file that the import record does not hold becomes a note.
+ */
+"import" | 
+/**
+ * The files go into the import record as skipped. Only files that
+ * arrive later become notes.
+ */
+"skip"
 /**
  * A note that the last conversion could not convert (R10).
  */
@@ -2743,6 +2814,11 @@ alert_sound: boolean;
  */
 hide_from_dock: boolean; 
 /**
+ * The watched folder of this computer (R4), or `None` when it is off
+ * (the default). Each new audio file in it becomes a note (R5).
+ */
+watched_folder: string | null; 
+/**
  * A shared setting. Whether a new note shows the recording widget: the
  * pill that is on screen while a note is open (R11). On by default. A
  * change applies to the next note (R14).
@@ -3175,6 +3251,37 @@ export type WaitView =
  * A part of a note that the sync has not delivered yet (R6).
  */
 export type WaitingPart = "transcript" | "summary" | "notes" | "audio"
+/**
+ * The status of the watched folder changed.
+ */
+export type WatchedFolderChanged = { status: WatchedFolderStatus }
+/**
+ * The count and the total size of the audio files that the first-pick
+ * question names (R6).
+ */
+export type WatchedFolderPreview = { count: number; 
+/**
+ * The total size in bytes.
+ */
+bytes: number }
+/**
+ * The state of the watched folder, as Settings shows it and the notices
+ * (U8) read it.
+ */
+export type WatchedFolderStatus = 
+/**
+ * No watched folder is set on this computer.
+ */
+{ kind: "off" } | 
+/**
+ * The folder is watched.
+ */
+{ kind: "watching"; path: string } | 
+/**
+ * The folder could not be read for [`UNAVAILABLE_SCANS`] scans in a
+ * row. The watcher tries again at each scan.
+ */
+{ kind: "unavailable"; path: string }
 export type WebviewLogLevel = "error" | "warn" | "info"
 /**
  * The pointer entered, moved on or left the pill (KTD6). WebKit sends

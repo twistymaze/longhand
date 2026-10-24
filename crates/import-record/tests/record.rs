@@ -378,3 +378,26 @@ fn the_entry_of_one_computer_reads_only_its_own_file() {
         Some(imported(A))
     );
 }
+
+// The first-pick question of the watched folder counts by name and size
+// (R6, KTD12): every entry gives its name and size, in each state.
+#[test]
+fn the_names_and_sizes_come_from_every_entry_and_skip_what_does_not_parse() {
+    let root = tempfile::tempdir().unwrap();
+    assert!(import_record::names_and_sizes(root.path()).is_empty());
+    write(root.path(), &identity(), &imported(A)).unwrap();
+    let other = Identity::parse(&"f".repeat(64)).unwrap();
+    let skipped = Entry::new(State::Skipped, "Old.wav", 10, computer(B), time());
+    write(root.path(), &other, &skipped).unwrap();
+    // A file that does not parse and a conflict copy give nothing.
+    put(root.path(), &format!("{B}.json"), b"{ not json");
+    put(root.path(), &format!("{A} 2.json"), b"{}");
+    let found = import_record::names_and_sizes(root.path());
+    let expected: std::collections::HashSet<(String, u64)> = [
+        ("Memo 12.m4a".to_string(), 4_096),
+        ("Old.wav".to_string(), 10),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(found, expected);
+}

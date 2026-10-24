@@ -92,7 +92,6 @@ impl ImportManager {
 
     /// Try each import that waits again: for free space or the storage
     /// folder. A scan of the watched folder calls it (KTD9).
-    #[expect(dead_code, reason = "the watched folder (U6) calls it at each scan")]
     pub fn retry(&self) {
         if let Some(imports) = &self.imports {
             imports.retry();
@@ -111,7 +110,6 @@ impl ImportManager {
 
     /// The source files of the open imports, also of deleted ones. The
     /// watched folder does not import them again (KTD6).
-    #[expect(dead_code, reason = "the watched folder (U6) reads it")]
     pub fn open_sources(&self) -> Vec<PathBuf> {
         self.imports
             .as_ref()

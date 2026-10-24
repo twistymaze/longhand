@@ -58,6 +58,7 @@ asr = { path = "../crates/asr" }
 transcribe-cpp = { version = "0.4.1", default-features = false }
 pipeline = { path = "../crates/pipeline" }
 audio-import = { path = "../crates/audio-import" }
+import-record = { path = "../crates/import-record" }
 library = { path = "../crates/library" }
 session-save = { path = "../crates/session-save" }
 summarize = { path = "../crates/summarize" }

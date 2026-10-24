@@ -1,7 +1,8 @@
 // Settings > Storage (R3, R4, R6, R10, R16): the one storage folder, Show
 // in Finder, Change, the Move of the notes to a new folder, the removal
-// of old audio, and the agent instructions (R29). Change is not available
-// while a Move runs or is paused (KTD11).
+// of old audio, the watched folder of this computer, and the agent
+// instructions (R29). Change is not available while a Move runs or is
+// paused (KTD11).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -15,6 +16,7 @@ import {
 } from "../bindings";
 import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
+import { WatchedFolder } from "./WatchedFolder";
 import { damagedFileText, readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes, notes } from "./ui";
 
@@ -333,6 +335,7 @@ export function DestinationPicker({
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
+      <WatchedFolder settings={settings} onSettings={onSettings} />
       <AudioRemoval settings={settings} onSettings={onSettings} />
       <AgentInstructions folder={current} folderStatus={status} />
       {dialog}

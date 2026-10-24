@@ -28,7 +28,12 @@ function picker(
   handlers: Record<string, CommandHandler> = {},
   options: { settings?: Settings; status?: DestinationStatus } = {},
 ) {
-  const tauri = mockTauri({ move_status: () => null, agent_instructions_status: () => ({ kind: "not_added" }), ...handlers });
+  const tauri = mockTauri({
+    move_status: () => null,
+    agent_instructions_status: () => ({ kind: "not_added" }),
+    watched_folder_status: () => ({ kind: "off" }),
+    ...handlers,
+  });
   const received: Settings[] = [];
   const view = render(
     <DestinationPicker
@@ -42,7 +47,7 @@ function picker(
 
 const change = () => screen.getByRole("button", { name: "Change…" }) as HTMLButtonElement;
 const show = () => screen.getByRole("button", { name: /^Show in / }) as HTMLButtonElement;
-const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status" && c !== "agent_instructions_status");
+const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status" && c !== "agent_instructions_status" && c !== "watched_folder_status");
 
 describe("DestinationPicker", () => {
   test("shows the one storage folder and no earlier folders", () => {

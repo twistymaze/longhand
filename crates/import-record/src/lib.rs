@@ -12,5 +12,5 @@ pub use entry::{Entry, SCHEMA_VERSION, State};
 pub use merge::{Merged, merge};
 pub use store::{
     ComputerId, IMPORTS_FOLDER, Identity, LONGHAND_FOLDER, Lookup, MAX_ENTRY_BYTES, WriteError,
-    entry_of, entry_path, identity_folder, imports_folder, lookup, write,
+    entry_of, entry_path, identity_folder, imports_folder, lookup, names_and_sizes, write,
 };

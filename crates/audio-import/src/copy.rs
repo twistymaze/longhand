@@ -3,6 +3,7 @@
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
 
@@ -42,6 +43,17 @@ pub fn copy_with_hash(source: &Path, destination: &Path) -> io::Result<Copied> {
 /// The SHA-256 of `path`, from one sequential read with no copy (KTD12).
 pub fn hash_file(path: &Path) -> io::Result<String> {
     stream(path, |_| Ok(())).map(|(sha256, _)| sha256)
+}
+
+/// The SHA-256 of `path` as [`hash_file`] gives it. `read` counts the bytes
+/// read so far, so another thread can see whether the read makes progress
+/// (KTD8).
+pub fn hash_file_counted(path: &Path, read: &AtomicU64) -> io::Result<String> {
+    stream(path, |chunk| {
+        read.fetch_add(chunk.len() as u64, Ordering::SeqCst);
+        Ok(())
+    })
+    .map(|(sha256, _)| sha256)
 }
 
 /// Read `path` from start to end, hash each chunk and give it to `sink`.
