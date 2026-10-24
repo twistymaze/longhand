@@ -8,7 +8,7 @@ use ort::{
     environment::Environment,
     session::{
         Session,
-        builder::{GraphOptimizationLevel, SessionBuilder},
+        builder::{AutoDevicePolicy, GraphOptimizationLevel, SessionBuilder},
     },
 };
 
@@ -152,8 +152,12 @@ fn environment() -> Result<&'static Environment, Error> {
     Ok(ENVIRONMENT.get_or_init(|| environment))
 }
 
+// ort selects AutoDevicePolicy::MaxEfficiency by default, which adds Core ML
+// on macOS to each session. PreferCPU adds no provider, so a plain session and
+// the CPU fallback stay on CPU. commit_accelerated adds Core ML explicitly.
 fn session_builder() -> Result<SessionBuilder, Error> {
     Ok(Session::builder(environment()?)?
+        .with_auto_device(AutoDevicePolicy::PreferCPU)?
         .with_intra_threads(1)?
         .with_inter_threads(1)?
         .with_optimization_level(GraphOptimizationLevel::Level3)?)
