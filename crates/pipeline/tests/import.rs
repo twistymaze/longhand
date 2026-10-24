@@ -41,6 +41,10 @@ struct Rig {
     phone: PathBuf,
     suspended: Arc<AtomicBool>,
     free: Arc<AtomicU64>,
+    /// True: the app has no storage folder.
+    no_storage: Arc<AtomicBool>,
+    /// True: the removal of a folder fails, as a Trash that refuses it.
+    refuse_remove: Arc<AtomicBool>,
     events: Mutex<Receiver<ImportEvent>>,
     sender: Arc<Mutex<Sender<ImportEvent>>>,
     _dir: tempfile::TempDir,
@@ -58,6 +62,8 @@ impl Rig {
             phone: dir.path().join("phone"),
             suspended: Arc::default(),
             free: Arc::new(AtomicU64::new(u64::MAX)),
+            no_storage: Arc::default(),
+            refuse_remove: Arc::default(),
             events: Mutex::new(events),
             sender: Arc::new(Mutex::new(sender)),
             _dir: dir,
@@ -74,16 +80,25 @@ impl Rig {
         let suspended = Arc::clone(&self.suspended);
         let free = Arc::clone(&self.free);
         let sender = Arc::clone(&self.sender);
+        let no_storage = Arc::clone(&self.no_storage);
+        let refuse_remove = Arc::clone(&self.refuse_remove);
         Imports::open(ImportEnvironment {
             store: Arc::clone(&self.store),
             working_root: self.working.clone(),
             journal: self.journal.clone(),
             computer_id: self.computer(),
             longhand_version: "1.4.0".into(),
-            storage_folder: Box::new(move || Some(storage.clone())),
+            storage_folder: Box::new(move || {
+                (!no_storage.load(Ordering::SeqCst)).then(|| storage.clone())
+            }),
             suspended: Box::new(move || suspended.load(Ordering::SeqCst)),
             free_space: Arc::new(move |_: &Path| Some(free.load(Ordering::SeqCst))),
-            remove: Box::new(|path| std::fs::remove_dir_all(path).map_err(|e| e.to_string())),
+            remove: Box::new(move |path| {
+                if refuse_remove.load(Ordering::SeqCst) {
+                    return Err("the Trash refused the folder".into());
+                }
+                std::fs::remove_dir_all(path).map_err(|e| e.to_string())
+            }),
             claims: Claims::default(),
             early_homes: None,
             events: Box::new(move |event| {
@@ -520,15 +535,18 @@ fn a_manual_import_of_an_imported_file_makes_a_new_note() {
 
 /// Delete the importing note `id` as the delete command does.
 fn delete(r: &Rig, imports: &Imports, id: &str) {
-    assert!(imports.delete(id));
-    session_core::jobs::delete_session(
-        &r.store,
-        id,
-        &r.working.join(id),
-        &Claims::default(),
-        |path: &Path| std::fs::remove_dir_all(path).map_err(|e| e.to_string()),
-    )
-    .unwrap();
+    imports
+        .delete_note(id, || {
+            session_core::jobs::delete_session(
+                &r.store,
+                id,
+                &r.working.join(id),
+                &Claims::default(),
+                |path: &Path| std::fs::remove_dir_all(path).map_err(|e| e.to_string()),
+            )
+        })
+        .unwrap()
+        .unwrap();
 }
 
 #[test]
@@ -593,11 +611,9 @@ fn a_delete_during_the_conversion_stops_it_and_records_the_file() {
     };
     r.wait_for("the pause", |e| matches!(e, ImportEvent::Paused { .. }));
     delete(&r, &imports, &id);
-    r.wait_for(
-        "the end of the import",
-        |e| matches!(e, ImportEvent::Ended { note_id } if *note_id == id),
-    );
     worker.join().unwrap();
+    // The worker can stop before the row delete queues the entry again.
+    imports.run_pending();
 
     assert_eq!(r.state(&id), None);
     assert!(!r.working.join(&id).exists());
@@ -669,4 +685,184 @@ fn a_dismissed_failure_goes_and_a_new_attempt_gives_a_new_failure() {
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].note_id, second);
     assert_eq!(failed[0].file_name, "Notes.m4a");
+}
+
+// ------------------------------------------- a delete that does not complete
+
+#[test]
+fn a_delete_mark_that_cannot_be_saved_refuses_the_delete() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Team sync.m4a");
+    let imports = r.imports();
+    let id = imports
+        .import(request(&source, Origin::WatchedFolder), recognition())
+        .unwrap();
+    // A folder in the place of the journal file: no save succeeds.
+    std::fs::remove_file(&r.journal).unwrap();
+    std::fs::create_dir(&r.journal).unwrap();
+
+    let mut called = false;
+    let result = imports.delete_note(&id, || {
+        called = true;
+        Ok::<(), ()>(())
+    });
+
+    assert!(result.is_err(), "{result:?}");
+    assert!(!called, "the row delete must not start");
+    assert_eq!(r.state(&id), Some(SessionState::Importing));
+    assert!(!entry(&imports, &id).deleted);
+}
+
+#[test]
+fn a_failed_delete_of_an_importing_note_lets_the_import_continue() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Team sync.m4a");
+    let imports = r.imports();
+    let id = imports
+        .import(request(&source, Origin::WatchedFolder), recognition())
+        .unwrap();
+    let result = imports.delete_note(&id, || {
+        // The worker runs while the row delete runs.
+        imports.run_pending();
+        assert!(
+            matches!(
+                import_record::lookup(&r.storage, &identity_of(&source)),
+                Lookup::New
+            ),
+            "no entry while the row exists"
+        );
+        Err::<(), _>("the note is moving")
+    });
+    assert_eq!(result.unwrap(), Err("the note is moving"));
+    assert!(!entry(&imports, &id).deleted);
+
+    imports.run_pending();
+    assert_one_queued_note(&r, &id, &source);
+}
+
+#[test]
+fn a_crash_between_the_delete_mark_and_the_row_delete_continues_the_import() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Team sync.m4a");
+    let id = {
+        let imports = r.imports();
+        let id = imports
+            .import(request(&source, Origin::WatchedFolder), recognition())
+            .unwrap();
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            imports.delete_note(&id, || -> Result<(), ()> { panic!("the process stops") })
+        }));
+        assert!(crashed.is_err());
+        id
+    };
+    let imports = r.imports();
+    imports.launch();
+    imports.run_pending();
+    assert_one_queued_note(&r, &id, &source);
+}
+
+// -------------------------------------------------- a source that goes away
+
+#[test]
+fn a_source_that_goes_before_the_copy_removes_the_note_and_writes_no_entry() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Team sync.m4a");
+    let identity = identity_of(&source);
+    let imports = r.imports();
+    let id = imports
+        .import(request(&source, Origin::WatchedFolder), recognition())
+        .unwrap();
+    std::fs::remove_file(&source).unwrap();
+    imports.run_pending();
+
+    assert_eq!(r.state(&id), None);
+    assert!(imports.entries().is_empty());
+    assert!(!r.working.join(&id).exists());
+    assert!(matches!(
+        import_record::lookup(&r.storage, &identity),
+        Lookup::New
+    ));
+    assert!(
+        r.events_now()
+            .iter()
+            .any(|e| matches!(e, ImportEvent::Removed { note_id } if *note_id == id))
+    );
+}
+
+#[test]
+fn a_delete_while_the_source_is_gone_waits_until_the_source_returns() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Team sync.m4a");
+    let identity = identity_of(&source);
+    let away = r.phone.join("away.m4a");
+    let imports = r.imports();
+    let id = imports
+        .import(request(&source, Origin::WatchedFolder), recognition())
+        .unwrap();
+    // The removable volume goes before the hash is known.
+    std::fs::rename(&source, &away).unwrap();
+    delete(&r, &imports, &id);
+    imports.run_pending();
+
+    assert_eq!(r.state(&id), None);
+    assert_eq!(imports.open_sources(), std::slice::from_ref(&source));
+    assert!(matches!(
+        import_record::lookup(&r.storage, &identity),
+        Lookup::New
+    ));
+
+    std::fs::rename(&away, &source).unwrap();
+    imports.retry();
+    imports.run_pending();
+
+    assert!(lock(&r.store).sessions().unwrap().is_empty());
+    assert!(imports.entries().is_empty());
+    assert!(matches!(
+        import_record::lookup(&r.storage, &identity),
+        Lookup::Imported(_)
+    ));
+}
+
+// ------------------------------------------------------------ other waits
+
+#[test]
+fn an_import_waits_for_the_storage_folder_and_completes_after_a_retry() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Team sync.m4a");
+    r.no_storage.store(true, Ordering::SeqCst);
+    let imports = r.imports();
+    let id = imports
+        .import(request(&source, Origin::Manual), recognition())
+        .unwrap();
+    imports.run_pending();
+    assert_eq!(step_name(&entry(&imports, &id)), "converted");
+    assert_eq!(r.state(&id), Some(SessionState::Importing));
+
+    r.no_storage.store(false, Ordering::SeqCst);
+    imports.retry();
+    imports.run_pending();
+    // One queued note and one `imported` entry of this computer.
+    assert_one_queued_note(&r, &id, &source);
+}
+
+#[test]
+fn a_failure_shows_its_notice_when_the_note_cannot_be_removed() {
+    let r = Rig::new();
+    let source = r.phone.join("Notes.m4a");
+    std::fs::write(&source, "These are notes, not audio.\n").unwrap();
+    r.refuse_remove.store(true, Ordering::SeqCst);
+    let imports = r.imports();
+    let id = imports
+        .import(request(&source, Origin::Manual), recognition())
+        .unwrap();
+    imports.run_pending();
+    assert_eq!(imports.notices().failed.len(), 1);
+    assert_eq!(r.state(&id), Some(SessionState::Importing));
+
+    r.refuse_remove.store(false, Ordering::SeqCst);
+    imports.retry();
+    imports.run_pending();
+    assert_eq!(r.state(&id), None);
+    assert!(imports.entries().is_empty());
+    assert_eq!(imports.notices().failed.len(), 1);
 }

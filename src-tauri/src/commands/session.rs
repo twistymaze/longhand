@@ -1735,26 +1735,42 @@ async fn delete(
     tauri::async_runtime::spawn_blocking(move || {
         let now = chrono::Local::now().fixed_offset();
         if in_use_by_scan || in_use_elsewhere(&store, &own_runs, &note_id, now) {
-            return Err(session_core::DeleteError::Busy {
-                state: IN_USE_REASON,
-            });
+            return Err(delete_error(
+                session_core::DeleteError::Busy {
+                    state: IN_USE_REASON,
+                },
+                removal,
+            ));
         }
         // The early write job writes nothing more into the folder of the
         // note after this (KTD4).
         early_homes.cancel(&note_id);
-        // An importing note: the import worker stops its conversion and
-        // records the file, so the file does not come back (KTD6 of the
-        // audio import plan).
-        imports.delete(&note_id);
-        session_core::jobs::delete_session(&store, &note_id, &working, &claims, remove)
+        // An importing note: the journal records the delete first. The
+        // import worker stops its conversion and records the file after the
+        // row is gone, so the file does not come back. When the delete
+        // fails, the import continues (KTD6 of the audio import plan).
+        imports
+            .delete_note(&note_id, || {
+                session_core::jobs::delete_session(&store, &note_id, &working, &claims, remove)
+            })
+            .map_err(|e| {
+                log::error!("could not record the delete of the import of {note_id}: {e}");
+                DeleteSessionError::Failed {
+                    message: IMPORT_DELETE_FAILED.to_string(),
+                }
+            })?
             .inspect(|()| log::info!("deleted session {note_id} ({removal:?})"))
+            .map_err(|e| delete_error(e, removal))
     })
     .await
     .map_err(|e| DeleteSessionError::Failed {
         message: e.to_string(),
     })?
-    .map_err(|e| delete_error(e, removal))
 }
+
+/// The message when the delete of an importing note cannot be recorded.
+const IMPORT_DELETE_FAILED: &str =
+    "Longhand could not delete this note while it imports. Try again.";
 
 /// Move the session's folder to the Trash and remove the session from
 /// Longhand (R8). Refused while it records or is processed.

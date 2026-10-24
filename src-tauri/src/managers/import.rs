@@ -87,13 +87,22 @@ impl ImportManager {
             .map_err(|e| e.to_string())
     }
 
-    /// Mark the import of the note `note_id` deleted, before the delete of
-    /// the note (KTD6). The worker then records the file, so the file does
-    /// not come back. False when the note has no open import.
-    pub fn delete(&self, note_id: &str) -> bool {
-        self.imports
-            .as_ref()
-            .is_some_and(|imports| imports.delete(note_id))
+    /// Delete the note `note_id` with `delete` (KTD6). For an importing
+    /// note, the journal records the delete first, and the worker records
+    /// the file after the row is gone, so the file does not come back. When
+    /// `delete` fails, the import continues. An error is a delete mark that
+    /// cannot be saved: `delete` did not run.
+    pub fn delete_note<T, E>(
+        &self,
+        note_id: &str,
+        delete: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Result<T, E>, String> {
+        match &self.imports {
+            Some(imports) => imports
+                .delete_note(note_id, delete)
+                .map_err(|e| e.to_string()),
+            None => Ok(delete()),
+        }
     }
 
     /// Try each import that waits again: for free space or the storage
@@ -148,11 +157,7 @@ fn open(
 ) -> Result<Arc<Imports>, String> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let store = capture.shared_store();
-    let computer = pipeline::lock(&store)
-        .computer_id()
-        .map_err(|e| e.to_string())?;
-    let computer_id =
-        ComputerId::parse(&computer).ok_or_else(|| format!("{computer} is not a computer id"))?;
+    let computer_id = computer_id(&store)?;
     let storage = app.clone();
     let events = app.clone();
     Imports::open(ImportEnvironment {
@@ -171,6 +176,14 @@ fn open(
         poll: SUSPENDED_POLL,
     })
     .map_err(|e| format!("the import journal cannot be read: {e}"))
+}
+
+/// The computer id of this computer in the import record, from the store.
+pub(crate) fn computer_id(store: &pipeline::SharedStore) -> Result<ComputerId, String> {
+    let computer = pipeline::lock(store)
+        .computer_id()
+        .map_err(|e| e.to_string())?;
+    ComputerId::parse(&computer).ok_or_else(|| format!("{computer} is not a computer id"))
 }
 
 /// Tell Home of each row change, and wake processing for a queued note.

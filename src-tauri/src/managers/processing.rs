@@ -1741,11 +1741,7 @@ impl ProcessingManager {
     /// What the watcher of the watched folder needs from the app.
     fn watched_environment(&self) -> Result<WatchedEnvironment, String> {
         let data = self.app.path().app_data_dir().map_err(|e| e.to_string())?;
-        let computer = pipeline::lock(&self.store)
-            .computer_id()
-            .map_err(|e| e.to_string())?;
-        let computer_id = import_record::ComputerId::parse(&computer)
-            .ok_or_else(|| format!("{computer} is not a computer id"))?;
+        let computer_id = crate::managers::import::computer_id(&self.store)?;
         let capture = self
             .app
             .try_state::<Arc<CaptureManager>>()

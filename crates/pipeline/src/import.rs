@@ -29,10 +29,13 @@
 //! `failed` entry is written and the note goes (R12a).
 //!
 //! A user delete of an importing note marks the journal entry deleted
-//! ([`Imports::delete`]). The worker stops the conversion, removes its
-//! working folder, hashes the file when the hash is not known, writes the
+//! before the row delete ([`Imports::delete_note`]). The worker stops the
+//! conversion and waits until the row is gone. Then it removes the working
+//! folder, hashes the file when the hash is not known, writes the
 //! `imported` entry and only then removes the journal entry, so the file
-//! does not come back (R12).
+//! does not come back (R12). A row delete that fails removes the mark, and
+//! the import continues. A deleted entry whose file is gone before its hash
+//! waits for the file.
 //!
 //! Every file read, hash and conversion runs on the caller's thread or the
 //! worker thread, never under the store lock.
@@ -208,6 +211,9 @@ pub enum Wait {
     Source,
     /// The app stops.
     Stopped,
+    /// The user deleted the note, and its row is not deleted yet. The
+    /// file is recorded only after the row delete succeeds.
+    Delete,
 }
 
 /// A file that the decoder refused (R12a), for its notice on Home.
@@ -301,6 +307,17 @@ struct Work {
     /// The imports that wait for a retry.
     waiting: BTreeSet<String>,
     stopped: bool,
+}
+
+/// What [`Imports::delete_note`] did to the journal before the row delete.
+#[derive(Debug, Clone, Copy)]
+enum Mark {
+    /// The note has no open import.
+    None,
+    /// This call wrote the delete mark.
+    New,
+    /// An earlier delete wrote the mark.
+    Already,
 }
 
 /// The imports of this computer.
@@ -416,16 +433,40 @@ impl Imports {
         Ok(id)
     }
 
-    /// Mark the import of the note `id` deleted, before the caller deletes
-    /// the note. Returns false when the note has no open import, or when
-    /// the import has queued the note: the caller then deletes as for any
-    /// note.
-    pub fn delete(&self, id: &str) -> bool {
+    /// Delete the note `id` with `delete`, which deletes its row and its
+    /// folders (KTD6). For a note with an open import, the journal first
+    /// records the delete mark: the conversion stops, and the file is
+    /// recorded only after the row is gone. When `delete` fails, the mark
+    /// is removed and the import continues. An error is a mark that cannot
+    /// be saved: `delete` did not run, and the note stays.
+    pub fn delete_note<T, E>(
+        &self,
+        id: &str,
+        delete: impl FnOnce() -> Result<T, E>,
+    ) -> io::Result<Result<T, E>> {
+        let mark = self.mark_deleted(id)?;
+        let result = delete();
+        match (mark, &result) {
+            (Mark::None, _) => {}
+            (Mark::New, Err(_)) => self.cancel_delete(id),
+            // The worker waits for the row delete before it records the
+            // file.
+            (Mark::New | Mark::Already, _) => self.queue(id),
+        }
+        Ok(result)
+    }
+
+    /// Write the delete mark of the import of `id`. A note with no open
+    /// import, or one that the import has queued, gets no mark.
+    fn mark_deleted(&self, id: &str) -> io::Result<Mark> {
         let mut journal = held(&self.journal);
         let Some(i) = journal.iter().position(|e| e.note_id == id) else {
-            return false;
+            return Ok(Mark::None);
         };
-        if matches!(journal[i].step, Step::Recorded { .. }) && !journal[i].deleted {
+        if journal[i].deleted {
+            return Ok(Mark::Already);
+        }
+        if matches!(journal[i].step, Step::Recorded { .. }) {
             // The queue step can have run: the note is a normal note now.
             let queued = lock(&self.env.store)
                 .session(id)
@@ -433,35 +474,68 @@ impl Imports {
                 .flatten()
                 .is_some_and(|r| r.state != SessionState::Importing);
             if queued {
-                return false;
+                return Ok(Mark::None);
             }
         }
-        if !journal[i].deleted {
-            journal[i].deleted = true;
-            if let Err(e) = self.save(&journal) {
-                log::error!("could not mark the import of {id} deleted: {e}");
-                journal[i].deleted = false;
-                return false;
+        journal[i].deleted = true;
+        if let Err(e) = self.save(&journal) {
+            log::error!("could not mark the import of {id} deleted: {e}");
+            journal[i].deleted = false;
+            return Err(e);
+        }
+        Ok(Mark::New)
+    }
+
+    /// The delete of the note `id` failed: remove the delete mark, and
+    /// continue the import. A row that is gone keeps the mark. A mark that
+    /// cannot be saved stays in the file; the next launch removes it,
+    /// because the row exists.
+    fn cancel_delete(&self, id: &str) {
+        let row = lock(&self.env.store).session(id).ok().flatten().is_some();
+        if row {
+            let mut journal = held(&self.journal);
+            if let Some(entry) = journal.iter_mut().find(|e| e.note_id == id) {
+                entry.deleted = false;
+                if let Err(e) = self.save(&journal) {
+                    log::error!("could not remove the delete mark of the import of {id}: {e}");
+                }
             }
         }
-        drop(journal);
         self.queue(id);
-        true
     }
 
     /// At launch: remove each importing note that has no journal entry
     /// (an import that the journal does not know cannot continue), then
-    /// queue every entry.
+    /// queue every entry. A delete mark of a note whose row exists is
+    /// removed: the process stopped before the row delete, so the import
+    /// continues.
     pub fn launch(&self) {
         let known: Vec<String> = self.entries().into_iter().map(|e| e.note_id).collect();
-        let orphans = match lock(&self.env.store).sessions_in(SessionState::Importing.name()) {
+        let importing = match lock(&self.env.store).sessions_in(SessionState::Importing.name()) {
             Ok(records) => records,
             Err(e) => {
                 log::error!("could not list the importing notes: {e}");
                 Vec::new()
             }
         };
-        for record in orphans.into_iter().filter(|r| !known.contains(&r.id)) {
+        {
+            let mut journal = held(&self.journal);
+            let mut changed = false;
+            for entry in journal.iter_mut() {
+                if entry.deleted && importing.iter().any(|r| r.id == entry.note_id) {
+                    log::warn!(
+                        "the delete of the importing note {} did not complete; the import continues",
+                        entry.note_id
+                    );
+                    entry.deleted = false;
+                    changed = true;
+                }
+            }
+            if changed && let Err(e) = self.save(&journal) {
+                log::error!("could not remove the delete marks of the journal: {e}");
+            }
+        }
+        for record in importing.into_iter().filter(|r| !known.contains(&r.id)) {
             log::warn!(
                 "the importing note {} has no journal entry; it is removed",
                 record.id
@@ -658,6 +732,7 @@ impl Imports {
         let source = &entry.request.source;
         let size = match std::fs::metadata(source) {
             Ok(meta) => meta.len(),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return self.source_gone(id),
             Err(e) => {
                 log::warn!("cannot read the file of the import {id}: {e}");
                 return Ok(Next::Wait(Wait::Source));
@@ -676,11 +751,21 @@ impl Imports {
                     size: copied.bytes,
                 }))
             }
+            Err(_) if matches!(source.try_exists(), Ok(false)) => self.source_gone(id),
             Err(e) => {
                 log::warn!("cannot copy the file of the import {id}: {e}");
                 Ok(Next::Wait(Wait::Source))
             }
         }
+    }
+
+    /// The file went before its copy was complete. The file was never
+    /// imported, so the note goes and the import record gets no entry: the
+    /// file can import again when it returns.
+    fn source_gone(&self, id: &str) -> Result<Next, StageError> {
+        log::warn!("the file of the import {id} is gone before its copy; the note is removed");
+        self.remove_note(id)?;
+        Ok(Next::Done)
     }
 
     /// Step 3 to 4: decode the copy into the chunks of segment 0. A partial
@@ -953,21 +1038,27 @@ impl Imports {
             log::warn!("cannot write the failed entry of {id}: {e}");
             return Ok(Next::Wait(Wait::ImportRecord));
         }
-        self.remove_note(id)?;
+        // The notice comes before the removal: the user sees the failure
+        // also when the Trash refuses the folder and the step runs again.
         let failure = Failure {
             note_id: id.to_string(),
             identity: identity.to_string(),
             file_name: name,
             at,
         };
-        {
+        let added = {
             let mut notices = held(&self.notices);
-            if !notices.failed.contains(&failure) {
+            let added = !notices.failed.contains(&failure);
+            if added {
                 notices.failed.push(failure.clone());
             }
+            added
+        };
+        if added {
+            log::warn!("the import of {id} failed: {error}");
+            self.tell(ImportEvent::Failed(failure));
         }
-        log::warn!("the import of {id} failed: {error}");
-        self.tell(ImportEvent::Failed(failure));
+        self.remove_note(id)?;
         Ok(Next::Done)
     }
 
@@ -976,6 +1067,11 @@ impl Imports {
     /// The caller deleted the row and the home folder.
     fn finish_deleted(&self, entry: &Entry) -> Result<Next, StageError> {
         let id = entry.note_id.as_str();
+        // The delete of the row is in progress, or it failed and the
+        // caller removes the mark: the file is not recorded yet.
+        if lock(&self.env.store).session(id)?.is_some() {
+            return Ok(Next::Wait(Wait::Delete));
+        }
         remove_folder(&self.working(id))?;
         self.clear_disk(id);
         if matches!(entry.step, Step::Recorded { .. } | Step::Duplicate) {
@@ -990,8 +1086,9 @@ impl Imports {
                     .and_then(|size| audio_import::hash_file(source).map(|hash| (hash, size)));
                 match hashed {
                     Ok(hashed) => hashed,
-                    // Nothing can import a file that is gone.
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Next::Done),
+                    // A file that is gone can return, for example on a
+                    // removable volume. The entry waits for it, and the
+                    // watched folder does not import an open source.
                     Err(e) => {
                         log::warn!("cannot hash the file of the deleted import {id}: {e}");
                         return Ok(Next::Wait(Wait::Source));
