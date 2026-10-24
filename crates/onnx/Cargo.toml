@@ -9,11 +9,14 @@ publish.workspace = true
 default = []
 cuda = ["ort/cuda"]
 coreml = ["ort/coreml"]
+# The pyke Windows binaries contain DirectML with or without this feature, and
+# ort-sys links DirectML.lib. The archive also holds DirectML.dll, but the
+# Windows bundle does not ship it; this was the same with ONNX Runtime 1.22.0.
 directml = ["ort/directml"]
 
 [dependencies]
-ndarray = "0.16"
-ort = { version = "=2.0.0-rc.10", features = ["ndarray"] }
+ndarray = "0.17.2"
+ort = { version = "=2.0.0-rc.15", features = ["ndarray"] }
 thiserror.workspace = true
 # The borrowed code logs through `tracing`; its `log` feature forwards to the
 # app's `log` facade when no subscriber is installed.
