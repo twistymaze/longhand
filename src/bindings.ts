@@ -584,8 +584,14 @@ async pickStorageFolder() : Promise<Result<string | null, string>> {
  * Leave them, the library forgets the notes of the old folder and keeps
  * their files; a busy note is forgotten when it is free (R7). A note that
  * records during the change saves to the new folder.
+ * 
+ * The watcher of the watched folder pauses during the change (U7). With
+ * Move, it stays paused until the Move has taken the import record into
+ * the new folder. A watched folder that touches the new storage folder
+ * turns off (R9). With Leave Them, the watcher holds the audio files that
+ * the new folder's import record does not hold until the R6 answer.
  */
-async changeStorageFolder(folder: string, oldNotes: OldNotes) : Promise<Result<Settings, string>> {
+async changeStorageFolder(folder: string, oldNotes: OldNotes) : Promise<Result<StorageFolderChange, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("change_storage_folder", { folder, oldNotes }) };
 } catch (e) {
@@ -3007,6 +3013,22 @@ export type StopOutcome =
  * The failed-capture alert tells the user: the page shows nothing.
  */
 { kind: "interrupted"; note_id: string }
+/**
+ * What a change of storage folder did (R4, U7).
+ */
+export type StorageFolderChange = { settings: Settings; 
+/**
+ * The watched folder touched the new storage folder, so the change
+ * turned it off (R9). The reason, as Settings shows it.
+ */
+watched_folder_off: string | null; 
+/**
+ * Leave Them: the watched folder holds audio files that the import
+ * record of the new storage folder does not hold. The watcher holds
+ * them until the surface asks the question of R6 and calls
+ * [`set_watched_folder`] with the answer.
+ */
+watched_folder_files: WatchedFolderPreview | null }
 /**
  * A summary prompt that the user made (R1, KTD6). The built-in prompts are
  * never saved: their text lives in `summarize::prompts`.

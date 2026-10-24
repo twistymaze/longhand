@@ -52,7 +52,11 @@ const waiting: SessionDetail = {
 function open() {
   const tauri = mockTauri({
     pick_storage_folder: () => "/Volumes/Disk/Notes",
-    change_storage_folder: () => ({ storage_folder: "/Volumes/Disk/Notes" }) as Settings,
+    change_storage_folder: () => ({
+      settings: { storage_folder: "/Volumes/Disk/Notes" } as Settings,
+      watched_folder_off: null,
+      watched_folder_files: null,
+    }),
   });
   let changed = 0;
   render(<ProcessingStatus detail={waiting} live={undefined} onChanged={() => changed++} />);

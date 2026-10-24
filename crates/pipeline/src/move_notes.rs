@@ -219,6 +219,28 @@ fn check_old(old: &Path) -> Result<(), MoveError> {
     }))
 }
 
+/// Copy each entry of the import record of the old folder into the new
+/// folder (R11 of the audio import plan). The merge never replaces an
+/// entry, so a second merge after a crash copies only the rest. An old
+/// folder that is not reachable pauses the Move: its record is not empty,
+/// only not readable now. An entry that cannot be read or does not parse
+/// stays in the old folder, and the log names it.
+fn merge_imports(journal: &MoveJournal) -> Result<(), MoveError> {
+    let (old, new) = (&journal.old_folder, &journal.new_folder);
+    check_old(old)?;
+    let merged = import_record::merge(old, new).map_err(|e| pause_for(&e, new))?;
+    for path in &merged.not_copied {
+        log::warn!(
+            "move: cannot copy the import record entry {}",
+            path.display()
+        );
+    }
+    if merged.copied > 0 {
+        log::info!("move: copied {} import record entries", merged.copied);
+    }
+    Ok(())
+}
+
 /// The pause for an I/O error on `folder`.
 fn pause_for(e: &io::Error, folder: &Path) -> MoveError {
     let text = folder.to_string_lossy().into_owned();
@@ -532,17 +554,31 @@ impl Mover<'_> {
             if self.rescan(&journal)? && !waiting {
                 continue;
             }
+            if waiting || !self.all_moved(&journal)? {
+                return Ok(PassEnd::Waiting);
+            }
+            // The import record goes with the notes (R11 of the audio
+            // import plan), before the journal closes. A crash before the
+            // close continues the merge at the next pass.
+            merge_imports(&journal)?;
             let mut store = lock(self.store);
-            if waiting
-                || !store.moving_notes()?.is_empty()
+            if !store.moving_notes()?.is_empty()
                 || !store.saves_into(&journal.old_folder)?.is_empty()
             {
-                return Ok(PassEnd::Waiting);
+                // A note came into the old folder during the merge.
+                continue;
             }
             store.close_move()?;
             log::info!("move: every note is in {}", journal.new_folder.display());
             return Ok(PassEnd::Finished);
         }
+    }
+
+    /// Whether every note is in the new folder, and no save puts a note in
+    /// the old folder.
+    fn all_moved(&self, journal: &MoveJournal) -> Result<bool, MoveError> {
+        let store = lock(self.store);
+        Ok(store.moving_notes()?.is_empty() && store.saves_into(&journal.old_folder)?.is_empty())
     }
 
     /// Take the steps of one note until it is done, busy or dropped.

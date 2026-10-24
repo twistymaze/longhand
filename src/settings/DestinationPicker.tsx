@@ -252,6 +252,9 @@ export function DestinationPicker({
   onSettings: (s: Settings) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  // The reason when the last storage folder change turned the watched
+  // folder off (R9).
+  const [watchedOff, setWatchedOff] = useState<string | null>(null);
   const { change, dialog } = useFolderChange();
   const { move, finished, read } = useMove();
   const [busy, setBusy] = useState(false);
@@ -271,6 +274,7 @@ export function DestinationPicker({
       else {
         setError(null);
         if (result.data) {
+          setWatchedOff(result.data.watchedFolderOff);
           onSettings(result.data.settings);
           if (result.data.moved) await read();
         }
@@ -335,7 +339,7 @@ export function DestinationPicker({
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
-      <WatchedFolder settings={settings} onSettings={onSettings} />
+      <WatchedFolder settings={settings} turnedOff={watchedOff} onSettings={onSettings} />
       <AudioRemoval settings={settings} onSettings={onSettings} />
       <AgentInstructions folder={current} folderStatus={status} />
       {dialog}

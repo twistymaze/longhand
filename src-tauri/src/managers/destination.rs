@@ -208,23 +208,19 @@ pub fn check_watched_folder(folder: &Path, limits: &WatchLimits) -> Result<(), S
     Ok(())
 }
 
-/// Whether `storage` can be the new storage folder while `watched` is the
-/// watched folder (R9). The error is the cause, as Settings shows it.
-pub fn check_storage_beside_watched(storage: &Path, watched: &Path) -> Result<(), String> {
-    match placement(storage, watched) {
-        Placement::Same => Err(
-            "This folder is the watched folder. Choose another folder, or turn off the watched folder first."
-                .into(),
-        ),
-        Placement::Inside => {
-            Err("This folder is inside the watched folder. Choose a folder outside it.".into())
-        }
-        Placement::Contains => Err(
-            "This folder contains the watched folder. Choose a folder that does not contain it."
-                .into(),
-        ),
-        Placement::Apart => Ok(()),
-    }
+/// The reason, as Settings shows it, when the new storage folder `storage`
+/// and the watched folder `watched` touch (R9): the storage folder change
+/// then turns the watched folder off (U7). `None` when they are apart.
+pub fn watched_folder_turned_off(storage: &Path, watched: &Path) -> Option<String> {
+    let why = match placement(storage, watched) {
+        Placement::Same => "it is now the storage folder",
+        Placement::Inside => "the new storage folder is inside it",
+        Placement::Contains => "it is inside the new storage folder",
+        Placement::Apart => return None,
+    };
+    Some(format!(
+        "The watched folder is off because {why}. Choose another folder to watch."
+    ))
 }
 
 pub fn check(dir: &Path, floor_bytes: u64) -> DestinationStatus {
@@ -549,25 +545,27 @@ mod tests {
         assert_eq!(std::fs::read_dir(&recordings).unwrap().count(), 0);
     }
 
-    // R9 at a change of the storage folder.
+    // R9 at a change of the storage folder (U7): a new storage folder that
+    // touches the watched folder turns the watched folder off, and the
+    // reason says why.
     #[test]
-    fn a_storage_folder_that_touches_the_watched_folder_is_refused() {
+    fn a_storage_folder_that_touches_the_watched_folder_turns_it_off() {
         let dir = tempfile::tempdir().unwrap();
         let watched = dir.path().join("Recordings");
         let inside = watched.join("Notes");
         std::fs::create_dir_all(&inside).unwrap();
         let other = dir.path().join("Notes");
         std::fs::create_dir_all(&other).unwrap();
-        let same = check_storage_beside_watched(&watched, &watched).unwrap_err();
-        assert!(same.contains("is the watched folder"), "{same}");
-        let within = check_storage_beside_watched(&inside, &watched).unwrap_err();
-        assert!(within.contains("inside the watched folder"), "{within}");
-        let contains = check_storage_beside_watched(dir.path(), &watched).unwrap_err();
+        let same = watched_folder_turned_off(&watched, &watched).unwrap();
+        assert!(same.contains("is now the storage folder"), "{same}");
+        let within = watched_folder_turned_off(&inside, &watched).unwrap();
+        assert!(within.contains("storage folder is inside it"), "{within}");
+        let contains = watched_folder_turned_off(dir.path(), &watched).unwrap();
         assert!(
-            contains.contains("contains the watched folder"),
+            contains.contains("is inside the new storage folder"),
             "{contains}"
         );
-        assert_eq!(check_storage_beside_watched(&other, &watched), Ok(()));
+        assert_eq!(watched_folder_turned_off(&other, &watched), None);
     }
 
     // Checks that run at the same time must not use the same probe file.

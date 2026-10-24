@@ -1268,3 +1268,168 @@ fn same_contents_does_not_count_the_in_use_markers() {
     std::fs::write(a.join("audio").join(marker_name("run-c")), "x").unwrap();
     assert!(!move_notes::same_contents(&a, &b).unwrap());
 }
+
+// ------------------------------------------------- import record (U7, R11)
+
+const THIS_COMPUTER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const OTHER_COMPUTER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+fn identity(n: u8) -> import_record::Identity {
+    import_record::Identity::parse(&format!("{n:02x}").repeat(32)).unwrap()
+}
+
+/// Write an import record entry of `computer` for the identity `n` into
+/// `root`.
+fn record(root: &Path, n: u8, computer: &str, state: import_record::State) {
+    let entry = import_record::Entry::new(
+        state,
+        &format!("Recording {n}.m4a"),
+        1000 + u64::from(n),
+        import_record::ComputerId::parse(computer).unwrap(),
+        started(),
+    );
+    import_record::write(root, &identity(n), &entry).unwrap();
+}
+
+fn entry_bytes(root: &Path, n: u8, computer: &str) -> Vec<u8> {
+    let computer = import_record::ComputerId::parse(computer).unwrap();
+    std::fs::read(import_record::entry_path(root, &identity(n), &computer)).unwrap()
+}
+
+/// R11: the Move takes every import record entry with the notes. The
+/// file of a deleted note (an `imported` entry with no note) stays
+/// imported in the new storage folder, so the watcher does not import it
+/// again (R12).
+#[test]
+fn a_move_copies_every_import_record_entry_into_the_new_folder() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    record(&f.old, 1, THIS_COMPUTER, import_record::State::Imported);
+    record(&f.old, 1, OTHER_COMPUTER, import_record::State::Skipped);
+    record(&f.old, 2, OTHER_COMPUTER, import_record::State::Skipped);
+    // The file of a deleted note: no note has it.
+    record(&f.old, 3, THIS_COMPUTER, import_record::State::Imported);
+    f.open();
+    finish(&mover(&f, &fs));
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_none());
+    for (n, computer) in [
+        (1, THIS_COMPUTER),
+        (1, OTHER_COMPUTER),
+        (2, OTHER_COMPUTER),
+        (3, THIS_COMPUTER),
+    ] {
+        assert_eq!(
+            entry_bytes(&f.new, n, computer),
+            entry_bytes(&f.old, n, computer)
+        );
+    }
+    assert!(matches!(
+        import_record::lookup(&f.new, &identity(3)),
+        import_record::Lookup::Imported(_)
+    ));
+    assert_moved(&f, "a");
+}
+
+/// A crash during the merge leaves some entries in the new folder and a
+/// staged file of an entry write. The Move journal stays open until the
+/// merge is complete, so the launch continues the Move, and the merge
+/// copies the rest with no lost entry.
+#[test]
+fn a_crash_during_the_import_record_merge_completes_at_the_next_launch() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    for n in 1..=4 {
+        record(&f.old, n, THIS_COMPUTER, import_record::State::Imported);
+    }
+    f.open();
+    // The state on disk at the crash: the note moved, entries 1 and 2 are
+    // in the new folder, and entry 3 has only its staged file.
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    drive(&f, &m, &j, "a", &|s| *s == MoveStep::Done);
+    for n in [1, 2] {
+        let to = import_record::identity_folder(&f.new, &identity(n));
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::write(
+            to.join(format!("{THIS_COMPUTER}.json")),
+            entry_bytes(&f.old, n, THIS_COMPUTER),
+        )
+        .unwrap();
+    }
+    let third = import_record::identity_folder(&f.new, &identity(3));
+    std::fs::create_dir_all(&third).unwrap();
+    std::fs::write(third.join(".0123.new"), b"{").unwrap();
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_some());
+    // The launch: a new pass of the open Move.
+    finish(&mover(&f, &fs));
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_none());
+    for n in 1..=4 {
+        assert_eq!(
+            entry_bytes(&f.new, n, THIS_COMPUTER),
+            entry_bytes(&f.old, n, THIS_COMPUTER),
+            "{n}"
+        );
+    }
+}
+
+/// A merge that cannot write pauses the Move: the journal stays open, so
+/// the old folder stays a library root, and Retry merges again.
+#[test]
+fn a_merge_that_cannot_write_pauses_the_move_and_retry_finishes_it() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    record(&f.old, 1, THIS_COMPUTER, import_record::State::Imported);
+    f.open();
+    // A file where the imports folder must be.
+    let imports = import_record::imports_folder(&f.new);
+    std::fs::create_dir_all(imports.parent().unwrap()).unwrap();
+    std::fs::write(&imports, b"not a folder").unwrap();
+    let m = mover(&f, &fs);
+    assert!(matches!(
+        pass(&m),
+        PassEnd::Paused(MovePause::Failed { .. })
+    ));
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_some());
+    assert_eq!(f.roots(), vec![f.new.clone(), f.old.clone()]);
+    std::fs::remove_file(&imports).unwrap();
+    move_notes::retry(&f.store).unwrap();
+    finish(&m);
+    assert_eq!(
+        entry_bytes(&f.new, 1, THIS_COMPUTER),
+        entry_bytes(&f.old, 1, THIS_COMPUTER)
+    );
+}
+
+/// An old folder that goes away after the last note moved is not an
+/// empty import record: the Move pauses before the merge and does not
+/// close (`docs/solutions/logic-errors/move-dropped-notes-when-old-folder-went-away.md`).
+#[test]
+fn an_old_folder_that_goes_away_before_the_merge_pauses_the_move() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    record(&f.old, 1, THIS_COMPUTER, import_record::State::Imported);
+    f.open();
+    let m = mover(&f, &fs);
+    let j = journal(&m);
+    drive(&f, &m, &j, "a", &|s| *s == MoveStep::Done);
+    let away = f.working.join("away");
+    std::fs::rename(&f.old, &away).unwrap();
+    assert_eq!(
+        pass(&m),
+        PassEnd::Paused(MovePause::NotReachable {
+            folder: f.old.to_string_lossy().into_owned(),
+        }),
+    );
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_some());
+    std::fs::rename(&away, &f.old).unwrap();
+    move_notes::retry(&f.store).unwrap();
+    finish(&m);
+    assert_eq!(
+        entry_bytes(&f.new, 1, THIS_COMPUTER),
+        entry_bytes(&f.old, 1, THIS_COMPUTER)
+    );
+}

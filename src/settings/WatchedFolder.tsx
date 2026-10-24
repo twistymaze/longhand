@@ -16,7 +16,8 @@ const audioFiles = (n: number) => `${n} audio ${n === 1 ? "file" : "files"}`;
 
 /// The question about the audio files that are in the folder (R6). Only
 /// New Files has the focus: an old archive can start hours of processing.
-function ExistingFilesDialog({
+/// A storage folder change with Leave Them asks it too (U7).
+export function ExistingFilesDialog({
   folder,
   preview,
   onAnswer,
@@ -74,7 +75,18 @@ function useWatchedStatus() {
   return status;
 }
 
-export function WatchedFolder({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+/// `turnedOff` is the reason when a storage folder change turned the
+/// watched folder off (R9, U7). It shows while the setting stays off: the
+/// user must choose another folder.
+export function WatchedFolder({
+  settings,
+  turnedOff = null,
+  onSettings,
+}: {
+  settings: Settings;
+  turnedOff?: string | null;
+  onSettings: (s: Settings) => void;
+}) {
   const folder = settings.watched_folder ?? null;
   const status = useWatchedStatus();
   const [reading, setReading] = useState(false);
@@ -155,6 +167,16 @@ export function WatchedFolder({ settings, onSettings }: { settings: Settings; on
             Turn Off
           </Button>
         </Row>
+      )}
+      {folder === null && turnedOff && (
+        <Row
+          label={
+            <span role="status">
+              <Status tone="caution">Turned off</Status>
+            </span>
+          }
+          detail={turnedOff}
+        />
       )}
       {reading && (
         <Row

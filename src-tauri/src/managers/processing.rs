@@ -868,6 +868,11 @@ pub struct ProcessingManager {
 struct WatchedSlot {
     watcher: Option<WatchedFolder>,
     stopped: bool,
+    /// The storage folder changes now (U7).
+    changing: bool,
+    /// After Leave Them, the watcher waits for the answer to the R6
+    /// question (U7).
+    asking: bool,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -1410,6 +1415,9 @@ impl ProcessingManager {
                     // The old folder is not a library root any more.
                     self.roots_changed();
                     self.forget_outside_roots();
+                    // The import record is in the new folder: the watcher
+                    // continues (U7).
+                    self.sync_watched_pause();
                     break;
                 }
                 Ok(pipeline::move_notes::PassEnd::Waiting) => {
@@ -1668,21 +1676,67 @@ impl ProcessingManager {
         let folder = settings::get_settings(&self.app)
             .watched_folder
             .map(std::path::PathBuf::from);
-        let watcher = match WatchedFolder::start(folder, env, WatchedTiming::default()) {
-            Ok(watcher) => watcher,
-            Err(e) => {
-                log::error!("could not start the watched folder: {e}");
-                return;
-            }
-        };
+        // A Move that a quit stopped continues: the watcher starts paused
+        // until the Move has taken the import record (U7).
+        let move_open = self.move_open();
+        // The slot lock is held from the pause check to the store of the
+        // watcher, so a change of storage folder cannot start between them.
         let mut slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
         if slot.stopped {
             // The quit came during the launch steps.
-            drop(slot);
-            watcher.stop();
-        } else {
-            slot.watcher = Some(watcher);
+            return;
         }
+        let paused = move_open || slot.changing || slot.asking;
+        match WatchedFolder::start(folder, env, WatchedTiming::default(), paused) {
+            Ok(watcher) => slot.watcher = Some(watcher),
+            Err(e) => log::error!("could not start the watched folder: {e}"),
+        }
+    }
+
+    /// Whether the watcher must pause now (U7): the storage folder changes,
+    /// a Move has not taken the import record yet, or the R6 question after
+    /// Leave Them waits for its answer.
+    fn sync_watched_pause(&self) {
+        let move_open = self.move_open();
+        let slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(watcher) = &slot.watcher else {
+            return;
+        };
+        if move_open || slot.changing || slot.asking {
+            // A pause with no reply is in the log; the flag stops the work.
+            let _ = watcher.pause();
+        } else {
+            watcher.resume();
+        }
+    }
+
+    /// The storage folder starts to change (U7): the watcher pauses, and a
+    /// read in progress stops, so no import reads the import record of a
+    /// folder that is not the storage folder any more.
+    pub fn pause_watched_folder(&self) {
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .changing = true;
+        self.sync_watched_pause();
+    }
+
+    /// The storage folder change ended (U7). `held` are the files of the
+    /// watched folder that wait for the R6 answer after Leave Them: the
+    /// snapshot holds them, so a quit before the answer gives the answer
+    /// Only New Files. [`ProcessingManager::watched_folder_changed`] gives
+    /// the answer. The watcher stays paused until the answer, and while a
+    /// Move is open.
+    pub fn watched_folder_change_done(&self, held: Option<Vec<watched_folder::Held>>) {
+        {
+            let mut slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+            slot.changing = false;
+            slot.asking = held.is_some();
+        }
+        if let Some(held) = held {
+            self.set_watched_folder_files(held);
+        }
+        self.sync_watched_pause();
     }
 
     /// What the watcher of the watched folder needs from the app.
@@ -1743,8 +1797,20 @@ impl ProcessingManager {
     /// The watched folder setting changed: the watcher watches the new
     /// folder, or nothing. `skip` holds the files that the user chose not
     /// to import (R6). Before the watcher starts, the snapshot file gets
-    /// them, and the start reads it.
+    /// them, and the start reads it. A call is also the answer to the R6
+    /// question after Leave Them (U7), so the watcher stops waiting for it.
     pub fn watched_folder_changed(&self, skip: Vec<watched_folder::Held>) {
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .asking = false;
+        self.set_watched_folder_files(skip);
+        self.sync_watched_pause();
+    }
+
+    /// Give the watcher the watched folder of the settings, with `skip` as
+    /// its new snapshot, or write the snapshot file when no watcher runs.
+    fn set_watched_folder_files(&self, skip: Vec<watched_folder::Held>) {
         let folder = settings::get_settings(&self.app)
             .watched_folder
             .map(std::path::PathBuf::from);

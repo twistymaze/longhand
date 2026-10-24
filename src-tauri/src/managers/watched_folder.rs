@@ -32,6 +32,9 @@
 //! (KTD12, R12b). Settling files and read failures stay in memory only: the
 //! next scan finds them again.
 //!
+//! While the storage folder changes, the watcher pauses (U7): a read in
+//! progress stops, and no scan, read or import starts until the resume.
+//!
 //! A folder that cannot be read for [`UNAVAILABLE_SCANS`] scans in a row
 //! has the status [`WatchedFolderStatus::Unavailable`]. The next scan that
 //! reads it clears the status.
@@ -67,6 +70,10 @@ pub const UNAVAILABLE_SCANS: u32 = 3;
 
 /// How long [`WatchedFolder::stop`] waits for a scan in progress.
 const STOP_WAIT: Duration = Duration::from_secs(2);
+
+/// How long [`WatchedFolder::pause`] waits for a scan in progress. A read
+/// stops within [`PROGRESS_CHECK`] of the pause.
+const PAUSE_WAIT: Duration = Duration::from_secs(10);
 
 /// The longest time between two checks of the progress of a read.
 const PROGRESS_CHECK: Duration = Duration::from_secs(1);
@@ -406,6 +413,9 @@ enum Command {
         folder: Option<PathBuf>,
         skip: Vec<Held>,
     },
+    /// The thread replies when it does no more work: the pause flag is
+    /// set, and the scan in progress stopped.
+    Paused(Sender<()>),
     Stop,
 }
 
@@ -429,6 +439,9 @@ struct Worker {
     next_full: Instant,
     last_scan: Instant,
     stopped: Arc<AtomicBool>,
+    /// True while the storage folder changes (U7): no scan, no read and no
+    /// import.
+    paused: Arc<AtomicBool>,
 }
 
 impl Worker {
@@ -437,6 +450,7 @@ impl Worker {
         timing: Timing,
         commands: Sender<Command>,
         stopped: Arc<AtomicBool>,
+        paused: Arc<AtomicBool>,
     ) -> Self {
         let now = Instant::now();
         Self {
@@ -453,7 +467,12 @@ impl Worker {
             next_full: now + timing.full_scan_every,
             last_scan: now,
             stopped,
+            paused,
         }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::SeqCst)
     }
 
     /// Watch `folder`, or nothing. The memory of the old folder goes.
@@ -525,6 +544,9 @@ impl Worker {
     /// the skip work of the snapshot continues.
     fn scan(&mut self, now: Instant) {
         self.last_scan = now;
+        if self.is_paused() {
+            return;
+        }
         let Some(folder) = self.folder.clone() else {
             return;
         };
@@ -747,7 +769,7 @@ impl Worker {
     /// its read starts only when the free space minus its size stays above
     /// the recording reserve.
     fn read(&self, path: &Path) -> Read {
-        if self.stopped.load(Ordering::SeqCst) || (self.env.suspended)() {
+        if self.stopped.load(Ordering::SeqCst) || self.is_paused() || (self.env.suspended)() {
             return Read::Stop;
         }
         let Ok(meta) = std::fs::metadata(path) else {
@@ -800,6 +822,12 @@ impl Worker {
                     if self.stopped.load(Ordering::SeqCst) {
                         return Err(io::Error::new(io::ErrorKind::Interrupted, "the app stops"));
                     }
+                    if self.is_paused() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "the watcher pauses",
+                        ));
+                    }
                     let now = progress();
                     if now != last {
                         last = now;
@@ -846,6 +874,9 @@ impl Worker {
                     self.set_folder(folder, Some(skip));
                     self.scan(Instant::now());
                 }
+                Ok(Command::Paused(reply)) => {
+                    let _ = reply.send(());
+                }
                 Ok(Command::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                 Err(RecvTimeoutError::Timeout) => self.timeout(Instant::now()),
             }
@@ -859,6 +890,7 @@ pub struct WatchedFolder {
     commands: Sender<Command>,
     status: Arc<Mutex<WatchedFolderStatus>>,
     stopped: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     /// The thread, and the channel on which it says that it stopped.
     thread: Mutex<Option<(Receiver<()>, JoinHandle<()>)>>,
 }
@@ -866,11 +898,13 @@ pub struct WatchedFolder {
 impl WatchedFolder {
     /// Start watching `folder`, or nothing when it is `None`. The first
     /// scan runs at once: a file that arrived while Longhand was closed is
-    /// imported now (R5).
+    /// imported now (R5). With `paused`, the watcher starts paused, and the
+    /// first scan runs at [`WatchedFolder::resume`].
     pub fn start(
         folder: Option<PathBuf>,
         mut env: Environment,
         timing: Timing,
+        paused: bool,
     ) -> io::Result<Self> {
         let (commands, received) = mpsc::channel();
         let status = Arc::new(Mutex::new(WatchedFolderStatus::Off));
@@ -881,7 +915,14 @@ impl WatchedFolder {
             tell(next);
         });
         let stopped = Arc::new(AtomicBool::new(false));
-        let mut worker = Worker::new(env, timing, commands.clone(), Arc::clone(&stopped));
+        let paused = Arc::new(AtomicBool::new(paused));
+        let mut worker = Worker::new(
+            env,
+            timing,
+            commands.clone(),
+            Arc::clone(&stopped),
+            Arc::clone(&paused),
+        );
         worker.set_folder(folder, None);
         let (done, finished) = mpsc::channel();
         let thread = std::thread::Builder::new()
@@ -894,8 +935,32 @@ impl WatchedFolder {
             commands,
             status,
             stopped,
+            paused,
             thread: Mutex::new(Some((finished, thread))),
         })
+    }
+
+    /// Pause the watcher while the storage folder changes (U7): a read in
+    /// progress stops, and no new scan, read or import starts. Returns when
+    /// the thread does no more work, but not later than [`PAUSE_WAIT`].
+    /// Returns false when the thread did not reply in that time.
+    pub fn pause(&self) -> bool {
+        self.paused.store(true, Ordering::SeqCst);
+        let (reply, replied) = mpsc::channel();
+        if self.commands.send(Command::Paused(reply)).is_err() {
+            return false;
+        }
+        let done = replied.recv_timeout(PAUSE_WAIT).is_ok();
+        if !done {
+            log::warn!("watched folder: the watcher did not pause in {PAUSE_WAIT:?}");
+        }
+        done
+    }
+
+    /// End the pause, and scan at once.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+        let _ = self.commands.send(Command::Events);
     }
 
     /// The watched folder changed: watch `folder`, or nothing. `skip` holds
@@ -1119,8 +1184,13 @@ mod tests {
 
         fn worker_with(&self, f: &Folders, version: &str, hash: Option<HashFn>) -> Worker {
             let (commands, _) = mpsc::channel();
-            let mut worker =
-                Worker::new(self.env(f, version, hash), fast(), commands, Arc::default());
+            let mut worker = Worker::new(
+                self.env(f, version, hash),
+                fast(),
+                commands,
+                Arc::default(),
+                Arc::default(),
+            );
             worker.set_folder(Some(f.watched.clone()), None);
             self.seen.lock().unwrap().statuses.clear();
             worker
@@ -1152,9 +1222,13 @@ mod tests {
             stable_for: Duration::from_millis(100),
             ..fast()
         };
-        let watcher =
-            WatchedFolder::start(Some(f.watched.clone()), fake.env(&f, VERSION, None), timing)
-                .unwrap();
+        let watcher = WatchedFolder::start(
+            Some(f.watched.clone()),
+            fake.env(&f, VERSION, None),
+            timing,
+            false,
+        )
+        .unwrap();
         let memo = f.watched.join("Team sync.m4a");
         write(&memo, b"memo one");
         // Wait for the import, not for a time. A write each second makes a
@@ -1254,7 +1328,7 @@ mod tests {
             Ok("note".into())
         });
         let (commands, _) = mpsc::channel();
-        let mut worker = Worker::new(env, fast(), commands, Arc::default());
+        let mut worker = Worker::new(env, fast(), commands, Arc::default(), Arc::default());
         worker.set_folder(Some(f.watched.clone()), None);
         write(&f.watched.join("Memo.m4a"), b"one recording");
         write(&f.watched.join("Memo copy.m4a"), b"one recording");
@@ -1549,5 +1623,71 @@ mod tests {
     fn a_folder_that_cannot_be_listed_gives_an_error() {
         let f = folders();
         assert!(list(&f.watched.join("gone")).is_err());
+    }
+
+    // U7: while the storage folder changes, the watcher reads and imports
+    // nothing. After the pause, the file imports.
+    #[test]
+    fn a_paused_watcher_reads_and_imports_nothing_until_it_resumes() {
+        let f = folders();
+        let fake = Fake::new();
+        let mut worker = fake.worker(&f);
+        let memo = write(&f.watched.join("Memo.m4a"), b"memo");
+        worker.paused.store(true, Ordering::SeqCst);
+        let at = settle(&mut worker, Instant::now());
+        assert!(fake.hashes().is_empty());
+        assert!(fake.imports().is_empty());
+        worker.paused.store(false, Ordering::SeqCst);
+        settle(&mut worker, at);
+        assert_eq!(fake.imports(), vec![memo]);
+    }
+
+    // U7: the pause stops a read in progress, and returns only when the
+    // watcher thread does no more work. A resume imports the file.
+    #[test]
+    fn a_pause_stops_a_read_in_progress_and_a_resume_imports_the_file() {
+        let f = folders();
+        let mut fake = Fake::new();
+        let (sent, imported) = mpsc::channel();
+        fake.imported = Some(sent);
+        let memo = write(&f.watched.join("Memo.m4a"), b"memo");
+        let (started, reading) = mpsc::channel::<()>();
+        let (release, gate) = mpsc::channel::<()>();
+        let (started, gate) = (Mutex::new(started), Mutex::new(gate));
+        let first = AtomicBool::new(true);
+        let hash: HashFn = Arc::new(move |path: &Path, read: &AtomicU64| {
+            if first.swap(false, Ordering::SeqCst) {
+                let _ = started.lock().unwrap().send(());
+                // No byte arrives until the test releases the read.
+                let _ = gate.lock().unwrap().recv();
+                return Err(io::Error::other("released"));
+            }
+            audio_import::hash_file_counted(path, read)
+        });
+        let timing = Timing {
+            stable_for: Duration::ZERO,
+            stall_after: Duration::from_secs(3600),
+            ..fast()
+        };
+        let watcher = WatchedFolder::start(
+            Some(f.watched.clone()),
+            fake.env(&f, VERSION, Some(hash)),
+            timing,
+            false,
+        )
+        .unwrap();
+        reading
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the read starts");
+        // The read is still blocked: only the pause can stop it.
+        assert!(watcher.pause(), "the thread replies when it stops the read");
+        assert!(fake.imports().is_empty());
+        let _ = release.send(());
+        watcher.resume();
+        let path = imported
+            .recv_timeout(Duration::from_secs(120))
+            .expect("the file imports after the resume");
+        assert_eq!(path, memo);
+        watcher.stop();
     }
 }
