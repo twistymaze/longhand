@@ -145,10 +145,11 @@ describe("selectNative", () => {
 });
 
 describe("checkOnnxRuntimeVersion", () => {
-  const dist = "cu12\tx86_64-pc-windows-msvc\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/x.tgz\tABC\n" +
-    "none\taarch64-apple-darwin\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/y.tgz\tDEF\n";
+  const dist = "target\tfeature_set\turl\tsha256_hash\n" +
+    "aarch64-apple-darwin\tcoreml\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/aarch64-apple-darwin+coreml.tar.lzma2\tABC\n" +
+    "x86_64-pc-windows-msvc\tdirectml\thttps://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/x86_64-pc-windows-msvc+directml.tar.lzma2\tDEF\n";
 
-  test("passes when dist.txt names the manifest's version", () => {
+  test("passes when dist.tsv names the manifest's version", () => {
     assert.doesNotThrow(() => checkOnnxRuntimeVersion(dist, "1.22.0"));
   });
 
@@ -156,7 +157,7 @@ describe("checkOnnxRuntimeVersion", () => {
     assert.throws(() => checkOnnxRuntimeVersion(dist, "1.21.0"), /1\.21\.0.*1\.22\.0|1\.22\.0.*1\.21\.0/);
   });
 
-  test("fails when dist.txt names no version", () => {
+  test("fails when dist.tsv names no version", () => {
     assert.throws(() => checkOnnxRuntimeVersion("nothing here\n", "1.22.0"));
   });
 });

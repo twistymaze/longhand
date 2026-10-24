@@ -37,7 +37,7 @@ option-ext = { accepted = ["MPL-2.0"] }
 # files that ship with the native code, with a checksum, so a crate update that
 # changes a licence file fails the check until the entry is reviewed.
 
-# transcribe.cpp, with ggml and miniz inside it.
+# transcribe.cpp, with ggml, miniz and code translated from Silero VAD inside it.
 [transcribe-cpp-sys.clarify]
 license = "MIT"
 
@@ -55,6 +55,11 @@ checksum = "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
 path = "src/third_party/miniz/LICENSE"
 license = "MIT"
 checksum = "6f20fa7672b00e2e975c291df737cf227addf3ad32e36fef3fe0f416e4664d3d"
+
+[[transcribe-cpp-sys.clarify.files]]
+path = "src/third_party/silero_vad/LICENSE"
+license = "MIT"
+checksum = "2e63e9a38b6e8fc0c7bc37ce174caca1862870856c6daf5697cfb785e925520b"
 
 # kaldi-native-fbank (Apache-2.0) inside the MIT bindings. The crate ships no
 # MIT file of its own.
