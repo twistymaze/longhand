@@ -1,8 +1,9 @@
 //! The downloaded update archives (KTD10). Each verified archive is saved as
 //! `<version>.tar.gz` in the updates folder, with the manifest's signature
-//! in `<version>.tar.gz.sig`. `Update::install` does not check the signature,
-//! and another process can change a saved file, so each install from a
-//! saved archive checks it again first.
+//! in `<version>.tar.gz.sig`. Another process can change a saved file, so
+//! each install from a saved archive checks it again first and deletes an
+//! archive that fails. `Update::install` (updater 2.14 and later) also
+//! checks the bytes, but it does not delete the saved archive.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
