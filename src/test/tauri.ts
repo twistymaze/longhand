@@ -1,8 +1,10 @@
 // One helper that mocks the Tauri IPC for component tests. Components call
 // `commands.*` and `events.*` from `src/bindings.ts`; both go through the
 // Tauri IPC, which this helper replaces with local handlers.
-import { mockIPC } from "@tauri-apps/api/mocks";
+import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
+
+type Invoke = (cmd: string, args?: unknown, options?: unknown) => Promise<unknown>;
 
 /** The `shortcut_status` result for a Settings window whose recording
  * shortcut is registered and whose show, Pause and widget shortcuts are off. */
@@ -19,6 +21,8 @@ export type CommandHandler = (args: Record<string, unknown>) => unknown;
 export type TauriMock = {
   /** The commands that were called, in order, with their arguments. */
   calls: { cmd: string; args: Record<string, unknown> }[];
+  /** The events that a listener was registered for, in order. */
+  listened: string[];
   /** Send an event to the listeners that the components registered. */
   emit: (event: string, payload?: unknown) => Promise<void>;
 };
@@ -42,8 +46,20 @@ export function mockTauri(handlers: Record<string, CommandHandler> = {}): TauriM
     },
     { shouldMockEvents: true },
   );
+  // The page is the main window, so `getCurrentWebview()` works.
+  mockWindows("main");
+  // The mock handles `plugin:event|listen` itself, so the call is not in
+  // `calls`. A listener is registered when its listen call starts.
+  const listened: string[] = [];
+  const internals = (window as unknown as { __TAURI_INTERNALS__: { invoke: Invoke } }).__TAURI_INTERNALS__;
+  const invoke = internals.invoke;
+  internals.invoke = (cmd, args, options) => {
+    if (cmd === "plugin:event|listen") listened.push((args as { event: string }).event);
+    return invoke(cmd, args, options);
+  };
   return {
     calls,
+    listened,
     emit: (event, payload) => emit(event, payload),
   };
 }

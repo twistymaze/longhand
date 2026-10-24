@@ -9,7 +9,9 @@ import {
 import {
   commands,
   type DamagedFile,
+  type ImportResult,
   type NewNoteType,
+  type Result,
   type Readiness,
   type SessionEntry,
 } from "../bindings";
@@ -28,11 +30,13 @@ import { Button } from "../settings/ui";
 import { FilterBar } from "./FilterBar";
 import { generalIsChoice, isFiltered, keepExisting, matches, type NoteFilter, noFilter, typesInUse } from "./filter";
 import { groupByDay, rowTitle } from "./group";
+import { ImportSheet } from "./ImportSheet";
 import { CautionBanner, LibraryNotices } from "./LibraryNotices";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
+import { useFileDrop } from "./useFileDrop";
 import { useLibraryNotices } from "./useLibraryNotices";
 import { useTypesAndTags } from "./useTypesAndTags";
 
@@ -146,6 +150,10 @@ export function Home({
     }
   }, [shortcutNotice]);
   const [starting, setStarting] = useState(false);
+  // The files of the open import sheet, or null when no sheet is open.
+  const [importing, setImporting] = useState<string[] | null>(null);
+  // While the sheet is open, a drop does not replace its files.
+  const dragging = useFileDrop(active && importing === null, setImporting);
   const list = useRef<HTMLDivElement>(null);
   const newNote = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef(false);
@@ -209,6 +217,7 @@ export function Home({
         !active ||
         renamingId ||
         deletion.dialog ||
+        importing ||
         list.current?.querySelector('[role="menu"]')
       )
         return;
@@ -233,7 +242,7 @@ export function Home({
     };
     window.addEventListener("keydown", navigateFromPage);
     return () => window.removeEventListener("keydown", navigateFromPage);
-  }, [active, order, selected?.id, renamingId, deletion.dialog]);
+  }, [active, order, selected?.id, renamingId, deletion.dialog, importing]);
 
   // Home shows no note, so no note is left here: the view change to Home
   // already left the note that the page showed (R18).
@@ -261,6 +270,33 @@ export function Home({
     } finally {
       setStarting(false);
     }
+  };
+
+  // "Import Audio…": the system dialog shows the accepted formats only.
+  const chooseFiles = async () => {
+    try {
+      const result = await commands.pickAudioFiles();
+      if (result.status === "error") {
+        setNotice({ tone: "negative", text: sentence(result.error) });
+      } else if (result.data.length > 0) {
+        setImporting(result.data);
+      }
+    } catch {
+      setNotice({ tone: "negative", text: "Could not open the file dialog." });
+    }
+  };
+
+  // The import ended. A file that did not import shows its reason (R20).
+  // The new notes come with the library change events.
+  const imported = (result: Result<ImportResult, string>) => {
+    setImporting(null);
+    if (result.status === "error") {
+      setNotice({ tone: "negative", text: sentence(result.error) });
+      return;
+    }
+    const reasons = result.data.refused.map((r) => sentence(r.reason));
+    setNotice(reasons.length > 0 ? { tone: "negative", text: reasons.join(" ") } : null);
+    onChanged();
   };
 
   const missing = readiness ? missingPreconditions(readiness) : "";
@@ -296,6 +332,7 @@ export function Home({
             types={lists.types?.types}
             onStart={(record, noteType) => void start(record, noteType)}
             onTypesChanged={lists.setTypes}
+            onImport={() => void chooseFiles()}
           />
         )}
       </header>
@@ -494,6 +531,31 @@ export function Home({
         )}
       </div>
       {deletion.dialog}
+      {importing && (
+        <ImportSheet
+          paths={importing}
+          types={lists.types}
+          tags={lists.tags?.map((t) => t.text) ?? []}
+          onDone={imported}
+          onCancel={() => setImporting(null)}
+        />
+      )}
+      {dragging && <DropTarget />}
+    </div>
+  );
+}
+
+/// The drop target: it covers the window only while files are dragged
+/// over it (KTD14). It takes no pointer events, so the native drop gets
+/// them.
+function DropTarget() {
+  return (
+    <div className="fade-in pointer-events-none fixed inset-0 z-30 p-3">
+      <div className="flex h-full items-center justify-center rounded-xl border-2 border-dashed border-accent bg-accent/10">
+        <p className="rounded-full bg-group px-4 py-2 text-[0.95rem] font-medium text-label shadow-[0_0_0_0.5px_var(--separator),0_4px_16px_rgb(0_0_0/0.14)]">
+          Drop audio files to import them
+        </p>
+      </div>
     </div>
   );
 }

@@ -802,6 +802,35 @@ async startRecording(record: boolean, config: RecognitionConfig | null, noteType
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Choose audio files with the system dialog (KTD14). The dialog shows
+ * only the accepted formats (R19). An empty list when the user closes
+ * the dialog.
+ */
+async pickAudioFiles() : Promise<Result<string[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("pick_audio_files") };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Import each file of `paths` into a new note (R1, R3). `note_type` and
+ * `tags` apply to each note (R2). `title` is a title that the user set in
+ * the import sheet for one file (R2a); with no title, each note gets its
+ * file name as a proposed title (R15). Refused while the storage folder
+ * is not available, as New Note is. A path that is not a file with an
+ * accepted extension gets a refusal, and the other files import (R20).
+ */
+async importFiles(paths: string[], noteType: NewNoteType | null, tags: string[], title: string | null) : Promise<Result<ImportResult, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("import_files", { paths, noteType, tags, title }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async stopRecording() : Promise<Result<StopOutcome, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("stop_recording") };
@@ -1658,6 +1687,26 @@ export type FolderRenameResult =
  * The folder could not be renamed and keeps its old name.
  */
 { kind: "kept"; message: string }
+/**
+ * A file that did not import.
+ */
+export type ImportRefusal = { path: string; 
+/**
+ * The reason, as Home shows it. It names the file.
+ */
+reason: string }
+/**
+ * What a manual import did.
+ */
+export type ImportResult = { 
+/**
+ * The ids of the new notes, in the order of the paths.
+ */
+note_ids: string[]; 
+/**
+ * The files that did not import, each with its reason (R20).
+ */
+refused: ImportRefusal[] }
 export type Interruption = { headline: string; 
 /**
  * A disk interruption resumes only once space is freed (R7a).

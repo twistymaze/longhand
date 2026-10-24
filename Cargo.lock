@@ -3138,6 +3138,7 @@ dependencies = [
  "asr",
  "audio",
  "audio-cpal",
+ "audio-import",
  "audio-system",
  "base64 0.22.1",
  "chrono",

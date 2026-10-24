@@ -997,13 +997,13 @@ impl ProcessingManager {
         &self.audio_removal
     }
 
-    /// The early writes of the home folders of new notes (KTD4).
-    /// The imports of audio files: U5 and U6 call
-    /// [`ImportManager::import`], and U8 reads its notices.
+    /// The imports of audio files. The import commands and the watched
+    /// folder call [`ImportManager::import`].
     pub fn imports(&self) -> &Arc<ImportManager> {
         &self.imports
     }
 
+    /// The early writes of the home folders of new notes (KTD4).
     pub fn early_homes(&self) -> &Arc<EarlyHomes> {
         &self.early_homes
     }

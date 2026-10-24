@@ -1803,3 +1803,81 @@ describe("Home: filter by type and tags", () => {
     });
   });
 });
+
+describe("Home: audio import (R1, R20 of the audio import plan)", () => {
+  const ready: Readiness = {
+    microphone_authorized: true,
+    system_audio: "allowed",
+    destination: { kind: "ready", path: "/x", free_bytes: null },
+    armed: true,
+    shortcut: { chord: "Alt+Shift+L", registered: true, error: null },
+    missing_models: [],
+    endpoint_configured: true,
+    can_start_note: true,
+    note_start_refusal: null,
+  };
+
+  function renderReady(onChanged = () => {}) {
+    return render(
+      <Home entries={[]} stages={{}} recording={null} readiness={ready} chord={null} onOpen={() => {}} onChanged={onChanged} now={now} />,
+    );
+  }
+
+  // `onDragDropEvent` registers the leave listener last.
+  const dropListening = (tauri: { listened: string[] }) =>
+    waitFor(() => expect(tauri.listened).toContain("tauri://drag-leave"));
+  const position = { x: 10, y: 10 };
+  const target = "Drop audio files to import them";
+
+  test("the drop target shows only while files are dragged over the window", async () => {
+    const tauri = mockTauri();
+    renderReady();
+    expect(screen.queryByText(target)).toBeNull();
+    await dropListening(tauri);
+    await act(() => tauri.emit("tauri://drag-enter", { paths: ["/a/Team sync.m4a"], position }));
+    expect(screen.getByText(target)).toBeTruthy();
+    await act(() => tauri.emit("tauri://drag-leave"));
+    expect(screen.queryByText(target)).toBeNull();
+  });
+
+  test("a drop opens the import sheet, and a refused file shows its reason", async () => {
+    const reason = "Longhand can’t import “notes.txt”. Only m4a, mp3 and wav files can be imported.";
+    const tauri = mockTauri({
+      import_files: () => ({ note_ids: ["n1"], refused: [{ path: "/a/notes.txt", reason }] }),
+    });
+    const onChanged = vi.fn(() => {});
+    renderReady(onChanged);
+    const paths = ["/a/Team sync.m4a", "/a/notes.txt"];
+    await dropListening(tauri);
+    await act(() => tauri.emit("tauri://drag-enter", { paths, position }));
+    await act(() => tauri.emit("tauri://drag-drop", { paths, position }));
+    expect(screen.queryByText(target)).toBeNull();
+    const sheet = screen.getByRole("dialog", { name: "Import 2 Audio Files" });
+    await userEvent.setup().click(within(sheet).getByRole("button", { name: "Import" }));
+    expect((await screen.findByRole("status")).textContent).toBe(reason);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onChanged).toHaveBeenCalled();
+    expect(tauri.calls.find((c) => c.cmd === "import_files")?.args.paths).toEqual(paths);
+  });
+
+  test("Import Audio… opens the import sheet with the chosen files", async () => {
+    const tauri = mockTauri({ pick_audio_files: () => ["/a/Team sync.m4a"] });
+    renderReady();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "New Note Options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Import Audio…" }));
+    expect(await screen.findByRole("dialog", { name: "Import Audio" })).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Team sync");
+    expect(tauri.calls.some((c) => c.cmd === "pick_audio_files")).toBe(true);
+  });
+
+  test("a closed file dialog opens no sheet", async () => {
+    const tauri = mockTauri({ pick_audio_files: () => [] });
+    renderReady();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "New Note Options" }));
+    await user.click(screen.getByRole("menuitem", { name: "Import Audio…" }));
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "pick_audio_files")).toBe(true));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+});

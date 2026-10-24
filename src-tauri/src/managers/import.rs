@@ -70,10 +70,6 @@ impl ImportManager {
     /// note shows on Home at once in the state "Preparing" (R21), and the
     /// worker converts the file and queues the note. Returns the note id.
     /// Call it off the main thread: it reads the file's recording time.
-    #[expect(
-        dead_code,
-        reason = "the manual import (U5) and the watched folder (U6) call it"
-    )]
     pub fn import(&self, request: Request) -> Result<String, String> {
         let imports = self.imports.as_ref().ok_or("imports are off")?;
         let settings = settings::get_settings(&self.app);
