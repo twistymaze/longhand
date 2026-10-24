@@ -242,8 +242,9 @@ fn record_refusal(check: &RecordCheck) -> Option<&'static str> {
 }
 
 /// The recording button of the note of `record`, or `None` while the note
-/// records, is interrupted (the recording bar owns those) or is
-/// discarded. `saving`: the save of the note has begun.
+/// records, is interrupted (the recording bar owns those), is discarded, or
+/// is imported (only rename and delete are available). `saving`: the save
+/// of the note has begun.
 fn record_button(
     record: &SessionRecord,
     has_segments: bool,
@@ -253,7 +254,10 @@ fn record_button(
 ) -> Option<RecordButton> {
     if matches!(
         record.state,
-        SessionState::Capturing | SessionState::Interrupted { .. } | SessionState::Discarded
+        SessionState::Capturing
+            | SessionState::Interrupted { .. }
+            | SessionState::Discarded
+            | SessionState::Importing
     ) {
         return None;
     }
@@ -1554,7 +1558,7 @@ fn delete_error(error: session_core::DeleteError, removal: Removal) -> DeleteSes
 /// Move a directory to the Trash (KTD9). On macOS, NSFileManager does it:
 /// the default Finder method runs AppleScript and asks for Automation
 /// permission.
-fn move_to_trash(path: &Path) -> Result<(), String> {
+pub(crate) fn move_to_trash(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let context = {
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
@@ -1626,6 +1630,7 @@ async fn delete(
     let working = capture.working_root().join(&note_id);
     let claims = processing.claims();
     let early_homes = Arc::clone(processing.early_homes());
+    let imports = Arc::clone(processing.imports());
     let in_use_by_scan =
         remote_of(&store, processing.library_status(), &note_id) == Some(RemoteView::InUse);
     let own_runs = processing.own_runs().to_vec();
@@ -1643,6 +1648,10 @@ async fn delete(
         // The early write job writes nothing more into the folder of the
         // note after this (KTD4).
         early_homes.cancel(&note_id);
+        // An importing note: the import worker stops its conversion and
+        // records the file, so the file does not come back (KTD6 of the
+        // audio import plan).
+        imports.delete(&note_id);
         session_core::jobs::delete_session(&store, &note_id, &working, &claims, remove)
             .inspect(|()| log::info!("deleted session {note_id} ({removal:?})"))
     })
@@ -2846,6 +2855,21 @@ mod record_tests {
         assert_eq!(saving.reason.as_deref(), Some(CANNOT_RESUME));
         let waiting = record_button(&queued, true, false, AudioState::Present, &status).unwrap();
         assert!(waiting.available);
+    }
+
+    /// An importing note offers only rename and delete (U4 of the audio
+    /// import plan): it has no recording button.
+    #[test]
+    fn an_importing_note_has_no_button() {
+        let status: Arc<LibraryStatus> = Arc::default();
+        let importing = SessionRecord {
+            state: SessionState::Importing,
+            ..saved(false)
+        };
+        assert_eq!(
+            record_button(&importing, false, false, AudioState::Present, &status),
+            None
+        );
     }
 
     // Covers R12, R21, R23: the work of another computer comes first, then

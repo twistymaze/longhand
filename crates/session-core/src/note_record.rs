@@ -71,6 +71,23 @@ pub struct NoteRecord {
     /// prompt. `None` until a summary is saved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<SummaryMeta>,
+    /// The audio file that the note was imported from (R11, KTD10 of the
+    /// audio import plan). `None` for a recorded note. An older build
+    /// drops the field at its next write, so only the import record of
+    /// the storage folder decides whether a file was imported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import: Option<ImportSource>,
+}
+
+/// The source of an imported note: the file that it was imported from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportSource {
+    /// The name of the file, with no folder.
+    pub source_name: String,
+    /// The SHA-256 of the file as 64 lowercase hex characters: its content
+    /// identity (KTD3). `None` until the copy of the file is complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// The result of a parse of `longhand.json`.
@@ -109,6 +126,7 @@ impl NoteRecord {
             result: None,
             segments: Vec::new(),
             summary: None,
+            import: None,
         }
     }
 

@@ -258,6 +258,8 @@ export function ProcessingStatus({
     <div className="grid gap-5">
       {/* A status line, not a notice: a wait is normal (CLAUDE.md). */}
       {active && waits && <p className="text-label-secondary">{waitText(waits)}</p>}
+      {/* The file of an imported note downloads and converts (R21). */}
+      {state === "importing" && <p className="text-label-secondary">Preparing</p>}
       <Exception detail={detail} onDone={onChanged} />
       <Group>
         {stageRows(detail, active ? waits : null).map((row) => (

@@ -2628,3 +2628,153 @@ fn two_notes_keep_different_app_sets() {
     assert!(store.note_apps("s1").unwrap().is_empty());
     assert_eq!(store.note_apps("s2").unwrap(), teams);
 }
+
+// ------------------------------------------------- imports (U4 of the audio import plan)
+
+use session_core::jobs::NewImport;
+use session_core::note_record::ImportSource;
+
+fn import_model() -> RecordingModel {
+    RecordingModel {
+        asr_model: "m".into(),
+        live_transcript: false,
+    }
+}
+
+/// Make the importing note `id` from `Team sync.m4a`, recorded at
+/// `t(recorded)`.
+fn create_import(store: &mut Store, id: &str, recorded: i64, title: Title) {
+    store
+        .create_import(&NewImport {
+            id,
+            opened_at: t(recorded),
+            title: &title,
+            note_type: Some("One on One"),
+            tags: &["phone".to_string()],
+            model: &import_model(),
+            snapshot: Some(&serde_json::json!({"model": "m"})),
+            speaker_count: None,
+            source: &ImportSource {
+                source_name: "Team sync.m4a".into(),
+                sha256: None,
+            },
+        })
+        .unwrap();
+}
+
+fn proposed(text: &str) -> Title {
+    Title {
+        text: text.into(),
+        source: TitleSource::Proposed,
+    }
+}
+
+#[test]
+fn an_import_row_is_importing_with_its_title_type_tags_and_recording_time() {
+    let mut store = Store::open_in_memory().unwrap();
+    create_import(&mut store, "i", -600, proposed("Team sync"));
+    let record = store.session("i").unwrap().unwrap();
+    assert_eq!(record.state, SessionState::Importing);
+    assert_eq!(record.title, Some(proposed("Team sync")));
+    assert_eq!(record.note_type.as_deref(), Some("One on One"));
+    assert_eq!(record.tags, ["phone"]);
+    // R16: the note starts at the recording time of the file.
+    assert_eq!(record.start(&[]), t(-600));
+    assert_eq!(record.asr_model.as_deref(), Some("m"));
+    assert_eq!(record.live_transcript, Some(false));
+    assert_eq!(
+        record.recognition_snapshot,
+        Some(serde_json::json!({"model": "m"}))
+    );
+    assert!(store.started_here("i").unwrap());
+    assert!(store.queue().unwrap().is_empty());
+    assert_eq!(
+        store.import_source("i").unwrap(),
+        Some(ImportSource {
+            source_name: "Team sync.m4a".into(),
+            sha256: None,
+        })
+    );
+    store.set_import_identity("i", &"a".repeat(64)).unwrap();
+    assert_eq!(
+        store.import_source("i").unwrap().unwrap().sha256,
+        Some("a".repeat(64))
+    );
+    // A recorded note has no import source.
+    store.create_session("r", t(0), None).unwrap();
+    assert_eq!(store.import_source("r").unwrap(), None);
+}
+
+#[test]
+fn a_finished_import_has_its_segment_and_is_queued() {
+    let mut store = Store::open_in_memory().unwrap();
+    create_import(&mut store, "i", 0, proposed("Team sync"));
+    let state = store.finish_import("i", &segment(0, 0), t(5)).unwrap();
+    assert_eq!(state, SessionState::Queued { stopped_at: t(5) });
+    assert_eq!(store.segments("i").unwrap(), [segment(0, 0)]);
+    assert_eq!(store.queue().unwrap(), ["i"]);
+    // A second finish is refused, and adds no segment.
+    assert!(store.finish_import("i", &segment(1, 70_000), t(6)).is_err());
+    assert_eq!(store.segments("i").unwrap().len(), 1);
+}
+
+#[test]
+fn a_recorded_note_queued_after_three_imports_is_claimed_before_them() {
+    // Covers R14a, KTD13.
+    let mut store = Store::open_in_memory().unwrap();
+    for (i, id) in ["i1", "i2", "i3"].iter().enumerate() {
+        create_import(&mut store, id, 0, proposed(id));
+        store
+            .finish_import(id, &segment(0, 0), t(i as i64 + 1))
+            .unwrap();
+    }
+    store.create_session("r", t(0), None).unwrap();
+    store.put_segment("r", &segment(0, 0)).unwrap();
+    stop(&mut store, "r", 10);
+    assert_eq!(store.queue().unwrap(), ["r", "i1", "i2", "i3"]);
+    assert_eq!(store.dequeue("run", t(11)).unwrap().as_deref(), Some("r"));
+    assert_eq!(store.dequeue("run", t(12)).unwrap().as_deref(), Some("i1"));
+}
+
+#[test]
+fn a_recording_start_leaves_an_importing_note_unchanged() {
+    let mut store = Store::open_in_memory().unwrap();
+    create_import(&mut store, "i", 0, proposed("Team sync"));
+    let stopped = store
+        .start_session_with_recognition(
+            "r",
+            t(1),
+            None,
+            &import_model(),
+            &CaptureChoice::default(),
+            None,
+            &[],
+        )
+        .unwrap();
+    assert!(stopped.is_empty());
+    assert_eq!(
+        store.session("i").unwrap().unwrap().state,
+        SessionState::Importing
+    );
+}
+
+#[test]
+fn an_importing_note_can_be_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let working = dir.path().join("i");
+    std::fs::create_dir_all(&working).unwrap();
+    let mut store = Store::open_in_memory().unwrap();
+    create_import(&mut store, "i", 0, proposed("Team sync"));
+    let store = Mutex::new(store);
+    let mut calls = Vec::new();
+    delete_session(
+        &store,
+        "i",
+        &working,
+        &Claims::default(),
+        recording(&mut calls),
+    )
+    .unwrap();
+    assert_eq!(calls, [working]);
+    assert!(store.lock().unwrap().session("i").unwrap().is_none());
+}

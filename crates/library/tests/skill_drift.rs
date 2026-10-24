@@ -162,6 +162,9 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
             prompt_name: Some("Topic summary".to_string()),
             prompt_id: Some("topic-summary".to_string()),
         }),
+        // The skill learns the `import` field in U9 of the audio import
+        // plan.
+        import: None,
     }
 }
 

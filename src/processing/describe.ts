@@ -82,6 +82,10 @@ export function entryStatus(entry: SessionEntry, live: string | null): string {
   const stage = live ?? entry.stage;
   if (entry.waits_for && (entry.state === "queued" || entry.state === "processing")) return waitText(entry.waits_for);
   switch (entry.state) {
+    // An imported file downloads and converts: a quiet state, not a
+    // message (R21 of the audio import plan).
+    case "importing":
+      return "Preparing";
     case "queued":
       return "Waiting to process";
     case "processing":

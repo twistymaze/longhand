@@ -22,6 +22,7 @@ use tauri_specta::Event as _;
 
 use crate::managers::audio_removal::AudioRemovalManager;
 use crate::managers::capture::CaptureManager;
+use crate::managers::import::ImportManager;
 use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
 use crate::managers::models::{ModelState, ModelsManager};
@@ -769,6 +770,18 @@ fn ends_work(event: &RunnerEvent) -> bool {
     )
 }
 
+/// True while a recording runs, or while the live worker saves its last
+/// part after Stop and holds the engine (KTD9): the audio stages and the
+/// conversion of an import wait. It locks the capture state, so a caller
+/// must not hold the store lock.
+fn suspended(
+    capture: &Arc<CaptureManager>,
+    live: &Arc<LiveManager>,
+) -> impl Fn() -> bool + Send + Sync + 'static {
+    let (capture, live) = (Arc::clone(capture), Arc::clone(live));
+    move || capture.is_capturing() || live.busy()
+}
+
 fn notify_saved(
     app: &AppHandle,
     store: &pipeline::SharedStore,
@@ -835,6 +848,8 @@ pub struct ProcessingManager {
     audio_removal: Arc<AudioRemovalManager>,
     /// The early writes of the home folders of new notes (KTD4).
     early_homes: Arc<EarlyHomes>,
+    /// The imports of audio files (U4 of the audio import plan).
+    imports: Arc<ImportManager>,
     /// Held by each pass of the bulk edits: the type rename, merge and
     /// delete edits (KTD7) and the tag rename and delete edits (KTD11), so
     /// two passes of one edit do not run at the same time.
@@ -862,10 +877,6 @@ impl ProcessingManager {
         secrets: Arc<SecretStore>,
         liveness: session_core::jobs::Liveness,
     ) -> Self {
-        let suspended = Arc::clone(capture);
-        // Processing stays suspended after Stop until the live worker has
-        // saved its last part and released the engine (KTD9).
-        let draining = Arc::clone(live);
         let events = app.clone();
         let saved = capture.shared_store();
         let runner = Runner::new(Environment {
@@ -876,7 +887,7 @@ impl ProcessingManager {
                 models: Arc::clone(&models),
                 secrets,
             }),
-            suspended: Box::new(move || suspended.is_capturing() || draining.busy()),
+            suspended: Box::new(suspended(capture, live)),
             events: Box::new(move |event| {
                 if let RunnerEvent::Saved { note_id, path, .. } = &event {
                     notify_saved(&events, &saved, note_id, path);
@@ -946,6 +957,15 @@ impl ProcessingManager {
             }),
         )
         .with_earlier_runs(own_runs.get(1..).unwrap_or_default().to_vec());
+        // The conversion of an import waits as the audio stages wait
+        // (KTD9 of the audio import plan).
+        let imports = Arc::new(ImportManager::new(
+            app,
+            capture,
+            Box::new(suspended(capture, live)),
+            runner.claims().clone(),
+            Arc::clone(&early_homes),
+        ));
         let library_status: Arc<library::status::LibraryStatus> = Arc::default();
         let audio_removal = AudioRemovalManager::new(
             app,
@@ -958,6 +978,7 @@ impl ProcessingManager {
             own_runs,
             audio_removal,
             early_homes,
+            imports,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -977,6 +998,12 @@ impl ProcessingManager {
     }
 
     /// The early writes of the home folders of new notes (KTD4).
+    /// The imports of audio files: U5 and U6 call
+    /// [`ImportManager::import`], and U8 reads its notices.
+    pub fn imports(&self) -> &Arc<ImportManager> {
+        &self.imports
+    }
+
     pub fn early_homes(&self) -> &Arc<EarlyHomes> {
         &self.early_homes
     }
@@ -1191,6 +1218,10 @@ impl ProcessingManager {
             // come before the rehome of a note that has had no first save.
             self.rehome_outside();
             self.early_homes.resume();
+            // The imports that a quit or a crash stopped continue (KTD6 of
+            // the audio import plan). Only with the instance lock held, so
+            // no other run uses the same journal.
+            self.imports.start();
             // A note that the crash recovery made a note with no audio
             // again gets the flag "no recording" in its folder (R19).
             if let Some(capture) = self.app.try_state::<Arc<CaptureManager>>() {
@@ -1626,6 +1657,7 @@ impl ProcessingManager {
             self.mover.signal.notify_all();
         }
         self.audio_removal.stop();
+        self.imports.stop();
         self.early_homes.stop();
         self.live.shutdown();
         self.runner.shutdown();

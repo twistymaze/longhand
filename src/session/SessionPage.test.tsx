@@ -998,6 +998,17 @@ describe("SessionPage", () => {
     expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
   });
 
+  test("an importing note shows Preparing and offers only Rename and Delete", async () => {
+    const e = entry("i", { state: "importing", duration_ms: 0 });
+    mockPage(e, { done: [] });
+    renderPage({ id: "i", sessions: sessionsOf([e]) });
+    await act(async () => {});
+    expect(screen.getAllByText("Preparing").length).toBeGreaterThan(0);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Actions" }));
+    const items = screen.getAllByRole("menuitem").map((i) => i.textContent);
+    expect(items).toEqual(["Rename", "Delete…"]);
+  });
+
   test("a stopped session shows Resume, which records again, and its menu has Delete", async () => {
     const e = entry("s");
     const tauri = mockPage(e, { resumable: true, record: { kind: "resume", available: true, reason: null } }, {

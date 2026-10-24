@@ -29,6 +29,9 @@ pub enum DecodeError {
     /// The file is not audio in an accepted format, or its audio is damaged.
     #[error("cannot decode the file: {0}")]
     Format(String),
+    /// The caller stopped the decode ([`decode_mono_until`]).
+    #[error("the decode was stopped")]
+    Stopped,
 }
 
 /// Decode `path` and give its audio to `on_block` as mono samples at the
@@ -41,6 +44,20 @@ pub enum DecodeError {
 pub fn decode_mono(
     path: &Path,
     mut on_block: impl FnMut(&[f32]),
+) -> Result<DecodeInfo, DecodeError> {
+    decode_mono_until(path, |_, block| {
+        on_block(block);
+        true
+    })
+}
+
+/// [`decode_mono`] that gives the sample rate with each block, and stops
+/// with [`DecodeError::Stopped`] when `on_block` returns false. The import
+/// worker needs the rate before it writes the first block, and it stops a
+/// conversion when the user deletes the note.
+pub fn decode_mono_until(
+    path: &Path,
+    mut on_block: impl FnMut(u32, &[f32]) -> bool,
 ) -> Result<DecodeInfo, DecodeError> {
     let file = File::open(path)?;
     let source = MediaSourceStream::new(Box::new(file), Default::default());
@@ -105,7 +122,9 @@ pub fn decode_mono(
                 .map(|frame| frame.iter().sum::<f32>() / channels as f32),
         );
         frames += mono.len() as u64;
-        on_block(&mono);
+        if !on_block(sample_rate, &mono) {
+            return Err(DecodeError::Stopped);
+        }
     }
     if skipped > 0 {
         log::warn!("audio import: skipped {skipped} packets that did not decode");

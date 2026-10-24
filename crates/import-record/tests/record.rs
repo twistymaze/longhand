@@ -359,3 +359,22 @@ fn the_merge_ignores_names_that_are_not_an_identity_or_a_computer_id() {
     assert_eq!(merged.copied, 0);
     assert_eq!(snapshot(new.path()), Vec::new());
 }
+
+#[test]
+fn the_entry_of_one_computer_reads_only_its_own_file() {
+    let root = tempfile::tempdir().unwrap();
+    assert_eq!(
+        import_record::entry_of(root.path(), &identity(), &computer(A)),
+        None
+    );
+    write(root.path(), &identity(), &imported(B)).unwrap();
+    assert_eq!(
+        import_record::entry_of(root.path(), &identity(), &computer(A)),
+        None
+    );
+    write(root.path(), &identity(), &imported(A)).unwrap();
+    assert_eq!(
+        import_record::entry_of(root.path(), &identity(), &computer(A)),
+        Some(imported(A))
+    );
+}

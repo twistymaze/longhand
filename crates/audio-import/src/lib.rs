@@ -11,7 +11,7 @@ mod decode;
 mod metadata;
 
 pub use copy::{Copied, copy_with_hash, hash_file};
-pub use decode::{DecodeError, DecodeInfo, decode_mono};
+pub use decode::{DecodeError, DecodeInfo, decode_mono, decode_mono_until};
 pub use metadata::recording_time;
 
 /// The decoder name that a `failed` entry of the import record holds (KTD11).

@@ -205,6 +205,16 @@ pub fn lookup(root: &Path, identity: &Identity) -> Lookup {
     }
 }
 
+/// The entry of the computer `computer` for `identity`, when its file
+/// parses. The import worker reads its own entry to find a write whose
+/// record a crash lost (KTD6). It never writes.
+pub fn entry_of(root: &Path, identity: &Identity, computer: &ComputerId) -> Option<Entry> {
+    match read_entry(root, &entry_path(root, identity, computer)) {
+        EntryRead::Parsed(entry, _) => Some(*entry),
+        EntryRead::Missing | EntryRead::DoesNotParse(_) | EntryRead::Unreadable(_) => None,
+    }
+}
+
 /// Whether `entry` decides the lookup over `best`: a higher state, or for
 /// two `Failed` entries, a newer Longhand version.
 fn ranks_above(entry: &Entry, best: &Entry) -> bool {

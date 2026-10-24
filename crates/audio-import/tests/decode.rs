@@ -127,3 +127,15 @@ fn the_hash_with_no_copy_equals_the_hash_of_the_copy() {
 
     assert_eq!(hash_file(&source).unwrap(), copied.sha256);
 }
+
+#[test]
+fn a_decode_that_the_caller_stops_gives_stopped_after_the_first_block() {
+    let mut blocks = Vec::new();
+    let result = audio_import::decode_mono_until(&sample("tone-mono.m4a"), |rate, block| {
+        blocks.push((rate, block.len()));
+        false
+    });
+    assert!(matches!(result, Err(DecodeError::Stopped)), "{result:?}");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].0, 22050);
+}
