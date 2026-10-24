@@ -993,11 +993,14 @@ pub async fn delete_tag(
 #[tauri::command]
 #[specta::specta]
 pub async fn pick_storage_folder(app: AppHandle) -> Result<Option<String>, String> {
+    pick_folder(app, "Choose where notes are saved").await
+}
+
+/// Pick a folder with the system dialog that has the title `title`.
+/// `None` when the user closes the dialog.
+async fn pick_folder(app: AppHandle, title: &'static str) -> Result<Option<String>, String> {
     let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
-            .file()
-            .set_title("Choose where notes are saved")
-            .blocking_pick_folder()
+        app.dialog().file().set_title(title).blocking_pick_folder()
     })
     .await
     .map_err(|e| e.to_string())?;
@@ -1023,7 +1026,7 @@ pub enum OldNotes {
 /// (KTD11): no Move runs or is paused, and the new folder can be the
 /// storage folder. The error is the cause, as Settings shows it. Returns
 /// the new folder. A new folder that touches the watched folder is not
-/// refused: the change turns the watched folder off (R9, U7).
+/// refused: the change turns the watched folder off (R9).
 fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf, String> {
     if move_open {
         return Err(crate::managers::processing::MOVE_OPEN.into());
@@ -1035,7 +1038,7 @@ fn check_change(current: &str, folder: &str, move_open: bool) -> Result<PathBuf,
 
 /// Make `folder` the storage folder in `s`. When the watched folder and
 /// the new storage folder touch (R9), the watched folder turns off in the
-/// same write, and the result is the reason, as Settings shows it (U7).
+/// same write, and the result is the reason, as Settings shows it.
 fn change_settings(s: &mut Settings, folder: &str) -> Option<String> {
     s.storage_folder = folder.to_string();
     let off = s.watched_folder.as_deref().and_then(|watched| {
@@ -1047,7 +1050,7 @@ fn change_settings(s: &mut Settings, folder: &str) -> Option<String> {
     off
 }
 
-/// The question after Leave Them (R6, U7): the count and the size of the
+/// The question after Leave Them (R6): the count and the size of the
 /// audio files in `watched` that the import record of `storage` does not
 /// hold by name and size, and the files to hold from import until the
 /// answer. `None` when no file needs the question, or when the folder
@@ -1075,7 +1078,7 @@ fn files_to_ask(
     })
 }
 
-/// What a change of storage folder did (R4, U7).
+/// What a change of storage folder did (R4).
 #[derive(Serialize, Type, Debug, Clone)]
 pub struct StorageFolderChange {
     pub settings: Settings,
@@ -1129,7 +1132,7 @@ fn check_leave(
 /// their files; a busy note is forgotten when it is free (R7). A note that
 /// records during the change saves to the new folder.
 ///
-/// The watcher of the watched folder pauses during the change (U7). With
+/// The watcher of the watched folder pauses during the change. With
 /// Move, it stays paused until the Move has taken the import record into
 /// the new folder. A watched folder that touches the new storage folder
 /// turns off (R9). With Leave Them, the watcher holds the audio files that
@@ -1169,16 +1172,17 @@ fn change_folder(
     if let Some(processing) = &processing {
         processing.pause_watched_folder();
     }
-    let changed = apply_change(app, processing.as_deref(), &current, folder, &new, moving);
+    let changed = apply_change(app, processing.as_deref(), &current, &new, moving);
     // R6 after Leave Them: the new folder's import record can hold none of
     // the files in the watched folder.
-    let mut asked = None;
-    if matches!(changed, Ok(None))
+    let asked = if matches!(changed, Ok(None))
         && !moving
         && let Some(watched) = settings::get_settings(app).watched_folder
     {
-        asked = files_to_ask(Path::new(&watched), &new);
-    }
+        files_to_ask(Path::new(&watched), &new)
+    } else {
+        None
+    };
     let (preview, held) = asked.unzip();
     if let Some(processing) = &processing {
         processing.watched_folder_change_done(held);
@@ -1197,7 +1201,6 @@ fn apply_change(
     app: &AppHandle,
     processing: Option<&Arc<ProcessingManager>>,
     current: &str,
-    folder: &str,
     new: &Path,
     moving: bool,
 ) -> Result<Option<String>, String> {
@@ -1223,7 +1226,9 @@ fn apply_change(
     }
     let mut off = None;
     let set = settings::update_settings(app, |s| {
-        off = change_settings(s, folder);
+        // `new` comes from the folder text unchanged, so the text is the
+        // same.
+        off = change_settings(s, &new.to_string_lossy());
         Ok(())
     });
     if let Err(e) = set {
@@ -1270,19 +1275,7 @@ fn apply_change(
 #[tauri::command]
 #[specta::specta]
 pub async fn pick_watched_folder(app: AppHandle) -> Result<Option<String>, String> {
-    let picked = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
-            .file()
-            .set_title("Choose a folder for new recordings")
-            .blocking_pick_folder()
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    let Some(picked) = picked else {
-        return Ok(None);
-    };
-    let path = picked.into_path().map_err(|e| e.to_string())?;
-    Ok(Some(path.to_string_lossy().into_owned()))
+    pick_folder(app, "Choose a folder for new recordings").await
 }
 
 /// Whether `folder` can be the watched folder of this computer (R9). The
@@ -1393,10 +1386,9 @@ pub async fn watched_folder_status(
     blocking(move || {
         Ok(match app.try_state::<Arc<ProcessingManager>>() {
             Some(processing) => processing.watched_folder_status(),
-            None => match settings::get_settings(&app).watched_folder {
-                Some(path) => watched_folder::WatchedFolderStatus::Watching { path },
-                None => watched_folder::WatchedFolderStatus::Off,
-            },
+            None => watched_folder::WatchedFolderStatus::of_setting(
+                settings::get_settings(&app).watched_folder,
+            ),
         })
     })
     .await
@@ -1872,7 +1864,7 @@ mod tests {
         assert!(cause.contains("already the storage folder"), "{cause}");
     }
 
-    // R9 at a change of the storage folder (U7): a new storage folder that
+    // R9 at a change of the storage folder: a new storage folder that
     // contains the watched folder is accepted, and the same settings write
     // turns the watched folder off and gives the reason. A folder apart
     // keeps the watched folder.
@@ -1907,7 +1899,7 @@ mod tests {
         assert_eq!(s.watched_folder.as_deref(), Some(watched));
     }
 
-    // R6 after Leave Them (U7): the question counts the audio files of the
+    // R6 after Leave Them: the question counts the audio files of the
     // watched folder against the new storage folder's empty import record,
     // and the files to hold until the answer are the same files.
     #[test]

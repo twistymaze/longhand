@@ -20,7 +20,7 @@ export function LibraryNotices({ notices, onChanged }: { notices: Notices | null
   );
 }
 
-/// The notices of the audio import (U8 of the audio import plan). Each
+/// The notices of the audio import. Each
 /// shows only when the user must act or an import failed. An import that
 /// waits for a download or a recording shows no notice (R21).
 function ImportNotices({ imports, onChanged }: { imports: Notices["imports"]; onChanged: () => void }) {

@@ -10,13 +10,13 @@ import { commands, events, type ExistingFiles, type Settings, type WatchedFolder
 import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { Button, ErrorText, Group, Row, Status, folderName, formatBytes } from "./ui";
 
-type Answer = ExistingFiles | "cancel";
+export type Answer = ExistingFiles | "cancel";
 
 const audioFiles = (n: number) => `${n} audio ${n === 1 ? "file" : "files"}`;
 
 /// The question about the audio files that are in the folder (R6). Only
 /// New Files has the focus: an old archive can start hours of processing.
-/// A storage folder change with Leave Them asks it too (U7).
+/// A storage folder change with Leave Them asks it too.
 export function ExistingFilesDialog({
   folder,
   preview,
@@ -76,7 +76,7 @@ function useWatchedStatus() {
 }
 
 /// `turnedOff` is the reason when a storage folder change turned the
-/// watched folder off (R9, U7). It shows while the setting stays off: the
+/// watched folder off (R9). It shows while the setting stays off: the
 /// user must choose another folder.
 export function WatchedFolder({
   settings,

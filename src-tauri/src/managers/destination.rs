@@ -79,22 +79,23 @@ pub fn default_storage_folder(local_data: &Path) -> PathBuf {
 /// folder that Longhand cannot write are refused. An empty `current`
 /// means that no storage folder is set.
 pub fn check_new_folder(current: &Path, new: &Path) -> Result<(), String> {
-    let resolve = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if !current.as_os_str().is_empty() {
-        let (current, new) = (resolve(current), resolve(new));
-        if new == current {
-            return Err("This folder is already the storage folder.".into());
-        }
-        if new.starts_with(&current) {
-            return Err(
-                "This folder is inside the storage folder. Choose a folder outside it.".into(),
-            );
-        }
-        if current.starts_with(&new) {
-            return Err(
-                "This folder contains the storage folder. Choose a folder that does not contain it."
-                    .into(),
-            );
+        match placement(new, current) {
+            Placement::Same => {
+                return Err("This folder is already the storage folder.".into());
+            }
+            Placement::Inside => {
+                return Err(
+                    "This folder is inside the storage folder. Choose a folder outside it.".into(),
+                );
+            }
+            Placement::Contains => {
+                return Err(
+                    "This folder contains the storage folder. Choose a folder that does not contain it."
+                        .into(),
+                );
+            }
+            Placement::Apart => {}
         }
     }
     match new.metadata() {
@@ -210,7 +211,7 @@ pub fn check_watched_folder(folder: &Path, limits: &WatchLimits) -> Result<(), S
 
 /// The reason, as Settings shows it, when the new storage folder `storage`
 /// and the watched folder `watched` touch (R9): the storage folder change
-/// then turns the watched folder off (U7). `None` when they are apart.
+/// then turns the watched folder off. `None` when they are apart.
 pub fn watched_folder_turned_off(storage: &Path, watched: &Path) -> Option<String> {
     let why = match placement(storage, watched) {
         Placement::Same => "it is now the storage folder",
@@ -545,7 +546,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&recordings).unwrap().count(), 0);
     }
 
-    // R9 at a change of the storage folder (U7): a new storage folder that
+    // R9 at a change of the storage folder: a new storage folder that
     // touches the watched folder turns the watched folder off, and the
     // reason says why.
     #[test]

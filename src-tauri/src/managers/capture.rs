@@ -1954,9 +1954,8 @@ fn note_recognition(
     })
 }
 
-/// The recognition of a note that an import makes (U4 of the audio import
-/// plan): the configuration that a recording that starts now gets, with
-/// nothing live, because the note has no recording to follow. Processing
+/// The recognition of a note that an import makes: the configuration that
+/// a recording that starts now gets, with nothing live, because the note has no recording to follow. Processing
 /// waits for models that are not on disk.
 pub fn import_recognition(
     settings: &Settings,
@@ -4959,8 +4958,7 @@ mod tests {
         assert!(!spec.enabled_live_transcription);
     }
 
-    /// An imported note has no recording to follow, so it has nothing live
-    /// (U4 of the audio import plan).
+    /// An imported note has no recording to follow, so it has nothing live.
     #[test]
     fn an_import_gets_the_configuration_in_use_with_nothing_live() {
         use models::recognition::ProcessingMode;

@@ -1269,7 +1269,7 @@ fn same_contents_does_not_count_the_in_use_markers() {
     assert!(!move_notes::same_contents(&a, &b).unwrap());
 }
 
-// ------------------------------------------------- import record (U7, R11)
+// ------------------------------------------------------ import record (R11)
 
 const THIS_COMPUTER: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const OTHER_COMPUTER: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

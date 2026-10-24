@@ -11,8 +11,7 @@ nemo-runtime = { path = "../nemo-runtime" }
 power = { path = "../power" }
 asr = { path = "../asr" }
 audio = { path = "../audio" }
-# The copy, the hash and the decode of an imported file (U4 of the audio
-# import plan).
+# The copy, the hash and the decode of an imported file.
 audio-import = { path = "../audio-import" }
 # The shared import record of the storage folder (KTD2).
 import-record = { path = "../import-record" }

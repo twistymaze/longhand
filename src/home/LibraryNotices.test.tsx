@@ -24,7 +24,7 @@ const failedRegion = "Audio files that could not be imported";
 const diskRegion = "Imports that wait for disk space";
 const folderRegion = "Watched folder not available";
 
-describe("LibraryNotices: audio import (U8 of the audio import plan)", () => {
+describe("LibraryNotices: audio import", () => {
   // Covers AE8, R20: one notice names the failed file. Dismiss removes it,
   // and later reads do not show it again. A new attempt is a new notice.
   test("a failed import shows one notice until the user dismisses it", async () => {

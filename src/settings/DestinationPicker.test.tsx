@@ -117,7 +117,7 @@ describe("DestinationPicker", () => {
     view.unmount();
   });
 
-  // R6 after Leave Them (U7): the new folder's import record holds none of
+  // R6 after Leave Them: the new folder's import record holds none of
   // the 5 audio files in the watched folder, so the question of the
   // watched folder shows, and the answer goes to the watched folder.
   test("Leave Them with 5 audio files in the watched folder asks about 5 files", async () => {
@@ -148,7 +148,7 @@ describe("DestinationPicker", () => {
     view.unmount();
   });
 
-  // R9 at a change of the storage folder (U7): the user must choose
+  // R9 at a change of the storage folder: the user must choose
   // another folder to watch, so the reason shows in the watched folder
   // group.
   test("a change that turns the watched folder off says why in the watched folder group", async () => {

@@ -10,15 +10,12 @@ import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { commands, type ImportResult, type NewNoteType, type NoteTypeList, type Result } from "../bindings";
 import { GENERAL, TagLabel, tagKey, withGeneral } from "../lib/Labels";
 import { TagPicker } from "../lib/TagPicker";
-import { fieldClass } from "../settings/ui";
+// The last part of a path, on macOS and on Windows. A file path does not
+// end with a separator, so the last part is the file name.
+import { fieldClass, folderName as fileName } from "../settings/ui";
 
 /// The value of General in the type field. A type name is never empty.
 const GENERAL_VALUE = "";
-
-/// The last part of `path`, on macOS and on Windows.
-export function fileName(path: string): string {
-  return path.split(/[\\/]/).pop() ?? path;
-}
 
 /// The file name with no extension: the first title of the note (R15).
 function stem(path: string): string {

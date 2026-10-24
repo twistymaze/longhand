@@ -1,9 +1,9 @@
-//! The import manager (U4 of the audio import plan): the import worker of
-//! `pipeline::import` in the app. Its journal is a file in the app data
-//! folder, next to `settings.json` (KTD6).
+//! The import manager: the import worker of `pipeline::import` in the app.
+//! Its journal is a file in the app data folder, next to `settings.json`
+//! (KTD6).
 //!
-//! The manual import (U5) and the watched folder (U6) call
-//! [`ImportManager::import`] off the main thread. The notices (U8) read
+//! The manual import and the watched folder call
+//! [`ImportManager::import`] off the main thread. The notices on Home read
 //! [`ImportManager::notices`].
 
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ use crate::managers::settings;
 /// waits for a recording to end.
 const SUSPENDED_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// The import notices of Home changed (U8): an import waits for free space
+/// The import notices of Home changed: an import waits for free space
 /// or no longer waits, or the decoder refused a file. Home reads the
 /// library notices again.
 #[derive(serde::Serialize, Clone, Debug, specta::Type, tauri_specta::Event)]
@@ -72,7 +72,7 @@ impl ImportManager {
         }
     }
 
-    /// Import the audio file of `request` into a new note (U5, U6). The
+    /// Import the audio file of `request` into a new note. The
     /// note shows on Home at once in the state "Preparing" (R21), and the
     /// worker converts the file and queues the note. Returns the note id.
     /// Call it off the main thread: it reads the file's recording time.
@@ -104,7 +104,7 @@ impl ImportManager {
         }
     }
 
-    /// The facts that the notices need (U8): the imports that wait for
+    /// The facts that the notices on Home need: the imports that wait for
     /// free space, and the files that the decoder refused.
     pub fn notices(&self) -> Notices {
         self.imports
@@ -113,7 +113,7 @@ impl ImportManager {
             .unwrap_or_default()
     }
 
-    /// The user dismissed the failure of the import `note_id` (U8). The
+    /// The user dismissed the failure of the import `note_id`. The
     /// dismissal stays in memory, as the failures do.
     pub fn dismiss(&self, note_id: &str) {
         if let Some(imports) = &self.imports {

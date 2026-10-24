@@ -585,7 +585,7 @@ async pickStorageFolder() : Promise<Result<string | null, string>> {
  * their files; a busy note is forgotten when it is free (R7). A note that
  * records during the change saves to the new folder.
  * 
- * The watcher of the watched folder pauses during the change (U7). With
+ * The watcher of the watched folder pauses during the change. With
  * Move, it stays paused until the Move has taken the import record into
  * the new folder. A watched folder that touches the new storage folder
  * turns off (R9). With Leave Them, the watcher holds the audio files that
@@ -1136,7 +1136,7 @@ async libraryNotices() : Promise<Result<LibraryNotices, string>> {
 }
 },
 /**
- * The user dismissed the notice of the failed import `note_id` (U8). The
+ * The user dismissed the notice of the failed import `note_id`. The
  * notice does not come back; a new attempt of the file gives a new one.
  */
 async dismissImportFailure(noteId: string) : Promise<void> {
@@ -1806,7 +1806,7 @@ waiting_for_space: string[];
  */
 failed: FailedImport[] }
 /**
- * The import notices of Home changed (U8): an import waits for free space
+ * The import notices of Home changed: an import waits for free space
  * or no longer waits, or the decoder refused a file. Home reads the
  * library notices again.
  */
@@ -1871,7 +1871,7 @@ conversion: ConversionNotice | null;
  */
 problems: ProblemNote[]; 
 /**
- * The notices of the audio import (U8 of the audio import plan).
+ * The notices of the audio import.
  */
 imports: ImportNotices }
 export type LicenceInfo = { name: string; url: string; attribution: string }
@@ -3065,7 +3065,7 @@ export type StopOutcome =
  */
 { kind: "interrupted"; note_id: string }
 /**
- * What a change of storage folder did (R4, U7).
+ * What a change of storage folder did (R4).
  */
 export type StorageFolderChange = { settings: Settings; 
 /**
@@ -3339,7 +3339,7 @@ export type WatchedFolderPreview = { count: number;
 bytes: number }
 /**
  * The state of the watched folder, as Settings shows it and the notices
- * (U8) read it.
+ * on Home read it.
  */
 export type WatchedFolderStatus = 
 /**

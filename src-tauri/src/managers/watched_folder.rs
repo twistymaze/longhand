@@ -1,4 +1,4 @@
-//! The watched folder (U6 of the audio import plan): while Longhand runs,
+//! The watched folder: while Longhand runs,
 //! each new audio file in a folder that the user chose on this computer
 //! becomes a note with no user action (R5).
 //!
@@ -32,7 +32,7 @@
 //! (KTD12, R12b). Settling files and read failures stay in memory only: the
 //! next scan finds them again.
 //!
-//! While the storage folder changes, the watcher pauses (U7): a read in
+//! While the storage folder changes, the watcher pauses: a read in
 //! progress stops, and no scan, read or import starts until the resume.
 //!
 //! A folder that cannot be read for [`UNAVAILABLE_SCANS`] scans in a row
@@ -65,7 +65,7 @@ pub const SNAPSHOT_FILE: &str = "watched-folder-snapshot.json";
 const SNAPSHOT_VERSION: u32 = 1;
 
 /// The number of scans in a row that cannot read the folder before its
-/// status is unavailable (U8 shows the notice).
+/// status is unavailable (Home shows the notice).
 pub const UNAVAILABLE_SCANS: u32 = 3;
 
 /// How long [`WatchedFolder::stop`] waits for a scan in progress.
@@ -79,7 +79,7 @@ const PAUSE_WAIT: Duration = Duration::from_secs(10);
 const PROGRESS_CHECK: Duration = Duration::from_secs(1);
 
 /// The state of the watched folder, as Settings shows it and the notices
-/// (U8) read it.
+/// on Home read it.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WatchedFolderStatus {
@@ -90,6 +90,17 @@ pub enum WatchedFolderStatus {
     /// The folder could not be read for [`UNAVAILABLE_SCANS`] scans in a
     /// row. The watcher tries again at each scan.
     Unavailable { path: String },
+}
+
+impl WatchedFolderStatus {
+    /// The status from the watched folder setting `folder` alone, when no
+    /// watcher runs.
+    pub fn of_setting(folder: Option<String>) -> Self {
+        match folder {
+            Some(path) => Self::Watching { path },
+            None => Self::Off,
+        }
+    }
 }
 
 /// The status of the watched folder changed.
@@ -238,12 +249,7 @@ pub fn preview(listed: &[Listed], storage: Option<&Path>) -> WatchedFolderPrevie
         .unwrap_or_default();
     let mut counted = WatchedFolderPreview { count: 0, bytes: 0 };
     for file in listed {
-        let name = file
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if !known.contains(&(name, file.size)) {
+        if !known.contains(&(audio_import::file_name(&file.path), file.size)) {
             counted.count += 1;
             counted.bytes = counted.bytes.saturating_add(file.size);
         }
@@ -439,7 +445,7 @@ struct Worker {
     next_full: Instant,
     last_scan: Instant,
     stopped: Arc<AtomicBool>,
-    /// True while the storage folder changes (U7): no scan, no read and no
+    /// True while the storage folder changes: no scan, no read and no
     /// import.
     paused: Arc<AtomicBool>,
 }
@@ -569,6 +575,7 @@ impl Worker {
         self.tracked
             .retain(|path, _| present.contains(path.as_path()));
         let open = (self.env.open_sources)();
+        let held: HashSet<&Path> = self.held.iter().map(|h| h.path.as_path()).collect();
         let mut candidates = Vec::new();
         for file in &listed {
             let tracked = self
@@ -583,7 +590,7 @@ impl Worker {
             {
                 continue;
             }
-            if self.held.iter().any(|held| held.path == file.path) || open.contains(&file.path) {
+            if held.contains(file.path.as_path()) || open.contains(&file.path) {
                 continue;
             }
             candidates.push(file.clone());
@@ -678,15 +685,27 @@ impl Worker {
 
     /// The skip work of the snapshot (KTD12, R12b): read each held file
     /// and write a `skipped` entry when the record does not hold it. A
-    /// file that is done, or gone, leaves the snapshot.
+    /// file that is done, or gone, leaves the snapshot. The snapshot file
+    /// is written once, when the pass ends or stops. After a crash, the
+    /// next pass reads the files again and finds their entries.
     fn skip_work(&mut self) {
+        let before = self.held.len();
+        self.skip_pass();
+        if self.held.len() != before {
+            self.write_held();
+        }
+    }
+
+    /// The pass of [`Worker::skip_work`]. It removes each file that is
+    /// done, or gone, from `held`.
+    fn skip_pass(&mut self) {
         let mut i = 0;
         while i < self.held.len() {
             let path = self.held[i].path.clone();
             let meta = match std::fs::metadata(&path) {
                 Ok(meta) => meta,
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                    self.drop_held(i);
+                    self.held.remove(i);
                     continue;
                 }
                 Err(_) => {
@@ -710,10 +729,7 @@ impl Worker {
                 Lookup::New | Lookup::Failed(_) => {
                     let skipped = Entry::new(
                         State::Skipped,
-                        &path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_default(),
+                        &audio_import::file_name(&path),
                         meta.len(),
                         self.env.computer_id.clone(),
                         Local::now().fixed_offset(),
@@ -741,7 +757,7 @@ impl Worker {
             tracked.identity = Some(identity);
             tracked.known = true;
             self.tracked.insert(path, tracked);
-            self.drop_held(i);
+            self.held.remove(i);
         }
     }
 
@@ -752,10 +768,8 @@ impl Worker {
         (self.env.storage_folder)().filter(|root| root.is_dir())
     }
 
-    /// Remove the held file at `i` from the snapshot, and write the
-    /// snapshot file again.
-    fn drop_held(&mut self, i: usize) {
-        self.held.remove(i);
+    /// Write the snapshot file again with the held files.
+    fn write_held(&self) {
         let Some(folder) = &self.folder else {
             return;
         };
@@ -940,7 +954,7 @@ impl WatchedFolder {
         })
     }
 
-    /// Pause the watcher while the storage folder changes (U7): a read in
+    /// Pause the watcher while the storage folder changes: a read in
     /// progress stops, and no new scan, read or import starts. Returns when
     /// the thread does no more work, but not later than [`PAUSE_WAIT`].
     /// Returns false when the thread did not reply in that time.
@@ -1426,7 +1440,7 @@ mod tests {
         assert_eq!(fake.imports().len(), 2);
     }
 
-    // Covers R20 (U8): a failed entry that another computer wrote gives no
+    // Covers R20: a failed entry that another computer wrote gives no
     // attempt here, so no notice. The computer that tried owns the notice.
     #[test]
     fn a_failed_entry_from_another_computer_makes_no_attempt() {
@@ -1587,7 +1601,7 @@ mod tests {
         assert_eq!(fake.statuses(), vec![WatchedFolderStatus::Off]);
     }
 
-    // The folder notice (U8) shows after 3 scans that cannot read the
+    // The folder notice on Home shows after 3 scans that cannot read the
     // folder, and clears when it is back. Nothing else happens to a folder
     // that went away.
     #[test]
@@ -1647,7 +1661,7 @@ mod tests {
         assert!(list(&f.watched.join("gone")).is_err());
     }
 
-    // U7: while the storage folder changes, the watcher reads and imports
+    // While the storage folder changes, the watcher reads and imports
     // nothing. After the pause, the file imports.
     #[test]
     fn a_paused_watcher_reads_and_imports_nothing_until_it_resumes() {
@@ -1664,7 +1678,7 @@ mod tests {
         assert_eq!(fake.imports(), vec![memo]);
     }
 
-    // U7: the pause stops a read in progress, and returns only when the
+    // The pause stops a read in progress, and returns only when the
     // watcher thread does no more work. A resume imports the file.
     #[test]
     fn a_pause_stops_a_read_in_progress_and_a_resume_imports_the_file() {

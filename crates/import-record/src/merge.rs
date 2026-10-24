@@ -51,11 +51,7 @@ pub fn merge(old_root: &Path, new_root: &Path) -> io::Result<Merged> {
         };
         for file in files {
             let file = file?;
-            let Some(computer) = file
-                .file_name()
-                .to_str()
-                .and_then(|name| name.strip_suffix(".json"))
-                .and_then(ComputerId::parse)
+            let Some(computer) = file.file_name().to_str().and_then(ComputerId::of_file_name)
             else {
                 continue;
             };

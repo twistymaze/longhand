@@ -1,5 +1,5 @@
-//! The manual import (U5 of the audio import plan): the user chooses or
-//! drops audio files, and each file becomes a new note (R1, KTD14).
+//! The manual import: the user chooses or drops audio files, and each file
+//! becomes a new note (R1, KTD14).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

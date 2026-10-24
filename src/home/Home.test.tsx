@@ -1875,7 +1875,7 @@ describe("Home: audio import (R1, R20 of the audio import plan)", () => {
     expect(tauri.calls.some((c) => c.cmd === "pick_audio_files")).toBe(true);
   });
 
-  // Covers R21 (U8): an importing note shows "Preparing" in its row, and
+  // Covers R21: an importing note shows "Preparing" in its row, and
   // no notice.
   test("an importing row shows Preparing and no notice", async () => {
     const tauri = mockTauri({

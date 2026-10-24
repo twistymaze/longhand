@@ -4,17 +4,10 @@
 // accident.
 
 import { useCallback, useState } from "react";
-import {
-  commands,
-  type ExistingFiles,
-  type OldNotes,
-  type Result,
-  type Settings,
-  type WatchedFolderPreview,
-} from "../bindings";
+import { commands, type OldNotes, type Result, type Settings, type WatchedFolderPreview } from "../bindings";
 import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { folderName } from "./ui";
-import { ExistingFilesDialog } from "./WatchedFolder";
+import { type Answer as ExistingFilesAnswer, ExistingFilesDialog } from "./WatchedFolder";
 
 type Answer = OldNotes | "cancel";
 
@@ -61,7 +54,7 @@ export function useFolderChange() {
   const [askingFiles, setAskingFiles] = useState<{
     folder: string;
     preview: WatchedFolderPreview;
-    answer: (a: ExistingFiles | "cancel") => void;
+    answer: (a: ExistingFilesAnswer) => void;
   } | null>(null);
   const change = useCallback(async (): Promise<Result<Changed | null, string>> => {
     const picked = await commands.pickStorageFolder();
@@ -77,7 +70,7 @@ export function useFolderChange() {
     const watched = settings.watched_folder;
     const preview = changed.data.watched_folder_files;
     if (watched && preview) {
-      const files = await new Promise<ExistingFiles | "cancel">((resolve) =>
+      const files = await new Promise<ExistingFilesAnswer>((resolve) =>
         setAskingFiles({ folder: watched, preview, answer: resolve }),
       );
       setAskingFiles(null);

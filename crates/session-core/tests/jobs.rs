@@ -2629,7 +2629,7 @@ fn two_notes_keep_different_app_sets() {
     assert_eq!(store.note_apps("s2").unwrap(), teams);
 }
 
-// ------------------------------------------------- imports (U4 of the audio import plan)
+// ----------------------------------------------------------------------- imports
 
 use session_core::jobs::NewImport;
 use session_core::note_record::ImportSource;

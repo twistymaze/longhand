@@ -63,7 +63,7 @@ impl ComputerId {
     /// The computer id of the entry file name `name`, which is
     /// `<computer_id>.json` exactly. A conflict copy such as
     /// `<computer_id> 2.json` gives none.
-    fn of_file_name(name: &str) -> Option<Self> {
+    pub(crate) fn of_file_name(name: &str) -> Option<Self> {
         name.strip_suffix(ENTRY_EXTENSION).and_then(Self::parse)
     }
 

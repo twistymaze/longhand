@@ -716,7 +716,7 @@ pub struct LibraryNotices {
     /// The note folders whose files have given no note for about one
     /// minute, sorted by folder (R6).
     pub problems: Vec<ProblemNote>,
-    /// The notices of the audio import (U8 of the audio import plan).
+    /// The notices of the audio import.
     pub imports: ImportNotices,
 }
 
@@ -857,6 +857,7 @@ pub async fn library_notices(
     blocking(move || {
         let facts = processing.imports().notices();
         let watched = processing.watched_folder_status();
+        let named = named_note_ids(processing.library_status(), &state);
         let (records, imports) = {
             let store = capture.shared_store();
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
@@ -867,7 +868,12 @@ pub async fn library_notices(
                     .flatten()
                     .map(|source| source.source_name)
             });
-            (store.sessions().map_err(|e| e.to_string())?, imports)
+            let records = named
+                .iter()
+                .filter_map(|id| store.session(id).transpose())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            (records, imports)
         };
         Ok(library_notices_of(
             processing.library_status(),
@@ -879,7 +885,22 @@ pub async fn library_notices(
     .await
 }
 
-/// The user dismissed the notice of the failed import `note_id` (U8). The
+/// The ids of the notes that the library notices can name: the notes that
+/// the last conversion could not convert, and the notes of the reported
+/// problems.
+fn named_note_ids(status: &LibraryStatus, conversion: &ConversionState) -> Vec<String> {
+    let mut ids: Vec<String> = conversion
+        .failed
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .chain(status.problems().into_iter().filter_map(|p| p.known_id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// The user dismissed the notice of the failed import `note_id`. The
 /// notice does not come back; a new attempt of the file gives a new one.
 #[tauri::command]
 #[specta::specta]
@@ -2659,7 +2680,7 @@ mod tests {
         );
     }
 
-    // Covers R20, R22, AE8 (U8): the import notices name the files and the
+    // Covers R20, R22, AE8: the import notices name the files and the
     // folder that stays unavailable.
     #[test]
     fn the_import_notices_name_the_files_and_the_unavailable_folder() {
@@ -2691,7 +2712,7 @@ mod tests {
         );
     }
 
-    // Covers R20, R21 (U8): normal behaviour shows no import notice.
+    // Covers R20, R21: normal behaviour shows no import notice.
     #[test]
     fn a_watched_or_off_folder_with_no_failure_shows_no_import_notice() {
         use pipeline::import::Notices;
@@ -2997,8 +3018,8 @@ mod record_tests {
         assert!(waiting.available);
     }
 
-    /// An importing note offers only rename and delete (U4 of the audio
-    /// import plan): it has no recording button.
+    /// An importing note offers only rename and delete: it has no
+    /// recording button.
     #[test]
     fn an_importing_note_has_no_button() {
         let status: Arc<LibraryStatus> = Arc::default();

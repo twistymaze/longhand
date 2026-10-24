@@ -29,7 +29,7 @@ export function useLibraryNotices(): { notices: LibraryNotices | null; reload: (
   }, [reload]);
   useReloadOn(ignore, reload);
   // The import notices change with the import worker and the watched
-  // folder (U8 of the audio import plan).
+  // folder.
   useEffect(() => {
     const unlisteners = [
       events.importNoticesChanged.listen(() => void reload()),

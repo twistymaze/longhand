@@ -1,5 +1,4 @@
-//! The import worker (U4 of the audio import plan): one audio file becomes
-//! a queued note, crash-safe.
+//! The import worker: one audio file becomes a queued note, crash-safe.
 //!
 //! Each import has an entry in a local journal, a file in the app data
 //! folder ([`JOURNAL_FILE`]), written before any other step (KTD6). The
@@ -45,6 +44,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
+use audio_import::file_name;
 use chrono::{DateTime, FixedOffset, Local};
 use import_record::{Identity, Lookup, State};
 use recorder::{ChunkedWriter, SegmentArgs};
@@ -210,7 +210,7 @@ pub enum Wait {
     Stopped,
 }
 
-/// A file that the decoder refused (R12a), for the notice of U8.
+/// A file that the decoder refused (R12a), for its notice on Home.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Failure {
     pub note_id: String,
@@ -219,7 +219,7 @@ pub struct Failure {
     pub at: DateTime<FixedOffset>,
 }
 
-/// The facts that the notices of U8 need.
+/// The facts that the notices on Home need.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Notices {
     /// The notes whose import waits for free space (R22). Only the user can
@@ -361,13 +361,13 @@ impl Imports {
             .collect()
     }
 
-    /// The facts that the notices of U8 need.
+    /// The facts that the notices on Home need.
     pub fn notices(&self) -> Notices {
         held(&self.notices).clone()
     }
 
-    /// The user dismissed the failure of the import `note_id` (U8): it
-    /// leaves the notices. A later attempt of the same file is a new
+    /// The user dismissed the failure of the import `note_id`: it leaves
+    /// the notices. A later attempt of the same file is a new
     /// failure. False when no failure has that note id.
     pub fn dismiss(&self, note_id: &str) -> bool {
         let mut notices = held(&self.notices);
@@ -611,39 +611,37 @@ impl Imports {
         let id = entry.note_id.as_str();
         if !self.importing(id)? {
             let mut store = lock(&self.env.store);
-            {
-                let request = &entry.request;
-                let title = match &request.title {
-                    Some(text) => Title {
-                        text: text.clone(),
-                        source: TitleSource::User,
-                    },
-                    None => Title {
-                        text: file_stem(&request.source),
-                        source: TitleSource::Proposed,
-                    },
-                };
-                store.create_import(&NewImport {
-                    id,
-                    opened_at: entry.started,
-                    title: &title,
-                    note_type: request.note_type.as_deref(),
-                    tags: &request.tags,
-                    model: &RecordingModel {
-                        asr_model: entry.recognition.asr_model.clone(),
-                        live_transcript: false,
-                    },
-                    snapshot: entry.recognition.snapshot.as_ref(),
-                    speaker_count: entry.recognition.speaker_count,
-                    source: &ImportSource {
-                        source_name: file_name(&request.source),
-                        sha256: None,
-                    },
-                })?;
-                // The early write begins with the row, so a crash before
-                // its first step still gets one folder (KTD4).
-                early_home::begin(&store, id)?;
-            }
+            let request = &entry.request;
+            let title = match &request.title {
+                Some(text) => Title {
+                    text: text.clone(),
+                    source: TitleSource::User,
+                },
+                None => Title {
+                    text: file_stem(&request.source),
+                    source: TitleSource::Proposed,
+                },
+            };
+            store.create_import(&NewImport {
+                id,
+                opened_at: entry.started,
+                title: &title,
+                note_type: request.note_type.as_deref(),
+                tags: &request.tags,
+                model: &RecordingModel {
+                    asr_model: entry.recognition.asr_model.clone(),
+                    live_transcript: false,
+                },
+                snapshot: entry.recognition.snapshot.as_ref(),
+                speaker_count: entry.recognition.speaker_count,
+                source: &ImportSource {
+                    source_name: file_name(&request.source),
+                    sha256: None,
+                },
+            })?;
+            // The early write begins with the row, so a crash before its
+            // first step still gets one folder (KTD4).
+            early_home::begin(&store, id)?;
         }
         if let Some(homes) = &self.env.early_homes {
             homes.start(id);
@@ -734,9 +732,12 @@ impl Imports {
                 _ => true,
             }
         });
-        if let Some(e) = write_error {
-            drop(writer);
+        if write_error.is_some() || decoded.is_err() {
+            // The conversion is not complete: remove its chunks.
+            writer = None;
             recorder::remove_segment(&recovery, 0)?;
+        }
+        if let Some(e) = write_error {
             return match e {
                 recorder::RecorderError::LowDisk { .. } => {
                     self.disk_wait(id);
@@ -748,15 +749,11 @@ impl Imports {
         match decoded {
             Ok(_) => {}
             Err(audio_import::DecodeError::Stopped) => {
-                drop(writer);
-                recorder::remove_segment(&recovery, 0)?;
                 // A delete or the stop of the app: the next run reads the
                 // journal entry again.
                 return Ok(Next::Wait(Wait::Stopped));
             }
             Err(audio_import::DecodeError::Format(error)) => {
-                drop(writer);
-                recorder::remove_segment(&recovery, 0)?;
                 log::warn!("the decoder refused the file of the import {id}: {error}");
                 return Ok(Next::Step(Step::Failed {
                     identity: identity.to_string(),
@@ -765,11 +762,7 @@ impl Imports {
                     error,
                 }));
             }
-            Err(audio_import::DecodeError::Io(e)) => {
-                drop(writer);
-                recorder::remove_segment(&recovery, 0)?;
-                return Err(e.into());
-            }
+            Err(audio_import::DecodeError::Io(e)) => return Err(e.into()),
         }
         let Some(writer) = writer else {
             return Err(StageError::Failed("the decode gave no audio".into()));
@@ -852,18 +845,35 @@ impl Imports {
                 _ => {}
             }
         }
+        Ok(self.write_imported(&root, &identity_value, entry, size, entry_time, recorded))
+    }
+
+    /// Write the `imported` entry of `entry` at `time`. Gives `done` when
+    /// the write succeeds, else a wait for the import record.
+    fn write_imported(
+        &self,
+        root: &Path,
+        identity: &Identity,
+        entry: &Entry,
+        size: u64,
+        time: DateTime<FixedOffset>,
+        done: Next,
+    ) -> Next {
         let written = import_record::Entry::new(
             State::Imported,
             &file_name(&entry.request.source),
             size,
             self.env.computer_id.clone(),
-            entry_time,
+            time,
         );
-        match import_record::write(&root, &identity_value, &written) {
-            Ok(_) => Ok(recorded),
+        match import_record::write(root, identity, &written) {
+            Ok(_) => done,
             Err(e) => {
-                log::warn!("cannot write the import record entry of {id}: {e}");
-                Ok(Next::Wait(Wait::ImportRecord))
+                log::warn!(
+                    "cannot write the import record entry of {}: {e}",
+                    entry.note_id
+                );
+                Next::Wait(Wait::ImportRecord)
             }
         }
     }
@@ -999,20 +1009,14 @@ impl Imports {
         ) {
             return Ok(Next::Done);
         }
-        let written = import_record::Entry::new(
-            State::Imported,
-            &file_name(&entry.request.source),
+        Ok(self.write_imported(
+            &root,
+            &identity_value,
+            entry,
             size,
-            self.env.computer_id.clone(),
             Local::now().fixed_offset(),
-        );
-        match import_record::write(&root, &identity_value, &written) {
-            Ok(_) => Ok(Next::Done),
-            Err(e) => {
-                log::warn!("cannot write the import record entry of {id}: {e}");
-                Ok(Next::Wait(Wait::ImportRecord))
-            }
-        }
+            Next::Done,
+        ))
     }
 
     // ------------------------------------------------------------ helpers
@@ -1249,13 +1253,6 @@ fn copy_name(source: &Path) -> String {
         Some(extension) => format!("source.{}", extension.to_ascii_lowercase()),
         None => "source".to_string(),
     }
-}
-
-fn file_name(source: &Path) -> String {
-    source
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default()
 }
 
 /// The file name with no extension: the first title (R15).

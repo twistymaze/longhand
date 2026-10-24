@@ -1,4 +1,4 @@
-//! The import record of one computer over one storage folder (U3).
+//! The import record of one computer over one storage folder.
 
 use std::fs;
 use std::path::{Path, PathBuf};

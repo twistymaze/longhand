@@ -1,4 +1,4 @@
-//! Two computers over one synced storage folder (U3). Each computer has
+//! Two computers over one synced storage folder. Each computer has
 //! its own copy of the storage folder. A sync copies each file of one copy
 //! into the other, as a sync service does.
 

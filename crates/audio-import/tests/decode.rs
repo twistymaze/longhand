@@ -1,4 +1,4 @@
-//! Tests of the copy, the decode and the recording time (U2), with the
+//! Tests of the copy, the decode and the recording time, with the
 //! synthetic files in `testdata/audio-import/`.
 
 use std::path::{Path, PathBuf};

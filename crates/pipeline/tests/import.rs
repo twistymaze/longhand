@@ -1,5 +1,5 @@
-//! The import worker (U4 of the audio import plan): one audio file becomes
-//! a queued note, crash-safe, with the recording wait and the disk check.
+//! The import worker: one audio file becomes a queued note, crash-safe,
+//! with the recording wait and the disk check.
 //!
 //! Each "launch" in these tests is a new `Imports` over the same journal
 //! file and store, as a new process has.
@@ -635,7 +635,7 @@ fn a_file_that_does_not_decode_gets_a_failed_entry_and_its_note_is_removed() {
         entry.decoder_version.as_deref(),
         Some(audio_import::DECODER_VERSION)
     );
-    // U8 reads the failure: the identity, the file name and the time.
+    // The notices on Home read the failure: the identity, the file name and the time.
     let failed = imports.notices().failed;
     assert_eq!(failed.len(), 1);
     assert_eq!(failed[0].identity, identity.as_str());
@@ -643,7 +643,7 @@ fn a_file_that_does_not_decode_gets_a_failed_entry_and_its_note_is_removed() {
     assert_eq!(failed[0].at, entry.time);
 }
 
-// Covers R20 (U8): Dismiss removes the failure. A new manual import of the
+// Covers R20: Dismiss removes the failure. A new manual import of the
 // same file is a new attempt, so it gives a new failure.
 #[test]
 fn a_dismissed_failure_goes_and_a_new_attempt_gives_a_new_failure() {

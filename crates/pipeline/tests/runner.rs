@@ -11587,7 +11587,7 @@ async fn the_title_job_sends_to_the_provider_in_effect_when_it_started() {
     assert_eq!(size % 2_048, 0, "{size}");
 }
 
-// ------------------------------------- imported notes (U4 of the audio import plan)
+// ---------------------------------------------------------------- imported notes
 
 use pipeline::import::{ImportEnvironment, Imports, Origin, Recognition, Request};
 

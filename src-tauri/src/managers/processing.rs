@@ -852,14 +852,13 @@ pub struct ProcessingManager {
     audio_removal: Arc<AudioRemovalManager>,
     /// The early writes of the home folders of new notes (KTD4).
     early_homes: Arc<EarlyHomes>,
-    /// The imports of audio files (U4 of the audio import plan).
+    /// The imports of audio files.
     imports: Arc<ImportManager>,
     /// Held by each pass of the bulk edits: the type rename, merge and
     /// delete edits (KTD7) and the tag rename and delete edits (KTD11), so
     /// two passes of one edit do not run at the same time.
     bulk_edits: std::sync::Mutex<()>,
-    /// The watcher of the watched folder (U6 of the audio import plan).
-    /// It starts after the import worker, with the instance lock held.
+    /// The watcher of the watched folder. It starts after the import worker, with the instance lock held.
     watched: std::sync::Mutex<WatchedSlot>,
 }
 
@@ -868,10 +867,10 @@ pub struct ProcessingManager {
 struct WatchedSlot {
     watcher: Option<WatchedFolder>,
     stopped: bool,
-    /// The storage folder changes now (U7).
+    /// The storage folder changes now.
     changing: bool,
     /// After Leave Them, the watcher waits for the answer to the R6
-    /// question (U7).
+    /// question.
     asking: bool,
 }
 
@@ -1416,7 +1415,7 @@ impl ProcessingManager {
                     self.roots_changed();
                     self.forget_outside_roots();
                     // The import record is in the new folder: the watcher
-                    // continues (U7).
+                    // continues.
                     self.sync_watched_pause();
                     break;
                 }
@@ -1677,7 +1676,7 @@ impl ProcessingManager {
             .watched_folder
             .map(std::path::PathBuf::from);
         // A Move that a quit stopped continues: the watcher starts paused
-        // until the Move has taken the import record (U7).
+        // until the Move has taken the import record.
         let move_open = self.move_open();
         // The slot lock is held from the pause check to the store of the
         // watcher, so a change of storage folder cannot start between them.
@@ -1693,7 +1692,7 @@ impl ProcessingManager {
         }
     }
 
-    /// Whether the watcher must pause now (U7): the storage folder changes,
+    /// Whether the watcher must pause now: the storage folder changes,
     /// a Move has not taken the import record yet, or the R6 question after
     /// Leave Them waits for its answer.
     fn sync_watched_pause(&self) {
@@ -1710,7 +1709,7 @@ impl ProcessingManager {
         }
     }
 
-    /// The storage folder starts to change (U7): the watcher pauses, and a
+    /// The storage folder starts to change: the watcher pauses, and a
     /// read in progress stops, so no import reads the import record of a
     /// folder that is not the storage folder any more.
     pub fn pause_watched_folder(&self) {
@@ -1721,7 +1720,7 @@ impl ProcessingManager {
         self.sync_watched_pause();
     }
 
-    /// The storage folder change ended (U7). `held` are the files of the
+    /// The storage folder change ended. `held` are the files of the
     /// watched folder that wait for the R6 answer after Leave Them: the
     /// snapshot holds them, so a quit before the answer gives the answer
     /// Only New Files. [`ProcessingManager::watched_folder_changed`] gives
@@ -1777,11 +1776,7 @@ impl ProcessingManager {
             suspended: Box::new(suspended(&capture, &self.live)),
             free_space: Box::new(recorder::storage::available_space),
             dataless: Box::new(watched_folder::is_dataless),
-            hash: Arc::new(
-                |path: &std::path::Path, read: &std::sync::atomic::AtomicU64| {
-                    audio_import::hash_file_counted(path, read)
-                },
-            ),
+            hash: Arc::new(audio_import::hash_file_counted),
             snapshot: data.join(watched_folder::SNAPSHOT_FILE),
             status: Box::new(move |status| {
                 let changed = WatchedFolderChanged {
@@ -1798,7 +1793,7 @@ impl ProcessingManager {
     /// folder, or nothing. `skip` holds the files that the user chose not
     /// to import (R6). Before the watcher starts, the snapshot file gets
     /// them, and the start reads it. A call is also the answer to the R6
-    /// question after Leave Them (U7), so the watcher stops waiting for it.
+    /// question after Leave Them, so the watcher stops waiting for it.
     pub fn watched_folder_changed(&self, skip: Vec<watched_folder::Held>) {
         self.watched
             .lock()
@@ -1833,17 +1828,14 @@ impl ProcessingManager {
         }
     }
 
-    /// The state of the watched folder (R4, and the notice of U8).
+    /// The state of the watched folder (R4, and its notice on Home).
     pub fn watched_folder_status(&self) -> WatchedFolderStatus {
         let slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(watcher) = &slot.watcher {
             return watcher.status();
         }
         drop(slot);
-        match settings::get_settings(&self.app).watched_folder {
-            Some(path) => WatchedFolderStatus::Watching { path },
-            None => WatchedFolderStatus::Off,
-        }
+        WatchedFolderStatus::of_setting(settings::get_settings(&self.app).watched_folder)
     }
 
     /// Before the process exits: stop the library watcher and processing,
