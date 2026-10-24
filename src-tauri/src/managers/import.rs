@@ -27,6 +27,12 @@ use crate::managers::settings;
 /// waits for a recording to end.
 const SUSPENDED_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// The import notices of Home changed (U8): an import waits for free space
+/// or no longer waits, or the decoder refused a file. Home reads the
+/// library notices again.
+#[derive(serde::Serialize, Clone, Debug, specta::Type, tauri_specta::Event)]
+pub struct ImportNoticesChanged;
+
 /// The imports of this computer.
 pub struct ImportManager {
     app: AppHandle,
@@ -100,12 +106,19 @@ impl ImportManager {
 
     /// The facts that the notices need (U8): the imports that wait for
     /// free space, and the files that the decoder refused.
-    #[expect(dead_code, reason = "the notices (U8) read it")]
     pub fn notices(&self) -> Notices {
         self.imports
             .as_ref()
             .map(|imports| imports.notices())
             .unwrap_or_default()
+    }
+
+    /// The user dismissed the failure of the import `note_id` (U8). The
+    /// dismissal stays in memory, as the failures do.
+    pub fn dismiss(&self, note_id: &str) {
+        if let Some(imports) = &self.imports {
+            imports.dismiss(note_id);
+        }
     }
 
     /// The source files of the open imports, also of deleted ones. The
@@ -188,10 +201,13 @@ fn on_event(app: &AppHandle, event: ImportEvent) {
             log::info!("the import of {note_id} continues");
             return;
         }
-        ImportEvent::DiskWait { .. }
-        | ImportEvent::DiskClear { .. }
-        | ImportEvent::Failed(_)
-        | ImportEvent::Ended { .. } => return,
+        ImportEvent::DiskWait { .. } | ImportEvent::DiskClear { .. } | ImportEvent::Failed(_) => {
+            if let Err(e) = ImportNoticesChanged.emit(app) {
+                log::warn!("could not emit an import notices change: {e}");
+            }
+            return;
+        }
+        ImportEvent::Ended { .. } => return,
     };
     if let Err(e) = changes.emit(app) {
         log::warn!("could not emit a library change: {e}");

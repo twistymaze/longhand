@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
+  ImportNotices,
   NoteTypeList,
   Readiness,
   SessionDetail,
@@ -23,6 +24,8 @@ import { Home, type RecordingNow } from "./Home";
 import { useSessions } from "../session/useSessions";
 
 const now = new Date(2026, 8, 24, 18, 0);
+
+const noImports: ImportNotices = { watched_folder: null, waiting_for_space: [], failed: [] };
 
 const entry = (id: string, over: Partial<SessionEntry> = {}): SessionEntry => ({
   id,
@@ -715,7 +718,7 @@ describe("Home", () => {
   // Covers R6: a note whose file does not parse stays listed. Rename waits,
   // and Delete stays available.
   test("a note whose session.md does not parse cannot be renamed and can be deleted", async () => {
-    mockTauri({ library_notices: () => ({ conversion: null, problems: [] }) });
+    mockTauri({ library_notices: () => ({ conversion: null, problems: [], imports: noImports }) });
     const reason = "session.md has an error on line 3. Correct the file to change this note.";
     renderHome({
       entries: [
@@ -756,6 +759,7 @@ describe("Home", () => {
             },
           },
         ],
+        imports: noImports,
       }),
     });
     renderHome({ entries: [entry("a", { title: "Planning" })] });
@@ -768,7 +772,7 @@ describe("Home", () => {
 
   // Covers R6: the normal path shows nothing.
   test("a library with no problem shows no library notice", async () => {
-    const tauri = mockTauri({ library_notices: () => ({ conversion: null, problems: [] }) });
+    const tauri = mockTauri({ library_notices: () => ({ conversion: null, problems: [], imports: noImports }) });
     renderHome({ entries: [entry("a", { title: "Planning" })] });
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "library_notices")).toBe(true));
     expect(screen.queryByRole("region", { name: "Notes that Longhand can’t read" })).toBeNull();
@@ -785,7 +789,7 @@ describe("Home", () => {
     const tauri = mockTauri({
       library_notices: () => ({
         conversion: old > 0 ? { old_notes: old, running: false, skipped: 0, failed: [] } : null,
-        problems: [],
+        problems: [], imports: noImports,
       }),
       convert_old_notes: () =>
         new Promise<null>((resolve) => {
@@ -819,7 +823,7 @@ describe("Home", () => {
           skipped: 1,
           failed: [{ name: "Budget", reason: "the frontmatter cannot change" }],
         },
-        problems: [],
+        problems: [], imports: noImports,
       }),
     });
     renderHome({ entries: [] });
@@ -846,7 +850,7 @@ describe("Home", () => {
         mockTauri({
           library_notices: () => ({
             conversion: { old_notes: 2, running: false, skipped: 0, failed: [] },
-            problems: [],
+            problems: [], imports: noImports,
           }),
           convert_old_notes: fail,
         });
@@ -1869,6 +1873,24 @@ describe("Home: audio import (R1, R20 of the audio import plan)", () => {
     expect(await screen.findByRole("dialog", { name: "Import Audio" })).toBeTruthy();
     expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("Team sync");
     expect(tauri.calls.some((c) => c.cmd === "pick_audio_files")).toBe(true);
+  });
+
+  // Covers R21 (U8): an importing note shows "Preparing" in its row, and
+  // no notice.
+  test("an importing row shows Preparing and no notice", async () => {
+    const tauri = mockTauri({
+      library_notices: () => ({ conversion: null, problems: [], imports: noImports }),
+    });
+    renderHome({ entries: [entry("a", { title: "Team sync", state: "importing" })] });
+    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "library_notices")).toBe(true));
+    expect(within(row("Team sync")).getByText("Preparing")).toBeTruthy();
+    for (const name of [
+      "Audio files that could not be imported",
+      "Imports that wait for disk space",
+      "Watched folder not available",
+    ]) {
+      expect(screen.queryByRole("region", { name })).toBeNull();
+    }
   });
 
   test("a closed file dialog opens no sheet", async () => {

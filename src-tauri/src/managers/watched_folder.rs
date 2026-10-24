@@ -1426,6 +1426,28 @@ mod tests {
         assert_eq!(fake.imports().len(), 2);
     }
 
+    // Covers R20 (U8): a failed entry that another computer wrote gives no
+    // attempt here, so no notice. The computer that tried owns the notice.
+    #[test]
+    fn a_failed_entry_from_another_computer_makes_no_attempt() {
+        let f = folders();
+        let fake = Fake::new();
+        let damaged = write(&f.watched.join("Damaged.m4a"), b"not audio");
+        let failed = Entry::failed(
+            "Damaged.m4a",
+            9,
+            computer(OTHER),
+            Local::now().fixed_offset(),
+            VERSION,
+            "decoder",
+            "1",
+        );
+        import_record::write(&f.storage, &identity_of(&damaged), &failed).unwrap();
+        let mut worker = fake.worker(&f);
+        settle(&mut worker, Instant::now());
+        assert!(fake.imports().is_empty());
+    }
+
     // Covers AE5 (R8): an online-only file waits for room, downloads, then
     // imports.
     #[test]

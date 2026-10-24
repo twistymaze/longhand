@@ -642,3 +642,31 @@ fn a_file_that_does_not_decode_gets_a_failed_entry_and_its_note_is_removed() {
     assert_eq!(failed[0].file_name, "Notes.m4a");
     assert_eq!(failed[0].at, entry.time);
 }
+
+// Covers R20 (U8): Dismiss removes the failure. A new manual import of the
+// same file is a new attempt, so it gives a new failure.
+#[test]
+fn a_dismissed_failure_goes_and_a_new_attempt_gives_a_new_failure() {
+    let r = Rig::new();
+    let source = r.phone.join("Notes.m4a");
+    std::fs::write(&source, "These are notes, not audio.\n").unwrap();
+    let imports = r.imports();
+    let first = imports
+        .import(request(&source, Origin::Manual), recognition())
+        .unwrap();
+    imports.run_pending();
+    assert_eq!(imports.notices().failed.len(), 1);
+
+    assert!(imports.dismiss(&first));
+    assert!(imports.notices().failed.is_empty());
+    assert!(!imports.dismiss(&first), "a dismissed failure is gone");
+
+    let second = imports
+        .import(request(&source, Origin::Manual), recognition())
+        .unwrap();
+    imports.run_pending();
+    let failed = imports.notices().failed;
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].note_id, second);
+    assert_eq!(failed[0].file_name, "Notes.m4a");
+}

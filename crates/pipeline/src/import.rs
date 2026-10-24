@@ -366,6 +366,16 @@ impl Imports {
         held(&self.notices).clone()
     }
 
+    /// The user dismissed the failure of the import `note_id` (U8): it
+    /// leaves the notices. A later attempt of the same file is a new
+    /// failure. False when no failure has that note id.
+    pub fn dismiss(&self, note_id: &str) -> bool {
+        let mut notices = held(&self.notices);
+        let before = notices.failed.len();
+        notices.failed.retain(|f| f.note_id != note_id);
+        notices.failed.len() != before
+    }
+
     /// Step 1: write the journal entry of a new import. The caller runs it
     /// off the main thread: it reads the recording time of the file (R16).
     pub fn begin(&self, request: Request, recognition: Recognition) -> Result<Entry, StageError> {

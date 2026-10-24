@@ -1136,6 +1136,13 @@ async libraryNotices() : Promise<Result<LibraryNotices, string>> {
 }
 },
 /**
+ * The user dismissed the notice of the failed import `note_id` (U8). The
+ * notice does not come back; a new attempt of the file gives a new one.
+ */
+async dismissImportFailure(noteId: string) : Promise<void> {
+    await TAURI_INVOKE("dismiss_import_failure", { noteId });
+},
+/**
  * Convert the notes in the old layout to the new layout (U5, R10, R12).
  * Only the user starts it, from the Convert notice. A note that a
  * computer works on now is skipped. The notices show the result: the
@@ -1438,6 +1445,7 @@ async widgetOpenNote() : Promise<void> {
 export const events = __makeEvents__<{
 captureEnded: CaptureEnded,
 captureTick: CaptureTick,
+importNoticesChanged: ImportNoticesChanged,
 libraryChanged: LibraryChanged,
 livePartSaved: LivePartSaved,
 liveRecognitionEvent: LiveRecognitionEvent,
@@ -1460,6 +1468,7 @@ widgetShown: WidgetShown
 }>({
 captureEnded: "capture-ended",
 captureTick: "capture-tick",
+importNoticesChanged: "import-notices-changed",
 libraryChanged: "library-changed",
 livePartSaved: "live-part-saved",
 liveRecognitionEvent: "live-recognition-event",
@@ -1735,6 +1744,18 @@ export type ExistingFiles =
  */
 "skip"
 /**
+ * A file that the decoder refused (R12a).
+ */
+export type FailedImport = { 
+/**
+ * The id of the attempt. Dismiss uses it.
+ */
+note_id: string; 
+/**
+ * The name of the file, with no folder.
+ */
+file_name: string }
+/**
  * A note that the last conversion could not convert (R10).
  */
 export type FailedNote = { 
@@ -1764,6 +1785,32 @@ export type FolderRenameResult =
  * The folder could not be renamed and keeps its old name.
  */
 { kind: "kept"; message: string }
+/**
+ * The notices of the audio import (R20, R22). Each part shows only when
+ * the user must act or an import failed. An import that waits for a
+ * download or a recording shows no notice (R21).
+ */
+export type ImportNotices = { 
+/**
+ * The path of the watched folder when it stays unavailable after
+ * several scans. `None` when the folder is watched or off.
+ */
+watched_folder: string | null; 
+/**
+ * The names of the files whose import waits for free space (KTD9).
+ */
+waiting_for_space: string[]; 
+/**
+ * The files that the decoder refused on this computer since the
+ * launch, and that the user did not dismiss (R12a).
+ */
+failed: FailedImport[] }
+/**
+ * The import notices of Home changed (U8): an import waits for free space
+ * or no longer waits, or the decoder refused a file. Home reads the
+ * library notices again.
+ */
+export type ImportNoticesChanged = null
 /**
  * A file that did not import.
  */
@@ -1822,7 +1869,11 @@ conversion: ConversionNotice | null;
  * The note folders whose files have given no note for about one
  * minute, sorted by folder (R6).
  */
-problems: ProblemNote[] }
+problems: ProblemNote[]; 
+/**
+ * The notices of the audio import (U8 of the audio import plan).
+ */
+imports: ImportNotices }
 export type LicenceInfo = { name: string; url: string; attribution: string }
 /**
  * Why Longhand sent no model list request (R12, R17).
