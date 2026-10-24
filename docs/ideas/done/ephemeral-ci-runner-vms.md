@@ -28,6 +28,8 @@ Possible design for macOS:
 
 Possible design for Windows: the runner is a Proxmox VM (VM 420 on bravo). Roll back to a clean snapshot after each job (`qm rollback`, with an `--ephemeral` runner), or make a linked clone of a template for each job.
 
+A fault on the persistent Windows runner (2026-10-24, PR #68) is a further reason. The runner keeps one `target\` folder for all branches. The `transcribe-cpp-sys` build script copies `transcribe.dll` and `ggml*.dll` into `target\debug`, `deps` and `examples`, but only when the build script runs. Cargo does not track these copies. A branch on transcribe.cpp 0.4.1 overwrote `deps\transcribe.dll`. The next branch, on 0.2.4, reused its cached build script output, so nothing copied the right DLL back. Its `asr` test binary loaded the 0.4.1 DLL and stopped with `STATUS_ENTRYPOINT_NOT_FOUND` (0xc0000139). A rerun fails the same way. A new VM for each job removes this fault. Until then, a CI step before the Windows tests can copy the DLLs from the current build's `transcribe-cpp-sys-*/out` folder (`ci.yml` already finds the newest build folder for the release check). Another fix is a separate `target\` folder for each branch.
+
 Warm builds: a new VM has no `target/`, so sccache keeps the builds warm. Use a shared sccache store on a home-lab server, not a folder in the VM:
 
 - Redis (`SCCACHE_REDIS`) with `maxmemory` and `allkeys-lru`, or MinIO/S3 (`SCCACHE_BUCKET`, `SCCACHE_ENDPOINT`) with a lifecycle rule that deletes old objects. sccache does not delete S3 entries.
