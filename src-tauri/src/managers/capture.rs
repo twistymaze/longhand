@@ -3599,6 +3599,11 @@ impl CaptureManager {
                 log::info!("the chosen microphone of {id} went away; using the system default");
                 match self.reopen(app, &mut inner, id, true, None) {
                     Ok(()) => {
+                        // The default records now: a loss before it was
+                        // healthy spends the same budget.
+                        if let Some(clock) = inner.clock.as_mut().filter(|c| c.note_id == id) {
+                            clock.restarts.came_back_at(Instant::now());
+                        }
                         drop(inner);
                         changed(app, Some(id));
                         return;

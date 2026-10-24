@@ -40,8 +40,10 @@ impl SourceRestarts {
         Self::default()
     }
 
-    pub fn count(&self) -> u32 {
-        self.tracker.count()
+    /// Capture came back at `at` with no restart, on another input: the
+    /// period that makes the source healthy starts again.
+    pub fn came_back_at(&mut self, at: Instant) {
+        self.came_back = Some(at);
     }
 }
 
@@ -221,6 +223,29 @@ mod tests {
     #[test]
     fn a_source_that_fails_again_before_it_was_healthy_gets_no_new_budget() {
         assert_eq!(attempts_after_a_spent_budget(Duration::from_secs(4)), 0);
+    }
+
+    #[test]
+    fn a_comeback_on_another_input_starts_the_health_period_again() {
+        // The spent source comes back at 0 s, moves to the default input at
+        // 29 s, and the default fails at 31 s.
+        let clock = Fake::new();
+        let mut restarts = SourceRestarts::new();
+        for _ in 0..3 {
+            recover(&mut restarts, &SOURCE_RESTART_BUDGET, &clock, || {
+                Ok::<_, String>(())
+            });
+        }
+        clock.advance(Duration::from_secs(29));
+        restarts.came_back_at(clock.now());
+        clock.advance(Duration::from_secs(2));
+        let mut attempts = 0;
+        let out = recover(&mut restarts, &SOURCE_RESTART_BUDGET, &clock, || {
+            attempts += 1;
+            Err::<(), _>("gone")
+        });
+        assert_eq!(out, Recovery::Exhausted(None));
+        assert_eq!(attempts, 0);
     }
 
     #[test]
