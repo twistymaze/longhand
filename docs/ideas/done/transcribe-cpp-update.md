@@ -23,3 +23,7 @@ Handy went from 0.2.4 to 0.3.0, 0.3.1 and then 0.4.0 between 2026-09-29 and 2026
 - Handy 3985508 runs Silero VAD through transcribe-cpp. The backend mask given to `init_backends_with` is fixed at the first registration in a process.
 - Do a real-audio route check before and after, as for the 0.2.4 update (archived PR 25).
 - Upkeep review, 2026-10-19 (issue #47): 0.4.0 also has the ggml GGUF loader overflow and malformed-file fixes and the ggml Vulkan Flash Attention out-of-bounds fix, which the 0.2.4 ggml pin does not have. It also adds Silero VAD, a backend allowlist, a repetition guard and a langid role (see `summary-language`). 0.3.0 removes `<unk>` from NeMo output, and 0.4.0 builds with `GGML_NATIVE=OFF` on macOS. PR #51 fixes these two in Longhand before the update: `without_unknown` in `crates/asr/src/engine.rs`, and `TRANSCRIBE_CMAKE_ARGS` with a cache check in the macOS release job. After the update, keep both: the removal does nothing when no marker comes, and the cache check finds a regression.
+
+## Outcome
+
+Shipped in [PR 67](https://github.com/twistymaze/longhand/pull/67) on 2026-10-24, with ONNX Runtime 1.31 in the same PR. transcribe-cpp 0.4.1 maps the model weights, so peak memory on a 30-minute note is about half (Parakeet unified 1.37 GB to 0.63 GB). Parakeet and Nemotron transcripts did not change. Notes that recorded transcribe.cpp 4807edaf still process.

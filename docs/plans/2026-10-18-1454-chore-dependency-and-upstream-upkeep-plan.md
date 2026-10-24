@@ -115,7 +115,7 @@ Only the maintainer's local machine has the reference clones, so a review that r
 ### Scope Boundaries
 
 - The Renovate app and Dependabot version-update PRs are not used.
-- The transcribe-cpp 0.4 update (`docs/ideas/next/transcribe-cpp-update.md`) and the move to the Handy recorder crates (`docs/ideas/someday/handy-recorder-crates.md`) stay ideas. The routine reports on them and does not do them.
+- The transcribe-cpp 0.4 update (`docs/ideas/done/transcribe-cpp-update.md`) and the move to the Handy recorder crates (`docs/ideas/someday/handy-recorder-crates.md`) stay ideas. The routine reports on them and does not do them.
 - gitleaks in CI (`docs/ideas/someday/gitleaks-in-ci.md`) is not part of this work.
 - The routine does not merge any PR, do signed-build tests, or prepare held updates (R6) or sensitive ports (R14).
 - Automatic merges are not part of this work. The check script (U6) gives the evidence that a later change would need to turn them on.
