@@ -12,3 +12,75 @@
 # name = "rustls"
 # version = "0.23.31"
 # reason = "RUSTSEC-2026-0400: the fix is only in this version"
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-darwin-arm64"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-darwin-x64"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-linux-arm-gnueabihf"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-linux-arm64-gnu"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-linux-arm64-musl"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-linux-riscv64-gnu"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-linux-x64-gnu"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-linux-x64-musl"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-win32-arm64-msvc"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-win32-ia32-msvc"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
+
+[[exception]]
+ecosystem = "package"
+name = "@tauri-apps/cli-win32-x64-msvc"
+version = "2.12.4"
+reason = "RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369: the CLI moves to zip 9 in 2.12.4. Remove on 2026-10-28."
