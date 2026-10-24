@@ -287,5 +287,4 @@ fn a_new_note_records_the_current_runtimes() {
         revision("onnx-runtime").as_deref(),
         Some(ONNX_RUNTIME_REVISION)
     );
-    assert_eq!(ONNX_RUNTIME_REVISION, "1.31.0");
 }

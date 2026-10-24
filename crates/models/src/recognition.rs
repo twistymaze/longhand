@@ -16,15 +16,22 @@ const EARLIER_REVISIONS: &[(&str, &str)] = &[
     ("onnx-runtime", "1.22.0"),
 ];
 
+/// The revision of `runtime` in this build, or `None` for a runtime that this
+/// build does not have.
+pub fn current_revision(runtime: &str) -> Option<&'static str> {
+    match runtime {
+        "transcribe.cpp" => Some(TRANSCRIBE_REVISION),
+        "NeMo-Speech.cpp" => Some(NEMO_REVISION),
+        "onnx-runtime" => Some(ONNX_RUNTIME_REVISION),
+        _ => None,
+    }
+}
+
 /// Whether this build can process a note that names `revision` of `runtime`.
 pub fn runtime_accepted(runtime: &str, revision: &str) -> bool {
-    let current = match runtime {
-        "transcribe.cpp" => TRANSCRIBE_REVISION,
-        "NeMo-Speech.cpp" => NEMO_REVISION,
-        "onnx-runtime" => ONNX_RUNTIME_REVISION,
-        _ => return false,
-    };
-    revision == current || EARLIER_REVISIONS.contains(&(runtime, revision))
+    current_revision(runtime).is_some_and(|current| {
+        revision == current || EARLIER_REVISIONS.contains(&(runtime, revision))
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]

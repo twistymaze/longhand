@@ -35,10 +35,7 @@ impl TaskGraph {
             return Err(failed("unsupported recognition snapshot version"));
         }
         for runtime in &spec.runtimes {
-            if !matches!(
-                runtime.name.as_str(),
-                "transcribe.cpp" | "NeMo-Speech.cpp" | "onnx-runtime"
-            ) {
+            if models::recognition::current_revision(&runtime.name).is_none() {
                 return Err(failed("unsupported recognition runtime"));
             }
             if !models::recognition::runtime_accepted(&runtime.name, &runtime.revision) {

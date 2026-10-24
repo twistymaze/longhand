@@ -130,9 +130,18 @@ pub fn load_model_with_backend(bytes: &[u8]) -> Result<BackendSession<Session>, 
 }
 
 // One environment for the process. Telemetry is off: the pyke binaries send
-// none, but a Microsoft build of ONNX Runtime would.
+// none, but a Microsoft build of ONNX Runtime would. Only one thread builds
+// it: ort keeps a link to the first environment built, and a second one that
+// is dropped would leave that link empty.
 fn environment() -> Result<&'static Environment, Error> {
     static ENVIRONMENT: OnceLock<Environment> = OnceLock::new();
+    static BUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    if let Some(environment) = ENVIRONMENT.get() {
+        return Ok(environment);
+    }
+    let _guard = BUILD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(environment) = ENVIRONMENT.get() {
         return Ok(environment);
     }
