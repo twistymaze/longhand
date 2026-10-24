@@ -150,13 +150,13 @@
   ],
   "packageLicences": {
     "@tauri-apps/plugin-opener": {
-      "version": "2.5.5",
+      "version": "2.7.2",
       "copyright": ["Copyright (c) 2017 - Present Tauri Apps Contributors"],
       "files": [
         "licences/sources/tauri-plugin-opener-LICENSE_MIT.txt",
         "licences/sources/tauri-plugin-opener-LICENSE_APACHE-2.0.txt"
       ],
-      "source": "The npm package includes only LICENSE.spdx. These files are LICENSE_MIT and LICENSE_APACHE-2.0 of the tauri-plugin-opener 2.5.5 crate, from the same repository and version: https://crates.io/crates/tauri-plugin-opener/2.5.5"
+      "source": "The npm package includes only LICENSE.spdx. These files are LICENSE_MIT and LICENSE_APACHE-2.0 of the tauri-plugin-opener 2.7.2 crate, from the same repository and version: https://crates.io/crates/tauri-plugin-opener/2.7.2"
     }
   },
   "crateNotes": {

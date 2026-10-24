@@ -672,6 +672,8 @@ jobs:
 
       - name: Check the signatures and the notarization
         if: steps.version.outputs.due == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           app=target/release/bundle/macos/Longhand.app
           codesign --verify --deep --strict "$app"
@@ -680,6 +682,11 @@ jobs:
           spctl -a -vv "$app"
           spctl -a -vv -t open --context context:primary-signature "$DMG"
           test -s target/release/bundle/macos/Longhand.app.tar.gz.sig
+          # Updater 2.14 and later refuses an update whose signature names a
+          # version other than the version in latest.json.
+          base64 -d < target/release/bundle/macos/Longhand.app.tar.gz.sig | tr '\t' '\n' \
+            | grep -qxF "version:$VERSION" \
+            || { echo "the updater signature does not name version $VERSION"; exit 1; }
           # The cache can keep older transcribe-cpp builds; the newest is this one.
           cache=$(ls -t target/release/build/transcribe-cpp-sys-*/out/build/CMakeCache.txt | head -n 1)
           grep -q '^GGML_NATIVE:BOOL=OFF$' "$cache" \
