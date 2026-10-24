@@ -34,8 +34,12 @@ test("a multi-line array of basic strings with a trailing comma is a list", () =
   });
 });
 
-test("the repository's min-age-exceptions.toml has no entries", () => {
-  assert.deepEqual(parseToml(readFileSync(join(root, "min-age-exceptions.toml"), "utf8")), {});
+test("the repository's min-age-exceptions.toml parses, with no entries or only [[exception]] entries", () => {
+  const parsed = parseToml(readFileSync(join(root, "min-age-exceptions.toml"), "utf8")) as { exception?: unknown[] };
+  assert.deepEqual(Object.keys(parsed).filter((key) => key !== "exception"), []);
+  for (const entry of parsed.exception ?? []) {
+    assert.deepEqual(Object.keys(entry as object).sort(), ["ecosystem", "name", "reason", "version"]);
+  }
 });
 
 test("two [[exception]] entries give a list of two tables", () => {
