@@ -500,7 +500,7 @@ impl EngineProvider for Models {
     ) -> Result<Box<dyn Recognizer>, String> {
         if !spec.runtimes.iter().any(|runtime| {
             runtime.name == "transcribe.cpp"
-                && runtime.revision == models::recognition::TRANSCRIBE_REVISION
+                && models::recognition::runtime_accepted(&runtime.name, &runtime.revision)
         }) {
             return Err("The selected transcription runtime is not installed".into());
         }
