@@ -66,7 +66,7 @@ These come from the reference source review of 2026-10-15 (`docs/reference/refer
 
 **Handy moved the transcribe.cpp calls into a worker process** (c8262ab). The code that `crates/asr/PROVENANCE.md` names (`init_transcribe_backend`, the run and stream calls) is now in `src-tauri/src/engine_supervisor/worker.rs`.
 
-**transcribe-cpp 0.4.0 changes the API.** `model.capabilities()` returns a `Result`. Handy is on 0.4.0, Longhand on 0.2.4. See `docs/ideas/someday/transcribe-cpp-update.md`.
+**transcribe-cpp 0.4.0 changes the API.** `model.capabilities()` returns a `Result`. Handy is on 0.4.0, Longhand on 0.2.4. See `docs/ideas/next/transcribe-cpp-update.md`.
 
 **Silero VAD in transcribe-cpp** (Handy 3985508): a `VadSession` with a v6.2 GGUF and 512-sample frames. The backend mask given to `init_backends_with` is fixed at the first registration in a process, so do not register GPU backends in a process for VAD alone.
 

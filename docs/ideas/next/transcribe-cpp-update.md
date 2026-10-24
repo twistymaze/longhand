@@ -5,6 +5,7 @@ area: processing
 added: 2026-10-15
 source: "Handy review, 2026-10-15: commits ffbc950, 1b011a1"
 related: [custom-vocabulary, recognition-in-worker-process, handy-recorder-crates]
+plan: docs/plans/2026-10-24-1354-feat-ort-and-transcribe-cpp-upkeep-plan.md
 ---
 
 # Update transcribe-cpp to the current release

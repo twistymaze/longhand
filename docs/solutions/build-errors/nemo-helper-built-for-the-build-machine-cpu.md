@@ -70,7 +70,7 @@ The crate's build script passes `TRANSCRIBE_CMAKE_ARGS` (or `CMAKE_ARGS`) to the
 - When you change a CMake option of a build folder that CI keeps, check what the cache keeps from the earlier configure, or delete the folder on the runner (`W:\nemo-cache\source\build\vulkan-asr` and `W:\nemo-cache\helper-vulkan` on the Windows runner).
 - CI on one CPU cannot prove that a build runs on older CPUs. The configure line and the cache check are the evidence.
 - A new release target or a new ggml-based crate needs the same check. Read its CMakeCache.txt after a release build before you assume that it is portable.
-- The upstream review in issue #47 reports that transcribe-cpp 0.4.0 fixes the macOS default (`docs/ideas/someday/transcribe-cpp-update.md`). After that update, keep the cache check: it costs nothing and finds a regression.
+- The upstream review in issue #47 reports that transcribe-cpp 0.4.0 fixes the macOS default (`docs/ideas/next/transcribe-cpp-update.md`). After that update, keep the cache check: it costs nothing and finds a regression.
 
 ## Related
 
