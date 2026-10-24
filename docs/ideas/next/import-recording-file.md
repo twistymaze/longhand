@@ -5,6 +5,7 @@ area: capture
 added: 2026-10-13
 source: "conversation about iPhone capture, 2026-10-13"
 related: [iphone-capture]
+plan: docs/plans/2026-10-24-0928-feat-import-audio-recordings-plan.md
 ---
 
 # Make a note from an audio file
@@ -18,7 +19,7 @@ Sometimes a laptop is not available, for example in a hallway or at a table wher
 `STRATEGY.md` permits this: "A recording you made on another device counts as what you record."
 
 ## Notes / Current state
-- This is the first step of [iphone-capture](iphone-capture.md), and it gives value alone.
-- Formats to accept: at least m4a (AAC) and wav. Decoding probably uses the same path as the audio in the note folder.
-- Open question: keep the original file in the note folder, or convert it to the normal audio format of a note.
+- This is the first step of [iphone-capture](../someday/iphone-capture.md), and it gives value alone.
+- The brainstorm on 2026-10-24 added a watched folder on one computer, so that a file that a phone app saves to a synced folder becomes a note with no action on the Mac. The plan holds the decisions.
+- Formats: m4a (AAC), wav and mp3. The note converts the audio to the normal audio format of a note and keeps no copy of the original.
 - The computer that imports the file does the processing and the publication, so the rule that only the computer that starts a publication finishes it does not change.

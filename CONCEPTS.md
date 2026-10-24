@@ -120,6 +120,15 @@ The state of a recording note that captures nothing for a time, by the user's ch
 A small window above all other windows that shows the open note's state, time and Pause, Continue and Stop while a note is recording, paused or interrupted, so the user does not forget a note that still records or is paused. It never takes the focus from the app in front and is hidden from screen capture where the system allows. A Settings switch sets whether each new note shows it; the user can hide or show it for the open note only, and that choice ends when the note stops.
 *Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)
 
+### Import
+The step that makes a new note from an audio file that another device recorded, for example a phone. The user drops or chooses the file (a manual import), or the watched folder brings it in. An imported note is a normal note: it processes on the computer that imported it, and its audio becomes the normal audio of a note. A manual import always makes a new note, also for a file that was imported before. Planned in `docs/plans/2026-10-24-0928-feat-import-audio-recordings-plan.md`.
+
+### Watched folder
+A folder that the user chooses on one computer, where each new audio file becomes a note through an import with no user action. It is a setting of that computer only, not a shared setting. Longhand never changes, moves or deletes a file in it. It cannot be the storage folder, be inside it or contain it.
+
+### Import record
+The plain-file list, in the hidden `.longhand` folder of the storage folder, of each file that a watched folder imported or skipped. A file's identity is its content. The watched folder never imports a file that the import record holds, also after its note is deleted.
+
 ## Transcription
 
 ### Recognition model
