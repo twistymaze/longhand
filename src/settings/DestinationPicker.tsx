@@ -266,6 +266,11 @@ export function DestinationPicker({
     status.kind !== "not_a_directory" &&
     !(settings.shared.availability.kind === "read_only" && settings.shared.availability.cause === "folder_not_available");
 
+  // The reason is old once a watched folder is set again.
+  useEffect(() => {
+    if (settings.watched_folder) setWatchedOff(null);
+  }, [settings.watched_folder]);
+
   const choose = async () => {
     setBusy(true);
     try {

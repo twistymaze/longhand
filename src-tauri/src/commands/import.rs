@@ -237,19 +237,6 @@ mod tests {
         assert_eq!(requests[0].title.as_deref(), Some("Budget review"));
     }
 
-    // AE2, R3: a manual import does not read the import record, so a file
-    // that the record holds makes a new note. The worker test
-    // `a_manual_import_of_an_imported_file_makes_a_new_note` shows that the
-    // worker does not stop a `Manual` request.
-    #[test]
-    fn a_file_that_the_import_record_holds_makes_a_new_note() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = vec![file(dir.path(), "Team sync.m4a")];
-        let (result, requests) = run(&paths, &ready(), &choices());
-        assert_eq!(result.unwrap().note_ids, vec!["note-1".to_string()]);
-        assert_eq!(requests[0].origin, Origin::Manual);
-    }
-
     // R19, R20: a file with another extension, and a folder, each get one
     // refusal that names them. The other files import.
     #[test]

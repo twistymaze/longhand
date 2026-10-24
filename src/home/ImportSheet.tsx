@@ -54,6 +54,8 @@ export function ImportSheet({
   const typeField = useRef<HTMLSelectElement>(null);
   const cancelled = useRef(onCancel);
   cancelled.current = onCancel;
+  // Escape does nothing while the import runs: the import still ends.
+  const running = useRef(false);
   const id = useId();
 
   // The first field takes the focus. WKWebView does not move the focus on
@@ -72,6 +74,7 @@ export function ImportSheet({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
+        if (running.current) return;
         cancelled.current();
       }
     };
@@ -91,6 +94,7 @@ export function ImportSheet({
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     if (busy) return;
+    running.current = true;
     setBusy(true);
     // An unchanged file name stays a proposed title, so the summary can
     // replace it (R15). An empty field also gives the file name.

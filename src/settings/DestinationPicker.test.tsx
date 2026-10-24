@@ -171,6 +171,31 @@ describe("DestinationPicker", () => {
     view.unmount();
   });
 
+  test("a Turn Off after a new folder does not show the old reason", async () => {
+    const changed = { ...settings, storage_folder: "/Users/me/Library", watched_folder: null } as Settings;
+    const reason = "The watched folder is off because it is inside the new storage folder. Choose another folder to watch.";
+    const { user, received, view } = picker(
+      {
+        pick_storage_folder: () => "/Users/me/Library",
+        change_storage_folder: () => ({ ...done(changed), watched_folder_off: reason }),
+      },
+      { settings: { ...settings, watched_folder: RECORDINGS } as Settings },
+    );
+    await user.click(change());
+    await user.click(await screen.findByRole("button", { name: "Leave Them" }));
+    await waitFor(() => expect(received).toEqual([changed]));
+    const onSettings = (s: Settings) => received.push(s);
+    view.rerender(<DestinationPicker settings={changed} status={ready} onSettings={onSettings} />);
+    expect(screen.getByText(reason)).toBeTruthy();
+    const watching = { ...changed, watched_folder: "/Users/me/Other" } as Settings;
+    view.rerender(<DestinationPicker settings={watching} status={ready} onSettings={onSettings} />);
+    expect(screen.queryByText(reason)).toBeNull();
+    view.rerender(<DestinationPicker settings={changed} status={ready} onSettings={onSettings} />);
+    expect(screen.queryByText(reason)).toBeNull();
+    expect(screen.queryByText("Turned off")).toBeNull();
+    view.unmount();
+  });
+
   test("a closed folder dialog changes nothing", async () => {
     const { tauri, user, received, view } = picker({ pick_storage_folder: () => null });
     await user.click(change());

@@ -288,8 +288,10 @@ export function Home({
 
   // The import ended. A file that did not import shows its reason (R20).
   // The new notes come with the library change events.
-  const imported = (result: Result<ImportResult, string>) => {
-    setImporting(null);
+  // An older request must not close a newer sheet: the sheet closes only
+  // if it still shows the files of this request.
+  const imported = (files: string[], result: Result<ImportResult, string>) => {
+    setImporting((current) => (current === files ? null : current));
     if (result.status === "error") {
       setNotice({ tone: "negative", text: sentence(result.error) });
       return;
@@ -536,7 +538,7 @@ export function Home({
           paths={importing}
           types={lists.types}
           tags={lists.tags?.map((t) => t.text) ?? []}
-          onDone={imported}
+          onDone={(result) => imported(importing, result)}
           onCancel={() => setImporting(null)}
         />
       )}

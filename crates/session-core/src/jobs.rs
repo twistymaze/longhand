@@ -476,6 +476,10 @@ const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, 
      home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot, \
      started_at, note_type, tags, pending_type";
 
+/// The order of the queue: each recorded note goes before each imported
+/// note (R14a, KTD13). `dequeue` and `queue` use it.
+const QUEUE_ORDER: &str = "import_source IS NOT NULL, queue_seq";
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -2054,9 +2058,11 @@ impl Store {
         let next: Option<String> = self
             .conn
             .query_row(
-                "SELECT id FROM sessions WHERE queue_seq IS NOT NULL
-                 AND json_extract(state, '$.state') = 'queued'
-                 ORDER BY import_source IS NOT NULL, queue_seq LIMIT 1",
+                &format!(
+                    "SELECT id FROM sessions WHERE queue_seq IS NOT NULL
+                     AND json_extract(state, '$.state') = 'queued'
+                     ORDER BY {QUEUE_ORDER} LIMIT 1"
+                ),
                 [],
                 |r| r.get(0),
             )
@@ -2103,11 +2109,11 @@ impl Store {
     /// Queued session ids, head first: the recorded notes in their order,
     /// then the imported notes in their order (R14a, KTD13).
     pub fn queue(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT id FROM sessions WHERE queue_seq IS NOT NULL
              AND json_extract(state, '$.state') = 'queued'
-             ORDER BY import_source IS NOT NULL, queue_seq",
-        )?;
+             ORDER BY {QUEUE_ORDER}"
+        ))?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;

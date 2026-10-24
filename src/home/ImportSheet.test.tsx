@@ -23,8 +23,8 @@ const types: NoteTypeList = {
 
 const imported = { note_ids: ["n1"], refused: [] };
 
-function setup(paths: string[]) {
-  const tauri = mockTauri({ import_files: () => imported });
+function setup(paths: string[], handler: () => unknown = () => imported) {
+  const tauri = mockTauri({ import_files: handler as () => never });
   const onDone = vi.fn((_result: unknown) => {});
   const onCancel = vi.fn(() => {});
   render(<ImportSheet paths={paths} types={types} tags={["Team", "Client::Acme"]} onDone={onDone} onCancel={onCancel} />);
@@ -95,6 +95,18 @@ describe("ImportSheet", () => {
     await user.keyboard("{Escape}");
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(imports()).toEqual([]);
+  });
+
+  test("Escape does nothing while the import runs", async () => {
+    let finish: (v: typeof imported) => void = () => {};
+    const running = new Promise<typeof imported>((resolve) => (finish = resolve));
+    const { user, onCancel, onDone, imports } = setup(["/a/One.m4a"], () => running);
+    await user.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(imports()).toHaveLength(1));
+    await user.keyboard("{Escape}");
+    expect(onCancel).not.toHaveBeenCalled();
+    finish(imported);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
   });
 
   test("the first field has the focus when the sheet opens", () => {

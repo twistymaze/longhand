@@ -30,6 +30,9 @@ export function useFileDrop(enabled: boolean, onDrop: (paths: string[]) => void)
       .then((stop) => {
         if (ended) stop();
         else unlisten = stop;
+      })
+      .catch((e: unknown) => {
+        console.error("The file drop could not be started:", e);
       });
     return () => {
       ended = true;
