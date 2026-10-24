@@ -49,6 +49,7 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 - **The file name gives only the first title.** Governs R15. (session-settled: user-directed — the summary sets the final title, as for a recording.)
 - **The audio becomes normal note audio, and a file's identity is its content.** Governs R12, R17. (session-settled: user-approved — proposed in the scoping synthesis with the alternatives of keeping the original file and identifying by name; the user accepted.)
 - **Content identity for every file, also when that downloads a skipped archive.** A user who chooses a folder wants Longhand to read the files in it, so the downloads are expected. Governs R12b. (session-settled: user-directed — chosen over a check by name, size and date for skipped files: that check avoids downloads, but a skipped file that is renamed could come back as new.)
+- **The first-pick count matches by name and size.** The count must show before any download, and only content is exact. Governs R6. (session-settled: user-directed — chosen over a count of all audio files: exact in the normal case; a renamed file that was imported can count as new, and the content check still stops a second import.)
 - **The watched folder includes its subfolders.** Some recorder apps save into dated subfolders. Governs R5. (session-settled: user-directed — chosen over the top level only: a user who chooses a broad folder sees the count in the R6 question.)
 
 ### Requirements
@@ -64,7 +65,7 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 
 - R4. Each computer has its own watched-folder setting, off by default. The user chooses the folder with the system folder dialog.
 - R5. While Longhand runs, each new audio file in the watched folder or its subfolders becomes a new note with the default note type and no tags, and it processes fully with no user action. A file that arrives while Longhand is closed is imported at the next launch.
-- R6. When the user chooses a folder that already holds audio files that are not in the import record, Longhand says how many there are and asks once: import them, or import only new files. The question shows at once, with the number and the total size of the audio files, before any download. The files that the user does not import go into the import record as skipped; Longhand reads and records them in the background after the answer. The same question appears when the storage folder changes and the watched folder holds audio files that the new storage folder's import record does not hold.
+- R6. When the user chooses a folder that already holds audio files that are not in the import record, Longhand says how many there are and asks once: import them, or import only new files. The question shows at once, before any download, with the number and the total size of the audio files whose name and size match no entry in the import record. The content check still decides each import. The files that the user does not import go into the import record as skipped; Longhand reads and records them in the background after the answer. The same question appears when the storage folder changes and the watched folder holds audio files that the new storage folder's import record does not hold.
 - R7. Longhand never changes, moves, renames or deletes a file in the watched folder.
 - R8. Longhand imports a file only when it is complete. It first downloads a file that is online only, and it waits while a file still changes.
 - R9. The watched folder cannot be the storage folder, cannot be inside it and cannot contain it. It also cannot contain Longhand's own app data (which holds the Working location), and it cannot be the user's home folder or the root of a volume. The setting refuses such a folder and says why.
@@ -156,26 +157,26 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 ### Key Technical Decisions
 
 - KTD1. **Decode m4a and mp3 with Symphonia 0.6, after a spike on real files.** Symphonia is pure Rust and gives one decoder for macOS and Windows. It is MPL-2.0, so `deny.toml` and `about.toml` get an exception for the Symphonia crates only. If U1 shows that it fails on real recordings, U2 uses AudioToolbox (`objc2-audio-toolbox` and `objc2-avf-audio` are already in `Cargo.lock` through `cpal`) and Media Foundation instead. wav keeps `hound`. (session-settled: user-directed — chosen over the platform decoders from the start and over Symphonia with no spike: one decoder for both systems, with a tested way back.)
-- KTD2. **The import record is one small JSON file per content identity:** `.longhand/imports/<sha256>.json`. Automatic writes from several computers must never lose an entry. One shared file with read-modify-write loses entries in the sync window, which `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md` accepts only for settings that people edit. One file per identity makes each write independent. Two computers that write the same identity write the same meaning ("do not import"), so a lost write loses nothing. Governs the shape of R11, R12, R13.
-- KTD3. **The content identity is the SHA-256 of the file bytes, computed in the same read pass that decodes the file.** Two separate reads can see two versions of a file that another app saves again between them. The skip work of R6 (KTD12) hashes without a decode. `session_core::recognition::file_digest` is the streaming model.
-- KTD4. **An import enters processing as a normal recording.** The decoded audio goes through `recorder::ChunkedWriter` into `<working>/<id>/audio-recovery/` as 16-bit chunks, then a segment row and `UserStop` queue it. Assemble, Diarize and the later stages do not change. `crates/pipeline/tests/common/mod.rs` already uses this sequence. Chunk names carry the recording time from R16 as `capture_started_at`.
-- KTD5. **A new note state, `Importing`, holds a note while its file downloads and converts.** A note in `Capturing` or `Interrupted` is stopped or interrupted by launch recovery and by each recording start (`recover_crashed`, `hold_unregistered`), and its chunks would read as a crashed recording. `Importing` is touched only by the import worker (KTD6). Its exits are `Queued` (done) and removal of the note (a delete by the user, a duplicate found during conversion, or a decode failure). Home shows it as "Preparing" (R21).
+- KTD2. **The import record is one folder per content identity, with one small JSON file per computer:** `.longhand/imports/<sha256>/<computer_id>.json`. Automatic writes from several computers must never lose an entry. One shared file with read-modify-write loses entries in the sync window, which `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md` accepts only for settings that people edit. With one file per computer, no two computers ever write the same file, so a sync conflict cannot replace a state. A lookup reads every computer's file for the identity and resolves the state as `imported` over `skipped` over `failed`. Governs the shape of R11, R12, R13.
+- KTD3. **The content identity is the SHA-256 of the whole file, computed while the worker copies the file in one sequential pass into the note's Working location.** The decoder then reads the copy, never the source. A decoder seeks inside m4a containers (the `moov` atom often follows `mdat`) and can stop early on a damaged file, so a hash of the decoder's reads is not the file's hash. The copy also gives the decoder a file that cannot change during the decode, and it works with the platform decoders of KTD1. The worker deletes the copy after the chunks are written. The skip work (KTD12) hashes with the same sequential read and no copy. `session_core::recognition::file_digest` is the streaming model.
+- KTD4. **An import enters processing as a normal microphone recording.** The decoder downmixes every file to mono (the average of the channels), because a 2-channel segment means microphone plus app audio in processing (`crates/pipeline/src/assemble.rs`). The mono audio goes through `recorder::ChunkedWriter` into `<working>/<id>/audio-recovery/` as 16-bit chunks, then a segment row and `UserStop` queue it. Assemble, Diarize and the later stages do not change. `crates/pipeline/tests/common/mod.rs` already uses this sequence. Chunk names carry the recording time from R16 as `capture_started_at`.
+- KTD5. **A new note state, `Importing`, holds a note while its file downloads and converts.** A note in `Capturing` or `Interrupted` is stopped or interrupted by launch recovery and by each recording start (`recover_crashed`, `hold_unregistered`), and its chunks would read as a crashed recording. Only the import worker and a user delete change an `Importing` note. Its exits are `Queued` (done) and removal of the note (a delete by the user, a duplicate found during conversion, or a decode failure). Home shows it as "Preparing" (R21). The state is stored in the database, and an older `SessionState` cannot parse it, so the new migration of KTD13 also raises the schema version: an older build on this computer then refuses the database and takes its existing rebuild path (`docs/solutions/runtime-errors/older-build-panicked-on-newer-database-at-launch.md`).
 - KTD6. **Each import has a local journal entry, written before any other step.** The journal is a file in the app data folder, next to `settings.json`, because data must never live only in the database (`docs/solutions/runtime-errors/older-build-panicked-on-newer-database-at-launch.md`). The order of steps, each one recorded before the next starts:
   1. Journal entry (source path, identity when known, note id).
   2. Note row in `Importing`, with type, tags, title and start time, and the early home write.
-  3. Download, hash and convert into the note's Working location.
+  3. Download, copy with hash (KTD3) and convert into the note's Working location.
   4. Import record entry `imported`.
   5. Segment row and `UserStop` in one store lock, so the note is `Queued`.
   6. Journal entry removed.
 
-  At launch, the import worker reads the journal and continues each entry from the last recorded step. A user who deletes a note in `Importing` gets an `imported` entry written, so the file does not come back (R12).
+  At launch, the import worker reads the journal and continues each entry from the last recorded step. When the user deletes an `Importing` note, the worker stops the conversion and removes the note, but keeps the journal entry, marked deleted. It then finishes the download and the hash with no conversion, writes the `imported` entry, and only then removes the journal entry, so the file does not come back (R12). While a deleted entry is open, the watcher does not import its source path.
 - KTD7. **The watched folder gets its own watcher manager,** modelled on `src-tauri/src/managers/library.rs`: one thread, a `notify` debouncer, a command channel, a scan at launch and a full scan each minute. An event only asks for a scan; no file is imported from an event alone, because FSEvents and File Provider folders drop and delay events. The watched folder is never a library root, because the reconcile would try to adopt its audio files.
-- KTD8. **Stability before import.** A file is a candidate only when its size and modification time have not changed for 30 s across scans, and, on macOS, it is not dataless (`st_flags & SF_DATALESS`). The worker downloads a dataless file with a coordinated read on its own thread. A download with no progress for 10 minutes ends as a read failure (KTD11) and is tried again at a later scan. On Windows, a plain read hydrates a placeholder.
-- KTD9. **The conversion waits for a recording, and checks the disk first.** The conversion runs outside the runner, so it polls the runner's `suspended` predicate (`src-tauri/src/managers/processing.rs`, capture active or draining) at each decode block and pauses while it is true. Before it starts, it checks that free space minus the expected size of the chunks stays above `DISK_RESERVE_BYTES` plus a margin; if not, the import waits as a read failure. Download and hashing can continue during a recording. Covers R18, R22.
+- KTD8. **Stability before import.** A file is a candidate only when its size and modification time have not changed for 30 s across scans, and, on macOS, it is not dataless (`st_flags & SF_DATALESS`). The worker downloads a dataless file with a coordinated read on its own thread. Before each download, of an import or of the skip work, the worker checks the disk as KTD9 does, with the file's `st_size`, and it starts no new download while a recording runs. A download with no progress for 10 minutes ends as a read failure (KTD11) and is tried again at a later scan. On Windows, a plain read hydrates a placeholder.
+- KTD9. **The conversion waits for a recording, and checks the disk first.** The conversion runs outside the runner, so it polls the runner's `suspended` predicate (`src-tauri/src/managers/processing.rs`, capture active or draining) at each decode block and pauses while it is true. Before the copy starts, the worker checks that free space minus the file size (the copy) and the expected size of the chunks stays above `DISK_RESERVE_BYTES` plus a margin. If not, the import waits, the disk notice shows (U8, because only the user can free space), and the worker checks again at each scan and launch. A download in progress can finish during a recording; hashing can continue. Covers R18, R20, R22.
 - KTD10. **The note's own source field is optional and can be lost.** `NoteRecord` gets an optional `import` object (source file name and identity) with `serde(default, skip_serializing_if)`, and `layout` stays at 2. An older build drops the field at its next write, so dedupe reads only the import record (KTD2). A `layout` bump would make every imported note a problem note on older builds.
-- KTD11. **Read failures stay local; decode failures are shared.** A file that cannot be read yet (TCC, a stalled download, a sharing violation) goes to a local list in the watcher's state and is tried again at later scans, with no message. Only a file that was read completely and that the decoder refuses gets a shared `failed` entry, with the decoder name and version. A newer decoder version tries the file again. Covers R12a.
-- KTD12. **The first-pick question counts from file names, and the skip work runs later.** The count and size come from a directory listing (`st_size` is correct for placeholders), so the question shows at once (R6). At the answer "only new files", the watcher writes a local snapshot of the files then present (path, size, modification time). It holds those files from import until each has a `skipped` entry, which the worker writes in the background after it downloads and hashes the file (R12b).
-- KTD13. **Recorded notes go ahead of imported notes.** The queue order is `queue_seq` (`crates/session-core/src/jobs.rs`). The claim step takes the oldest `Queued` note that is not an import first, then the oldest import. Covers R14a.
+- KTD11. **Read failures stay local; decode failures are shared.** A file that cannot be read yet (TCC, a stalled download, a sharing violation) is kept in the watcher's memory and tried again at later scans, with no message. Only a file that was copied completely and that the decoder refuses gets a shared `failed` entry, with the Longhand version and the decoder name and version. A Longhand version newer than the one in the entry tries the file again (R12a).
+- KTD12. **The first-pick question counts from file names, and the skip work runs later.** The count and size come from a directory listing compared by name and size with the import record (`st_size` is correct for placeholders), so the question shows at once (R6). At the answer "only new files", the watcher writes a local snapshot of the files then present (path, size, modification time). It holds those files from import until each has a `skipped` entry, which the worker writes in the background after it downloads and hashes the file (R12b).
+- KTD13. **Recorded notes go ahead of imported notes.** A new migration in `crates/session-core/src/schema.rs` adds an import flag column to the sessions table, set when the row is created in `Importing`. `Store::queue()` and `Store::dequeue()` both order by (import flag, `queue_seq`); the runner walks `Store::queue()` and calls `dequeue_session` (`crates/pipeline/src/runner.rs`). Covers R14a.
 - KTD14. **Drag-and-drop uses Tauri's native file drop.** `getCurrentWebview().onDragDropEvent` gives absolute paths (HTML5 `drop` gives none and does not fire while the native handler is on). The import command takes the paths and checks in Rust that each is a regular file with an accepted extension. The file dialog runs in Rust (`blocking_pick_files` with an extension filter), as `pick_storage_folder` does.
 
 ### High-Level Technical Design
@@ -195,10 +196,10 @@ stateDiagram-v2
   ReadFailed --> Settling: next scan
   Journaled --> Converting: row Importing, early home written
   Converting --> Converting: paused while a recording runs
-  Converting --> Recorded: hash in record, entry "imported"
+  Converting --> Recorded: entry "imported" written
   Converting --> Known: hash already in record (another computer)
   Converting --> Failed: decoder refuses the complete file
-  Failed --> Known: entry "failed" + decoder version
+  Failed --> Known: entry "failed" + Longhand and decoder versions
   Recorded --> Queued: segment + UserStop, journal entry removed
   Queued --> [*]
   Known --> [*]
@@ -209,7 +210,7 @@ stateDiagram-v2
 ### Implementation Constraints
 
 - Every file read in the watched folder, every hash and every conversion runs off the main thread and outside the store lock (`docs/solutions/performance-issues/sync-tauri-commands-froze-the-app-on-a-slow-folder-or-microphone.md`). Lock order is capture state first, then store.
-- Readers of `.longhand/imports/` follow `shared-settings-in-a-synced-folder-rules.md`: a read never writes, exact file names only (no conflict copies), a file that does not parse is never overwritten and makes its identity wait, unknown fields are kept, the schema version never goes down, links that point outside the storage folder are refused, and reads have a size limit. The file name is accepted only as 64 lowercase hex characters (`docs/solutions/security-issues/synced-note-id-became-a-delete-path.md`).
+- Readers of `.longhand/imports/` follow `shared-settings-in-a-synced-folder-rules.md`: a read never writes, exact file names only (no conflict copies), a file that does not parse is never overwritten and makes its identity wait, unknown fields are kept, the schema version never goes down, links that point outside the storage folder are refused, and reads have a size limit. A folder name is accepted only as 64 lowercase hex characters, and a file name only as a computer id (`docs/solutions/security-issues/synced-note-id-became-a-delete-path.md`).
 - A computer that only receives a sync writes nothing into the import record (`docs/solutions/logic-errors/receiving-computer-renamed-synced-folder-back.md`).
 - No message for normal behaviour: waiting, downloading, a duplicate, or a read failure that the next scan can fix (`CLAUDE.md`, `docs/solutions/ui-bugs/folder-notice-for-a-move-the-app-does-without-help.md`).
 - New code says "note" and `note_id`. Text follows ASD-STE100.
@@ -218,7 +219,7 @@ stateDiagram-v2
 
 - **Other computers that share the storage folder:** they see imported notes through the normal library sync, and they read the import record before their own watched folder imports (R13). An older Longhand must ignore `.longhand/imports/` and keep imported notes readable (U1 step 5; KTD10).
 - **The processing queue:** imports join the one FIFO, behind recorded notes (KTD13). A large batch delays later imports, not recordings.
-- **Disk:** a conversion writes chunks of about the file's decoded size into the Working location until Assemble finishes; KTD9 keeps the recording reserve.
+- **Disk:** an import holds a copy of the file and chunks of about its decoded size in the Working location until Assemble finishes, and downloads stay on disk; KTD8 and KTD9 keep the recording reserve.
 - **The agent skill:** `plugins/` longhand-notes reads the storage folder; it must treat `.longhand/imports/` as Longhand's own and the `import` field as optional (U9).
 
 ### Risks
@@ -227,7 +228,7 @@ stateDiagram-v2
 |---|---|
 | Symphonia decodes some phone recordings badly | U1 decodes real files first; KTD1 falls back to the platform decoders. |
 | macOS refuses or prompts for an iCloud or CloudStorage watched folder after a relaunch | U1 step 4 tests it; U6 adds the usage keys; the folder notice (U8) tells the user when access stays refused. |
-| A crash between steps imports a file twice or drops a deleted note's entry | The journal order of KTD6 and one crash-window test per step (U4). |
+| A crash between steps imports a file twice or drops a deleted note's entry | The journal order of KTD6, the deleted mark, and one crash-window test per step (U4). |
 | Two computers that both watch one folder import one file twice | Accepted (Dependencies / Assumptions); the per-computer setting makes it a deliberate setup. |
 | Hashing an archive downloads many GB on first pick | Accepted by the user (R12b); the R6 question shows the total size first. |
 
@@ -243,7 +244,7 @@ stateDiagram-v2
 - **Files:** `docs/solutions/integration-issues/import-audio-spike-results.md` (new; private sample files stay in gitignored `fixtures/`).
 - **Approach:**
   1. Decode the private `sample.m4a` (about 3 h of AAC), an HE-AAC file, an iPhone Voice Memo, an mp3 and a file of 8 h or more with Symphonia 0.6 (`aac`, `isomp4`, `mp3`, `id3v2`), streaming. Record time, memory, and whether the PCM matches `afconvert` output.
-  2. Read the m4a `mvhd` creation time (1904 epoch) and `©day`, and the mp3 ID3 `TDRC`, through Symphonia tags or a small own atom reader.
+  2. Read the m4a `mvhd` creation time (1904 epoch) and `©day`, and the mp3 ID3 `TDRC`, through Symphonia tags or a small own atom reader. Compare each with the known recording time of the sample, and record the time zone that each writer uses. Confirm that the decode of an m4a with `moov` after `mdat` seeks.
   3. On macOS: detect an online-only iCloud file with `SF_DATALESS`, download it with a coordinated read, and observe a stalled download.
   4. In a signed bundle: choose an iCloud Drive folder and a `~/Library/CloudStorage` folder, relaunch, and check access to old and new files. Record any prompt and the usage keys needed.
   5. Put `.longhand/imports/<hash>.json` into a storage folder and run the last release on it: launch, library scan, Move, settings save.
@@ -254,25 +255,25 @@ stateDiagram-v2
 
 ### U2. Decoder crate
 
-- **Goal:** One function that reads an accepted file once, gives PCM blocks, the SHA-256 of the bytes and the recording time.
+- **Goal:** Functions that copy a file with its SHA-256, decode the copy to mono PCM blocks, and read the recording time.
 - **Requirements:** R16, R17, R19; KTD1, KTD3.
 - **Dependencies:** U1.
 - **Files:** `crates/audio-import/` (new crate: `Cargo.toml`, `src/lib.rs`, `src/decode.rs`, `src/metadata.rs`, `tests/decode.rs`); `Cargo.toml` (workspace member); `deny.toml`; `about.toml`; `licences/generated/*`; `testdata/audio-import/` (small synthetic m4a, mp3 and wav files made from a generated tone, with a note on how they were made).
 - **Approach:**
-  1. A decode reader that wraps the file in a hashing reader, so the hash covers exactly the bytes decoded (KTD3).
-  2. Output in blocks of f32, mono or stereo at the file's rate; the caller writes chunks (U4).
-  3. The recording time: m4a `mvhd` or `©day`, mp3 `TDRC`, else none (the caller uses the modification time, R16).
+  1. A sequential copy with SHA-256 into a given folder (KTD3), and the same sequential hash with no copy for the skip work (KTD12).
+  2. A decode of the copy to blocks of mono f32 at the file's rate, the average of the channels (KTD4); the caller writes chunks (U4).
+  3. The recording time: m4a `mvhd` or `©day`, mp3 `TDRC`. A value that is zero, before 2000, or later than the file's modification time plus one day counts as none (the caller then uses the modification time, R16).
   4. A decoder name and version constant for `failed` entries (KTD11).
-  5. A hash-only reader for the skip work (KTD12).
 - **Patterns to follow:** `session_core::recognition::file_digest` (streaming SHA-256); `crates/pipeline/src/resample.rs`.
 - **Test scenarios:**
-  - A 5 s mono m4a decodes to 5 s of samples at its rate, and its hash equals the SHA-256 of the file.
-  - A stereo mp3 decodes to two channels.
+  - A 5 s mono m4a copied and decoded gives 5 s of samples at its rate, and the copy's hash equals the SHA-256 of the source.
+  - An m4a with `moov` after `mdat` gives the same hash as `shasum -a 256` of the file.
+  - A stereo mp3 decodes to one channel that is the average of the two.
   - A wav decodes through the same function.
-  - An m4a with `mvhd` set to a known time returns that time; an mp3 with `TDRC` returns its time; a file with neither returns none.
+  - An m4a with `mvhd` set to a known time returns that time; an mp3 with `TDRC` returns its time; a file with neither returns none; an m4a with `mvhd` zero returns none.
   - A truncated m4a returns a decode error, not a panic, and not a partial success.
   - A file with an accepted extension that is not audio (text renamed `.m4a`) returns a decode error.
-  - The hash-only reader gives the same hash as the decode reader for the same file.
+  - The hash with no copy gives the same hash as the copy for the same file.
 - **Verification:** The tests pass; `cargo deny check` passes with the MPL-2.0 exception for the Symphonia crates only; `scripts/check-licences.sh` passes.
 
 ### U3. Import record
@@ -282,9 +283,9 @@ stateDiagram-v2
 - **Dependencies:** None.
 - **Files:** `crates/import-record/` (new crate: `src/lib.rs`, `src/entry.rs`, `src/store.rs`, `src/merge.rs`, `tests/record.rs`, `tests/two_computers.rs`); `Cargo.toml`.
 - **Approach:**
-  1. An entry holds schema version, state (`imported`, `skipped`, `failed`), source file name, size, the writing computer's id, the time, and for `failed` the decoder name and version. Unknown fields are kept.
-  2. Writes are create-or-replace of one file through the atomic write that `crates/shared-settings` uses. Allowed changes: none to `imported`, `failed` → `imported` or `failed` with a newer decoder, `skipped` → `imported` (a manual import, R3).
-  3. A lookup by identity reads exactly `<hash>.json`. A file that does not parse returns "unknown, wait".
+  1. An entry holds schema version, state (`imported`, `skipped`, `failed`), source file name, size, the writing computer's id, the time, and for `failed` the Longhand version and the decoder name and version. Unknown fields are kept.
+  2. A computer writes only its own file, `imports/<hash>/<computer_id>.json`, through the atomic write that `crates/shared-settings` uses (KTD2).
+  3. A lookup by identity reads the files in exactly `imports/<hash>/` and resolves `imported` over `skipped` over `failed`. A file that does not parse returns "unknown, wait".
   4. A merge copies each entry from an old storage folder into a new one when the new one has no file for that identity (for U7).
   5. Link and path checks use `crates/shared-settings/src/inside.rs`.
 - **Patterns to follow:** `crates/shared-settings/src/file.rs` (patch-only save, unknown fields, schema version); `crates/shared-settings/tests/two_computers.rs`.
@@ -293,11 +294,12 @@ stateDiagram-v2
   - An entry with an unknown field keeps the field after a state change.
   - An entry with a newer schema version is read, and a write does not lower the version.
   - A file that does not parse makes the lookup return "wait", and a write for that identity does not overwrite it.
-  - A conflict copy `<hash> 2.json` has no effect on the lookup.
-  - A symbolic link `imports/<hash>.json` that points outside the storage folder is refused.
-  - A file name that is not 64 lowercase hex characters is ignored.
-  - `failed` with decoder version 1 allows a retry when the current version is 2, and not when it is 1.
-  - Two computers write `imported` for the same identity; after both syncs, the lookup on each gives "imported".
+  - A conflict copy `<computer_id> 2.json` has no effect on the lookup.
+  - A symbolic link in `imports/<hash>/` that points outside the storage folder is refused.
+  - A folder name that is not 64 lowercase hex characters, and a file name that is not a valid computer id, are ignored.
+  - `failed` written by Longhand 1.4 allows a retry on 1.5, and not on 1.4.
+  - Computer A writes `skipped` and computer B writes `failed` for the same identity; after both syncs, the lookup on each gives "skipped".
+  - Computer A writes `imported` and computer B writes `failed`; the lookup gives "imported".
   - The merge copies an entry that the new folder lacks and does not replace one that it has.
 - **Verification:** The tests pass. The rules in `shared-settings-in-a-synced-folder-rules.md` that apply each have a test.
 
@@ -306,30 +308,35 @@ stateDiagram-v2
 - **Goal:** Turn one file into a queued note, crash-safe, with the recording wait and the disk check.
 - **Requirements:** R11, R12, R14, R14a, R15, R16, R17, R18, R21, R22; KTD4, KTD5, KTD6, KTD9, KTD10, KTD13.
 - **Dependencies:** U2, U3.
-- **Files:** `crates/session-core/src/state.rs` (new `Importing` state and its events); `crates/session-core/src/jobs.rs` (create an import row, claim order); `crates/session-core/src/note_record.rs` (optional `import` field); `crates/session-core/src/schema.rs` and a new migration only if the state needs one; `crates/pipeline/src/import.rs` (new: the worker steps); `src-tauri/src/managers/import.rs` (new: the manager, its journal and its thread); `src-tauri/src/managers/processing.rs` (start and stop the manager, share the `suspended` predicate); `src-tauri/src/commands/session.rs` (Home row state "Preparing"); `crates/pipeline/tests/import.rs`; `crates/session-core/tests/` for the state.
+- **Files:** `crates/session-core/src/state.rs` (new `Importing` state and its events); `crates/session-core/src/jobs.rs` (create an import row; `queue()` and `dequeue()` order); `crates/session-core/src/note_record.rs` (optional `import` field); `crates/session-core/src/schema.rs` and a new migration (import flag column, schema version raised; KTD5, KTD13); `crates/pipeline/src/import.rs` (new: the worker steps); `src-tauri/src/managers/import.rs` (new: the manager, its journal and its thread); `src-tauri/src/managers/processing.rs` (start and stop the manager, share the `suspended` predicate); `src-tauri/src/commands/session.rs` (Home row state "Preparing"); `crates/pipeline/tests/import.rs`; `crates/session-core/tests/` for the state.
 - **Approach:**
   1. The journal is a JSON file in the app data folder, written atomically, read at launch (KTD6).
   2. Create the row in `Importing` with `TitleSource::Proposed` from the file name or `TitleSource::User` from the sheet (R15, R2a), the type and tags, `created_at` and `opened = true` at the recording time (R16), `live_transcript = false`, and the recognition snapshot and model that a recording start stores (`record_in_store` in `src-tauri/src/managers/capture.rs`). Then `begin_home` and the early home write.
-  3. Convert with the U2 reader into `ChunkedWriter`, with the `suspended` wait and the disk check (KTD9).
+  3. Copy with hash, then decode into `ChunkedWriter`, with the disk check before the copy and the `suspended` wait (KTD3, KTD9).
   4. Look up the identity again; if another computer imported it meanwhile, delete this note and its Working location (state diagram).
   5. Write the `imported` entry, then the segment and `UserStop` in one store lock.
-  6. Claim order: non-import `Queued` notes first (KTD13).
-  7. Delete of an `Importing` note: stop its conversion, write the `imported` entry when the identity is known, remove the journal entry.
+  6. Queue order: non-import `Queued` notes first (KTD13).
+  7. Delete of an `Importing` note: as KTD6 (journal entry marked deleted until the `imported` entry is written).
+  8. The note view of an `Importing` note shows the pending view that a `Queued` note shows, with "Preparing"; only rename and delete are available.
 - **Patterns to follow:** `crates/pipeline/src/early_home.rs` (step-then-record); `open_note` in `src-tauri/src/managers/capture.rs`; `crates/pipeline/tests/common/mod.rs` (`write_segment`, `queue_session`); `docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`.
 - **Execution note:** Write one crash-window test for each journal step before the worker code.
 - **Test scenarios:**
   - A 10 s m4a import gives a `Queued` note whose Assemble output is 10 s, with the proposed title from the file name and the start time from the file's `mvhd`.
-  - Covers AE7. An import with a sheet title keeps that title after the summary's title job.
+  - An import with a sheet title keeps that title after the summary's title job.
+  - Covers AE7. The user renames an importing note before its summary ends; the summary does not change the title.
   - A crash after each journal step, followed by a launch, ends with exactly one queued note and one `imported` entry.
   - A launch with an `Importing` row and no journal entry removes the row and its Working location.
   - Launch recovery and a recording start leave an `Importing` note unchanged.
   - A recording starts during a conversion: the conversion pauses until capture ends (wait for the pause event), then completes.
-  - Free space below the reserve: the conversion does not start, and the import stays waiting with no message.
+  - Free space below the reserve: the copy does not start, the import waits, and the disk notice is set; when space returns, the import continues and the notice clears.
   - Another computer's `imported` entry appears during the conversion: the note is removed and no second entry is written.
-  - Covers AE1. The user deletes an `Importing` note: the file gets an `imported` entry and no note.
+  - The user deletes an `Importing` note before its hash is known: the worker finishes the hash, writes the `imported` entry, and a later scan makes no note.
+  - A crash after a delete and before the `imported` entry, then a launch: the entry is written and no note returns.
   - A recorded note queued after three imports is claimed before them.
   - The `import` field survives a round trip; a `longhand.json` with no `import` field still reads.
-  - A decode error on a complete file writes a `failed` entry with the decoder version and removes the note.
+  - A decode error on a complete copy writes a `failed` entry with the Longhand and decoder versions and removes the note.
+  - A database with an `Importing` row has a schema version above the last release's version.
+  - The note view of an `Importing` note offers rename and delete only.
 - **Verification:** The tests pass. An imported note runs through Save and its summary in the existing runner tests' harness, and the test waits for the end of the title job (`docs/solutions/test-failures/runner-test-stopped-before-the-title-job-that-the-save-queued.md`).
 
 ### U5. Manual import: menu, drop and sheet
@@ -343,6 +350,7 @@ stateDiagram-v2
   2. The sheet: for one file, a title field filled with the file name; for several, a list of file names. Type (default note type) and tags (`TagPicker`). Import and Cancel. Call `focus()` on open (`docs/solutions` WebKit focus lesson).
   3. `import_files` checks each path in Rust (regular file, accepted extension) and the storage-folder refusal that New Note uses (`destination::note_start_refusal`), then hands each file to the U4 manager.
   4. A dropped folder or a file with another extension gets one message that names it (R20); the other files import.
+  5. A manual import that fails to decode always shows its own failure notice (U8), also when the file already has a `failed` entry.
   5. The drop target shows only while files are dragged over the window.
 - **Patterns to follow:** `src/lib/NewTypeDialog.tsx`, `src/lib/ConfirmDialog.tsx`, `src/lib/TagPicker.tsx`; `pick_storage_folder` in `src-tauri/src/commands/settings.rs`; `start_recording` in `src-tauri/src/commands/capture.rs` (type resolution).
 - **Test scenarios:**
@@ -361,13 +369,13 @@ stateDiagram-v2
 - **Goal:** A per-computer watched folder that imports each new stable audio file with no user action.
 - **Requirements:** R4, R5, R6, R7, R8, R9, R10, R12, R12a, R12b, R13, R19, R20; F2, F3; KTD7, KTD8, KTD11, KTD12.
 - **Dependencies:** U3, U4.
-- **Files:** `src-tauri/src/managers/watched_folder.rs` (new: watcher, scans, local state, snapshot); `src-tauri/src/managers/settings.rs` (`watched_folder` in `LocalSettings` and `Settings`); `src-tauri/src/managers/destination.rs` (R9 checks); `src-tauri/src/commands/settings.rs` (`pick_watched_folder`, `set_watched_folder`, `watched_folder_preview` for the R6 count); `src-tauri/Info.plist` (folder usage keys from U1); `src/settings/WatchedFolder.tsx` (new, in the Storage pane); `src/settings/DestinationPicker.tsx`; tests inline in `watched_folder.rs`, `src/settings/WatchedFolder.test.tsx`.
+- **Files:** `src-tauri/src/managers/watched_folder.rs` (new: watcher, scans, local state, snapshot); `src-tauri/src/managers/settings.rs` (`watched_folder` in `LocalSettings` only); `src-tauri/src/managers/destination.rs` (R9 checks); `src-tauri/src/commands/settings.rs` (`pick_watched_folder`, `set_watched_folder`, `watched_folder_preview` for the R6 count); `src-tauri/Info.plist` (folder usage keys from U1); `src/settings/WatchedFolder.tsx` (new, in the Storage pane); `src/settings/DestinationPicker.tsx`; tests inline in `watched_folder.rs`, `src/settings/WatchedFolder.test.tsx`.
 - **Approach:**
-  1. The setting is local (`LocalSettings` is `serde(default)`, so no schema bump). It shows in Settings > Storage outside the shared-settings footer.
+  1. The setting is local (`LocalSettings` is `serde(default)`, so no schema bump). It shows in Settings > Storage outside the shared-settings footer. Invoke `apple-design` first. Its states: off (Choose Folder…); on, with the path, Change… and Turn Off; refused, with one reason for each R9 case; folder unavailable; preview being read; preview that cannot be read.
   2. R9 check at each change of the watched folder and of the storage folder: reuse `check_new_folder` logic in reverse, plus app data, home folder and volume roots.
-  3. The R6 question uses the `useFolderChange` pattern: pick, preview (count and size from a listing), ask, then set.
+  3. The R6 question uses the `useFolderChange` pattern: pick, preview, ask, then set. The question gives the count and the total size, with the buttons "Import Them" and "Only New Files"; Cancel leaves the setting as it was.
   4. Each scan walks the folder recursively, skips dot files, temporary files and other extensions, and moves each file through the KTD8 stability check and the KTD12 snapshot.
-  5. Local state (read failures, snapshot, settling files) lives in a file in the app data folder, not only in memory.
+  5. Only the R6 snapshot is written to a file in the app data folder; read failures and settling files stay in memory, because the next scan finds them again.
   6. The folder unavailable for 3 scans in a row sets the folder notice (U8); the next successful scan clears it.
   7. Stop the watcher in `ProcessingManager::shutdown`.
 - **Patterns to follow:** `src-tauri/src/managers/library.rs` (thread, debouncer, timing struct, `fast()` test timing); `src/settings/OldNotesDialog.tsx` and `useFolderChange`.
@@ -377,6 +385,8 @@ stateDiagram-v2
   - A file that grows across scans waits until it is stable.
   - A `.txt` and a dot file are ignored with no message.
   - Covers AE3. A renamed imported file makes no note.
+  - Covers AE1. The user deletes a finished note from a watched file; after a relaunch, the file makes no note.
+  - A skip-work download does not start while free space is below the reserve or a recording runs, and continues after.
   - Covers AE4. A folder with 40 files and the answer "only new files": no notes; each file gets a `skipped` entry; a 41st file imports. A quit before the skip work ends, then a launch: still no notes for the 40.
   - Covers AE5. A dataless file waits, downloads, then imports (macOS, with a fake dataless check in the unit test).
   - A download with no progress ends as a read failure with no message and is tried at the next scan.
@@ -392,7 +402,7 @@ stateDiagram-v2
 - **Goal:** The import record follows a Move, and a Leave Them change asks R6 again.
 - **Requirements:** R6, R9, R11; KTD2.
 - **Dependencies:** U3, U6.
-- **Files:** `crates/pipeline/src/move_notes.rs` (merge step); `src-tauri/src/commands/settings.rs` (`change_folder`: pause the watcher, R9 check against the new folder, R6 after Leave Them); `src/settings/useFolderChange.ts`; tests in `crates/pipeline/tests/move_notes.rs` and `src/settings/DestinationPicker.test.tsx`.
+- **Files:** `crates/pipeline/src/move_notes.rs` (merge step); `src-tauri/src/commands/settings.rs` (`change_folder`: pause the watcher, R9 check against the new folder, R6 after Leave Them); `src/settings/OldNotesDialog.tsx` (`useFolderChange`); tests in `crates/pipeline/tests/move_notes.rs` and `src/settings/DestinationPicker.test.tsx`.
 - **Approach:**
   1. The Move worker merges the old `.longhand/imports/` into the new folder (U3 merge) before it reports done; a crash continues the merge from what is on disk.
   2. The watcher pauses while the storage folder changes and in-flight imports finish.
@@ -409,16 +419,19 @@ stateDiagram-v2
 ### U8. Notices
 
 - **Goal:** One notice for each failure the user must know about, and none for normal waits.
-- **Requirements:** R20, R21; AE8.
+- **Requirements:** R20, R21, R22; AE8.
 - **Dependencies:** U5, U6.
 - **Files:** `src-tauri/src/commands/session.rs` (`LibraryNotices`: watched folder unavailable, failed files); `src/home/LibraryNotices.tsx`; `src/home/useLibraryNotices.ts`; tests `src/home/LibraryNotices.test.tsx` and the command's inline tests.
 - **Approach:**
-  1. A failed-file notice names the file and has a Dismiss action; a dismissed identity is stored locally and does not come back.
+  1. A failed-file notice names the file and has a Dismiss action. A dismissal is stored locally for that failure (identity and attempt time), so the same failure does not come back, but a new failed attempt, for example a new manual import, shows a new notice.
   2. The folder notice has no Dismiss; it clears when the folder returns.
-  3. Home rows in `Importing` show "Preparing" in the row's status text, not as a notice.
+  3. A disk notice names the file that waits for free space; it clears when the copy starts (KTD9).
+  4. Home rows in `Importing` show "Preparing" in the row's status text, not as a notice.
 - **Patterns to follow:** `CautionBanner` and `ProblemNotice` in `src/home/LibraryNotices.tsx`; `docs/solutions/ui-bugs/one-capture-failure-gave-two-messages.md`.
 - **Test scenarios:**
-  - A failed entry from this computer shows one notice with the file name; Dismiss removes it for good.
+  - A failed entry from this computer shows one notice with the file name; Dismiss removes it, and later scans do not show it again.
+  - A second manual import of the same bad file after a Dismiss shows a new notice.
+  - An import waiting for disk space shows the disk notice; it clears when the copy starts.
   - A failed entry written by another computer shows no notice here (the computer that tried owns the message).
   - The folder notice shows and clears with the folder state.
   - An `Importing` row shows "Preparing" and no notice.
