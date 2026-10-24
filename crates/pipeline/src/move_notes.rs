@@ -223,22 +223,39 @@ fn check_old(old: &Path) -> Result<(), MoveError> {
 /// folder (R11 of the audio import plan). The merge never replaces an
 /// entry, so a second merge after a crash copies only the rest. An old
 /// folder that is not reachable pauses the Move: its record is not empty,
-/// only not readable now. An entry that cannot be read or does not parse
-/// stays in the old folder, and the log names it.
+/// only not readable now.
+///
+/// An entry that cannot be read or does not parse is not available, not
+/// absent: a sync can be in progress. It also pauses the Move, so the
+/// journal stays open and the watcher does not look only in the new
+/// folder. The pause names the file. When the file stays unreadable, the
+/// user can delete it, and Retry then closes the Move.
 fn merge_imports(journal: &MoveJournal) -> Result<(), MoveError> {
     let (old, new) = (&journal.old_folder, &journal.new_folder);
     check_old(old)?;
     let merged = import_record::merge(old, new).map_err(|e| pause_for(&e, new))?;
+    if merged.copied > 0 {
+        log::info!("move: copied {} import record entries", merged.copied);
+    }
+    let Some(first) = merged.not_copied.first() else {
+        return Ok(());
+    };
     for path in &merged.not_copied {
         log::warn!(
             "move: cannot copy the import record entry {}",
             path.display()
         );
     }
-    if merged.copied > 0 {
-        log::info!("move: copied {} import record entries", merged.copied);
-    }
-    Ok(())
+    // The text that Settings shows after "The notes could not be moved:".
+    let files = match merged.not_copied.len() {
+        1 => format!("the import record file {}", first.display()),
+        n => format!("{n} import record files, for example {}", first.display()),
+    };
+    Err(MoveError::Paused(MovePause::Failed {
+        message: format!(
+            "Longhand cannot read {files}. If a sync is still in progress, wait for it to finish. If not, delete the file"
+        ),
+    }))
 }
 
 /// The pause for an I/O error on `folder`.

@@ -697,7 +697,10 @@ impl Worker {
     }
 
     /// The pass of [`Worker::skip_work`]. It removes each file that is
-    /// done, or gone, from `held`.
+    /// done, or gone, from `held`. A file whose size or modification time
+    /// is not the one in the snapshot is not the file that the user chose
+    /// to skip: it leaves `held` with no skipped entry, and the scan
+    /// imports it when it is stable.
     fn skip_pass(&mut self) {
         let mut i = 0;
         while i < self.held.len() {
@@ -713,6 +716,10 @@ impl Worker {
                     continue;
                 }
             };
+            if !self.is_held_file(i, &meta) {
+                self.held.remove(i);
+                continue;
+            }
             let identity = match self.read(&path) {
                 Read::Identity(identity) => identity,
                 Read::Later => {
@@ -721,6 +728,22 @@ impl Worker {
                 }
                 Read::Stop => return,
             };
+            // The file can change during the read.
+            match std::fs::metadata(&path) {
+                Ok(after) if self.is_held_file(i, &after) => {}
+                Ok(_) => {
+                    self.held.remove(i);
+                    continue;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    self.held.remove(i);
+                    continue;
+                }
+                Err(_) => {
+                    i += 1;
+                    continue;
+                }
+            }
             let Some(root) = self.record_folder() else {
                 return;
             };
@@ -759,6 +782,18 @@ impl Worker {
             self.tracked.insert(path, tracked);
             self.held.remove(i);
         }
+    }
+
+    /// Whether `meta` has the size and the modification time of the held
+    /// file `held[i]` in the snapshot.
+    fn is_held_file(&self, i: usize, meta: &std::fs::Metadata) -> bool {
+        let path = &self.held[i].path;
+        let now = Held::from(&Listed {
+            path: path.clone(),
+            size: meta.len(),
+            modified: meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        });
+        now == self.held[i]
     }
 
     /// The storage folder whose import record the watcher reads, when it is
@@ -1356,21 +1391,18 @@ mod tests {
     fn no_file_imports_while_the_storage_folder_is_not_available() {
         let f = folders();
         let fake = Fake::new();
-        let memo = write(&f.watched.join("Memo.m4a"), b"imported before");
-        import_record::write(
-            &f.storage,
-            &identity_of(&memo),
-            &entry(State::Imported, &memo, THIS),
-        )
-        .unwrap();
+        // A file with no entry: only the storage check stops its import.
+        let memo = write(&f.watched.join("Memo.m4a"), b"not imported");
         let unplugged = f.storage.with_file_name("Unplugged");
         std::fs::rename(&f.storage, &unplugged).unwrap();
         let mut worker = fake.worker(&f);
         let at = settle(&mut worker, Instant::now());
-        assert!(fake.imports().is_empty());
-        std::fs::rename(&unplugged, &f.storage).unwrap();
         worker.scan(at + LATER);
         assert!(fake.imports().is_empty());
+        std::fs::rename(&unplugged, &f.storage).unwrap();
+        worker.scan(at + LATER * 2);
+        assert_eq!(fake.imports(), vec![memo.clone()]);
+        assert!(matches!(record_of(&f.storage, &memo), Lookup::Imported(_)));
     }
 
     // KTD6: a file whose import is open is not imported again.
@@ -1580,6 +1612,59 @@ mod tests {
         worker.scan(at);
         worker.scan(at + LATER);
         assert_eq!(fake.imports(), vec![new]);
+    }
+
+    /// Write the snapshot of the files in the watched folder now.
+    fn hold_all(f: &Folders) {
+        let held: Vec<Held> = list(&f.watched).unwrap().iter().map(Held::from).collect();
+        write_snapshot(&f.snapshot, &f.watched, &held).unwrap();
+    }
+
+    // R6, R12b: a file that replaced a held file before the skip work is
+    // not the file that the user chose to skip. It gets no skipped entry,
+    // and it imports.
+    #[test]
+    fn a_file_that_replaces_a_held_file_before_the_skip_work_imports() {
+        let f = folders();
+        let fake = Fake::new();
+        let memo = write(&f.watched.join("Memo.m4a"), b"old recording");
+        let old = identity_of(&memo);
+        hold_all(&f);
+        write(&memo, b"a new recording with the same name");
+        let mut worker = fake.worker(&f);
+        let at = settle(&mut worker, Instant::now());
+        worker.scan(at + LATER);
+        assert_eq!(import_record::lookup(&f.storage, &old), Lookup::New);
+        assert_eq!(fake.imports(), vec![memo.clone()]);
+        assert!(matches!(record_of(&f.storage, &memo), Lookup::Imported(_)));
+        assert!(!f.snapshot.exists());
+    }
+
+    // R6, R12b: a file that replaces a held file during the read of the
+    // skip work gets no skipped entry, and it imports.
+    #[test]
+    fn a_file_that_replaces_a_held_file_during_the_skip_read_imports() {
+        let f = folders();
+        let fake = Fake::new();
+        let memo = write(&f.watched.join("Memo.m4a"), b"old recording");
+        let old = identity_of(&memo);
+        hold_all(&f);
+        let first = AtomicBool::new(true);
+        let hash: HashFn = Arc::new(move |path: &Path, read: &AtomicU64| {
+            let hash = audio_import::hash_file_counted(path, read);
+            if first.swap(false, Ordering::SeqCst) {
+                // The new file arrives after the read of the held file.
+                std::fs::write(path, b"a new recording with the same name").unwrap();
+            }
+            hash
+        });
+        let mut worker = fake.worker_with(&f, VERSION, Some(hash));
+        let at = settle(&mut worker, Instant::now());
+        worker.scan(at + LATER);
+        assert_eq!(import_record::lookup(&f.storage, &old), Lookup::New);
+        assert_eq!(fake.imports(), vec![memo.clone()]);
+        assert!(matches!(record_of(&f.storage, &memo), Lookup::Imported(_)));
+        assert!(!f.snapshot.exists());
     }
 
     // R10: turning off stops new imports.

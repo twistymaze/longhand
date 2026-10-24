@@ -1433,3 +1433,81 @@ fn an_old_folder_that_goes_away_before_the_merge_pauses_the_move() {
         entry_bytes(&f.old, 1, THIS_COMPUTER)
     );
 }
+
+/// Write bytes that do not parse as the entry of `computer` for the
+/// identity `n` in `root`: a sync that is not complete, or a damaged file.
+fn damaged_record(root: &Path, n: u8, computer: &str) -> PathBuf {
+    let computer = import_record::ComputerId::parse(computer).unwrap();
+    let path = import_record::entry_path(root, &identity(n), &computer);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"{\"schema_version\":").unwrap();
+    path
+}
+
+/// An entry of the old folder that does not parse is not available, not
+/// absent (rule 4 of
+/// `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`).
+/// The Move pauses and names the file, so the watcher does not look only
+/// in the new folder and import the file again. The Move closes after the
+/// entry parses.
+#[test]
+fn an_import_record_entry_that_does_not_parse_pauses_the_move_until_it_parses() {
+    let f = folders();
+    let fs = Volumes::of(&f, false);
+    f.save_note("a", "Budget");
+    record(&f.old, 1, THIS_COMPUTER, import_record::State::Imported);
+    let damaged = damaged_record(&f.old, 2, OTHER_COMPUTER);
+    f.open();
+    let m = mover(&f, &fs);
+    let PassEnd::Paused(MovePause::Failed { message }) = pass(&m) else {
+        panic!("the move did not pause");
+    };
+    assert!(message.contains(&*damaged.to_string_lossy()), "{message}");
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_some());
+    assert_eq!(f.roots(), vec![f.new.clone(), f.old.clone()]);
+    // Retry while the entry still does not parse: the Move stays open.
+    move_notes::retry(&f.store).unwrap();
+    assert!(matches!(
+        pass(&m),
+        PassEnd::Paused(MovePause::Failed { .. })
+    ));
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_some());
+    // The sync completes.
+    std::fs::remove_file(&damaged).unwrap();
+    record(&f.old, 2, OTHER_COMPUTER, import_record::State::Skipped);
+    move_notes::retry(&f.store).unwrap();
+    finish(&m);
+    for (n, computer) in [(1, THIS_COMPUTER), (2, OTHER_COMPUTER)] {
+        assert_eq!(
+            entry_bytes(&f.new, n, computer),
+            entry_bytes(&f.old, n, computer)
+        );
+    }
+}
+
+/// An entry that never parses does not keep the Move open for good: the
+/// pause names the file, and after the user deletes it, Retry closes the
+/// Move.
+#[test]
+fn an_import_record_entry_that_the_user_deletes_lets_the_move_close() {
+    let f = folders();
+    let fs = Volumes::of(&f, true);
+    f.save_note("a", "Budget");
+    record(&f.old, 1, THIS_COMPUTER, import_record::State::Imported);
+    let damaged = damaged_record(&f.old, 2, THIS_COMPUTER);
+    f.open();
+    let m = mover(&f, &fs);
+    assert!(matches!(
+        pass(&m),
+        PassEnd::Paused(MovePause::Failed { .. })
+    ));
+    std::fs::remove_file(&damaged).unwrap();
+    move_notes::retry(&f.store).unwrap();
+    finish(&m);
+    assert!(f.store.lock().unwrap().move_journal().unwrap().is_none());
+    assert_eq!(
+        entry_bytes(&f.new, 1, THIS_COMPUTER),
+        entry_bytes(&f.old, 1, THIS_COMPUTER)
+    );
+    assert_moved(&f, "a");
+}
