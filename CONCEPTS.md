@@ -127,7 +127,7 @@ The step that makes a new note from an audio file that another device recorded, 
 A folder that the user chooses on one computer, where each new audio file becomes a note through an import with no user action. It is a setting of that computer only, not a shared setting. Longhand never changes, moves or deletes a file in it. It cannot be the storage folder, be inside it or contain it.
 
 ### Import record
-The plain-file list, in the hidden `.longhand` folder of the storage folder, of each file that a watched folder imported or skipped. A file's identity is its content. The watched folder never imports a file that the import record holds, also after its note is deleted.
+The plain files, in the hidden `.longhand/imports/` folder of the storage folder, that record each file that Longhand imported (manually or from a watched folder), skipped, or could not decode. There is one small file for each file's content. A file's identity is its content. The watched folder never imports a file that the import record holds, also after its note is deleted.
 
 ## Transcription
 
