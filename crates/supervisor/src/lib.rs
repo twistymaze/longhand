@@ -12,7 +12,7 @@ mod retry;
 
 use std::time::Duration;
 
-pub use recover::{Clock, Recovery, recover};
+pub use recover::{Clock, Recovery, SourceRestarts, recover};
 pub use restart::{RestartBudget, RestartTracker};
 pub use retry::{RetryStrategy, retry_with_backoff};
 
@@ -22,6 +22,9 @@ const SOURCE_RESTART_BACKOFF_ALLOWANCE_SECS: u64 = 1 + 2 + 4;
 
 /// The capture source: its window also allows for the backoff sleeps between
 /// restarts, so three quick failures are judged on failure time alone.
+/// [`recover`] uses only `max_restarts` and `reset_after`: it counts
+/// consecutive failures, and `reset_after` is how long capture records after
+/// it came back before the count clears.
 pub const SOURCE_RESTART_BUDGET: RestartBudget = RestartBudget {
     max_restarts: MAX_RESTARTS,
     max_window: Duration::from_secs(
