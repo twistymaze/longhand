@@ -124,7 +124,7 @@ A small window above all other windows that shows the open note's state, time an
 *Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)
 
 ### Import
-The step that makes a new note from an audio file that another device recorded, for example a phone. The user drops or chooses the file (a manual import), or the watched folder brings it in. An imported note is a normal note: it processes on the computer that imported it, and its audio becomes the normal audio of a note. A manual import always makes a new note, also for a file that was imported before. Planned in `docs/plans/2026-10-24-0928-feat-import-audio-recordings-plan.md`.
+The step that makes a new note from an audio file that another device recorded, for example a phone. The user drops or chooses the file (a manual import), or the watched folder brings it in. A drop from an app that gives only a promise of a file, for example Voice Memos, is also a manual import: Longhand first asks that app to write the file into a local folder. An imported note is a normal note: it processes on the computer that imported it, and its audio becomes the normal audio of a note. A manual import always makes a new note, also for a file that was imported before.
 
 ### Watched folder
 A folder that the user chooses on one computer, where each new audio file becomes a note through an import with no user action. It is a setting of that computer only, not a shared setting. Longhand never changes, moves or deletes a file in it. It cannot be the storage folder, be inside it or contain it.

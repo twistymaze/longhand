@@ -140,7 +140,7 @@ Voice Memos is the most common recorder on an iPhone, but it syncs its recording
 
 ### Sources / Research
 
-- `docs/ideas/next/import-recording-file.md`: the original idea for a manual import.
+- `docs/ideas/done/import-recording-file.md`: the original idea for a manual import.
 - `src-tauri/src/managers/library.rs`: the existing `notify` watcher, with a 900 ms debounce and a full scan each minute because FSEvents can drop events and File Provider folders do not always report changes.
 - `src-tauri/src/commands/settings.rs` (`pick_storage_folder`): the only folder dialog today.
 - `src-tauri/src/managers/local_store.rs`: where settings that belong to one computer are stored.

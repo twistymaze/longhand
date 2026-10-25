@@ -23,3 +23,7 @@ Sometimes a laptop is not available, for example in a hallway or at a table wher
 - The brainstorm on 2026-10-24 added a watched folder on one computer, so that a file that a phone app saves to a synced folder becomes a note with no action on the Mac. The plan holds the decisions.
 - Formats: m4a (AAC), wav and mp3. The note converts the audio to the normal audio format of a note and keeps no copy of the original.
 - The computer that imports the file does the processing and the publication, so the rule that only the computer that starts a publication finishes it does not change.
+
+## Outcome
+
+Shipped in [#68](https://github.com/twistymaze/longhand/pull/68) on 2026-10-25, as one release. A manual import (Import Audio… or a drop on Home) and a watched folder for each computer both make notes. The formats are m4a, qta (the files of Voice Memos), mp3 and wav. A drag from Voice Memos also works: Longhand takes the promised file from the app ([solution](../../solutions/integration-issues/voice-memos-drop-gives-a-file-promise-not-a-file.md)). A shared import record in the storage folder keeps a deleted note from coming back from the watched folder.
