@@ -699,8 +699,8 @@ pub struct Settings {
     /// change applies to the next note (R14).
     pub show_recording_widget: bool,
     /// A shared setting. A release build checks for a newer release at
-    /// launch, each hour and at each wake (R9, R10). On by default. "Check
-    /// for Updates…" works when it is off (R11).
+    /// launch and one hour after each successful check (R9, R10). On by
+    /// default. "Check for Updates…" works when it is off (R11).
     pub check_updates_automatically: bool,
     /// A shared setting. When the audio of a saved note goes (R1, R2). On
     /// by default, with a delay of 30 days. A value that this version does

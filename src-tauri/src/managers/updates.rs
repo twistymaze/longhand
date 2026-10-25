@@ -34,7 +34,9 @@ const DELAYS_KEY: &str = "delays";
 const INSTALL_FAILURE_KEY: &str = "install_failure";
 /// The first automatic check comes 30 seconds after launch (KTD8).
 const LAUNCH_DELAY: Duration = Duration::from_secs(30);
-const CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// The flow starts a check at a tick when one is due. This timer stops
+/// while the computer sleeps, so the flow uses UTC time (R9).
+const TICK: Duration = Duration::from_secs(60);
 /// A held offer shows at most this long after busy ends (KTD7).
 const BUSY_POLL: Duration = Duration::from_secs(15);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -290,7 +292,9 @@ impl UpdateManager {
         })
     }
 
-    /// Start the schedule: 30 s after launch, then each hour (KTD8).
+    /// Start the schedule: a tick 30 s after launch, then each minute. The
+    /// first tick checks, and the flow decides when the next check is due
+    /// (KTD8).
     pub fn start(self: &Arc<Self>) {
         let Some(mut receiver) = lock(&self.receiver).take() else {
             return;
@@ -298,7 +302,7 @@ impl UpdateManager {
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let start = tokio::time::Instant::now() + LAUNCH_DELAY;
-            let mut timer = tokio::time::interval_at(start, CHECK_INTERVAL);
+            let mut timer = tokio::time::interval_at(start, TICK);
             timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut poll = tokio::time::interval(BUSY_POLL);
             loop {
@@ -320,11 +324,6 @@ impl UpdateManager {
 
     fn send(&self, message: Message) {
         let _ = self.messages.send(message);
-    }
-
-    /// A check at wake (KTD8).
-    pub fn wake(&self) {
-        self.send(Message::Timer);
     }
 
     /// "Check for Updates…" (R11).

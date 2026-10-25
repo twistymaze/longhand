@@ -2899,8 +2899,8 @@ watched_folder: string | null;
 show_recording_widget: boolean; 
 /**
  * A shared setting. A release build checks for a newer release at
- * launch, each hour and at each wake (R9, R10). On by default. "Check
- * for Updates…" works when it is off (R11).
+ * launch and one hour after each successful check (R9, R10). On by
+ * default. "Check for Updates…" works when it is off (R11).
  */
 check_updates_automatically: boolean; 
 /**
