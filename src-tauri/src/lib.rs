@@ -337,11 +337,6 @@ fn setup_app(
         power::PowerEvent::DidWake => {
             let capture = std::sync::Arc::clone(&sleeping);
             let app = sleep_app.clone();
-            if let Some(updates) =
-                app.try_state::<std::sync::Arc<managers::updates::UpdateManager>>()
-            {
-                updates.wake();
-            }
             std::thread::spawn(move || capture.did_wake(&app));
         }
     });

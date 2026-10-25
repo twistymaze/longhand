@@ -10,6 +10,15 @@ use specta::Type;
 /// "Later", no ready question for 24 hours (R17).
 pub const DELAY_SECONDS: i64 = 24 * 60 * 60;
 
+/// An automatic check starts this long after the last successful check
+/// (R9). The time is UTC, so the time that the computer sleeps counts.
+pub const CHECK_INTERVAL_SECONDS: i64 = 60 * 60;
+
+/// The waits before the next automatic check after one, two, and three or
+/// more failed checks in a row. A check at a wake often fails, because the
+/// network is not connected yet.
+const RETRY_SECONDS: [i64; 3] = [2 * 60, 5 * 60, 15 * 60];
+
 /// What the update window shows, and what the manager does in the
 /// background. A state with a view shows the update window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Type)]
@@ -77,7 +86,7 @@ pub struct Delays {
 /// One input to the flow.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Input {
-    /// The launch delay, the hourly timer or a wake (R9).
+    /// The tick of the schedule. It starts a check when one is due (R9).
     Timer,
     /// "Check for Updates…" (R11).
     ManualCheck,
@@ -180,6 +189,11 @@ pub struct Flow {
     /// notice offers it and no quit installs it, until the user starts an
     /// install or a download again.
     failed_install: Option<String>,
+    /// No automatic check before this UTC time, in seconds since 1970.
+    /// None at launch, so the first tick checks.
+    next_check: Option<i64>,
+    /// The number of failed checks in a row.
+    failed_checks: usize,
 }
 
 impl Flow {
@@ -195,6 +209,8 @@ impl Flow {
             pending: None,
             user_asked: false,
             failed_install: None,
+            next_check: None,
+            failed_checks: 0,
         }
     }
 
@@ -404,10 +420,17 @@ impl Flow {
         vec![]
     }
 
-    /// An automatic check (R9, R10). It runs also during the delays, and
-    /// the delays decide only whether its result shows a notice (R6).
+    /// An automatic check, when it is due (R9, R10). It runs also during
+    /// the delays, and the delays decide only whether its result shows a
+    /// notice (R6).
     fn timer(&mut self, facts: Facts) -> Vec<Effect> {
         if !facts.automatic_checks || !facts.is_release_build || self.pending.is_some() {
+            return vec![];
+        }
+        // A wait longer than the interval means that the clock moved back,
+        // so the check is due.
+        let wait = self.next_check.map_or(0, |t| t - facts.now);
+        if wait > 0 && wait <= CHECK_INTERVAL_SECONDS {
             return vec![];
         }
         if let UpdateState::Downloading { .. } | UpdateState::Installing { .. } = self.state {
@@ -466,6 +489,17 @@ impl Flow {
         let Some(pending) = self.pending.take() else {
             return vec![];
         };
+        let wait = match &result {
+            Ok(_) => {
+                self.failed_checks = 0;
+                CHECK_INTERVAL_SECONDS
+            }
+            Err(_) => {
+                self.failed_checks += 1;
+                RETRY_SECONDS[(self.failed_checks - 1).min(RETRY_SECONDS.len() - 1)]
+            }
+        };
+        self.next_check = Some(facts.now + wait);
         match &result {
             Ok(Some(version)) => self.newest = Some(version.clone()),
             Ok(None) => self.newest = None,
@@ -923,7 +957,7 @@ mod tests {
         assert_eq!(f.state(), &UpdateState::Idle);
         // The checks continue during the delay, and their results show
         // nothing (R6).
-        for later in [NINE + 3 * HOUR, NINE + 24 * HOUR - 1] {
+        for later in [NINE + 3 * HOUR, NINE + 23 * HOUR] {
             assert_eq!(f.step(Input::Timer, facts(later)), vec![Effect::Check]);
             f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(later));
             assert_eq!(f.state(), &UpdateState::Idle, "at {later}");
@@ -1596,6 +1630,73 @@ mod tests {
     }
 
     #[test]
+    fn a_tick_starts_an_automatic_check_only_one_hour_after_the_last_successful_check() {
+        let mut f = flow();
+        assert_eq!(f.step(Input::Timer, facts(NINE)), vec![Effect::Check]);
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        assert_eq!(f.step(Input::Timer, facts(NINE + 60)), vec![]);
+        assert_eq!(f.step(Input::Timer, facts(NINE + HOUR - 1)), vec![]);
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + HOUR)),
+            vec![Effect::Check]
+        );
+    }
+
+    #[test]
+    fn a_tick_after_a_long_sleep_starts_an_automatic_check_at_once() {
+        // The hour is UTC time, so the time that the computer sleeps counts.
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE + 3 * HOUR + 7)),
+            vec![Effect::Check]
+        );
+    }
+
+    #[test]
+    fn a_tick_after_the_clock_moves_back_starts_an_automatic_check() {
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE - 5 * 24 * HOUR)),
+            vec![Effect::Check]
+        );
+    }
+
+    #[test]
+    fn a_failed_automatic_check_tries_again_after_2_then_5_then_15_minutes() {
+        let mut f = flow();
+        let mut now = NINE;
+        f.step(Input::Timer, facts(now));
+        for wait in [2 * 60, 5 * 60, 15 * 60, 15 * 60] {
+            f.step(Input::Checked(Err("offline".into())), facts(now));
+            assert_eq!(
+                f.step(Input::Timer, facts(now + wait - 1)),
+                vec![],
+                "{wait} s"
+            );
+            now += wait;
+            assert_eq!(
+                f.step(Input::Timer, facts(now)),
+                vec![Effect::Check],
+                "{wait} s"
+            );
+        }
+        // A successful check starts the one-hour wait and the retries again.
+        f.step(Input::Checked(Ok(None)), facts(now));
+        assert_eq!(f.step(Input::Timer, facts(now + HOUR - 1)), vec![]);
+        now += HOUR;
+        f.step(Input::Timer, facts(now));
+        f.step(Input::Checked(Err("offline".into())), facts(now));
+        assert_eq!(
+            f.step(Input::Timer, facts(now + 2 * 60)),
+            vec![Effect::Check]
+        );
+    }
+
+    #[test]
     fn a_timer_while_a_check_runs_starts_no_second_check() {
         let mut f = flow();
         f.step(Input::ManualCheck, facts(NINE));
@@ -1798,9 +1899,9 @@ mod tests {
     #[test]
     fn relaunch_now_while_busy_on_a_replaced_question_downloads_the_newest() {
         let mut f = ready_asked_while_busy();
-        f.step(Input::Timer, busy(NINE));
-        f.step(Input::Checked(Ok(Some(NEWER.into()))), busy(NINE));
-        let effects = f.step(Input::Choice(Choice::RelaunchNow), busy(NINE));
+        f.step(Input::Timer, busy(NINE + HOUR));
+        f.step(Input::Checked(Ok(Some(NEWER.into()))), busy(NINE + HOUR));
+        let effects = f.step(Input::Choice(Choice::RelaunchNow), busy(NINE + HOUR));
         assert!(effects.contains(&Effect::QuickCheck));
         assert!(matches!(f.state(), UpdateState::Downloading { version, .. } if version == NEWER));
     }

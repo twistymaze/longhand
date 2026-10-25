@@ -78,17 +78,22 @@ impl Mock {
     }
 }
 
-/// A local port that nothing listens on. A connection to it is refused.
+/// A local socket that is bound but does not listen, and its port. No
+/// connection to the port succeeds until the test calls `listen` on the
+/// socket. While the socket is open, no other test can bind the port.
 #[allow(dead_code)]
-pub fn free_port() -> u16 {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.local_addr().unwrap().port()
+pub fn closed_socket() -> (tokio::net::TcpSocket, u16) {
+    let socket = tokio::net::TcpSocket::new_v4().unwrap();
+    socket.bind(([127, 0, 0, 1], 0).into()).unwrap();
+    let port = socket.local_addr().unwrap().port();
+    (socket, port)
 }
 
-/// A base URL on a local port that nothing listens on.
+/// A base URL that no connection can reach. A connection to port 0 fails at
+/// once, and no test server can listen on port 0.
 #[allow(dead_code)]
 pub fn closed_base() -> String {
-    format!("http://127.0.0.1:{}/v1", free_port())
+    "http://127.0.0.1:0/v1".to_string()
 }
 
 pub async fn serve(routes: HashMap<&'static str, Reply>) -> Mock {
