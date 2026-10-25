@@ -11,6 +11,13 @@ helper_build="${LONGHAND_NEMO_HELPER_BUILD:-$cache/helper-$backend}"
 tokenizer_source="${LONGHAND_SENTENCEPIECE_SOURCE:-$cache/sentencepiece}"
 tokenizer_build="${LONGHAND_SENTENCEPIECE_BUILD:-$cache/sentencepiece-build}"
 mkdir -p "$cache"
+# A build folder that names a compiler that is not there is configured again.
+# An update of Xcode, Visual Studio or a CI runner image can remove the compiler.
+for build in "$tokenizer_build" "$sdk_build" "$helper_build"; do
+  [[ -f "$build/CMakeCache.txt" ]] || continue
+  compiler="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$build/CMakeCache.txt" | tr -d '\r')"
+  if [[ "$compiler" == */* && ! -e "$compiler" ]]; then rm -rf "$build"; fi
+done
 # Gets one pinned commit with no history. A full clone of llama.cpp takes
 # about 85 s on a runner far from GitHub, and an ephemeral runner clones in
 # each job. GitHub serves a commit by its hash.

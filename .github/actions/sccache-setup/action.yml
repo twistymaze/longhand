@@ -63,8 +63,9 @@ runs:
 
     # CMake refuses a build folder that another generator made, and a
     # self-hosted runner keeps the CMake build folders of earlier jobs in
-    # target/. This step removes each folder that is not a Ninja build, so
-    # that CMake configures it again with Ninja. The libraries that the
+    # target/ (rust-cache restores them on GitHub's runners). This step
+    # removes each folder that is not a Ninja build, so that CMake
+    # configures it again with Ninja. The libraries that the
     # build scripts installed stay, so cargo rebuilds only when it must.
     #
     # cargo does not run a CMake build script again when the toolchain file
@@ -74,14 +75,19 @@ runs:
     # each CMake build script, and cargo runs them again. The MSVC setup
     # puts Windows' own find.exe first on PATH, so the step names Git
     # Bash's find.
-    - name: Remove CMake build folders of another generator
+    - name: Remove CMake build folders that cannot be used
       if: runner.os == 'Windows'
       shell: bash
       working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+      env:
+        HOSTED: ${{ runner.environment == 'github-hosted' }}
       run: |
         [ -d target ] || exit 0
         hash="$(sha256sum "$CMAKE_TOOLCHAIN_FILE" | cut -d' ' -f1)"
-        if [ "$(cat target/cmake-toolchain.sha256 2>/dev/null)" != "$hash" ]; then
+        # On GitHub's runners, rust-cache restores target/ without the hash
+        # file, and the hash of the toolchain file is part of the rust-cache
+        # key. So the step does not compare the hash there.
+        if [ "$HOSTED" != true ] && [ "$(cat target/cmake-toolchain.sha256 2>/dev/null)" != "$hash" ]; then
           /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
             dir="${cache%%/out/build/*}"
             echo "Removing $dir"
@@ -89,8 +95,13 @@ runs:
           done
           printf '%s' "$hash" > target/cmake-toolchain.sha256
         fi
+        # A build folder also goes when the compiler that it recorded is not
+        # there: an update of the runner image can replace the MSVC version.
         /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
-          if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
+          [ -f "$cache" ] || continue
+          compiler="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$cache" | tr -d '\r')"
+          if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache" ||
+            { [[ "$compiler" == */* ]] && [ ! -e "$compiler" ]; }; then
             echo "Removing $(dirname "$cache")"
             rm -rf "$(dirname "$cache")"
           fi

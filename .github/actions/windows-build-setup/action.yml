@@ -1,8 +1,8 @@
 name: Windows build setup
 description: >-
   Sets up a Windows runner to build Longhand: the Dev Drive, the Vulkan SDK,
-  SPIRV-Headers, the Rust toolchain, the Rust cache, MSVC, Node and npm with the
-  frontend dependencies, and the VC++ runtime dirs. The CI checks and the
+  the Rust toolchain, the Rust cache, MSVC, SPIRV-Headers, Node and npm with
+  the frontend dependencies, and the VC++ runtime dirs. The CI checks and the
   release installer use this one definition, so they build the same way.
   The caller enables long paths before the checkout, and runs this action
   after the checkout.
@@ -55,28 +55,22 @@ runs:
         version: 1.4.309.0
         cache: false
 
-    # ggml-vulkan does `find_package(SPIRV-Headers CONFIG REQUIRED)`, and the
-    # SDK install exposes no findable SPIRV-HeadersConfig.cmake. The
-    # header-only vcpkg package on CMAKE_PREFIX_PATH resolves it, as Handy's
-    # CI does.
-    - name: Install SPIRV-Headers
-      shell: pwsh
-      run: |
-        vcpkg install spirv-headers:x64-windows
-        if ($LASTEXITCODE -ne 0) { throw "vcpkg install spirv-headers failed" }
-        $prefix = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows" -replace '\\','/'
-        $combined = if ($env:CMAKE_PREFIX_PATH) { "$prefix;$env:CMAKE_PREFIX_PATH" } else { $prefix }
-        Add-Content $env:GITHUB_ENV "CMAKE_PREFIX_PATH=$combined"
-
     - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
       with:
         components: rustfmt, clippy
 
+    # Line tables give file and line numbers in backtraces. Full debug
+    # info makes each link of the test binaries and the app much slower.
+    - name: Line tables only in debug builds
+      if: runner.environment == 'github-hosted'
+      shell: bash
+      run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
+
     # Saved even when a later step fails (unless the caller sets
     # cache-on-failure to false): otherwise a job that has never
     # passed never gets a cache, and every run compiles ggml, ONNX Runtime
-    # and SQLite from scratch. The key follows Cargo.lock only, and an exact
-    # hit is never saved again, so a change to how CI builds (flags,
+    # and SQLite from scratch. The key follows Cargo.lock and the CMake
+    # toolchain file (sccache-setup), and an exact hit is never saved again, so a change to how CI builds (flags,
     # profiles, which cargo commands run) needs `prefix-key` bumped or its
     # new artifacts are never cached. A self-hosted runner skips this: its target/
     # stays from the last job, and a cache save would prune it.
@@ -84,6 +78,7 @@ runs:
       if: runner.environment == 'github-hosted'
       with:
         prefix-key: ${{ inputs.prefix-key }}
+        key: cmake-${{ hashFiles('.github/actions/sccache-setup/msvc-toolchain.cmake') }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
         workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
 
@@ -92,6 +87,26 @@ runs:
     # `shell: pwsh`:
     # https://github.com/ilammy/msvc-dev-cmd#name-conflicts-with-shell-bash
     - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+
+    # ggml-vulkan does `find_package(SPIRV-Headers CONFIG REQUIRED)`, and the
+    # SDK install exposes no findable SPIRV-HeadersConfig.cmake. The step
+    # installs the header-only package from the SPIRV-Headers commit of the
+    # Vulkan SDK version above (tag vulkan-sdk-1.4.309.0) and puts it on
+    # CMAKE_PREFIX_PATH. CMake with Ninja needs the MSVC environment, so the
+    # step comes after it. This takes a few seconds; vcpkg took about 40 s.
+    - name: Install SPIRV-Headers
+      shell: bash
+      run: |
+        src="$RUNNER_TEMP/spirv-headers-src"
+        prefix="$(cygpath -m "$RUNNER_TEMP/spirv-headers")"
+        rm -rf "$src"
+        git init -q "$src"
+        git -C "$src" fetch -q --depth 1 https://github.com/KhronosGroup/SPIRV-Headers 09913f088a1197aba4aefd300a876b2ebbaa3391
+        git -C "$src" checkout -q FETCH_HEAD
+        cmake -S "$src" -B "$src/build" -G Ninja -DCMAKE_INSTALL_PREFIX="$prefix" \
+          -DSPIRV_HEADERS_ENABLE_TESTS=OFF -DSPIRV_HEADERS_ENABLE_INSTALL=ON
+        cmake --install "$src/build"
+        echo "CMAKE_PREFIX_PATH=$prefix${CMAKE_PREFIX_PATH:+;$CMAKE_PREFIX_PATH}" >> "$GITHUB_ENV"
 
     # The two Windows runners share one VM user. node-setup installs npm
     # into the job's own temp folder, so a job never replaces a file that a
