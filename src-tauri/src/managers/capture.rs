@@ -1956,6 +1956,37 @@ fn note_recognition(
     })
 }
 
+/// The recognition of a note that an import makes: the configuration that
+/// a recording that starts now gets, with nothing live, because the note has no recording to follow. Processing
+/// waits for models that are not on disk.
+pub fn import_recognition(
+    settings: &Settings,
+    missing: impl Fn(&models::recognition::ExecutionSpec) -> Vec<String>,
+) -> Result<pipeline::import::Recognition, CaptureError> {
+    use models::recognition::{ProcessingMode, RecognitionConfig};
+    let after_stop = |mut config: RecognitionConfig| {
+        config.processing_mode = ProcessingMode::AfterStop;
+        config.speaker_processing_mode = ProcessingMode::AfterStop;
+        config
+    };
+    let spec = recording_spec(
+        after_stop(settings.recognition_config()),
+        settings.chosen_config().map(after_stop),
+        |spec| missing(spec).is_empty(),
+    )
+    .map_err(|e| CaptureError::Other(e.to_string()))?;
+    let snapshot = serde_json::to_value(&spec).map_err(|e| CaptureError::Other(e.to_string()))?;
+    let speaker_count = spec.config.speaker_count.map(|c| match c {
+        models::recognition::SpeakerCount::Exact { count } => SpeakerCount::Exact(count),
+        models::recognition::SpeakerCount::Range { min, max } => SpeakerCount::Range { min, max },
+    });
+    Ok(pipeline::import::Recognition {
+        asr_model: spec.config.asr_model.clone(),
+        snapshot: Some(snapshot),
+        speaker_count,
+    })
+}
+
 /// How a note that the store took to Capturing opens its next segment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Reopen {
@@ -4932,6 +4963,23 @@ mod tests {
             recording_spec(selected(PARAKEET, true).recognition_config(), None, nothing).unwrap();
         assert_eq!(spec.config.asr_model, PARAKEET);
         assert!(!spec.enabled_live_transcription);
+    }
+
+    /// An imported note has no recording to follow, so it has nothing live.
+    #[test]
+    fn an_import_gets_the_configuration_in_use_with_nothing_live() {
+        use models::recognition::ProcessingMode;
+        let mut settings = selected(PARAKEET, true);
+        settings.recognition_language = Some("en".into());
+        let recognition = import_recognition(&settings, |_| Vec::new()).unwrap();
+        assert_eq!(recognition.asr_model, PARAKEET);
+        let spec: models::recognition::ExecutionSpec =
+            serde_json::from_value(recognition.snapshot.unwrap()).unwrap();
+        assert_eq!(spec.config.asr_model, PARAKEET);
+        assert_eq!(spec.config.language.as_deref(), Some("en"));
+        assert_eq!(spec.config.processing_mode, ProcessingMode::AfterStop);
+        assert!(!spec.enabled_live_transcription);
+        assert!(!spec.enabled_live_speaker_analysis);
     }
 
     #[test]

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type { Readiness, SessionDetail, SessionEntry } from "../bindings";
 import {
   entryStatus,
+  entryTone,
   formatDuration,
   missingPreconditions,
   sentence,
@@ -127,6 +128,12 @@ describe("wording", () => {
     const entry = { id: "s", started: "", duration_ms: 0, state: "processing", stage: "diarize", title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null };
     expect(entryStatus(entry, null)).toBe("Finding speakers");
     expect(stoppedAt("diarize")).toBe("Stopped while finding speakers");
+  });
+
+  test("an importing note says Preparing, with no message (R21)", () => {
+    const entry = { id: "s", started: "", duration_ms: 0, state: "importing", stage: null, title: null, found_speakers: null, storage_unavailable: false, problem: null, remote: null, note_type: null, tags: [], waits_for: null };
+    expect(entryStatus(entry, null)).toBe("Preparing");
+    expect(entryTone("importing")).toBeNull();
   });
 
   test("a blocked session says what it needs, not that it failed", () => {

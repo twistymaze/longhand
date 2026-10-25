@@ -1506,6 +1506,15 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 cssparser 0.37.0
 cssparser-macros 0.7.1
 dtoa-short 0.3.5
+symphonia 0.6.1
+symphonia-bundle-mp3 0.6.1
+symphonia-codec-aac 0.6.1
+symphonia-codec-pcm 0.6.1
+symphonia-common 0.6.1
+symphonia-core 0.6.1
+symphonia-format-isomp4 0.6.1
+symphonia-format-riff 0.6.1
+symphonia-metadata 0.6.1
 
 Mozilla Public License Version 2.0
 ==================================
@@ -2400,6 +2409,8 @@ earshot 1.2.2
 equivalent 1.0.3
     Copyright (c) 2016--2023
 erased-serde 0.4.10
+extended 0.1.0
+    Copyright 2022 Dietrich Epp
 eyre 0.6.14
 fallible-iterator 0.3.0
     Copyright (c) 2015 The rust-openssl-verify Developers
@@ -2514,6 +2525,7 @@ keyring-core 1.0.0
     Copyright (c) 2016 keyring Developers
 knf-rs 0.3.2
 knf-rs-sys 0.3.2 (includes kaldi-native-fbank)
+lazy_static 1.5.1
 libc 0.2.191
     Copyright (c) The Rust Project Developers
 libsqlite3-sys 0.38.2 (includes SQLite)
@@ -2633,6 +2645,8 @@ ref-cast-impl 1.0.27
 regex 1.13.1
     Copyright (c) 2014 The Rust Project Developers
 regex-automata 0.4.18
+    Copyright (c) 2014 The Rust Project Developers
+regex-lite 0.1.9
     Copyright (c) 2014 The Rust Project Developers
 regex-syntax 0.8.11
     Copyright (c) 2014 The Rust Project Developers

@@ -79,22 +79,23 @@ pub fn default_storage_folder(local_data: &Path) -> PathBuf {
 /// folder that Longhand cannot write are refused. An empty `current`
 /// means that no storage folder is set.
 pub fn check_new_folder(current: &Path, new: &Path) -> Result<(), String> {
-    let resolve = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     if !current.as_os_str().is_empty() {
-        let (current, new) = (resolve(current), resolve(new));
-        if new == current {
-            return Err("This folder is already the storage folder.".into());
-        }
-        if new.starts_with(&current) {
-            return Err(
-                "This folder is inside the storage folder. Choose a folder outside it.".into(),
-            );
-        }
-        if current.starts_with(&new) {
-            return Err(
-                "This folder contains the storage folder. Choose a folder that does not contain it."
-                    .into(),
-            );
+        match placement(new, current) {
+            Placement::Same => {
+                return Err("This folder is already the storage folder.".into());
+            }
+            Placement::Inside => {
+                return Err(
+                    "This folder is inside the storage folder. Choose a folder outside it.".into(),
+                );
+            }
+            Placement::Contains => {
+                return Err(
+                    "This folder contains the storage folder. Choose a folder that does not contain it."
+                        .into(),
+                );
+            }
+            Placement::Apart => {}
         }
     }
     match new.metadata() {
@@ -103,6 +104,124 @@ pub fn check_new_folder(current: &Path, new: &Path) -> Result<(), String> {
         Ok(_) => {}
     }
     probe_writable(new).map_err(|e| format!("Longhand cannot save notes in this folder: {e}"))
+}
+
+/// The folders that a watched folder must keep clear of (R9).
+#[derive(Debug, Clone, Copy)]
+pub struct WatchLimits<'a> {
+    /// The storage folder. An empty path means that none is set.
+    pub storage: &'a Path,
+    /// Longhand's own app data folder, which holds the Working location.
+    pub app_data: &'a Path,
+    /// The home folder of the user, when known.
+    pub home: Option<&'a Path>,
+}
+
+/// How the folder `a` is placed relative to the folder `b`.
+#[derive(Debug, PartialEq, Eq)]
+enum Placement {
+    Same,
+    Inside,
+    Contains,
+    Apart,
+}
+
+fn resolve(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn placement(a: &Path, b: &Path) -> Placement {
+    let (a, b) = (resolve(a), resolve(b));
+    if a == b {
+        Placement::Same
+    } else if a.starts_with(&b) {
+        Placement::Inside
+    } else if b.starts_with(&a) {
+        Placement::Contains
+    } else {
+        Placement::Apart
+    }
+}
+
+/// Whether `folder` is the top folder of a volume: `/`, a drive such as
+/// `C:\`, or a mount point such as `/Volumes/Disk`.
+fn is_volume_root(folder: &Path) -> bool {
+    let folder = resolve(folder);
+    let Some(parent) = folder.parent() else {
+        return true;
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(own), Ok(up)) = (folder.metadata(), parent.metadata()) {
+            return own.dev() != up.dev();
+        }
+    }
+    let _ = parent;
+    false
+}
+
+/// Whether `folder` can be the watched folder (R9). The error is the
+/// cause, as Settings shows it. The storage folder, a folder inside it or
+/// that contains it, a folder that contains Longhand's app data, the home
+/// folder and the top folder of a volume are refused. The check only
+/// reads: Longhand never writes into the watched folder (R7).
+pub fn check_watched_folder(folder: &Path, limits: &WatchLimits) -> Result<(), String> {
+    match folder.metadata() {
+        Err(_) => return Err("This folder is not available.".into()),
+        Ok(meta) if !meta.is_dir() => return Err("This is a file, not a folder.".into()),
+        Ok(_) => {}
+    }
+    if is_volume_root(folder) {
+        return Err("This is the top folder of a disk. Choose a folder inside it.".into());
+    }
+    if limits
+        .home
+        .is_some_and(|home| placement(folder, home) == Placement::Same)
+    {
+        return Err("This is your home folder. Choose a folder inside it.".into());
+    }
+    if !limits.storage.as_os_str().is_empty() {
+        match placement(folder, limits.storage) {
+            Placement::Same => {
+                return Err("This folder is the storage folder. Choose another folder.".into());
+            }
+            Placement::Inside => {
+                return Err(
+                    "This folder is inside the storage folder. Choose a folder outside it.".into(),
+                );
+            }
+            Placement::Contains => {
+                return Err("This folder contains the storage folder. Choose a folder that does not contain it.".into());
+            }
+            Placement::Apart => {}
+        }
+    }
+    if matches!(
+        placement(folder, limits.app_data),
+        Placement::Same | Placement::Contains
+    ) {
+        return Err(
+            "This folder contains Longhand’s app data. Choose a folder that does not contain it."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// The reason, as Settings shows it, when the new storage folder `storage`
+/// and the watched folder `watched` touch (R9): the storage folder change
+/// then turns the watched folder off. `None` when they are apart.
+pub fn watched_folder_turned_off(storage: &Path, watched: &Path) -> Option<String> {
+    let why = match placement(storage, watched) {
+        Placement::Same => "it is now the storage folder",
+        Placement::Inside => "the new storage folder is inside it",
+        Placement::Contains => "it is inside the new storage folder",
+        Placement::Apart => return None,
+    };
+    Some(format!(
+        "The watched folder is off because {why}. Choose another folder to watch."
+    ))
 }
 
 pub fn check(dir: &Path, floor_bytes: u64) -> DestinationStatus {
@@ -343,6 +462,111 @@ mod tests {
         let result = check(&locked, 0);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(matches!(result, DestinationStatus::NotWritable { .. }));
+    }
+
+    /// A storage folder, an app data folder and a home folder in `dir`,
+    /// as a computer has them.
+    fn limits_in(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let home = dir.join("home");
+        let storage = home.join("Notes");
+        let app_data = home.join("Library/Application Support/net.ewal.longhand");
+        std::fs::create_dir_all(&storage).unwrap();
+        std::fs::create_dir_all(&app_data).unwrap();
+        (storage, app_data, home)
+    }
+
+    // R9: each folder that the watched folder cannot be gives its own
+    // reason.
+    #[test]
+    fn a_watched_folder_that_touches_longhand_folders_is_refused_with_a_reason() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, app_data, home) = limits_in(dir.path());
+        let limits = WatchLimits {
+            storage: &storage,
+            app_data: &app_data,
+            home: Some(&home),
+        };
+        let inside = storage.join("Archive");
+        std::fs::create_dir_all(&inside).unwrap();
+        let reason = |folder: &Path| check_watched_folder(folder, &limits).unwrap_err();
+        assert!(reason(&storage).contains("is the storage folder"));
+        // Another spelling of the same folder.
+        assert!(reason(&home.join("Notes/../Notes")).contains("is the storage folder"));
+        assert!(reason(&inside).contains("inside the storage folder"));
+        let library = home.join("Library");
+        assert!(reason(&library).contains("Longhand’s app data"));
+        assert!(reason(app_data.parent().unwrap()).contains("Longhand’s app data"));
+        assert!(reason(&app_data).contains("Longhand’s app data"));
+        assert!(reason(&home).contains("home folder"));
+        assert!(reason(Path::new("/")).contains("top folder of a disk"));
+        assert!(reason(&home.join("gone")).contains("not available"));
+        let file = home.join("memo.m4a");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(reason(&file).contains("a file"));
+    }
+
+    #[test]
+    fn a_watched_folder_that_contains_the_storage_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, app_data, home) = limits_in(dir.path());
+        // The storage folder is not in the home folder here, so only the
+        // storage rule refuses the folder.
+        let outer = dir.path().join("Shared");
+        let storage_in_outer = outer.join("Notes");
+        std::fs::create_dir_all(&storage_in_outer).unwrap();
+        let limits = WatchLimits {
+            storage: &storage_in_outer,
+            app_data: &app_data,
+            home: Some(&home),
+        };
+        let reason = check_watched_folder(&outer, &limits).unwrap_err();
+        assert!(reason.contains("contains the storage folder"), "{reason}");
+        assert!(storage.is_dir());
+    }
+
+    #[test]
+    fn a_recordings_folder_beside_the_storage_folder_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (storage, app_data, home) = limits_in(dir.path());
+        let recordings = home.join("Notes 2");
+        std::fs::create_dir_all(&recordings).unwrap();
+        let limits = WatchLimits {
+            storage: &storage,
+            app_data: &app_data,
+            home: Some(&home),
+        };
+        assert_eq!(check_watched_folder(&recordings, &limits), Ok(()));
+        // No storage folder yet is no reason to refuse.
+        let none = WatchLimits {
+            storage: Path::new(""),
+            ..limits
+        };
+        assert_eq!(check_watched_folder(&recordings, &none), Ok(()));
+        // Nothing is written into the folder: Longhand only reads it (R7).
+        assert_eq!(std::fs::read_dir(&recordings).unwrap().count(), 0);
+    }
+
+    // R9 at a change of the storage folder: a new storage folder that
+    // touches the watched folder turns the watched folder off, and the
+    // reason says why.
+    #[test]
+    fn a_storage_folder_that_touches_the_watched_folder_turns_it_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let watched = dir.path().join("Recordings");
+        let inside = watched.join("Notes");
+        std::fs::create_dir_all(&inside).unwrap();
+        let other = dir.path().join("Notes");
+        std::fs::create_dir_all(&other).unwrap();
+        let same = watched_folder_turned_off(&watched, &watched).unwrap();
+        assert!(same.contains("is now the storage folder"), "{same}");
+        let within = watched_folder_turned_off(&inside, &watched).unwrap();
+        assert!(within.contains("storage folder is inside it"), "{within}");
+        let contains = watched_folder_turned_off(dir.path(), &watched).unwrap();
+        assert!(
+            contains.contains("is inside the new storage folder"),
+            "{contains}"
+        );
+        assert_eq!(watched_folder_turned_off(&other, &watched), None);
     }
 
     // Checks that run at the same time must not use the same probe file.

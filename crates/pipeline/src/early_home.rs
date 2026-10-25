@@ -321,7 +321,7 @@ pub fn step(
             let root = destination
                 .ok_or_else(|| StageError::NoDestination("no storage folder is set".into()))?;
             check_root(root)?;
-            let (doc, notes, folder_name, records, note_type) = {
+            let (doc, notes, folder_name, records, note_type, import) = {
                 let guard = lock(store);
                 let record = guard.session(id)?.ok_or(StageError::Cancelled)?;
                 let note_type = row_type(&guard, &record)?;
@@ -337,7 +337,15 @@ pub fn step(
                 let title = record.title.as_ref().map(|t| t.text.as_str());
                 let name = naming::folder_name(started, title);
                 let notes = folder::render_notes(&guard.notes(id)?);
-                (doc, notes, name, flag == ResultFlag::NotSaved, note_type)
+                let import = guard.import_source(id)?;
+                (
+                    doc,
+                    notes,
+                    name,
+                    flag == ResultFlag::NotSaved,
+                    note_type,
+                    import,
+                )
             };
             let staging = root.join(naming::staging_name(id));
             match std::fs::create_dir(&staging) {
@@ -357,7 +365,12 @@ pub fn step(
             // `longhand.json` with the records and the identity, last
             // (KTD2 of the safe agent edits plan).
             let session = note_files::new_session_md(doc.title.as_deref(), &doc.tags);
-            let record = NoteRecord::from_doc(&doc).render();
+            // An imported note records its source file (R11, KTD10).
+            let record = NoteRecord {
+                import,
+                ..NoteRecord::from_doc(&doc)
+            }
+            .render();
             home_write::write_atomic(&staging, NOTES_FILE, notes.as_bytes())
                 .and_then(|()| home_write::write_atomic(&staging, SESSION_FILE, session.as_bytes()))
                 .and_then(|()| {

@@ -185,6 +185,7 @@ class FilesReferenceTests(unittest.TestCase):
         patterns = (
             lh.PROTECTED_NOTE_PATTERNS
             + lh.PROTECTED_STORAGE_PATTERNS
+            + lh.LONGHAND_ONLY_STORAGE_PATTERNS
             + lh.EDITABLE_NOTE_PATTERNS
             + lh.EDITABLE_STORAGE_PATTERNS
         )

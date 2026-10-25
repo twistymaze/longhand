@@ -5,7 +5,8 @@ use session_core::folder::{
     FolderError, PendingType, ResultFlag, SegmentRecord, SummaryMeta, fingerprint,
 };
 use session_core::note_record::{
-    LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, note_id_of, valid_audio_name,
+    ImportSource, LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, note_id_of,
+    valid_audio_name,
 };
 use session_core::recognition::ArtifactReference;
 use session_core::{SpeakerCount, Title, TitleSource};
@@ -74,6 +75,10 @@ fn full_record() -> NoteRecord {
             prompt_name: Some("Meeting".into()),
             prompt_id: Some("prompt-1".into()),
         }),
+        import: Some(ImportSource {
+            source_name: "Team sync.m4a".into(),
+            sha256: Some(fingerprint(b"source")),
+        }),
     }
 }
 
@@ -113,6 +118,7 @@ fn a_record_with_every_field_round_trips_and_two_writes_give_the_same_bytes() {
         [
             "asr_model",
             "found_speakers",
+            "import",
             "layout",
             "note_id",
             "pending_type",
@@ -352,4 +358,13 @@ fn a_layout_three_record_is_newer_and_gives_its_note_id() {
         NoteRecordRead::Newer { layout: 3 }
     );
     assert_eq!(note_id_of(text).as_deref(), Some("01j8z"));
+}
+
+#[test]
+fn a_record_with_no_import_field_reads_with_no_import_and_keeps_its_bytes() {
+    // KTD10: an older build writes no `import` field, and the layout stays.
+    let text = "{\n  \"layout\": 2,\n  \"note_id\": \"01j8z\",\n  \"segments\": [],\n  \"started\": \"2026-09-22T09:00:00-05:00\"\n}\n";
+    let record = NoteRecord::parse(text).unwrap().current().unwrap();
+    assert_eq!(record.import, None);
+    assert_eq!(record.render(), text);
 }

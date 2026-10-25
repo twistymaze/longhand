@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{PoisonError, RwLock, RwLockReadGuard};
 
 use chrono::{DateTime, FixedOffset, Local};
+use import_record::{ComputerId, Entry, Identity, State};
 use library::scan::{
     Known, LibraryScan, ProblemKind, RemoteState, ScanOptions, Waiting, scan, write_marker,
 };
@@ -27,7 +28,7 @@ use session_core::folder::{
 };
 use session_core::jobs::{Title, TitleSource};
 use session_core::note_folder::{Layout, SESSION_FILE};
-use session_core::note_record::NoteRecord;
+use session_core::note_record::{ImportSource, NoteRecord};
 use session_core::recognition::{self, ARTIFACT_FILE, ArtifactHeader, Fingerprints};
 use session_save::home_write::write_atomic;
 use session_save::in_use_marker;
@@ -51,6 +52,12 @@ const BUSY_RUN: &str = "run-on-another-computer";
 const WEEKLY_REVIEW_ID: &str = "3f1c2a9e-0d4b-4c51-9e57-6a1f0c2b7d10";
 const ACTION_ITEMS_ID: &str = "8b2e4f60-7a13-4d9c-b5e2-1c0d9f3a6e21";
 const LONG_PROMPT_ID: &str = "c47d9e12-5b6a-4f08-8e3d-2a9b1f7c0e54";
+
+/// The file that the imported note comes from: its name, its identity (the
+/// SHA-256 of its content) and the computer that imported it.
+const HIRING_SOURCE: &str = "Hiring sync.m4a";
+const HIRING_IDENTITY: &str = "5d41402abc4b2a76b9719d911017c5925d41402abc4b2a76b9719d911017c592";
+const IMPORT_COMPUTER: &str = "7f3c9a1e5b2d4c6f8a0e1d3b5c7a9f2e";
 
 /// The name of the conflict copy of the weekly review prompt, as a sync
 /// client names it.
@@ -253,8 +260,9 @@ fn generate(root: &Path) {
         },
     );
 
-    // A note in a type folder whose `session.md` has the same tag two
-    // times, in other cases and spaces.
+    // An imported note in a type folder whose `session.md` has the same
+    // tag two times, in other cases and spaces. The import record has the
+    // entry of the computer that imported the file.
     let hiring = Note {
         note_type: Some(MEETINGS),
         id: "note-hiring-sync",
@@ -271,8 +279,21 @@ fn generate(root: &Path) {
             turn(8_000, 2, "We can talk to both of them next week."),
         ],
         "## Next steps\n\n- Talk to the two people who applied next week.",
-        |_, _, _| {},
+        |_, _, record| {
+            record.import = Some(ImportSource {
+                source_name: HIRING_SOURCE.to_string(),
+                sha256: Some(HIRING_IDENTITY.to_string()),
+            });
+        },
     );
+    let entry = Entry::new(
+        State::Imported,
+        HIRING_SOURCE,
+        48_213,
+        ComputerId::parse(IMPORT_COMPUTER).unwrap(),
+        at("2026-10-02T15:10:00-05:00"),
+    );
+    import_record::write(root, &Identity::parse(HIRING_IDENTITY).unwrap(), &entry).unwrap();
 
     // A note that another computer processes: a fresh in-use marker of
     // another run.

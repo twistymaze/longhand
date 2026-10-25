@@ -22,11 +22,16 @@ use tauri_specta::Event as _;
 
 use crate::managers::audio_removal::AudioRemovalManager;
 use crate::managers::capture::CaptureManager;
+use crate::managers::import::ImportManager;
 use crate::managers::library::{LibraryChanged, LibraryWatcher, Timing};
 use crate::managers::live::LiveManager;
 use crate::managers::models::{ModelState, ModelsManager};
 use crate::managers::settings;
 use crate::managers::shared::SharedSettingsManager;
+use crate::managers::watched_folder::{
+    self, Environment as WatchedEnvironment, Timing as WatchedTiming, WatchedFolder,
+    WatchedFolderChanged, WatchedFolderStatus,
+};
 
 /// What processing is doing, for the surface.
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
@@ -769,6 +774,18 @@ fn ends_work(event: &RunnerEvent) -> bool {
     )
 }
 
+/// True while a recording runs, or while the live worker saves its last
+/// part after Stop and holds the engine (KTD9): the audio stages and the
+/// conversion of an import wait. It locks the capture state, so a caller
+/// must not hold the store lock.
+fn suspended(
+    capture: &Arc<CaptureManager>,
+    live: &Arc<LiveManager>,
+) -> impl Fn() -> bool + Send + Sync + 'static {
+    let (capture, live) = (Arc::clone(capture), Arc::clone(live));
+    move || capture.is_capturing() || live.busy()
+}
+
 fn notify_saved(
     app: &AppHandle,
     store: &pipeline::SharedStore,
@@ -835,10 +852,26 @@ pub struct ProcessingManager {
     audio_removal: Arc<AudioRemovalManager>,
     /// The early writes of the home folders of new notes (KTD4).
     early_homes: Arc<EarlyHomes>,
+    /// The imports of audio files.
+    imports: Arc<ImportManager>,
     /// Held by each pass of the bulk edits: the type rename, merge and
     /// delete edits (KTD7) and the tag rename and delete edits (KTD11), so
     /// two passes of one edit do not run at the same time.
     bulk_edits: std::sync::Mutex<()>,
+    /// The watcher of the watched folder. It starts after the import worker, with the instance lock held.
+    watched: std::sync::Mutex<WatchedSlot>,
+}
+
+/// The watcher of the watched folder, and whether the quit stopped it.
+#[derive(Default)]
+struct WatchedSlot {
+    watcher: Option<WatchedFolder>,
+    stopped: bool,
+    /// The storage folder changes now.
+    changing: bool,
+    /// After Leave Them, the watcher waits for the answer to the R6
+    /// question.
+    asking: bool,
 }
 
 /// The library watcher, which starts at the end of the launch steps
@@ -862,10 +895,6 @@ impl ProcessingManager {
         secrets: Arc<SecretStore>,
         liveness: session_core::jobs::Liveness,
     ) -> Self {
-        let suspended = Arc::clone(capture);
-        // Processing stays suspended after Stop until the live worker has
-        // saved its last part and released the engine (KTD9).
-        let draining = Arc::clone(live);
         let events = app.clone();
         let saved = capture.shared_store();
         let runner = Runner::new(Environment {
@@ -876,7 +905,7 @@ impl ProcessingManager {
                 models: Arc::clone(&models),
                 secrets,
             }),
-            suspended: Box::new(move || suspended.is_capturing() || draining.busy()),
+            suspended: Box::new(suspended(capture, live)),
             events: Box::new(move |event| {
                 if let RunnerEvent::Saved { note_id, path, .. } = &event {
                     notify_saved(&events, &saved, note_id, path);
@@ -946,6 +975,15 @@ impl ProcessingManager {
             }),
         )
         .with_earlier_runs(own_runs.get(1..).unwrap_or_default().to_vec());
+        // The conversion of an import waits as the audio stages wait
+        // (KTD9 of the audio import plan).
+        let imports = Arc::new(ImportManager::new(
+            app,
+            capture,
+            Box::new(suspended(capture, live)),
+            runner.claims().clone(),
+            Arc::clone(&early_homes),
+        ));
         let library_status: Arc<library::status::LibraryStatus> = Arc::default();
         let audio_removal = AudioRemovalManager::new(
             app,
@@ -958,6 +996,7 @@ impl ProcessingManager {
             own_runs,
             audio_removal,
             early_homes,
+            imports,
             runner,
             live: Arc::clone(live),
             app: app.clone(),
@@ -968,12 +1007,19 @@ impl ProcessingManager {
             library_status,
             mover: MoveWorker::default(),
             bulk_edits: std::sync::Mutex::default(),
+            watched: std::sync::Mutex::default(),
         }
     }
 
     /// The passes that remove the audio of old notes.
     pub fn audio_removal(&self) -> &Arc<AudioRemovalManager> {
         &self.audio_removal
+    }
+
+    /// The imports of audio files. The import commands and the watched
+    /// folder call [`ImportManager::import`].
+    pub fn imports(&self) -> &Arc<ImportManager> {
+        &self.imports
     }
 
     /// The early writes of the home folders of new notes (KTD4).
@@ -1191,6 +1237,13 @@ impl ProcessingManager {
             // come before the rehome of a note that has had no first save.
             self.rehome_outside();
             self.early_homes.resume();
+            // The imports that a quit or a crash stopped continue (KTD6 of
+            // the audio import plan). Only with the instance lock held, so
+            // no other run uses the same journal.
+            self.imports.start();
+            // After the import worker: a file that arrived in the watched
+            // folder while Longhand was closed is imported now (R5).
+            self.start_watched_folder();
             // A note that the crash recovery made a note with no audio
             // again gets the flag "no recording" in its folder (R19).
             if let Some(capture) = self.app.try_state::<Arc<CaptureManager>>() {
@@ -1361,6 +1414,9 @@ impl ProcessingManager {
                     // The old folder is not a library root any more.
                     self.roots_changed();
                     self.forget_outside_roots();
+                    // The import record is in the new folder: the watcher
+                    // continues.
+                    self.sync_watched_pause();
                     break;
                 }
                 Ok(pipeline::move_notes::PassEnd::Waiting) => {
@@ -1607,6 +1663,177 @@ impl ProcessingManager {
         }
     }
 
+    /// Start the watcher of the watched folder that the settings hold (R5).
+    fn start_watched_folder(&self) {
+        let env = match self.watched_environment() {
+            Ok(env) => env,
+            Err(e) => {
+                log::error!("could not start the watched folder: {e}");
+                return;
+            }
+        };
+        let folder = settings::get_settings(&self.app)
+            .watched_folder
+            .map(std::path::PathBuf::from);
+        // A Move that a quit stopped continues: the watcher starts paused
+        // until the Move has taken the import record.
+        let move_open = self.move_open();
+        // The slot lock is held from the pause check to the store of the
+        // watcher, so a change of storage folder cannot start between them.
+        let mut slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.stopped {
+            // The quit came during the launch steps.
+            return;
+        }
+        let paused = move_open || slot.changing || slot.asking;
+        match WatchedFolder::start(folder, env, WatchedTiming::default(), paused) {
+            Ok(watcher) => slot.watcher = Some(watcher),
+            Err(e) => log::error!("could not start the watched folder: {e}"),
+        }
+    }
+
+    /// Whether the watcher must pause now: the storage folder changes,
+    /// a Move has not taken the import record yet, or the R6 question after
+    /// Leave Them waits for its answer.
+    fn sync_watched_pause(&self) {
+        let move_open = self.move_open();
+        let slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(watcher) = &slot.watcher else {
+            return;
+        };
+        if move_open || slot.changing || slot.asking {
+            // A pause with no reply is in the log; the flag stops the work.
+            let _ = watcher.pause();
+        } else {
+            watcher.resume();
+        }
+    }
+
+    /// The storage folder starts to change: the watcher pauses, and a
+    /// read in progress stops, so no import reads the import record of a
+    /// folder that is not the storage folder any more.
+    pub fn pause_watched_folder(&self) {
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .changing = true;
+        self.sync_watched_pause();
+    }
+
+    /// The storage folder change ended. `held` are the files of the
+    /// watched folder that wait for the R6 answer after Leave Them: the
+    /// snapshot holds them, so a quit before the answer gives the answer
+    /// Only New Files. [`ProcessingManager::watched_folder_changed`] gives
+    /// the answer. The watcher stays paused until the answer, and while a
+    /// Move is open.
+    pub fn watched_folder_change_done(&self, held: Option<Vec<watched_folder::Held>>) {
+        {
+            let mut slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+            slot.changing = false;
+            slot.asking = held.is_some();
+        }
+        if let Some(held) = held {
+            self.set_watched_folder_files(held);
+        }
+        self.sync_watched_pause();
+    }
+
+    /// What the watcher of the watched folder needs from the app.
+    fn watched_environment(&self) -> Result<WatchedEnvironment, String> {
+        let data = self.app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let computer_id = crate::managers::import::computer_id(&self.store)?;
+        let capture = self
+            .app
+            .try_state::<Arc<CaptureManager>>()
+            .ok_or("the capture manager is not ready")?;
+        let (storage, typed, events) = (self.app.clone(), self.app.clone(), self.app.clone());
+        let (importer, sources, retry) = (
+            Arc::clone(&self.imports),
+            Arc::clone(&self.imports),
+            Arc::clone(&self.imports),
+        );
+        Ok(WatchedEnvironment {
+            storage_folder: Box::new(move || settings::get_settings(&storage).storage_folder()),
+            computer_id,
+            longhand_version: self.app.package_info().version.to_string(),
+            // The default note type and no tags (R5).
+            import: Box::new(move |path| {
+                let note_type = crate::commands::capture::type_of_new_note(&typed, None)?;
+                importer.import(pipeline::import::Request {
+                    source: path.to_path_buf(),
+                    origin: pipeline::import::Origin::WatchedFolder,
+                    note_type,
+                    tags: Vec::new(),
+                    title: None,
+                })
+            }),
+            open_sources: Box::new(move || sources.open_sources()),
+            retry: Box::new(move || retry.retry()),
+            suspended: Box::new(suspended(&capture, &self.live)),
+            free_space: Box::new(recorder::storage::available_space),
+            dataless: Box::new(watched_folder::is_dataless),
+            hash: Arc::new(audio_import::hash_file_counted),
+            snapshot: data.join(watched_folder::SNAPSHOT_FILE),
+            status: Box::new(move |status| {
+                let changed = WatchedFolderChanged {
+                    status: status.clone(),
+                };
+                if let Err(e) = changed.emit(&events) {
+                    log::warn!("could not emit a watched folder change: {e}");
+                }
+            }),
+        })
+    }
+
+    /// The watched folder setting changed: the watcher watches the new
+    /// folder, or nothing. `skip` holds the files that the user chose not
+    /// to import (R6). Before the watcher starts, the snapshot file gets
+    /// them, and the start reads it. A call is also the answer to the R6
+    /// question after Leave Them, so the watcher stops waiting for it.
+    pub fn watched_folder_changed(&self, skip: Vec<watched_folder::Held>) {
+        self.watched
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .asking = false;
+        self.set_watched_folder_files(skip);
+        self.sync_watched_pause();
+    }
+
+    /// Give the watcher the watched folder of the settings, with `skip` as
+    /// its new snapshot, or write the snapshot file when no watcher runs.
+    fn set_watched_folder_files(&self, skip: Vec<watched_folder::Held>) {
+        let folder = settings::get_settings(&self.app)
+            .watched_folder
+            .map(std::path::PathBuf::from);
+        let slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(watcher) = &slot.watcher {
+            watcher.set_folder(folder, skip);
+            return;
+        }
+        drop(slot);
+        let Ok(data) = self.app.path().app_data_dir() else {
+            return;
+        };
+        let file = data.join(watched_folder::SNAPSHOT_FILE);
+        let written = match &folder {
+            Some(folder) => watched_folder::write_snapshot(&file, folder, &skip),
+            None => watched_folder::remove_snapshot(&file),
+        };
+        if let Err(e) = written {
+            log::error!("could not write the watched folder snapshot: {e}");
+        }
+    }
+
+    /// The state of the watched folder (R4, and its notice on Home).
+    pub fn watched_folder_status(&self) -> WatchedFolderStatus {
+        let slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(watcher) = &slot.watcher {
+            return watcher.status();
+        }
+        drop(slot);
+        WatchedFolderStatus::of_setting(settings::get_settings(&self.app).watched_folder)
+    }
+
     /// Before the process exits: stop the library watcher and processing,
     /// and free the models. The live workers stop first: a worker holds the
     /// engine slot while it streams, and the runner frees the engine after
@@ -1626,6 +1853,16 @@ impl ProcessingManager {
             self.mover.signal.notify_all();
         }
         self.audio_removal.stop();
+        // Before the import worker: the watcher starts no new import.
+        let watched = {
+            let mut slot = self.watched.lock().unwrap_or_else(|e| e.into_inner());
+            slot.stopped = true;
+            slot.watcher.take()
+        };
+        if let Some(watched) = watched {
+            watched.stop();
+        }
+        self.imports.stop();
         self.early_homes.stop();
         self.live.shutdown();
         self.runner.shutdown();

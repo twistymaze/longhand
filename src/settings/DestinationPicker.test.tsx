@@ -28,7 +28,12 @@ function picker(
   handlers: Record<string, CommandHandler> = {},
   options: { settings?: Settings; status?: DestinationStatus } = {},
 ) {
-  const tauri = mockTauri({ move_status: () => null, agent_instructions_status: () => ({ kind: "not_added" }), ...handlers });
+  const tauri = mockTauri({
+    move_status: () => null,
+    agent_instructions_status: () => ({ kind: "not_added" }),
+    watched_folder_status: () => ({ kind: "off" }),
+    ...handlers,
+  });
   const received: Settings[] = [];
   const view = render(
     <DestinationPicker
@@ -40,9 +45,13 @@ function picker(
   return { tauri, received, view, user: userEvent.setup() };
 }
 
-const change = () => screen.getByRole("button", { name: "Change…" }) as HTMLButtonElement;
+const RECORDINGS = "/Users/me/Recordings";
+/// The result of a storage folder change that did nothing to the watched
+/// folder.
+const done = (s: Settings) => ({ settings: s, watched_folder_off: null, watched_folder_files: null });
+const change = () => screen.getAllByRole("button", { name: "Change…" })[0] as HTMLButtonElement;
 const show = () => screen.getByRole("button", { name: /^Show in / }) as HTMLButtonElement;
-const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status" && c !== "agent_instructions_status");
+const cmds = (tauri: { calls: { cmd: string }[] }) => tauri.calls.map((c) => c.cmd).filter((c) => c !== "move_status" && c !== "agent_instructions_status" && c !== "watched_folder_status");
 
 describe("DestinationPicker", () => {
   test("shows the one storage folder and no earlier folders", () => {
@@ -95,7 +104,7 @@ describe("DestinationPicker", () => {
     const changed = { ...settings, storage_folder: "/Volumes/Disk/Notes" } as Settings;
     const { tauri, user, received, view } = picker({
       pick_storage_folder: () => "/Volumes/Disk/Notes",
-      change_storage_folder: () => changed,
+      change_storage_folder: () => done(changed),
     });
     await user.click(change());
     await user.click(await screen.findByRole("button", { name: "Leave Them" }));
@@ -104,6 +113,86 @@ describe("DestinationPicker", () => {
       folder: "/Volumes/Disk/Notes",
       oldNotes: "leave",
     });
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    view.unmount();
+  });
+
+  // R6 after Leave Them: the new folder's import record holds none of
+  // the 5 audio files in the watched folder, so the question of the
+  // watched folder shows, and the answer goes to the watched folder.
+  test("Leave Them with 5 audio files in the watched folder asks about 5 files", async () => {
+    const changed = { ...settings, storage_folder: "/Volumes/Disk/Notes", watched_folder: RECORDINGS } as Settings;
+    const { tauri, user, received, view } = picker(
+      {
+        pick_storage_folder: () => "/Volumes/Disk/Notes",
+        change_storage_folder: () => ({ ...done(changed), watched_folder_files: { count: 5, bytes: 5_000_000 } }),
+        set_watched_folder: () => changed,
+      },
+      { settings: { ...settings, watched_folder: RECORDINGS } as Settings },
+    );
+    await user.click(change());
+    await user.click(await screen.findByRole("button", { name: "Leave Them" }));
+    const dialog = await screen.findByText(/This folder has 5 audio files \(5 MB\)/);
+    expect(dialog).toBeTruthy();
+    await waitFor(() => expect(document.activeElement?.textContent).toBe("Only New Files"));
+    expect(cmds(tauri)).not.toContain("set_watched_folder");
+    await user.click(screen.getByRole("button", { name: "Import Them" }));
+    await waitFor(() =>
+      expect(tauri.calls.find((c) => c.cmd === "set_watched_folder")?.args).toEqual({
+        folder: RECORDINGS,
+        existing: "import",
+      }),
+    );
+    await waitFor(() => expect(received).toEqual([changed]));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    view.unmount();
+  });
+
+  // R9 at a change of the storage folder: the user must choose
+  // another folder to watch, so the reason shows in the watched folder
+  // group.
+  test("a change that turns the watched folder off says why in the watched folder group", async () => {
+    const changed = { ...settings, storage_folder: "/Users/me/Library", watched_folder: null } as Settings;
+    const reason = "The watched folder is off because it is inside the new storage folder. Choose another folder to watch.";
+    const { user, received, view } = picker(
+      {
+        pick_storage_folder: () => "/Users/me/Library",
+        change_storage_folder: () => ({ ...done(changed), watched_folder_off: reason }),
+      },
+      { settings: { ...settings, watched_folder: RECORDINGS } as Settings },
+    );
+    await user.click(change());
+    await user.click(await screen.findByRole("button", { name: "Leave Them" }));
+    await waitFor(() => expect(received).toEqual([changed]));
+    view.rerender(<DestinationPicker settings={changed} status={ready} onSettings={(s) => received.push(s)} />);
+    const group = screen.getByRole("button", { name: "Choose Folder…" }).closest("section");
+    expect(group?.textContent).toContain(reason);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    view.unmount();
+  });
+
+  test("a Turn Off after a new folder does not show the old reason", async () => {
+    const changed = { ...settings, storage_folder: "/Users/me/Library", watched_folder: null } as Settings;
+    const reason = "The watched folder is off because it is inside the new storage folder. Choose another folder to watch.";
+    const { user, received, view } = picker(
+      {
+        pick_storage_folder: () => "/Users/me/Library",
+        change_storage_folder: () => ({ ...done(changed), watched_folder_off: reason }),
+      },
+      { settings: { ...settings, watched_folder: RECORDINGS } as Settings },
+    );
+    await user.click(change());
+    await user.click(await screen.findByRole("button", { name: "Leave Them" }));
+    await waitFor(() => expect(received).toEqual([changed]));
+    const onSettings = (s: Settings) => received.push(s);
+    view.rerender(<DestinationPicker settings={changed} status={ready} onSettings={onSettings} />);
+    expect(screen.getByText(reason)).toBeTruthy();
+    const watching = { ...changed, watched_folder: "/Users/me/Other" } as Settings;
+    view.rerender(<DestinationPicker settings={watching} status={ready} onSettings={onSettings} />);
+    expect(screen.queryByText(reason)).toBeNull();
+    view.rerender(<DestinationPicker settings={changed} status={ready} onSettings={onSettings} />);
+    expect(screen.queryByText(reason)).toBeNull();
+    expect(screen.queryByText("Turned off")).toBeNull();
     view.unmount();
   });
 
@@ -135,7 +224,7 @@ describe("DestinationPicker", () => {
       pick_storage_folder: () => "/Volumes/Disk/Notes",
       change_storage_folder: () => {
         status = moving;
-        return { ...settings, storage_folder: "/Volumes/Disk/Notes" };
+        return done({ ...settings, storage_folder: "/Volumes/Disk/Notes" } as Settings);
       },
       move_status: () => status,
       retry_move: () => null,

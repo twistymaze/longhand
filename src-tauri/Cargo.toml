@@ -57,6 +57,8 @@ asr = { path = "../crates/asr" }
 # `asr`'s per-platform declarations.
 transcribe-cpp = { version = "0.4.1", default-features = false }
 pipeline = { path = "../crates/pipeline" }
+audio-import = { path = "../crates/audio-import" }
+import-record = { path = "../crates/import-record" }
 library = { path = "../crates/library" }
 session-save = { path = "../crates/session-save" }
 summarize = { path = "../crates/summarize" }
@@ -88,12 +90,16 @@ minisign-verify = "0.3"
 [target.'cfg(target_os = "macos")'.dependencies]
 diarize = { path = "../crates/diarize", features = ["coreml"] }
 # The Settings window's zoom method (src/zoom.rs). tao already uses it.
-objc2 = "0.6"
+# `exception`: the drop code (src/file_promise.rs) catches Objective-C
+# exceptions.
+objc2 = { version = "0.6", features = ["exception"] }
 objc2-foundation = { version = "0.3.2", features = ["NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services"] }
 objc2-service-management = "0.3.2"
 # Rich text on the clipboard without WebKit's added styles
-# (src/commands/clipboard.rs). tao already uses it.
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSPasteboard"] }
+# (src/commands/clipboard.rs), and promised files in a drop
+# (src/file_promise.rs). tao and wry already use it.
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSDragging", "NSFilePromiseReceiver", "NSPasteboard"] }
+block2 = "0.6"
 # The recording widget panel (src/widget.rs), as in Handy. From crates.io,
 # because deny.toml refuses other sources.
 tauri-nspanel = "2.1"

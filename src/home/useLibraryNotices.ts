@@ -1,9 +1,10 @@
 // The library notices of Home (KTD14 of the safe agent edits plan). They
 // come from the latest library scans, so they are read again at each
-// library change.
+// library change. The import notices are read again at each change of the
+// imports or the watched folder.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, type LibraryNotices } from "../bindings";
+import { commands, events, type LibraryNotices } from "../bindings";
 import { useReloadOn } from "../lib/useReloadOn";
 
 const ignore = () => {};
@@ -27,5 +28,16 @@ export function useLibraryNotices(): { notices: LibraryNotices | null; reload: (
     void reload();
   }, [reload]);
   useReloadOn(ignore, reload);
+  // The import notices change with the import worker and the watched
+  // folder.
+  useEffect(() => {
+    const unlisteners = [
+      events.importNoticesChanged.listen(() => void reload()),
+      events.watchedFolderChanged.listen(() => void reload()),
+    ];
+    return () => {
+      for (const u of unlisteners) void u.then((f) => f());
+    };
+  }, [reload]);
   return { notices, reload };
 }

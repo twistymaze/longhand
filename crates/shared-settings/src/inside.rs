@@ -9,10 +9,10 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 /// The reason for a file that resolves outside the storage folder.
-pub(crate) const OUTSIDE_FILE: &str = "it links to a file outside the storage folder";
+pub const OUTSIDE_FILE: &str = "it links to a file outside the storage folder";
 
 /// The reason for a folder that resolves outside the storage folder.
-pub(crate) const OUTSIDE_FOLDER: &str = "it is in a folder outside the storage folder";
+pub const OUTSIDE_FOLDER: &str = "it is in a folder outside the storage folder";
 
 /// The reason for an opened entry that is not a file.
 const NOT_A_FILE: &str = "it is not a file";
@@ -22,7 +22,7 @@ const NOT_A_FILE: &str = "it is not a file";
 /// `.longhand` or `prompts` folder is examined too. A link to a file that
 /// does not exist gives the error of `canonicalize`. A path outside the
 /// storage folder gives an error with [`OUTSIDE_FILE`].
-pub(crate) fn inside_file(root: &Path, path: &Path) -> io::Result<PathBuf> {
+pub fn inside_file(root: &Path, path: &Path) -> io::Result<PathBuf> {
     // A path with no link under the storage folder is in the storage
     // folder. `canonicalize` is then not used: it fails on some network
     // and virtual drives of Windows.
@@ -41,7 +41,7 @@ pub(crate) fn inside_file(root: &Path, path: &Path) -> io::Result<PathBuf> {
 /// The bytes of the file `checked`. `checked` is the path that
 /// [`inside_file`] gave for the storage folder `root`. The read uses
 /// [`open_checked`].
-pub(crate) fn read_checked(root: &Path, checked: &Path) -> io::Result<Vec<u8>> {
+pub fn read_checked(root: &Path, checked: &Path) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     open_checked(root, checked)?.read_to_end(&mut bytes)?;
     Ok(bytes)
@@ -53,7 +53,7 @@ pub(crate) fn read_checked(root: &Path, checked: &Path) -> io::Result<Vec<u8>> {
 /// starts at the storage folder and refuses a link at each part of the
 /// path, so the open file is in the storage folder. An entry that is not
 /// a file gives an error.
-pub(crate) fn open_checked(root: &Path, checked: &Path) -> io::Result<File> {
+pub fn open_checked(root: &Path, checked: &Path) -> io::Result<File> {
     let file = open_no_link(root, checked)?;
     if !file.metadata()?.is_file() {
         return Err(io::Error::other(NOT_A_FILE));
@@ -141,7 +141,7 @@ fn open_no_link(_root: &Path, checked: &Path) -> io::Result<File> {
 /// folder `root`. The folder does not have to exist: the check examines
 /// the nearest part of the path that exists, which is the folder where a
 /// write would make the first new folder.
-pub(crate) fn check_write_folder(root: &Path, folder: &Path) -> io::Result<()> {
+pub fn check_write_folder(root: &Path, folder: &Path) -> io::Result<()> {
     let mut existing = folder;
     while std::fs::symlink_metadata(existing).is_err() {
         match existing.parent() {

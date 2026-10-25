@@ -36,6 +36,7 @@ fn states() -> Vec<SessionState> {
         },
         SessionState::Saved,
         SessionState::Discarded,
+        SessionState::Importing,
     ]
 }
 
@@ -156,6 +157,14 @@ fn expected(state: &SessionState, event: &Event) -> Option<&'static str> {
         (S::Saved, Event::UserResume { .. }) => Some("capturing"),
         (S::Saved, Event::UserRecord { .. }) => Some("capturing"),
         (S::Capturing | S::Interrupted { .. }, Event::RecordingDropped) => Some("saved"),
+        // The import worker queues the note with its segment (KTD5).
+        (
+            S::Importing,
+            Event::UserStop {
+                retained_audio: true,
+                ..
+            },
+        ) => Some("queued"),
         _ => None,
     }
 }
@@ -325,4 +334,22 @@ fn acknowledging_keeps_the_interruption() {
             ..
         }
     ));
+}
+
+#[test]
+fn an_importing_note_leaves_only_by_a_stop_that_keeps_its_audio() {
+    let queued = SessionState::Importing
+        .transition(&Event::UserStop {
+            at: t(1),
+            retained_audio: true,
+        })
+        .unwrap();
+    assert_eq!(queued, SessionState::Queued { stopped_at: t(1) });
+    let dropped = Event::UserStop {
+        at: t(1),
+        retained_audio: false,
+    };
+    assert!(SessionState::Importing.transition(&dropped).is_err());
+    assert_eq!(SessionState::Importing.name(), "importing");
+    assert!(!SessionState::Importing.is_stopped());
 }

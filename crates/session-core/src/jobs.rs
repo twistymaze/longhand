@@ -11,6 +11,7 @@ use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::folder::{PendingType, SessionDoc, SpeakerCount};
+use crate::note_record::ImportSource;
 use crate::recognition;
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
@@ -100,6 +101,23 @@ pub struct RecordingModel {
     pub asr_model: String,
     /// True only when the model streams and the Live transcript switch is on.
     pub live_transcript: bool,
+}
+
+/// The row of a note that an import makes ([`Store::create_import`]).
+#[derive(Debug, Clone)]
+pub struct NewImport<'a> {
+    pub id: &'a str,
+    /// The recording time of the file (R16): the start of the note.
+    pub opened_at: DateTime<FixedOffset>,
+    /// The file name as a proposed title, or the title that the user set
+    /// in the import sheet (R15, R2a).
+    pub title: &'a Title,
+    pub note_type: Option<&'a str>,
+    pub tags: &'a [String],
+    pub model: &'a RecordingModel,
+    pub snapshot: Option<&'a serde_json::Value>,
+    pub speaker_count: Option<SpeakerCount>,
+    pub source: &'a ImportSource,
 }
 
 /// A microphone that a note chose: cpal's stable device ID, with the device
@@ -458,6 +476,10 @@ const SESSION_COLUMNS: &str = "id, created_at, state, queue_seq, speaker_count, 
      home_path, title, title_source, found_speakers, live_transcript, transcribe_again_model, recognition_snapshot, \
      started_at, note_type, tags, pending_type";
 
+/// The order of the queue: each recorded note goes before each imported
+/// note (R14a, KTD13). `dequeue` and `queue` use it.
+const QUEUE_ORDER: &str = "import_source IS NOT NULL, queue_seq";
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
@@ -569,6 +591,92 @@ impl Store {
             ],
         )?;
         Ok(())
+    }
+
+    /// Make the row of a note that an import makes (KTD5, KTD13 of the
+    /// audio import plan) in one transaction: the state `Importing`, the
+    /// recording time of the file as the time the note opened (R16), the
+    /// title, the type, the tags, the import source, and the recognition
+    /// that a recording start records, with no live transcript. The row is
+    /// not queued until [`Store::finish_import`].
+    pub fn create_import(&mut self, note: &NewImport) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
+               recognition_snapshot, started_here, started_at, title, title_source, note_type,
+               tags, import_source)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?2, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                note.id,
+                note.opened_at.to_rfc3339(),
+                serde_json::to_string(&SessionState::Importing)?,
+                note.speaker_count
+                    .map(|c| serde_json::to_string(&c))
+                    .transpose()?,
+                note.model.asr_model,
+                note.model.live_transcript,
+                note.snapshot.map(serde_json::to_string).transpose()?,
+                note.title.text,
+                title_source_key(note.title.source),
+                note.note_type,
+                serde_json::to_string(note.tags)?,
+                serde_json::to_string(note.source)?,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The import source of the note `id`. `None` for a recorded note.
+    pub fn import_source(&self, id: &str) -> Result<Option<ImportSource>> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT import_source FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.into()))?;
+        Ok(value.map(|v| serde_json::from_str(&v)).transpose()?)
+    }
+
+    /// Record the content identity of the file of the imported note `id`.
+    /// A note with no import source does not change.
+    pub fn set_import_identity(&self, id: &str, sha256: &str) -> Result<()> {
+        let Some(mut source) = self.import_source(id)? else {
+            return Ok(());
+        };
+        source.sha256 = Some(sha256.to_string());
+        self.update_one(
+            id,
+            "UPDATE sessions SET import_source = ?2 WHERE id = ?1",
+            serde_json::to_string(&source)?,
+        )
+    }
+
+    /// Put the converted segment of the importing note `id` and queue the
+    /// note at `at`, in one transaction (KTD6 step 5). Refused when the
+    /// note is not `Importing`.
+    pub fn finish_import(
+        &mut self,
+        id: &str,
+        segment: &Segment,
+        at: DateTime<FixedOffset>,
+    ) -> Result<SessionState> {
+        let event = Event::UserStop {
+            at,
+            retained_audio: true,
+        };
+        let current = self.require(id)?;
+        if current.state != SessionState::Importing {
+            return Err(IllegalTransition {
+                state: current.state.name().to_string(),
+                event: format!("{event:?}"),
+            }
+            .into());
+        }
+        self.apply_with(id, &event, |tx| insert_segment(tx, id, segment))
     }
 
     /// Whether this computer started the note (KTD8). False for a note
@@ -1944,14 +2052,17 @@ impl Store {
 
     // ------------------------------------------------------------ queue
 
-    /// Take the oldest queued session (R20c) and claim it for `owner`.
+    /// Take the oldest queued session (R20c) and claim it for `owner`. Each
+    /// recorded note goes before each imported note (R14a, KTD13).
     pub fn dequeue(&mut self, owner: &str, now: DateTime<FixedOffset>) -> Result<Option<String>> {
         let next: Option<String> = self
             .conn
             .query_row(
-                "SELECT id FROM sessions WHERE queue_seq IS NOT NULL
-                 AND json_extract(state, '$.state') = 'queued'
-                 ORDER BY queue_seq LIMIT 1",
+                &format!(
+                    "SELECT id FROM sessions WHERE queue_seq IS NOT NULL
+                     AND json_extract(state, '$.state') = 'queued'
+                     ORDER BY {QUEUE_ORDER} LIMIT 1"
+                ),
                 [],
                 |r| r.get(0),
             )
@@ -1995,12 +2106,14 @@ impl Store {
         Ok(Some(id))
     }
 
-    /// Queued session ids, head first.
+    /// Queued session ids, head first: the recorded notes in their order,
+    /// then the imported notes in their order (R14a, KTD13).
     pub fn queue(&self) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT id FROM sessions WHERE queue_seq IS NOT NULL
-             AND json_extract(state, '$.state') = 'queued' ORDER BY queue_seq",
-        )?;
+             AND json_extract(state, '$.state') = 'queued'
+             ORDER BY {QUEUE_ORDER}"
+        ))?;
         let ids = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;

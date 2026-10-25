@@ -68,6 +68,12 @@ pub enum SessionState {
     },
     Saved,
     Discarded,
+    /// The import worker copies and converts an audio file into the note
+    /// (KTD5 of the audio import plan). Only the worker and a user delete
+    /// change the note. A stop that keeps the converted audio queues it.
+    /// An older build cannot read this state, so the store version is
+    /// above the version of each older build.
+    Importing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +167,7 @@ impl SessionState {
             SessionState::AwaitingDestination { .. } => "awaiting_destination",
             SessionState::Saved => "saved",
             SessionState::Discarded => "discarded",
+            SessionState::Importing => "importing",
         }
     }
 
@@ -302,6 +309,14 @@ impl SessionState {
             (S::Processing { .. }, Event::TranscribeAgainFailed) => Some(S::Saved),
             (S::Saved, Event::UserRecord { has_segments }) if !*has_segments => Some(S::Capturing),
             (S::Capturing | S::Interrupted { .. }, Event::RecordingDropped) => Some(S::Saved),
+            // The import worker stops the note with its converted segment.
+            (
+                S::Importing,
+                Event::UserStop {
+                    at,
+                    retained_audio: true,
+                },
+            ) => Some(S::Queued { stopped_at: *at }),
 
             (_, Event::UserResume { .. }) if self.is_stopped() => Some(S::Capturing),
             (S::Saved, Event::UserResume { audio_intact, .. }) if *audio_intact => {

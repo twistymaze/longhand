@@ -1,12 +1,13 @@
 // The library notices of Home, in the order of KTD14 of the safe agent
 // edits plan: the Convert notice with the result of the last conversion,
-// then the notes that Longhand can't read. Each shows only when the user
-// must act: the normal path shows nothing.
+// then the notes that Longhand can't read, then the notices of the audio
+// import. Each shows only when the user must act: the normal path shows
+// nothing.
 
 import { type ReactNode, useState } from "react";
 import { commands, type ConversionNotice, type LibraryNotices as Notices } from "../bindings";
 import { CautionIcon } from "../settings/icons";
-import { Button, notes } from "../settings/ui";
+import { Button, folderName, notes } from "../settings/ui";
 
 export function LibraryNotices({ notices, onChanged }: { notices: Notices | null; onChanged: () => void }) {
   if (!notices) return null;
@@ -14,6 +15,59 @@ export function LibraryNotices({ notices, onChanged }: { notices: Notices | null
     <>
       {notices.conversion && <ConvertNotice notice={notices.conversion} onChanged={onChanged} />}
       <ProblemNotice problems={notices.problems} />
+      <ImportNotices imports={notices.imports} onChanged={onChanged} />
+    </>
+  );
+}
+
+/// The notices of the audio import. Each
+/// shows only when the user must act or an import failed. An import that
+/// waits for a download or a recording shows no notice (R21).
+function ImportNotices({ imports, onChanged }: { imports: Notices["imports"]; onChanged: () => void }) {
+  const dismiss = async (noteId: string) => {
+    try {
+      await commands.dismissImportFailure(noteId);
+    } finally {
+      onChanged();
+    }
+  };
+  const waiting = imports.waiting_for_space.map((name) => `“${name}”`).join(", ");
+  return (
+    <>
+      {imports.watched_folder !== null && (
+        <CautionBanner label="Watched folder not available">
+          <p className="min-w-0 flex-1">
+            Longhand can’t open the watched folder “{folderName(imports.watched_folder)}”. Connect its disk, or
+            choose another folder in Settings.
+          </p>
+          <Button onClick={() => void commands.openSettings("destination")}>Open Settings…</Button>
+        </CautionBanner>
+      )}
+      {imports.waiting_for_space.length > 0 && (
+        <CautionBanner label="Imports that wait for disk space">
+          <p className="min-w-0 flex-1">
+            {imports.waiting_for_space.length === 1
+              ? `There is not enough disk space to import ${waiting}. Free some space, and the import continues.`
+              : `There is not enough disk space to import ${waiting}. Free some space, and the imports continue.`}
+          </p>
+        </CautionBanner>
+      )}
+      {imports.failed.length > 0 && (
+        <CautionBanner label="Audio files that could not be imported">
+          <ul className="min-w-0 flex-1 space-y-1.5">
+            {imports.failed.map((failure) => (
+              <li key={failure.note_id} className="flex items-center gap-2.5">
+                <p className="min-w-0 flex-1">
+                  Longhand can’t read the audio in “{failure.file_name}”. The file may be damaged.
+                </p>
+                <Button label={`Dismiss “${failure.file_name}”`} onClick={() => void dismiss(failure.note_id)}>
+                  Dismiss
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </CautionBanner>
+      )}
     </>
   );
 }

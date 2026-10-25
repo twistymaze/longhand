@@ -11586,3 +11586,167 @@ async fn the_title_job_sends_to_the_provider_in_effect_when_it_started() {
     assert!(size >= ollama_need(&sent[0]) as u64, "{size}");
     assert_eq!(size % 2_048, 0, "{size}");
 }
+
+// ---------------------------------------------------------------- imported notes
+
+use pipeline::import::{ImportEnvironment, Imports, Origin, Recognition, Request};
+
+/// Import the 5 s m4a fixture as `Team sync.m4a`, with the sheet title
+/// `title`, into the rig's store and storage folder. The worker runs to
+/// the queue, and the early write of the home folder ends. Returns the
+/// note id and the folder of the file.
+fn imported_note(r: &Rig, title: Option<&str>) -> (String, tempfile::TempDir) {
+    let phone = tempfile::tempdir().unwrap();
+    let source = phone.path().join("Team sync.m4a");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata/audio-import/tone-mono.m4a"),
+        &source,
+    )
+    .unwrap();
+    let dest = r.dest.clone();
+    let homes = pipeline::early_home::EarlyHomes::new(
+        Arc::clone(&r.store),
+        "import-run",
+        Box::new(move || Some(dest.clone())),
+        Box::new(|_| {}),
+    );
+    let storage = r.dest.clone();
+    let computer = r.store.lock().unwrap().computer_id().unwrap();
+    let imports = Imports::open(ImportEnvironment {
+        store: Arc::clone(&r.store),
+        working_root: r.root.clone(),
+        journal: phone.path().join(pipeline::import::JOURNAL_FILE),
+        computer_id: import_record::ComputerId::parse(&computer).unwrap(),
+        longhand_version: "1.4.0".into(),
+        storage_folder: Box::new(move || Some(storage.clone())),
+        suspended: Box::new(|| false),
+        free_space: Arc::new(|_: &std::path::Path| None),
+        remove: Box::new(|path| std::fs::remove_dir_all(path).map_err(|e| e.to_string())),
+        claims: r.runner.claims().clone(),
+        early_homes: Some(Arc::clone(&homes)),
+        events: Box::new(|_| {}),
+        poll: std::time::Duration::from_millis(1),
+    })
+    .unwrap();
+    let id = imports
+        .import(
+            Request {
+                source,
+                origin: Origin::Manual,
+                note_type: None,
+                tags: Vec::new(),
+                title: title.map(str::to_string),
+            },
+            Recognition {
+                asr_model: "m".into(),
+                snapshot: None,
+                speaker_count: None,
+            },
+        )
+        .unwrap();
+    imports.run_pending();
+    homes.wait(&id);
+    assert!(matches!(state(&r.store, &id), SessionState::Queued { .. }));
+    (id, phone)
+}
+
+fn title_of_note(r: &Rig, id: &str) -> Title {
+    r.store.lock().unwrap().title(id).unwrap().unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_imported_note_is_saved_with_its_summary_and_its_source_file() {
+    let r = rig().await;
+    let (id, phone) = imported_note(&r, None);
+    assert_eq!(
+        r.runner.run_next().await.unwrap(),
+        (id.clone(), Outcome::Finished)
+    );
+    // The title job that the save queued ends: its title call fails, so
+    // the note keeps the title from the file name.
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, &id), Some(TitleJob::Kept));
+
+    let folder = saved_folder(&r, &id);
+    assert!(summary_is_complete(&folder));
+    assert_eq!(
+        (
+            title_of_note(&r, &id).text.as_str(),
+            title_of_note(&r, &id).source
+        ),
+        ("Team sync", TitleSource::Proposed)
+    );
+    let record = session_core::note_folder::NoteFiles::read(&folder)
+        .unwrap()
+        .record;
+    let sha256 = audio_import::hash_file(&phone.path().join("Team sync.m4a")).unwrap();
+    assert_eq!(
+        record.import,
+        Some(session_core::note_record::ImportSource {
+            source_name: "Team sync.m4a".into(),
+            sha256: Some(sha256),
+        })
+    );
+    // The note keeps the recording time of the file (R16).
+    assert_eq!(
+        record.started,
+        chrono::DateTime::parse_from_rfc3339("2026-10-20T14:30:00Z").unwrap()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_import_with_a_sheet_title_keeps_it_after_the_summary() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let (id, _phone) = imported_note(&r, Some("Budget review"));
+    assert_eq!(
+        r.runner.run_next().await.unwrap(),
+        (id.clone(), Outcome::Finished)
+    );
+    // A user title queues no title job (R15).
+    assert!(r.runner.run_titles().await.is_empty());
+    assert!(title_calls(&mock).is_empty());
+    let title = title_of_note(&r, &id);
+    assert_eq!(
+        (title.text.as_str(), title.source),
+        ("Budget review", TitleSource::User)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rename_of_an_imported_note_before_its_summary_ends_keeps_the_users_title() {
+    // Covers AE7.
+    let r = rig().await;
+    let id = Arc::new(Mutex::new(String::new()));
+    let (runner, renamed) = (Arc::clone(&r.runner), Arc::clone(&id));
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::With(Arc::new(move |b: &str| {
+            if is_title_call(b) {
+                return (200, http::completion("Weekly sync"));
+            }
+            // The user renames the note while its summary is made.
+            let id = renamed.lock().unwrap().clone();
+            runner.rename_session(&id, "Budget review").unwrap();
+            (200, http::completion("A short summary."))
+        })),
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    let (note, _phone) = imported_note(&r, None);
+    *id.lock().unwrap() = note.clone();
+    assert_eq!(
+        r.runner.run_next().await.unwrap(),
+        (note.clone(), Outcome::Finished)
+    );
+    // The note has a user title, so the save queues no title job.
+    assert!(r.runner.run_titles().await.is_empty());
+    assert!(title_calls(&mock).is_empty());
+    let title = title_of_note(&r, &note);
+    assert_eq!(
+        (title.text.as_str(), title.source),
+        ("Budget review", TitleSource::User)
+    );
+}

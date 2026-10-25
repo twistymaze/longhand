@@ -23,6 +23,8 @@ use crate::managers::capture::CaptureManager;
 use crate::managers::live::{LiveManager, LiveTranscript};
 use crate::managers::processing::{ProcessingManager, SpeakerProgressView, WaitView, stage_name};
 use crate::managers::settings;
+use crate::managers::watched_folder::WatchedFolderStatus;
+use pipeline::import::Notices;
 use pipeline::runner::Waits;
 
 #[derive(Serialize, Clone, Type)]
@@ -242,8 +244,9 @@ fn record_refusal(check: &RecordCheck) -> Option<&'static str> {
 }
 
 /// The recording button of the note of `record`, or `None` while the note
-/// records, is interrupted (the recording bar owns those) or is
-/// discarded. `saving`: the save of the note has begun.
+/// records, is interrupted (the recording bar owns those), is discarded, or
+/// is imported (only rename and delete are available). `saving`: the save
+/// of the note has begun.
 fn record_button(
     record: &SessionRecord,
     has_segments: bool,
@@ -253,7 +256,10 @@ fn record_button(
 ) -> Option<RecordButton> {
     if matches!(
         record.state,
-        SessionState::Capturing | SessionState::Interrupted { .. } | SessionState::Discarded
+        SessionState::Capturing
+            | SessionState::Interrupted { .. }
+            | SessionState::Discarded
+            | SessionState::Importing
     ) {
         return None;
     }
@@ -710,6 +716,57 @@ pub struct LibraryNotices {
     /// The note folders whose files have given no note for about one
     /// minute, sorted by folder (R6).
     pub problems: Vec<ProblemNote>,
+    /// The notices of the audio import.
+    pub imports: ImportNotices,
+}
+
+/// The notices of the audio import (R20, R22). Each part shows only when
+/// the user must act or an import failed. An import that waits for a
+/// download or a recording shows no notice (R21).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Default, Type)]
+pub struct ImportNotices {
+    /// The path of the watched folder when it stays unavailable after
+    /// several scans. `None` when the folder is watched or off.
+    pub watched_folder: Option<String>,
+    /// The names of the files whose import waits for free space (KTD9).
+    pub waiting_for_space: Vec<String>,
+    /// The files that the decoder refused on this computer since the
+    /// launch, and that the user did not dismiss (R12a).
+    pub failed: Vec<FailedImport>,
+}
+
+/// A file that the decoder refused (R12a).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug, Type)]
+pub struct FailedImport {
+    /// The id of the attempt. Dismiss uses it.
+    pub note_id: String,
+    /// The name of the file, with no folder.
+    pub file_name: String,
+}
+
+/// The import notices from the facts of the import worker (`notices`) and
+/// the watched folder status (`watched`). `name_of` gives the file name of
+/// an import note; a note with no name shows nothing.
+fn import_notices_of(
+    notices: &Notices,
+    watched: &WatchedFolderStatus,
+    name_of: impl Fn(&str) -> Option<String>,
+) -> ImportNotices {
+    ImportNotices {
+        watched_folder: match watched {
+            WatchedFolderStatus::Unavailable { path } => Some(path.clone()),
+            WatchedFolderStatus::Off | WatchedFolderStatus::Watching { .. } => None,
+        },
+        waiting_for_space: notices.disk.iter().filter_map(|id| name_of(id)).collect(),
+        failed: notices
+            .failed
+            .iter()
+            .map(|f| FailedImport {
+                note_id: f.note_id.clone(),
+                file_name: f.file_name.clone(),
+            })
+            .collect(),
+    }
 }
 
 /// The state of the conversion on this computer (U5). It stays in memory
@@ -752,6 +809,7 @@ fn library_notices_of(
     status: &LibraryStatus,
     conversion: &ConversionState,
     records: &[SessionRecord],
+    imports: ImportNotices,
 ) -> LibraryNotices {
     let old = status.old_layout_notes();
     let still_old = |id: &str| old.iter().any(|(old_id, _)| old_id == id);
@@ -781,6 +839,7 @@ fn library_notices_of(
     LibraryNotices {
         conversion,
         problems,
+        imports,
     }
 }
 
@@ -796,18 +855,57 @@ pub async fn library_notices(
     let (capture, processing) = (Arc::clone(&capture), Arc::clone(&processing));
     let state = conversion.lock().clone();
     blocking(move || {
-        let records = {
+        let facts = processing.imports().notices();
+        let watched = processing.watched_folder_status();
+        let named = named_note_ids(processing.library_status(), &state);
+        let (records, imports) = {
             let store = capture.shared_store();
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            store.sessions().map_err(|e| e.to_string())?
+            let imports = import_notices_of(&facts, &watched, |id| {
+                store
+                    .import_source(id)
+                    .ok()
+                    .flatten()
+                    .map(|source| source.source_name)
+            });
+            let records = named
+                .iter()
+                .filter_map(|id| store.session(id).transpose())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            (records, imports)
         };
         Ok(library_notices_of(
             processing.library_status(),
             &state,
             &records,
+            imports,
         ))
     })
     .await
+}
+
+/// The ids of the notes that the library notices can name: the notes that
+/// the last conversion could not convert, and the notes of the reported
+/// problems.
+fn named_note_ids(status: &LibraryStatus, conversion: &ConversionState) -> Vec<String> {
+    let mut ids: Vec<String> = conversion
+        .failed
+        .iter()
+        .map(|(id, _, _)| id.clone())
+        .chain(status.problems().into_iter().filter_map(|p| p.known_id))
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// The user dismissed the notice of the failed import `note_id`. The
+/// notice does not come back; a new attempt of the file gives a new one.
+#[tauri::command]
+#[specta::specta]
+pub fn dismiss_import_failure(processing: State<'_, Arc<ProcessingManager>>, note_id: String) {
+    processing.imports().dismiss(&note_id);
 }
 
 /// Convert the notes in the old layout to the new layout (U5, R10, R12).
@@ -1554,7 +1652,7 @@ fn delete_error(error: session_core::DeleteError, removal: Removal) -> DeleteSes
 /// Move a directory to the Trash (KTD9). On macOS, NSFileManager does it:
 /// the default Finder method runs AppleScript and asks for Automation
 /// permission.
-fn move_to_trash(path: &Path) -> Result<(), String> {
+pub(crate) fn move_to_trash(path: &Path) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let context = {
         use trash::macos::{DeleteMethod, TrashContextExtMacos};
@@ -1626,6 +1724,7 @@ async fn delete(
     let working = capture.working_root().join(&note_id);
     let claims = processing.claims();
     let early_homes = Arc::clone(processing.early_homes());
+    let imports = Arc::clone(processing.imports());
     let in_use_by_scan =
         remote_of(&store, processing.library_status(), &note_id) == Some(RemoteView::InUse);
     let own_runs = processing.own_runs().to_vec();
@@ -1636,22 +1735,42 @@ async fn delete(
     tauri::async_runtime::spawn_blocking(move || {
         let now = chrono::Local::now().fixed_offset();
         if in_use_by_scan || in_use_elsewhere(&store, &own_runs, &note_id, now) {
-            return Err(session_core::DeleteError::Busy {
-                state: IN_USE_REASON,
-            });
+            return Err(delete_error(
+                session_core::DeleteError::Busy {
+                    state: IN_USE_REASON,
+                },
+                removal,
+            ));
         }
         // The early write job writes nothing more into the folder of the
         // note after this (KTD4).
         early_homes.cancel(&note_id);
-        session_core::jobs::delete_session(&store, &note_id, &working, &claims, remove)
+        // An importing note: the journal records the delete first. The
+        // import worker stops its conversion and records the file after the
+        // row is gone, so the file does not come back. When the delete
+        // fails, the import continues (KTD6 of the audio import plan).
+        imports
+            .delete_note(&note_id, || {
+                session_core::jobs::delete_session(&store, &note_id, &working, &claims, remove)
+            })
+            .map_err(|e| {
+                log::error!("could not record the delete of the import of {note_id}: {e}");
+                DeleteSessionError::Failed {
+                    message: IMPORT_DELETE_FAILED.to_string(),
+                }
+            })?
             .inspect(|()| log::info!("deleted session {note_id} ({removal:?})"))
+            .map_err(|e| delete_error(e, removal))
     })
     .await
     .map_err(|e| DeleteSessionError::Failed {
         message: e.to_string(),
     })?
-    .map_err(|e| delete_error(e, removal))
 }
+
+/// The message when the delete of an importing note cannot be recorded.
+const IMPORT_DELETE_FAILED: &str =
+    "Longhand could not delete this note while it imports. Try again.";
 
 /// Move the session's folder to the Trash and remove the session from
 /// Longhand (R8). Refused while it records or is processed.
@@ -2491,7 +2610,10 @@ mod tests {
             )],
         };
         // No old note: no conversion control.
-        assert_eq!(library_notices_of(&status, &failed, &[]).conversion, None);
+        assert_eq!(
+            library_notices_of(&status, &failed, &[], ImportNotices::default()).conversion,
+            None
+        );
 
         let folder = root.join("Old note");
         std::fs::create_dir(&folder).unwrap();
@@ -2502,12 +2624,17 @@ mod tests {
             .run_at(&store, &target, &|_| false, start)
             .unwrap();
 
-        let idle = library_notices_of(&status, &ConversionState::default(), &[]);
+        let idle = library_notices_of(
+            &status,
+            &ConversionState::default(),
+            &[],
+            ImportNotices::default(),
+        );
         let notice = idle.conversion.unwrap();
         assert_eq!(notice.old_notes, 1);
         assert!(!notice.running && notice.skipped == 0 && notice.failed.is_empty());
 
-        let notice = library_notices_of(&status, &failed, &[])
+        let notice = library_notices_of(&status, &failed, &[], ImportNotices::default())
             .conversion
             .unwrap();
         assert_eq!(notice.skipped, 1);
@@ -2541,15 +2668,25 @@ mod tests {
             .unwrap();
         let status = Arc::clone(reconciler.status());
         assert!(
-            library_notices_of(&status, &ConversionState::default(), &[])
-                .problems
-                .is_empty()
+            library_notices_of(
+                &status,
+                &ConversionState::default(),
+                &[],
+                ImportNotices::default()
+            )
+            .problems
+            .is_empty()
         );
 
         reconciler
             .run_at(&store, &target, &|_| false, start + PROBLEM_WAIT)
             .unwrap();
-        let notices = library_notices_of(&status, &ConversionState::default(), &[]);
+        let notices = library_notices_of(
+            &status,
+            &ConversionState::default(),
+            &[],
+            ImportNotices::default(),
+        );
         assert_eq!(notices.problems.len(), 1);
         assert_eq!(notices.problems[0].name, "Planning");
         assert_eq!(notices.problems[0].problem.kind, ProblemKindView::Record);
@@ -2557,6 +2694,55 @@ mod tests {
             notices.problems[0].problem.reason,
             "This note waits for longhand.json to sync. If it does not sync, update Longhand on the other computer."
         );
+    }
+
+    // Covers R20, R22, AE8: the import notices name the files and the
+    // folder that stays unavailable.
+    #[test]
+    fn the_import_notices_name_the_files_and_the_unavailable_folder() {
+        use pipeline::import::{Failure, Notices};
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-24T09:00:00+02:00").unwrap();
+        let notices = Notices {
+            disk: vec!["waits".into(), "gone".into()],
+            failed: vec![Failure {
+                note_id: "failed".into(),
+                identity: "a".repeat(64),
+                file_name: "Damaged.m4a".into(),
+                at,
+            }],
+        };
+        let unavailable = WatchedFolderStatus::Unavailable {
+            path: "/Users/a/Phone".into(),
+        };
+        let name_of = |id: &str| (id == "waits").then(|| "Team sync.m4a".to_string());
+        let view = import_notices_of(&notices, &unavailable, name_of);
+        assert_eq!(view.watched_folder.as_deref(), Some("/Users/a/Phone"));
+        // A note that is gone has no name and shows nothing.
+        assert_eq!(view.waiting_for_space, ["Team sync.m4a"]);
+        assert_eq!(
+            view.failed,
+            [FailedImport {
+                note_id: "failed".into(),
+                file_name: "Damaged.m4a".into(),
+            }]
+        );
+    }
+
+    // Covers R20, R21: normal behaviour shows no import notice.
+    #[test]
+    fn a_watched_or_off_folder_with_no_failure_shows_no_import_notice() {
+        use pipeline::import::Notices;
+        for status in [
+            WatchedFolderStatus::Off,
+            WatchedFolderStatus::Watching {
+                path: "/Users/a/Phone".into(),
+            },
+        ] {
+            assert_eq!(
+                import_notices_of(&Notices::default(), &status, |_| None),
+                ImportNotices::default()
+            );
+        }
     }
 }
 
@@ -2846,6 +3032,21 @@ mod record_tests {
         assert_eq!(saving.reason.as_deref(), Some(CANNOT_RESUME));
         let waiting = record_button(&queued, true, false, AudioState::Present, &status).unwrap();
         assert!(waiting.available);
+    }
+
+    /// An importing note offers only rename and delete: it has no
+    /// recording button.
+    #[test]
+    fn an_importing_note_has_no_button() {
+        let status: Arc<LibraryStatus> = Arc::default();
+        let importing = SessionRecord {
+            state: SessionState::Importing,
+            ..saved(false)
+        };
+        assert_eq!(
+            record_button(&importing, false, false, AudioState::Present, &status),
+            None
+        );
     }
 
     // Covers R12, R21, R23: the work of another computer comes first, then

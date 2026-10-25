@@ -16,7 +16,7 @@ use library::scan::{READ_TIMEOUT, Read, read_note_files, read_timed};
 pub use session_core::folder::AudioState;
 use session_core::folder::{self, ResultFlag, SessionDoc, Summary, SummaryMeta};
 use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE};
-use session_core::note_record::{NOTE_RECORD_FILE, NoteRecord};
+use session_core::note_record::{ImportSource, NOTE_RECORD_FILE, NoteRecord};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 pub use session_save::publication::OLD_LAYOUT;
 use session_save::publication::{Outcome, Publication, WriteSet};
@@ -668,6 +668,7 @@ fn stage_publication(
     let staged = with_summary(
         &session_doc(&record, segments, working)?,
         summary_meta(&guard, note_id, segments)?,
+        guard.import_source(note_id)?,
     );
     let publication = Publication::new(&home, staged, WriteSet::Result)?;
     publication.record(working)?;
@@ -870,15 +871,28 @@ fn render(
         SESSION_FILE,
         &note_files::new_session_md(doc.title.as_deref(), &doc.tags),
     )?;
-    let staged = with_summary(&doc, summary_meta(&lock(store), note_id, segments)?);
+    let (summary, import) = {
+        let guard = lock(store);
+        (
+            summary_meta(&guard, note_id, segments)?,
+            guard.import_source(note_id)?,
+        )
+    };
+    let staged = with_summary(&doc, summary, import);
     write_working(working, NOTE_RECORD_FILE, &staged.render())?;
     Ok(())
 }
 
-/// The records of `doc` with the summary data `summary`.
-fn with_summary(doc: &SessionDoc, summary: Option<SummaryMeta>) -> NoteRecord {
+/// The records of `doc` with the summary data `summary`, and the source
+/// file `import` of an imported note (R11, KTD10).
+fn with_summary(
+    doc: &SessionDoc,
+    summary: Option<SummaryMeta>,
+    import: Option<ImportSource>,
+) -> NoteRecord {
     NoteRecord {
         summary,
+        import,
         ..NoteRecord::from_doc(doc)
     }
 }
@@ -1512,6 +1526,7 @@ fn summarize_again(
             let mut staged = with_summary(
                 &session_doc(&record, &segments, &local)?,
                 Some(summary.meta.clone()),
+                guard.import_source(note_id)?,
             );
             // The summary is made from the transcript that the folder
             // holds. `transcript.md` and `recognition.jsonl` are not

@@ -34,6 +34,10 @@ pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
             .traffic_light_position(tauri::LogicalPosition::new(20.0, window_button_inset()));
         builder.build()
     })?;
+    #[cfg(target_os = "macos")]
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        crate::file_promise::accept_promised_files(app, &window);
+    }
     Ok(())
 }
 

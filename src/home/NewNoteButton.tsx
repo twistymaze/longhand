@@ -1,8 +1,8 @@
 // New Note as a split button (R9, KTD10). The main part does the default
 // that Settings > Recording sets, and its label says which default that is.
 // The main part starts a note of the default type (R23). The menu part
-// lists General and the other note types, the other choice, and "New
-// Type…" (R24). Each type item starts a note of that type in the same way
+// lists General and the other note types, the other choice, "Import
+// Audio…" (R1 of the audio import plan) and "New Type…" (R24). Each type item starts a note of that type in the same way
 // as the main part. Both parts are unavailable, with the reason, while a note
 // cannot start (R7). The menu opens and closes at once, with no motion: the
 // button is used many times a day.
@@ -46,6 +46,7 @@ export function NewNoteButton({
   busy = false,
   onStart,
   onTypesChanged,
+  onImport,
   ref,
 }: {
   /// The default of Settings > Recording: true when New Note records.
@@ -59,6 +60,8 @@ export function NewNoteButton({
   onStart: (record: boolean, noteType?: NewNoteType) => void;
   /// "New Type…" added a type. Gives the list after the change.
   onTypesChanged?: (list: NoteTypeList) => void;
+  /// "Import Audio…": the user wants to choose audio files to import (R1).
+  onImport?: () => void;
   /// The main part, which Home focuses after the last note goes.
   ref?: Ref<HTMLButtonElement>;
 }) {
@@ -68,6 +71,8 @@ export function NewNoteButton({
   const mainLabel = records ? labels.record.main : labels.note.main;
   const mainRefusal = refusal(readiness, records);
   const otherRefusal = refusal(readiness, !records);
+  // An import needs the storage folder, not the microphone.
+  const noteRefusal = noteStartRefusal(readiness);
   const close = () => {
     setOpen(false);
     menuPart.current?.focus();
@@ -95,6 +100,15 @@ export function NewNoteButton({
       onSelect: () => {
         setOpen(false);
         onStart(!records);
+      },
+    },
+    {
+      label: "Import Audio…",
+      disabled: noteRefusal !== null,
+      reason: noteRefusal ?? undefined,
+      onSelect: () => {
+        setOpen(false);
+        onImport?.();
       },
     },
     separator("new-type"),

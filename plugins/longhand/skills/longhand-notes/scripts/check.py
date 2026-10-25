@@ -52,11 +52,14 @@ def read_settings(root):
 
 def longhand_files(root):
     """Each file in `.longhand`, by its path in the storage folder. Hidden
-    files are temporary files of a write, and do not count."""
+    files are temporary files of a write, and do not count. The files that
+    only Longhand writes do not count."""
     folder = os.path.join(root, lh.LONGHAND_FOLDER)
     out = {}
     for relative in lh.folder_files(folder):
         if any(part.startswith(".") for part in relative.split("/")):
+            continue
+        if is_longhand_only(relative):
             continue
         out[lh.LONGHAND_FOLDER + "/" + relative] = lh.digest(os.path.join(folder, *relative.split("/")), relative)
     return out
@@ -87,6 +90,12 @@ def is_skipped(name):
         or name.startswith(PROBE_PREFIX)
         or bool(LONGHAND_TEMP.match(name))
     )
+
+
+def is_longhand_only(relative):
+    """Whether the file at `relative` in `.longhand` is a file that only
+    Longhand writes, such as an entry of the import record."""
+    return lh.matches(lh.LONGHAND_FOLDER + "/" + relative, lh.LONGHAND_ONLY_STORAGE_PATTERNS)
 
 
 def is_work_folder(name):
@@ -121,6 +130,8 @@ def other_entries(root):
         add(name, path)
     folder = os.path.join(root, lh.LONGHAND_FOLDER)
     for relative in lh.folder_files(folder):
+        if is_longhand_only(relative):
+            continue
         parts = relative.split("/")
         if any(lh.is_hidden(part) for part in parts) and not is_skipped(parts[-1]):
             out[lh.LONGHAND_FOLDER + "/" + relative] = False

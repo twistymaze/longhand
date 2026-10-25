@@ -6,5 +6,17 @@
   <string>Longhand records the conversation in the room so it can transcribe it on this Mac.</string>
   <key>NSAudioCaptureUsageDescription</key>
   <string>Longhand records the sound your Mac plays only while Computer audio is on, so it can transcribe the people on a call.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Longhand reads new recordings in the watched folder and saves notes in the folder that you choose in Settings.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Longhand reads new recordings in the watched folder and saves notes in the folder that you choose in Settings.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Longhand reads new recordings in the watched folder and saves notes in the folder that you choose in Settings.</string>
+  <key>NSFileProviderDomainUsageDescription</key>
+  <string>Longhand reads new recordings in the watched folder and saves notes in the folder that you choose in Settings.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Longhand reads new recordings in the watched folder and saves notes in the folder that you choose in Settings.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Longhand reads new recordings in the watched folder and saves notes in the folder that you choose in Settings.</string>
 </dict>
 </plist>

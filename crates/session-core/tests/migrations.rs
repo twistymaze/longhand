@@ -848,7 +848,10 @@ fn migration_twenty_two_keeps_the_rows_of_each_table_with_their_note_id() {
     let replay = store.restart_recognition_epoch("s1", "g", 0, 0).unwrap();
     assert_eq!(replay.scope.epoch, 2);
     drop(store);
-    assert_eq!(user_version(&path), 22);
+    assert_eq!(
+        user_version(&path),
+        session_core::schema::MIGRATION_SQL.len() as i64
+    );
 }
 
 #[test]
@@ -915,6 +918,48 @@ fn migrations_one_to_twenty_one_keep_their_hashes() {
     assert_eq!(inspect(dir.path()), Inspection::Own);
     drop(Store::open(&path).unwrap());
     assert_eq!(applied_rows(&path), build_rows());
-    assert_eq!(user_version(&path), 22);
+    assert_eq!(
+        user_version(&path),
+        session_core::schema::MIGRATION_SQL.len() as i64
+    );
     assert_eq!(inspect(dir.path()), Inspection::Own);
+}
+
+// ------------------------------------------------ migration 0023: imports
+
+/// The migration count of the last release before the audio import, which
+/// has no `Importing` state.
+const LAST_RELEASE_VERSION: i64 = 22;
+
+#[test]
+fn a_database_with_an_importing_row_is_above_the_last_release_version() {
+    // KTD5: an older build cannot parse the state, so it must refuse the
+    // database and rebuild it.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = Store::open(&path).unwrap();
+    store
+        .create_import(&session_core::jobs::NewImport {
+            id: "i",
+            opened_at: chrono::DateTime::parse_from_rfc3339("2026-10-20T14:30:00Z").unwrap(),
+            title: &session_core::Title {
+                text: "Team sync".into(),
+                source: session_core::TitleSource::Proposed,
+            },
+            note_type: None,
+            tags: &[],
+            model: &session_core::RecordingModel {
+                asr_model: "m".into(),
+                live_transcript: false,
+            },
+            snapshot: None,
+            speaker_count: None,
+            source: &session_core::note_record::ImportSource {
+                source_name: "Team sync.m4a".into(),
+                sha256: None,
+            },
+        })
+        .unwrap();
+    drop(store);
+    assert!(user_version(&path) > LAST_RELEASE_VERSION);
 }

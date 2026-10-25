@@ -50,6 +50,7 @@ const baseSettings: Settings = {
   alert_sound: true,
   show_recording_widget: true,
   hide_from_dock: false,
+  watched_folder: null,
   check_updates_automatically: true,
   audio_removal: { kind: "after_days", days: 30 },
   summary_prompts: [],

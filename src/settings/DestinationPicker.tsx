@@ -1,7 +1,8 @@
 // Settings > Storage (R3, R4, R6, R10, R16): the one storage folder, Show
 // in Finder, Change, the Move of the notes to a new folder, the removal
-// of old audio, and the agent instructions (R29). Change is not available
-// while a Move runs or is paused (KTD11).
+// of old audio, the watched folder of this computer, and the agent
+// instructions (R29). Change is not available while a Move runs or is
+// paused (KTD11).
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -15,6 +16,7 @@ import {
 } from "../bindings";
 import { AudioRemoval } from "./AudioRemoval";
 import { useFolderChange } from "./OldNotesDialog";
+import { WatchedFolder } from "./WatchedFolder";
 import { damagedFileText, readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, type Tone, folderName, formatBytes, notes } from "./ui";
 
@@ -250,6 +252,9 @@ export function DestinationPicker({
   onSettings: (s: Settings) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  // The reason when the last storage folder change turned the watched
+  // folder off (R9).
+  const [watchedOff, setWatchedOff] = useState<string | null>(null);
   const { change, dialog } = useFolderChange();
   const { move, finished, read } = useMove();
   const [busy, setBusy] = useState(false);
@@ -261,6 +266,11 @@ export function DestinationPicker({
     status.kind !== "not_a_directory" &&
     !(settings.shared.availability.kind === "read_only" && settings.shared.availability.cause === "folder_not_available");
 
+  // The reason is old once a watched folder is set again.
+  useEffect(() => {
+    if (settings.watched_folder) setWatchedOff(null);
+  }, [settings.watched_folder]);
+
   const choose = async () => {
     setBusy(true);
     try {
@@ -269,6 +279,7 @@ export function DestinationPicker({
       else {
         setError(null);
         if (result.data) {
+          setWatchedOff(result.data.watchedFolderOff);
           onSettings(result.data.settings);
           if (result.data.moved) await read();
         }
@@ -333,6 +344,7 @@ export function DestinationPicker({
         {error && <ErrorText>{error}</ErrorText>}
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
+      <WatchedFolder settings={settings} turnedOff={watchedOff} onSettings={onSettings} />
       <AudioRemoval settings={settings} onSettings={onSettings} />
       <AgentInstructions folder={current} folderStatus={status} />
       {dialog}

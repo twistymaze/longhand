@@ -1,6 +1,7 @@
 mod audio;
 mod autostart;
 mod commands;
+mod file_promise;
 mod interface_zoom;
 mod managers;
 #[cfg(target_os = "macos")]
@@ -94,6 +95,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::pick_storage_folder,
             commands::settings::change_storage_folder,
             commands::settings::move_status,
+            commands::settings::pick_watched_folder,
+            commands::settings::watched_folder_preview,
+            commands::settings::set_watched_folder,
+            commands::settings::watched_folder_status,
             commands::settings::retry_move,
             commands::settings::show_storage_folder,
             commands::settings::agent_instructions_status,
@@ -113,6 +118,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::readiness::request_system_audio_permission,
             commands::readiness::open_system_audio_settings,
             commands::capture::start_recording,
+            commands::import::pick_audio_files,
+            commands::import::import_files,
             commands::capture::stop_recording,
             commands::capture::pause_recording,
             commands::capture::continue_recording,
@@ -134,6 +141,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::processing::unblock_session,
             commands::session::list_sessions,
             commands::session::library_notices,
+            commands::session::dismiss_import_failure,
             commands::session::convert_old_notes,
             commands::session::session_detail,
             commands::session::load_session_notes,
@@ -173,6 +181,9 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::processing::MoveProgress,
             managers::processing::MovePaused,
             managers::library::LibraryChanged,
+            managers::watched_folder::WatchedFolderChanged,
+            managers::import::ImportNoticesChanged,
+            file_promise::PromisedFiles,
             managers::live::LiveTranscriptEvent,
             managers::live::LiveRecognitionEvent,
             managers::live::LivePartSaved,

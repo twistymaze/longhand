@@ -11,6 +11,10 @@ nemo-runtime = { path = "../nemo-runtime" }
 power = { path = "../power" }
 asr = { path = "../asr" }
 audio = { path = "../audio" }
+# The copy, the hash and the decode of an imported file.
+audio-import = { path = "../audio-import" }
+# The shared import record of the storage folder (KTD2).
+import-record = { path = "../import-record" }
 diarize = { path = "../diarize" }
 # The refresh step that every writer runs first (KTD3, KTD8).
 library = { path = "../library" }
@@ -32,6 +36,8 @@ thiserror.workspace = true
 tempfile = "3"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tokio-util = "0.7"
+# The id of an imported note, as capture makes it.
+uuid.workspace = true
 summarize = { path = "../summarize" }
 
 [dev-dependencies]

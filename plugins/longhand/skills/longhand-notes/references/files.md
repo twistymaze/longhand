@@ -13,6 +13,7 @@ Do not edit, move, copy, rename or delete these files. Do not make new files wit
 | `audio/*` | In each note folder | The audio and the removal files. A sync service can keep audio online only. Do not open it. |
 | `.longhand-in-use-*` | In each note folder | In-use markers. They tell each computer that a computer works on the note. |
 | `.longhand/library` | In the storage folder | The library marker. Without it, Longhand sees the storage folder as not available. |
+| `.longhand/imports/*` | In the storage folder | The import record: which audio files Longhand imported, skipped or did not decode. Longhand uses it to import each file one time. Longhand writes it at any time, so `check.py` does not compare it, and an edit there is not found. |
 
 Also do not touch the hidden folders that Longhand makes for a short time, such as `.longhand-staging-*` and `.longhand-rename-*`.
 

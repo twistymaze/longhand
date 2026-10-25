@@ -1,0 +1,22 @@
+[package]
+name = "import-record"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# write_atomic and rename_noreplace for each write into the storage folder.
+session-save = { path = "../session-save" }
+# The link checks that the shared settings apply to the same folder.
+shared-settings = { path = "../shared-settings" }
+thiserror.workspace = true
+# The staged name of a merge write.
+uuid.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

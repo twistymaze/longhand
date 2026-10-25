@@ -153,7 +153,20 @@ describe("NewNoteButton: note types (R24)", () => {
     const entries = [...menu.querySelectorAll('[role="menuitem"], [role="separator"]')].map((el) =>
       el.getAttribute("role") === "separator" ? "—" : el.textContent,
     );
-    expect(entries).toEqual(["General", "Pathfinder", "One on One", "—", "New Note Without Recording", "—", "New Type…"]);
+    expect(entries).toEqual(["General", "Pathfinder", "One on One", "—", "New Note Without Recording", "Import Audio…", "—", "New Type…"]);
+  });
+
+  test("Import Audio… asks for the import and starts no note", async () => {
+    mockTauri();
+    const onStart = vi.fn((_record: boolean) => {});
+    const onImport = vi.fn(() => {});
+    render(<NewNoteButton records readiness={ready} types={types} onStart={onStart} onImport={onImport} />);
+    const user = userEvent.setup();
+    await user.click(choices());
+    await user.click(screen.getByRole("menuitem", { name: "Import Audio…" }));
+    expect(onImport).toHaveBeenCalledTimes(1);
+    expect(onStart).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   test("a type item starts a note of that type in the same way as the main part", async () => {

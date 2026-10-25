@@ -15,6 +15,7 @@ pub mod echo;
 pub mod empty_note;
 pub mod folder_rename;
 pub mod follow;
+pub mod import;
 pub mod in_use;
 pub mod join;
 pub mod live;
