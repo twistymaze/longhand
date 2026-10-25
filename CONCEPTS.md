@@ -116,6 +116,9 @@ The apps whose audio one note records: a copy of the Settings app list at the no
 The state of a recording note that captures nothing for a time, by the user's choice. The microphone and the app audio are closed, and no audio, not even recovery data, goes to disk. Continue records into the same note; the UI does not call it Resume, because Resume records into a stopped note. A paused note is still open: processing starts only at Stop. The transcript and the summary input mark each pause with its duration. A pause is not a gap: gap fill does not transcribe it.
 *Avoid:* "pause" for a silence in speech (say silence)
 
+### Restart budget
+The few attempts that Longhand makes to reopen a lost microphone during a note, with a longer wait before each attempt, before it interrupts the note and shows the alert. Only failed reopens in a row count, however long each attempt takes. The budget is full again only after capture has recorded for a set time since it last came back, so a microphone that comes back and drops again soon after gets no new attempts. A move to the system default when the chosen microphone goes away also counts as a comeback. A wake from sleep, a returned microphone and a resume by the user start a new budget.
+
 ### Recording widget
 A small window above all other windows that shows the open note's state, time and Pause, Continue and Stop while a note is recording, paused or interrupted, so the user does not forget a note that still records or is paused. It never takes the focus from the app in front and is hidden from screen capture where the system allows. A Settings switch sets whether each new note shows it; the user can hide or show it for the open note only, and that choice ends when the note stops.
 *Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)

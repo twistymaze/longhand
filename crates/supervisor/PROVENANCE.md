@@ -5,11 +5,11 @@ Borrowed material in this crate, one record per file (R27). `supervisor.rs` and 
 ## `src/restart.rs`
 
 - Repository: https://github.com/fastrepl/anarlog
-- Revision: 7040ace23d1606dcc4371b5bb8c5aca1c3450044
+- Revision: 693500220d8e253b175e7a5b88fd831c48b4583b
 - Source paths: `crates/supervisor/src/restart.rs`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
-- Status: modified — `new_at`, `record_restart_at` and `maybe_reset_at` added so budgets are testable at their real durations; upstream methods and tests unchanged
+- Status: modified — `new_at`, `record_restart_at` and `maybe_reset_at` added so budgets are testable at their real durations; upstream methods unchanged; keeps the four tests that upstream removed in 8860cd65 (`new_tracker_starts_at_zero`, `record_restart_increments_within_budget`, `record_restart_at_exact_boundary`, `maybe_reset_noop_when_none`)
 
 ## `src/retry.rs`
 
