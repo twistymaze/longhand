@@ -427,7 +427,10 @@ impl Flow {
         if !facts.automatic_checks || !facts.is_release_build || self.pending.is_some() {
             return vec![];
         }
-        if Self::active(self.next_check, facts.now) {
+        // A wait longer than the interval means that the clock moved back,
+        // so the check is due.
+        let wait = self.next_check.map_or(0, |t| t - facts.now);
+        if wait > 0 && wait <= CHECK_INTERVAL_SECONDS {
             return vec![];
         }
         if let UpdateState::Downloading { .. } | UpdateState::Installing { .. } = self.state {
@@ -1647,6 +1650,17 @@ mod tests {
         f.step(Input::Checked(Ok(None)), facts(NINE));
         assert_eq!(
             f.step(Input::Timer, facts(NINE + 3 * HOUR + 7)),
+            vec![Effect::Check]
+        );
+    }
+
+    #[test]
+    fn a_tick_after_the_clock_moves_back_starts_an_automatic_check() {
+        let mut f = flow();
+        f.step(Input::Timer, facts(NINE));
+        f.step(Input::Checked(Ok(None)), facts(NINE));
+        assert_eq!(
+            f.step(Input::Timer, facts(NINE - 5 * 24 * HOUR)),
             vec![Effect::Check]
         );
     }
