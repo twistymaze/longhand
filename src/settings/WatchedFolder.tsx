@@ -150,7 +150,7 @@ export function WatchedFolder({
   return (
     <Group
       header="Watched folder"
-      footer="Each new m4a, mp3 or wav file in this folder and its subfolders becomes a note. Longhand never changes or deletes the files. This setting is for this computer only."
+      footer="Each new m4a, qta, mp3 or wav file in this folder and its subfolders becomes a note. Longhand never changes or deletes the files. This setting is for this computer only."
     >
       {folder === null ? (
         <Row label="Watched folder" detail="Off">

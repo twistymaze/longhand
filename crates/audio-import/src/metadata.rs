@@ -28,7 +28,7 @@ const MAX_ATOMS: usize = 4096;
 pub fn recording_time(path: &Path) -> Option<DateTime<Utc>> {
     let extension = path.extension()?.to_str()?.to_ascii_lowercase();
     let time = match extension.as_str() {
-        "m4a" => mvhd_time(path),
+        "m4a" | "qta" => mvhd_time(path),
         "mp3" => tag_time(path),
         _ => None,
     }?;

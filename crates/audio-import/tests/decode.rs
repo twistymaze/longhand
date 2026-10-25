@@ -78,6 +78,20 @@ fn a_wav_decodes_through_the_same_function() {
 }
 
 #[test]
+fn a_voice_memos_qta_decodes_and_is_accepted() {
+    let path = sample("tone.qta");
+    assert!(audio_import::is_accepted(&path));
+    let (rate, samples) = decode_all(&path);
+    assert_eq!(rate, 22050);
+    // AAC adds priming frames, so the length is close to 5 s, not exact.
+    assert!(
+        samples.len().abs_diff(5 * 22050) < 4096,
+        "{} samples",
+        samples.len()
+    );
+}
+
+#[test]
 fn the_recording_time_comes_from_mvhd_or_tdrc() {
     // mvhd is UTC; TDRC has no time zone, so it is local time.
     let utc = Utc.with_ymd_and_hms(2026, 10, 20, 14, 30, 0).unwrap();
@@ -87,6 +101,7 @@ fn the_recording_time_comes_from_mvhd_or_tdrc() {
         .with_timezone(&Utc);
     assert_eq!(recording_time(&sample("tone-mono.m4a")), Some(utc));
     assert_eq!(recording_time(&sample("tone-moov-last.m4a")), Some(utc));
+    assert_eq!(recording_time(&sample("tone.qta")), Some(utc));
     assert_eq!(recording_time(&sample("tone-stereo.mp3")), Some(local));
 }
 

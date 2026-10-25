@@ -134,7 +134,7 @@ fn import_paths(
             })
         } else {
             Err(format!(
-                "Longhand can’t import “{}”. Only m4a, mp3 and wav files can be imported.",
+                "Longhand can’t import “{}”. Only m4a, qta, mp3 and wav files can be imported.",
                 file_name(&source)
             ))
         };

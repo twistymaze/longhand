@@ -10,7 +10,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 log.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
-# Pure-Rust decoders for m4a (AAC-LC), mp3 and wav (KTD1). MPL-2.0: deny.toml
+# Pure-Rust decoders for m4a and qta (AAC-LC), mp3 and wav (KTD1). MPL-2.0: deny.toml
 # and about.toml accept it for the Symphonia crates only.
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "isomp4", "mp3", "wav", "pcm", "id3v2"] }
 
