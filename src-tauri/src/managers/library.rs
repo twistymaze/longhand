@@ -1065,11 +1065,19 @@ mod tests {
         // nothing for many seconds. Write `session.md` again until the
         // change arrives, and never run a full scan. The limit only stops
         // a test that hangs; the test waits for the change, not for a time.
+        // A scan that reads the folder while `write_doc` writes it does not
+        // add the row, but it reports the note as changed. So the test waits
+        // for the change that comes after the row is in the store.
         let dir = note(root.path(), "2026-09-25 0900 Planning", "a1");
         let limit = Instant::now() + Duration::from_secs(120);
         let changes = loop {
             match emitted.recv_timeout(Duration::from_secs(1)) {
-                Ok(c) if !c.changed.is_empty() => break c,
+                Ok(c)
+                    if !c.changed.is_empty()
+                        && store.lock().unwrap().session("a1").unwrap().is_some() =>
+                {
+                    break c;
+                }
                 Ok(_) => {}
                 Err(_) => {
                     assert!(Instant::now() < limit, "no LibraryChanged");
