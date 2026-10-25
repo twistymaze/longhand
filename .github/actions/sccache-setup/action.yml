@@ -95,13 +95,23 @@ runs:
           done
           printf '%s' "$hash" > target/cmake-toolchain.sha256
         fi
-        # A build folder also goes when the compiler that it recorded is not
-        # there: an update of the runner image can replace the MSVC version.
+        # A cache from a runner image with another MSVC version names a
+        # compiler that is not here. An older linker cannot always link the
+        # libraries of a newer compiler. A cache from a job with another Dev
+        # Drive letter names a source folder that is not here, and CMake
+        # refuses that build folder. In both cases the step removes the
+        # output and the fingerprint of that build script, and cargo builds
+        # it again.
         /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
           [ -f "$cache" ] || continue
           compiler="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$cache" | tr -d '\r')"
-          if ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache" ||
-            { [[ "$compiler" == */* ]] && [ ! -e "$compiler" ]; }; then
+          source="$(sed -n 's/^CMAKE_HOME_DIRECTORY:[A-Z]*=//p' "$cache" | tr -d '\r')"
+          if { [[ "$compiler" == */* ]] && [ ! -e "$compiler" ]; } ||
+            { [ -n "$source" ] && [ ! -e "$source" ]; }; then
+            dir="${cache%%/out/build/*}"
+            echo "Removing $dir"
+            rm -rf "$dir" "${dir%/build/*}/.fingerprint/${dir##*/}"
+          elif ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
             echo "Removing $(dirname "$cache")"
             rm -rf "$(dirname "$cache")"
           fi
