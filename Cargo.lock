@@ -3142,6 +3142,7 @@ dependencies = [
  "audio-import",
  "audio-system",
  "base64 0.22.1",
+ "block2",
  "chrono",
  "diarize",
  "dirs 6.0.0",

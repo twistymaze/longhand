@@ -1845,7 +1845,7 @@ describe("Home: audio import (R1, R20 of the audio import plan)", () => {
   });
 
   test("a drop opens the import sheet, and a refused file shows its reason", async () => {
-    const reason = "Longhand can’t import “notes.txt”. Only m4a, mp3 and wav files can be imported.";
+    const reason = "Longhand can’t import “notes.txt”. Only m4a, qta, mp3 and wav files can be imported.";
     const tauri = mockTauri({
       import_files: () => ({ note_ids: ["n1"], refused: [{ path: "/a/notes.txt", reason }] }),
     });
@@ -1862,6 +1862,49 @@ describe("Home: audio import (R1, R20 of the audio import plan)", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(onChanged).toHaveBeenCalled();
     expect(tauri.calls.find((c) => c.cmd === "import_files")?.args.paths).toEqual(paths);
+  });
+
+  // A drag from Voice Memos has a file promise and no paths.
+  const promisesListening = (tauri: { listened: string[] }) =>
+    waitFor(() => expect(tauri.listened).toContain("promised-files"));
+
+  test("a drag of promised files shows the drop target until it leaves", async () => {
+    const tauri = mockTauri();
+    renderReady();
+    await dropListening(tauri);
+    await promisesListening(tauri);
+    await act(() => tauri.emit("promised-files", { kind: "over" }));
+    await act(() => tauri.emit("tauri://drag-enter", { paths: [], position }));
+    expect(screen.getByText(target)).toBeTruthy();
+    await act(() => tauri.emit("tauri://drag-leave"));
+    expect(screen.queryByText(target)).toBeNull();
+  });
+
+  test("received promised files open the import sheet", async () => {
+    const tauri = mockTauri();
+    renderReady();
+    await dropListening(tauri);
+    await promisesListening(tauri);
+    await act(() => tauri.emit("tauri://drag-enter", { paths: [], position }));
+    await act(() => tauri.emit("promised-files", { kind: "over" }));
+    await act(() => tauri.emit("tauri://drag-drop", { paths: [], position }));
+    expect(screen.queryByText(target)).toBeNull();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(() =>
+      tauri.emit("promised-files", { kind: "received", paths: ["/cache/New Recording 3.m4a"], failed: 0 }),
+    );
+    expect(screen.getByRole("dialog", { name: "Import Audio" })).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement).value).toBe("New Recording 3");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  test("a promised file that the other app did not give shows a notice", async () => {
+    const tauri = mockTauri();
+    renderReady();
+    await promisesListening(tauri);
+    await act(() => tauri.emit("promised-files", { kind: "received", paths: [], failed: 1 }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect((await screen.findByRole("status")).textContent).toContain("Drag the recording to a folder in Finder");
   });
 
   test("Import Audio… opens the import sheet with the chosen files", async () => {

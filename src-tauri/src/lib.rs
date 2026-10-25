@@ -1,6 +1,7 @@
 mod audio;
 mod autostart;
 mod commands;
+mod file_promise;
 mod interface_zoom;
 mod managers;
 #[cfg(target_os = "macos")]
@@ -182,6 +183,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::library::LibraryChanged,
             managers::watched_folder::WatchedFolderChanged,
             managers::import::ImportNoticesChanged,
+            file_promise::PromisedFiles,
             managers::live::LiveTranscriptEvent,
             managers::live::LiveRecognitionEvent,
             managers::live::LivePartSaved,

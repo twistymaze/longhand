@@ -153,7 +153,12 @@ export function Home({
   // The files of the open import sheet, or null when no sheet is open.
   const [importing, setImporting] = useState<string[] | null>(null);
   // While the sheet is open, a drop does not replace its files.
-  const dragging = useFileDrop(active && importing === null, setImporting);
+  const dragging = useFileDrop(active && importing === null, setImporting, () =>
+    setNotice({
+      tone: "negative",
+      text: "The other app did not give Longhand the dropped recording. Drag the recording to a folder in Finder, then drop the file here.",
+    }),
+  );
   const list = useRef<HTMLDivElement>(null);
   const newNote = useRef<HTMLButtonElement>(null);
   const restoreFocus = useRef(false);

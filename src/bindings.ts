@@ -1456,6 +1456,7 @@ modelDownloadEvent: ModelDownloadEvent,
 movePaused: MovePaused,
 moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
+promisedFiles: PromisedFiles,
 recordingChanged: RecordingChanged,
 settingsChanged: SettingsChanged,
 settingsPaneRequested: SettingsPaneRequested,
@@ -1479,6 +1480,7 @@ modelDownloadEvent: "model-download-event",
 movePaused: "move-paused",
 moveProgress: "move-progress",
 processingUpdate: "processing-update",
+promisedFiles: "promised-files",
 recordingChanged: "recording-changed",
 settingsChanged: "settings-changed",
 settingsPaneRequested: "settings-pane-requested",
@@ -2298,6 +2300,20 @@ export type ProcessingStep = { kind: "stage_started"; stage: string } |
  * What processing is doing, for the surface.
  */
 export type ProcessingUpdate = { note_id: string; update: ProcessingStep }
+/**
+ * A drag of promised files over the main window.
+ */
+export type PromisedFiles = 
+/**
+ * A drag with promised files and no file URLs entered the window.
+ */
+{ kind: "over" } | 
+/**
+ * The other app wrote the promised files of a drop. `paths` are the
+ * files that it wrote. `failed` counts the files that it did not
+ * write.
+ */
+{ kind: "received"; paths: string[]; failed: number }
 /**
  * One AI provider. Each provider has a default address, except Custom,
  * whose address the user enters. The serialized name of each provider is
