@@ -59,16 +59,14 @@ async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
 async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure() {
     // A Mac that wakes from sleep can have no network for some seconds. The
     // request tries again after each wait, and the endpoint answers later.
-    let port = common::free_port();
+    let (socket, port) = common::closed_socket();
     let client = Client::new(endpoint(&format!("http://127.0.0.1:{port}/v1"), None))
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(50); 40]);
     tokio::spawn(async move {
         // Until then, each connection is refused.
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .unwrap();
+        let listener = socket.listen(1024).unwrap();
         // The server task owns the listener and keeps it open.
         common::serve_on(
             listener,

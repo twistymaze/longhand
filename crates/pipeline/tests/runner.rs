@@ -5652,7 +5652,7 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
     // The same wake with no network, but the network comes back while the
     // summary waits to try again: the note is saved with its summary.
     let r = rig().await;
-    let port = http::free_port();
+    let (socket, port) = http::closed_socket();
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
         retry_waits: vec![std::time::Duration::from_millis(50); 100],
         ..endpoint(&format!("http://127.0.0.1:{port}/v1"))
@@ -5677,9 +5677,7 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
-            .await
-            .unwrap();
+        let listener = socket.listen(1024).unwrap();
         let _ = sender.send(http::serve_on(
             listener,
             std::collections::HashMap::from([(
