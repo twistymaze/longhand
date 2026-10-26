@@ -1765,6 +1765,7 @@ impl ProcessingManager {
                     note_type,
                     tags: Vec::new(),
                     title: None,
+                    notes: String::new(),
                 })
             }),
             open_sources: Box::new(move || sources.open_sources()),

@@ -11589,11 +11589,16 @@ async fn the_title_job_sends_to_the_provider_in_effect_when_it_started() {
 
 use pipeline::import::{ImportEnvironment, Imports, Origin, Recognition, Request};
 
-/// Import the 5 s m4a fixture as `Team sync.m4a`, with the sheet title
-/// `title`, into the rig's store and storage folder. The worker runs to
-/// the queue, and the early write of the home folder ends. Returns the
-/// note id and the folder of the file.
+/// [`imported_note_with`] with no sheet notes.
 fn imported_note(r: &Rig, title: Option<&str>) -> (String, tempfile::TempDir) {
+    imported_note_with(r, title, "")
+}
+
+/// Import the 5 s m4a fixture as `Team sync.m4a`, with the sheet title
+/// `title` and the sheet notes `notes`, into the rig's store and storage
+/// folder. The worker runs to the queue, and the early write of the home
+/// folder ends. Returns the note id and the folder of the file.
+fn imported_note_with(r: &Rig, title: Option<&str>, notes: &str) -> (String, tempfile::TempDir) {
     let phone = tempfile::tempdir().unwrap();
     let source = phone.path().join("Team sync.m4a");
     std::fs::copy(
@@ -11635,6 +11640,7 @@ fn imported_note(r: &Rig, title: Option<&str>) -> (String, tempfile::TempDir) {
                 note_type: None,
                 tags: Vec::new(),
                 title: title.map(str::to_string),
+                notes: notes.to_string(),
             },
             Recognition {
                 asr_model: "m".into(),
@@ -11711,6 +11717,27 @@ async fn an_import_with_a_sheet_title_keeps_it_after_the_summary() {
         (title.text.as_str(), title.source),
         ("Budget review", TitleSource::User)
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sheet_notes_are_in_notes_md_and_in_the_first_summary_call() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let (id, _phone) = imported_note_with(&r, None, "Weekly sync with Dana");
+    assert_eq!(
+        r.runner.run_next().await.unwrap(),
+        (id.clone(), Outcome::Finished)
+    );
+    let folder = saved_folder(&r, &id);
+    assert!(
+        std::fs::read_to_string(folder.join("notes.md"))
+            .unwrap()
+            .contains("Weekly sync with Dana")
+    );
+    let bodies = summary_bodies(&mock, "/v1/chat/completions");
+    assert!(!bodies.is_empty());
+    assert!(texts(&bodies[0]["messages"]).contains("Weekly sync with Dana"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

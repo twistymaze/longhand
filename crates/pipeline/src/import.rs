@@ -112,6 +112,11 @@ pub struct Request {
     /// The title that the user set in the import sheet (R2a). `None` gives
     /// the file name as a proposed title (R15).
     pub title: Option<String>,
+    /// The notes that the user typed in the import sheet: the first
+    /// manual notes of the note. Empty for none. A journal entry of an
+    /// older build has no notes.
+    #[serde(default)]
+    pub notes: String,
 }
 
 /// The recognition that the note records at its start, as a recording
@@ -702,6 +707,7 @@ impl Imports {
                 title: &title,
                 note_type: request.note_type.as_deref(),
                 tags: &request.tags,
+                notes: &request.notes,
                 model: &RecordingModel {
                     asr_model: entry.recognition.asr_model.clone(),
                     live_transcript: false,

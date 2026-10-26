@@ -880,13 +880,14 @@ async pickAudioFiles() : Promise<Result<string[], string>> {
  * Import each file of `paths` into a new note (R1, R3). `note_type` and
  * `tags` apply to each note (R2). `title` is a title that the user set in
  * the import sheet for one file (R2a); with no title, each note gets its
- * file name as a proposed title (R15). Refused while the storage folder
+ * file name as a proposed title (R15). `notes` are the notes that the user
+ * typed in the import sheet, the first manual notes of each note. Refused while the storage folder
  * is not available, as New Note is. A path that is not a file with an
  * accepted extension gets a refusal, and the other files import (R20).
  */
-async importFiles(paths: string[], noteType: NewNoteType | null, tags: string[], title: string | null) : Promise<Result<ImportResult, string>> {
+async importFiles(paths: string[], noteType: NewNoteType | null, tags: string[], title: string | null, notes: string | null) : Promise<Result<ImportResult, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("import_files", { paths, noteType, tags, title }) };
+    return { status: "ok", data: await TAURI_INVOKE("import_files", { paths, noteType, tags, title, notes }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

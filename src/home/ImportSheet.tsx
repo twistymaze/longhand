@@ -102,7 +102,7 @@ export function ImportSheet({
     const userTitle = one && edited && edited !== proposed ? edited : null;
     let result: Result<ImportResult, string>;
     try {
-      result = await commands.importFiles(paths, noteType(), applied, userTitle);
+      result = await commands.importFiles(paths, noteType(), applied, userTitle, null);
     } catch {
       result = { status: "error", error: "Could not import the files." };
     }

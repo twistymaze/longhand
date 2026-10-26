@@ -63,7 +63,8 @@ pub async fn pick_audio_files(app: AppHandle) -> Result<Vec<String>, String> {
 /// Import each file of `paths` into a new note (R1, R3). `note_type` and
 /// `tags` apply to each note (R2). `title` is a title that the user set in
 /// the import sheet for one file (R2a); with no title, each note gets its
-/// file name as a proposed title (R15). Refused while the storage folder
+/// file name as a proposed title (R15). `notes` are the notes that the user
+/// typed in the import sheet, the first manual notes of each note. Refused while the storage folder
 /// is not available, as New Note is. A path that is not a file with an
 /// accepted extension gets a refusal, and the other files import (R20).
 #[tauri::command]
@@ -75,6 +76,7 @@ pub async fn import_files(
     note_type: Option<NewNoteType>,
     tags: Vec<String>,
     title: Option<String>,
+    notes: Option<String>,
 ) -> Result<ImportResult, String> {
     let processing = Arc::clone(&processing);
     let folder = settings::get_settings(&app).storage_folder;
@@ -84,7 +86,7 @@ pub async fn import_files(
         import_paths(
             &paths,
             &storage,
-            &Choices { tags, title },
+            &Choices { tags, title, notes },
             || type_of_new_note(&app, note_type.as_ref()),
             |request| processing.imports().import(request),
         )
@@ -92,10 +94,11 @@ pub async fn import_files(
     .await
 }
 
-/// The tags and the title that the import sheet set.
+/// The tags, the title and the notes that the import sheet set.
 struct Choices {
     tags: Vec<String>,
     title: Option<String>,
+    notes: Option<String>,
 }
 
 /// The work of [`import_files`] with the storage folder status `storage`.
@@ -131,6 +134,7 @@ fn import_paths(
                 note_type: note_type.clone(),
                 tags: tags.clone(),
                 title: choices.title.clone(),
+                notes: choices.notes.clone().unwrap_or_default(),
             })
         } else {
             Err(format!(
@@ -176,6 +180,7 @@ mod tests {
         Choices {
             tags: vec!["Team".into()],
             title: None,
+            notes: None,
         }
     }
 
@@ -235,6 +240,22 @@ mod tests {
         };
         let (_, requests) = run(&paths, &ready(), &set);
         assert_eq!(requests[0].title.as_deref(), Some("Budget review"));
+    }
+
+    // The notes of the sheet go with the request; with none, the notes
+    // are empty.
+    #[test]
+    fn the_notes_of_the_sheet_go_with_the_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = vec![file(dir.path(), "Team sync.m4a")];
+        let set = Choices {
+            notes: Some("Weekly sync with Dana".into()),
+            ..choices()
+        };
+        let (_, requests) = run(&paths, &ready(), &set);
+        assert_eq!(requests[0].notes, "Weekly sync with Dana");
+        let (_, requests) = run(&paths, &ready(), &choices());
+        assert_eq!(requests[0].notes, "");
     }
 
     // R19, R20: a file with another extension, and a folder, each get one
