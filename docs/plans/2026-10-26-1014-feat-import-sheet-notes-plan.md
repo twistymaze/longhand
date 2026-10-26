@@ -45,7 +45,7 @@ An imported recording has no context for the summary until the first summary is 
 
 **Keyboard**
 
-- R6. Return in the Notes field makes a new line, as in My Notes. Cmd+Return starts the import from any field of the sheet, except where the editor uses Cmd+Return itself (to check a task).
+- R6. Return in the Notes field makes a new line, as in My Notes. Cmd+Return starts the import from any field of the sheet, except where the editor uses Cmd+Return itself (to check a task). Tab and Shift+Tab stay inside the Notes field, as in My Notes, so Cmd+Return and Escape are the keyboard ways out of the field.
 - R7. Escape cancels the sheet, except when Escape closes an open menu or link field of the editor. Then only that menu or link field closes.
 
 ### Key Decisions
@@ -141,6 +141,9 @@ An imported recording has no context for the summary until the first summary is 
   - Cmd+Return in the Title field imports.
   - Escape while the slash menu is open closes the menu and does not cancel the sheet. A second Escape cancels the sheet.
   - Plain text typed in Notes, then Escape, cancels the sheet.
+  - Cmd+Return in a task item in Notes checks the task and does not import.
+  - Escape in the open link field of the format toolbar closes only the link field; the sheet stays open with its notes.
+  - Tab in Notes keeps the focus in the Notes field.
   - The existing tests (Escape cancels, Escape does nothing while the import runs, the first field has the focus) still pass.
 - **Verification:** The scenarios pass. In a signed build, the sheet for one file is compact, the field grows to approximately 7 lines and then scrolls, and the slash menu and format toolbar show fully.
 
@@ -156,7 +159,7 @@ An imported recording has no context for the summary until the first summary is 
 | Sheet tests | `npx vitest run src/home/ImportSheet.test.tsx` | U2 |
 | Frontend gates | `npm run typecheck`, `npm test` | Before the push |
 | Rust gates | `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, one full `cargo test --workspace` | Before the push |
-| Manual test | Signed build: import one file with notes; the first summary uses them; check size, scroll, slash menu, Cmd+Return, Escape | Before the PR |
+| Manual test | Signed build: import one file with notes; the first summary uses them; check size, scroll, slash menu, Cmd+Return (also in a task item), Escape (also in the toolbar's link field), Tab | Before the PR |
 
 Read [Checks and CI](docs/development-workflow.md#checks-and-ci) and [Manual tests](docs/development-workflow.md#manual-tests) first.
 
