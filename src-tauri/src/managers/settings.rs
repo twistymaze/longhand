@@ -497,13 +497,9 @@ impl RecognitionChoice {
     /// otherwise gives After Stop or automatic language. The choice keeps
     /// the preference for a model that can use it.
     pub fn config(&self) -> models::recognition::RecognitionConfig {
-        use models::recognition::{ProcessingMode, RecognitionConfig, SpeakerSource};
+        use models::recognition::{ProcessingMode, RecognitionConfig};
         let model = models::model(&self.asr_model);
         let live_supported = model.is_some_and(|m| m.streaming);
-        let live_speakers_supported = matches!(
-            self.speaker_source,
-            SpeakerSource::Sortformer | SpeakerSource::Nemotron
-        );
         let language = self
             .recognition_language
             .clone()
@@ -518,7 +514,7 @@ impl RecognitionChoice {
             },
             speaker_count: self.default_speaker_count.map(Into::into),
             language,
-            speaker_processing_mode: if live_speakers_supported {
+            speaker_processing_mode: if self.speaker_source.has_live_mode() {
                 self.speaker_processing_mode
             } else {
                 ProcessingMode::AfterStop

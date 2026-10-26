@@ -43,6 +43,12 @@ pub enum SpeakerSource {
     Sortformer,
     Nemotron,
 }
+impl SpeakerSource {
+    /// Whether the source can find speakers during the recording.
+    pub fn has_live_mode(self) -> bool {
+        matches!(self, Self::Sortformer | Self::Nemotron)
+    }
+}
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ProcessingMode {
@@ -156,10 +162,7 @@ fn validate_count(count: Option<SpeakerCount>, limit: Option<u32>) -> Result<(),
 /// Select the tested runtime without changing the user's model family or timing.
 pub fn resolve(config: &RecognitionConfig) -> Result<ExecutionSpec, ResolveError> {
     let combined_live = config.processing_mode == ProcessingMode::DuringRecording
-        && matches!(
-            config.speaker_source,
-            SpeakerSource::Sortformer | SpeakerSource::Nemotron
-        )
+        && config.speaker_source.has_live_mode()
         && matches!(
             config.asr_model.as_str(),
             "nemotron-speech-streaming-en-0.6b-q80" | "nemotron-3.5-asr-streaming-0.6b-q80"
@@ -195,10 +198,7 @@ fn resolve_transcribe(config: &RecognitionConfig) -> Result<ExecutionSpec, Resol
             model: asr.id.clone(),
         });
     }
-    let live_speaker_analysis = matches!(
-        config.speaker_source,
-        SpeakerSource::Sortformer | SpeakerSource::Nemotron
-    );
+    let live_speaker_analysis = config.speaker_source.has_live_mode();
     if config.speaker_processing_mode == ProcessingMode::DuringRecording && !live_speaker_analysis {
         return Err(ResolveError::NoLiveSpeakerAnalysis);
     }

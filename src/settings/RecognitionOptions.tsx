@@ -79,9 +79,15 @@ export function RecognitionOptions({
     language: initial.language,
   });
   // The configuration that the selected model uses, which the controls show.
-  const [draft, setDraft] = useState({
+  const [draft, setDraft] = useState(() => ({
     ...initial,
     language: usableLanguage(initial.asr_model, initial.language),
+  }));
+  // `base` with the timing preferences, for the choice that fits them best.
+  const wanted = (base: RecognitionConfig): RecognitionConfig => ({
+    ...base,
+    processing_mode: preferences.current.processing_mode,
+    speaker_processing_mode: preferences.current.speaker_processing_mode,
   });
   const edited = useRef(false);
   const invalidate = () => {
@@ -174,12 +180,8 @@ export function RecognitionOptions({
         }
       }
       setValid(choices);
-      const wanted = {
-        ...draft,
-        processing_mode: preferences.current.processing_mode,
-        speaker_processing_mode: preferences.current.speaker_processing_mode,
-      };
-      const score = (s: ExecutionSpec) => choiceScore(s, wanted);
+      const target = wanted(draft);
+      const score = (s: ExecutionSpec) => choiceScore(s, target);
       const best = choices
         .filter(
           (s) =>
@@ -245,10 +247,8 @@ export function RecognitionOptions({
       field === "speaker_processing_mode"
         ? value === "off"
         : draft.speaker_source === "off";
-    const wanted = {
-      ...draft,
-      processing_mode: preferences.current.processing_mode,
-      speaker_processing_mode: preferences.current.speaker_processing_mode,
+    const target = {
+      ...wanted(draft),
       [field]: value === "off" ? "after_stop" : value,
       speaker_source: off
         ? "off"
@@ -260,10 +260,10 @@ export function RecognitionOptions({
       (s) =>
         eligible(s) &&
         (s.config.speaker_source === "off") === off &&
-        s.config[field] === wanted[field],
+        s.config[field] === target[field],
     );
     const next = candidates.sort(
-      (a, b) => choiceScore(b, wanted) - choiceScore(a, wanted),
+      (a, b) => choiceScore(b, target) - choiceScore(a, target),
     )[0];
     if (next) {
       // Off is a speaker source, not a timing: the timing preference stays.
