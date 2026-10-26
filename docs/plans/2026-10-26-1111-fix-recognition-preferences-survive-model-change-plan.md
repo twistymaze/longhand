@@ -126,6 +126,7 @@ flowchart TB
   - A choice with speaker `DuringRecording`, source `nemotron` and an exact count of 3 gives speaker `DuringRecording`.
   - A choice with source `nemotron` and an exact count of 9 still fails to resolve with `SpeakerLimit` at either timing. `config()` does not change the source.
   - A choice with speaker `DuringRecording` and source `pyannote` gives speaker `AfterStop`.
+  - A choice with language `de`, speaker `DuringRecording` and source `pyannote` on `parakeet-unified-en-0.6b-q80` gives `language: None` and speaker `AfterStop`, and the result resolves. The stored choice keeps both preferences.
   - The stored choice keeps each preference after `config()`. `config()` does not change the choice.
   - Each returned configuration from the cases above, except the `SpeakerLimit` case, resolves with `models::recognition::resolve`.
   - In `capture.rs`: `recording_spec` with an in-use choice of language `de` on an English-only model whose files are ready records with that model and `language: None`. It does not fall back to the chosen configuration.
