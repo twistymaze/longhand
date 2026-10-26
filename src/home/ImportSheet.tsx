@@ -108,18 +108,22 @@ export function ImportSheet({
   //
   // In the Notes editor, ProseMirror prevents the default of every Return
   // and Escape, so the sheet records before the editor sees the key
-  // whether the editor uses it: Escape closes an open / menu, and
-  // Cmd+Return checks a task. The / menu can leave the page before the
-  // key gets to the window.
+  // whether the editor uses it: Escape closes an open / menu, Return runs
+  // the command of an open / menu, and Cmd+Return checks a task. The /
+  // menu can leave the page before the key gets to the window.
+  //
+  // A key of an input-method composition belongs to the composition.
   useEffect(() => {
     let editorUsesKey = false;
     const before = (e: KeyboardEvent) => {
       editorUsesKey = false;
       if (!inEditor(e.target)) return;
-      if (e.key === "Escape") editorUsesKey = document.querySelector(SLASH_MENU) !== null;
-      else if (isSubmitKey(e)) editorUsesKey = selectionInTask();
+      const slashMenuOpen = document.querySelector(SLASH_MENU) !== null;
+      if (e.key === "Escape") editorUsesKey = slashMenuOpen;
+      else if (isSubmitKey(e)) editorUsesKey = slashMenuOpen || selectionInTask();
     };
     const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
       if (inEditor(e.target) ? editorUsesKey : e.defaultPrevented) return;
       if (e.key === "Escape") {
         e.preventDefault();

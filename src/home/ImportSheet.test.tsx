@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { NoteTypeEntry, NoteTypeList } from "../bindings";
 import { mockTauri } from "../test/tauri";
@@ -196,6 +196,21 @@ describe("ImportSheet", () => {
       expect(onCancel).not.toHaveBeenCalled();
       await user.keyboard("{Escape}");
       expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    test("Cmd+Return with the / menu open runs the menu command and does not import", async () => {
+      const { user, onDone, imports } = setup(["/a/One.m4a"]);
+      await user.type(notesField(), "/");
+      expect(screen.getByRole("button", { name: "Heading 1" })).toBeTruthy();
+      await user.keyboard(modReturn);
+      expect(imports()).toEqual([]);
+      expect(onDone).not.toHaveBeenCalled();
+    });
+
+    test("Escape during an input-method composition does not cancel the sheet", () => {
+      const { onCancel } = setup(["/a/One.m4a"]);
+      fireEvent.keyDown(notesField(), { key: "Escape", isComposing: true });
+      expect(onCancel).not.toHaveBeenCalled();
     });
 
     test("Escape in the link field closes only the link field", async () => {
