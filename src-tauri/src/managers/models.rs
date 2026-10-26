@@ -950,14 +950,16 @@ mod tests {
     #[test]
     fn preferences_the_chosen_model_cannot_use_are_not_a_failure() {
         use models::recognition::{ProcessingMode, SpeakerSource};
-        let mut settings = Settings::default();
-        settings.chosen_recognition = RecognitionChoice {
-            asr_model: "parakeet-unified-en-0.6b-q80".into(),
-            live_transcript: true,
-            speaker_source: SpeakerSource::Pyannote,
-            speaker_processing_mode: ProcessingMode::DuringRecording,
-            recognition_language: Some("de".into()),
-            default_speaker_count: None,
+        let settings = Settings {
+            chosen_recognition: RecognitionChoice {
+                asr_model: "parakeet-unified-en-0.6b-q80".into(),
+                live_transcript: true,
+                speaker_source: SpeakerSource::Pyannote,
+                speaker_processing_mode: ProcessingMode::DuringRecording,
+                recognition_language: Some("de".into()),
+                default_speaker_count: None,
+            },
+            ..Settings::default()
         };
         let plan = plan_choice(&settings, |_| Vec::new(), &HashSet::new(), None);
         assert_eq!(plan.failure, None);
