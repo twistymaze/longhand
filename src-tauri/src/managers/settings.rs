@@ -504,11 +504,23 @@ impl RecognitionChoice {
         }
     }
 
-    /// The configuration that recognition resolves. Live transcript
-    /// applies only to a model that streams.
+    /// The configuration that recognition resolves. Live transcript, live
+    /// speaker recognition and the language are preferences: each one
+    /// applies only when the model and the speaker source can use it, and
+    /// otherwise gives After Stop or automatic language. The choice keeps
+    /// the preference for a model that can use it.
     pub fn config(&self) -> models::recognition::RecognitionConfig {
-        use models::recognition::{ProcessingMode, RecognitionConfig};
-        let live_supported = models::model(&self.asr_model).is_some_and(|m| m.streaming);
+        use models::recognition::{ProcessingMode, RecognitionConfig, SpeakerSource};
+        let model = models::model(&self.asr_model);
+        let live_supported = model.is_some_and(|m| m.streaming);
+        let live_speakers_supported = matches!(
+            self.speaker_source,
+            SpeakerSource::Sortformer | SpeakerSource::Nemotron
+        );
+        let language = self
+            .recognition_language
+            .clone()
+            .filter(|language| model.is_none_or(|m| m.languages.contains(language)));
         RecognitionConfig {
             asr_model: self.asr_model.clone(),
             speaker_source: self.speaker_source,
@@ -518,8 +530,12 @@ impl RecognitionChoice {
                 ProcessingMode::AfterStop
             },
             speaker_count: self.default_speaker_count.map(Into::into),
-            language: self.recognition_language.clone(),
-            speaker_processing_mode: self.speaker_processing_mode,
+            language,
+            speaker_processing_mode: if live_speakers_supported {
+                self.speaker_processing_mode
+            } else {
+                ProcessingMode::AfterStop
+            },
         }
     }
 
@@ -4272,6 +4288,125 @@ mod recognition_tests {
         let spec = models::recognition::resolve(&settings.recognition_config()).unwrap();
         assert!(!spec.enabled_live_transcription);
         assert!(spec.enabled_live_speaker_analysis);
+    }
+
+    const ENGLISH_ONLY: &str = "parakeet-unified-en-0.6b-q80";
+    const MULTILINGUAL: &str = "nemotron-3.5-asr-streaming-0.6b-q80";
+
+    fn choice(
+        asr_model: &str,
+        speaker_source: SpeakerSource,
+        speaker_processing_mode: ProcessingMode,
+        language: Option<&str>,
+        count: Option<u32>,
+    ) -> RecognitionChoice {
+        RecognitionChoice {
+            asr_model: asr_model.into(),
+            live_transcript: true,
+            speaker_source,
+            speaker_processing_mode,
+            recognition_language: language.map(Into::into),
+            default_speaker_count: count.map(|count| SpeakerCountSetting::Exact { count }),
+        }
+    }
+
+    #[test]
+    fn a_language_the_model_does_not_list_falls_back_to_automatic() {
+        let english = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::AfterStop,
+            Some("de"),
+            None,
+        );
+        let config = english.config();
+        assert_eq!(config.language, None);
+        models::recognition::resolve(&config).unwrap();
+        assert_eq!(english.recognition_language.as_deref(), Some("de"));
+
+        let multilingual = RecognitionChoice {
+            asr_model: MULTILINGUAL.into(),
+            ..english
+        };
+        assert_eq!(multilingual.config().language.as_deref(), Some("de"));
+    }
+
+    #[test]
+    fn live_speakers_fall_back_only_when_the_source_has_no_live_mode() {
+        let pyannote = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::DuringRecording,
+            None,
+            Some(9),
+        );
+        let config = pyannote.config();
+        assert_eq!(config.speaker_processing_mode, ProcessingMode::AfterStop);
+        models::recognition::resolve(&config).unwrap();
+        assert_eq!(
+            pyannote.speaker_processing_mode,
+            ProcessingMode::DuringRecording
+        );
+
+        let nemotron = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Nemotron,
+            ProcessingMode::DuringRecording,
+            None,
+            Some(3),
+        );
+        let config = nemotron.config();
+        assert_eq!(
+            config.speaker_processing_mode,
+            ProcessingMode::DuringRecording
+        );
+        models::recognition::resolve(&config).unwrap();
+    }
+
+    #[test]
+    fn a_count_above_the_source_limit_keeps_its_error() {
+        for mode in [ProcessingMode::AfterStop, ProcessingMode::DuringRecording] {
+            let config =
+                choice(ENGLISH_ONLY, SpeakerSource::Nemotron, mode, None, Some(9)).config();
+            assert_eq!(config.speaker_source, SpeakerSource::Nemotron);
+            assert!(matches!(
+                models::recognition::resolve(&config),
+                Err(models::recognition::ResolveError::SpeakerLimit { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn two_unsupported_preferences_fall_back_together() {
+        let both = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::DuringRecording,
+            Some("de"),
+            None,
+        );
+        let config = both.config();
+        assert_eq!(config.language, None);
+        assert_eq!(config.speaker_processing_mode, ProcessingMode::AfterStop);
+        models::recognition::resolve(&config).unwrap();
+        assert_eq!(both.recognition_language.as_deref(), Some("de"));
+        assert_eq!(
+            both.speaker_processing_mode,
+            ProcessingMode::DuringRecording
+        );
+    }
+
+    #[test]
+    fn live_transcript_on_a_model_that_does_not_stream_stays_a_preference() {
+        let whisper = choice(
+            "whisper-large-v3-turbo-q5km",
+            SpeakerSource::Pyannote,
+            ProcessingMode::AfterStop,
+            None,
+            None,
+        );
+        assert_eq!(whisper.config().processing_mode, ProcessingMode::AfterStop);
+        assert!(whisper.live_transcript);
     }
 }
 
