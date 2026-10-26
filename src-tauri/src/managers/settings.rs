@@ -465,7 +465,7 @@ impl LocalSettings {
 /// The six values of a recognition configuration, as the settings hold
 /// them (R18): the chosen configuration in the shared settings, or the
 /// configuration in use on this computer.
-#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
 pub struct RecognitionChoice {
     /// Catalog id of the transcription model (KTD6).
     pub asr_model: String,
@@ -491,19 +491,6 @@ impl Default for RecognitionChoice {
 }
 
 impl RecognitionChoice {
-    /// The choice of a configuration that the Settings window sends.
-    pub fn from_config(config: &models::recognition::RecognitionConfig) -> Self {
-        use models::recognition::ProcessingMode;
-        Self {
-            asr_model: config.asr_model.clone(),
-            live_transcript: config.processing_mode == ProcessingMode::DuringRecording,
-            speaker_source: config.speaker_source,
-            speaker_processing_mode: config.speaker_processing_mode,
-            recognition_language: config.language.clone(),
-            default_speaker_count: config.speaker_count.map(Into::into),
-        }
-    }
-
     /// The configuration that recognition resolves. Live transcript, live
     /// speaker recognition and the language are preferences: each one
     /// applies only when the model and the speaker source can use it, and
@@ -3278,17 +3265,17 @@ mod tests {
 
     #[test]
     fn a_change_of_the_recognition_patches_each_changed_value() {
-        use models::recognition::{ProcessingMode, RecognitionConfig, SpeakerSource};
+        use models::recognition::{ProcessingMode, SpeakerSource};
         let before = Settings::default();
         let mut after = before.clone();
-        after.chosen_recognition = RecognitionChoice::from_config(&RecognitionConfig {
+        after.chosen_recognition = RecognitionChoice {
             asr_model: "whisper-large-v3-turbo-q5km".into(),
+            live_transcript: false,
             speaker_source: SpeakerSource::Sortformer,
-            processing_mode: ProcessingMode::AfterStop,
-            speaker_count: None,
-            language: Some("de".into()),
             speaker_processing_mode: ProcessingMode::AfterStop,
-        });
+            recognition_language: Some("de".into()),
+            default_speaker_count: None,
+        };
         let keys: Vec<&str> = shared_patch(&before, &after)
             .iter()
             .map(SharedValue::key)

@@ -2237,23 +2237,29 @@ pub async fn change_interface_zoom(
         .map_err(|e| e.to_string())?
 }
 
-/// Choose the complete recognition configuration (R18). The configuration
-/// in use stays until every file of the chosen configuration is on disk.
+/// Choose the complete recognition configuration (R18). The choice keeps
+/// the live and language preferences also when its model cannot use them;
+/// the configuration that the model can use must resolve. The
+/// configuration in use stays until every file of the chosen
+/// configuration is on disk.
 #[tauri::command]
 #[specta::specta]
 pub async fn set_recognition_defaults(
     app: AppHandle,
     manager: State<'_, Arc<ModelsManager>>,
-    config: models::recognition::RecognitionConfig,
+    choice: settings::RecognitionChoice,
 ) -> Result<Settings, String> {
-    models::recognition::resolve(&config).map_err(|e| e.to_string())?;
+    if let Some(count) = &choice.default_speaker_count {
+        count.validate()?;
+    }
+    models::recognition::resolve(&choice.config()).map_err(|e| e.to_string())?;
     let manager = Arc::clone(&manager);
     blocking(move || {
-        let choice = settings::RecognitionChoice::from_config(&config);
+        let asr_model = choice.asr_model.clone();
         let result = choose_recognition(&app, &manager, |c| *c = choice)?;
         // The files of the chosen configuration download first. The rest
         // of the bundle follows (KTD5).
-        manager.start_bundle_downloads(&app, &config.asr_model, &[])?;
+        manager.start_bundle_downloads(&app, &asr_model, &[])?;
         Ok(result)
     })
     .await

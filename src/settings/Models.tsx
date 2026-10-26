@@ -9,7 +9,11 @@ import {
 } from "../bindings";
 import { sentence } from "../processing/describe";
 import { OwnSaves } from "./ownSaves";
-import { RecognitionOptions, recognitionDefaults } from "./RecognitionOptions";
+import {
+  RecognitionOptions,
+  choiceConfig,
+  recognitionDefaults,
+} from "./RecognitionOptions";
 import { readOnlyReason } from "./shared";
 import { Button, ErrorText, Group, Pane, ProgressBar, Row, Status, formatBytes } from "./ui";
 import type { RecognitionDefaultsSave } from "./useAppSettings";
@@ -259,12 +263,12 @@ export function Models({
         models={models}
         initial={recognitionDefaults(settings)}
         onResolved={() => {}}
-        onChanged={(next) => {
+        onChanged={(next, choice) => {
           setError(null);
           own(next.config.asr_model);
           const saves = ownSaves.current;
-          saves.sent(configKey(next.config));
-          void defaults.save(next.config).finally(() => saves.settled());
+          saves.sent(configKey(choiceConfig(choice)));
+          void defaults.save(choice).finally(() => saves.settled());
         }}
         disabled={readOnly !== null}
         modelAction={modelAction}

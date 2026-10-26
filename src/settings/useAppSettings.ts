@@ -10,7 +10,7 @@ import {
   events,
   type ModelStatus,
   type Readiness,
-  type RecognitionConfig,
+  type RecognitionChoice,
   type Settings,
 } from "../bindings";
 import { sentence } from "../processing/describe";
@@ -79,14 +79,14 @@ export function useRecognitionDefaultsSave(onSaved: () => Promise<void>) {
 
   // Resolves when this request ends: saved, failed, or not sent because a
   // later request replaced it.
-  const save = (config: RecognitionConfig): Promise<void> => {
+  const save = (choice: RecognitionChoice): Promise<void> => {
     const request = ++version.current;
-    setSavingModel(config.asr_model);
+    setSavingModel(choice.asr_model);
     setError(null);
     queue.current = queue.current.then(async () => {
       if (request !== version.current) return;
       try {
-        const result = await commands.setRecognitionDefaults(config);
+        const result = await commands.setRecognitionDefaults(choice);
         if (request !== version.current) return;
         if (result.status === "error") setError(sentence(result.error));
         else await onSaved();

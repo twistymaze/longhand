@@ -945,6 +945,25 @@ mod tests {
         assert_eq!(plan.apply, None);
     }
 
+    /// R3, R6: preferences that the chosen model cannot use are not a
+    /// failure, and the choice applies with them.
+    #[test]
+    fn preferences_the_chosen_model_cannot_use_are_not_a_failure() {
+        use models::recognition::{ProcessingMode, SpeakerSource};
+        let mut settings = Settings::default();
+        settings.chosen_recognition = RecognitionChoice {
+            asr_model: "parakeet-unified-en-0.6b-q80".into(),
+            live_transcript: true,
+            speaker_source: SpeakerSource::Pyannote,
+            speaker_processing_mode: ProcessingMode::DuringRecording,
+            recognition_language: Some("de".into()),
+            default_speaker_count: None,
+        };
+        let plan = plan_choice(&settings, |_| Vec::new(), &HashSet::new(), None);
+        assert_eq!(plan.failure, None);
+        assert_eq!(plan.apply.as_ref(), Some(&settings.chosen_recognition));
+    }
+
     #[test]
     fn when_the_last_file_is_on_disk_the_chosen_configuration_is_in_use() {
         let settings = tdt_with_sortformer_chosen();
