@@ -29,7 +29,7 @@ tags:
   - tauri-windows-manifest
   - ggml
   - cargo-test
-last_updated: 2026-10-17
+last_updated: 2026-10-25
 ---
 
 # Separate cargo invocations rebuilt ggml three times per Windows CI job
@@ -59,10 +59,10 @@ Per-step `Compiling` counts in the downloaded Windows job log (step times are se
 - **The original workaround for the manifest crash (session history).** When the first Windows CI run hit `STATUS_ENTRYPOINT_NOT_FOUND`, the app crate's tests were compiled on Windows without running them and run only on macOS. That created the `--exclude longhand` / `-p longhand` split, and with it the extra ggml builds. Neither linker-embedding the manifest nor nextest was tried then.
 - **A cache that never refreshed (session history).** rust-cache initially saved only on success, and every early Windows job failed or was cancelled, so every run started cold (the first fully green cold Windows run took 103 minutes). Once the key matched exactly, rust-cache treated the cache as current and never saved new artifacts, so after the app bundle moved to the debug profile every run rebuilt everything. `cache-on-failure: true` and prefix-key bumps came out of this.
 - **Reordering steps** (full build first, then clippy, then tests) does not help. Clippy only type-checks (it emits metadata) and tests need codegen, so neither reuses the other's Rust artifacts in any order. What can be shared is the build-script run, and only when the resolved features match. Matching the selection is the fix, not the order.
-- **cargo-nextest** was the fallback: it compiles the whole workspace in one pass and can skip the app's tests at run time. It was not needed once the manifest fix let the app's tests run.
+- **cargo-nextest** was the fallback: it compiles the whole workspace in one pass and can skip the app's tests at run time. It was not needed once the manifest fix let the app's tests run. (Since PR #71 the Windows tests run with nextest for another reason: it runs the test binaries side by side. It keeps the same `--workspace` selection.)
 - **Larger GitHub runners** are only available to organizations on Team or Enterprise plans, not a personal Pro account, and more cores would mostly speed up the CMake build rather than remove the duplicate builds. The repository later moved to the `twistymaze` organization, and archived PR 7 put the Windows job on an 8-core runner (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
 - **The `custom-protocol` split** was left alone. `tauri build` turns on Tauri's `custom-protocol` feature (the app serves its pages from the bundle), which changes `tauri` and everything built on it (plugins, wry, tao, muda, the app). Per session measurements that costs about 52 crates (about 42 s) on macOS and about 40 on Windows. Matching it would mean testing in bundled mode or restructuring the workspace.
-- **Downloading SPIRV-Headers directly** instead of through vcpkg would save only about 15 of 38 s, so Handy's vcpkg setup stays (`.github/workflows/ci.yml:103-115`). **A Dev Drive on Windows** was deferred to a separate, measured experiment, which archived PR 7 did (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
+- **Downloading SPIRV-Headers directly** instead of through vcpkg would save only about 15 of 38 s, so Handy's vcpkg setup stayed. (PR #71 reversed this: the Windows build setup now installs SPIRV-Headers from the commit of the Vulkan SDK tag with CMake, about 40 s to about 20 s.) **A Dev Drive on Windows** was deferred to a separate, measured experiment, which archived PR 7 did (see [Follow-up](#follow-up-dev-drive-8-core-runner-and-a-cache-on-main)).
 
 ## Solution
 
@@ -185,14 +185,14 @@ Runs 36151678746, 36176109623 and 36178741653. The Dev Drive decreased the job t
 
 What to know:
 
-- **The Dev Drive letter is part of the cache key.** rust-cache hashes the values of `CARGO_HOME`, `RUSTUP_HOME` and `CMAKE_PREFIX_PATH`, and the cached paths are absolute. On the standard runner the Dev Drive is `E:`, because `D:` is the runner's temp disk. The 8-core runner has one disk, so the Dev Drive is `D:`. A change of runner type thus gives one cold run. The action's `mount-path` input can mount the drive at a fixed folder, but Windows can resolve a path through a folder mount point to `\\?\Volume{GUID}\`, which CMake and the MSVC tools often do not accept. One cold run per change of runner type costs less.
+- **The Dev Drive letter is part of the cache key.** rust-cache hashes the values of `CARGO_HOME`, `RUSTUP_HOME` and `CMAKE_PREFIX_PATH`, and the cached paths are absolute. On the standard runner the Dev Drive is `E:`, because `D:` is the runner's temp disk. The 8-core runner has one disk, so the Dev Drive is `D:`. A change of runner type thus gives one cold run. The action's `mount-path` input can mount the drive at a fixed folder, but Windows can resolve a path through a folder mount point to `\\?\Volume{GUID}\`, which CMake and the MSVC tools often do not accept. One cold run per change of runner type costs less. Since PR #71, a restored CMake build that names a source folder on another drive letter is removed before the build, so CMake does not refuse it.
 - **Main cannot restore a pull request's cache.** So the first run on main after a key change is cold, even when the pull request saved a cache with the same key.
 - **`rust-lld` was not used.** `src-tauri/build.rs` embeds the manifest with `/MANIFEST:EMBED /MANIFESTINPUT`. `rust-lld` is built without libxml2, and so it may not merge a manifest input. Test it in its own change if link time becomes a large part of a warm run.
-- **Already done before archived PR 7:** debug-profile bundles, NSIS as the only bundle, and `CARGO_INCREMENTAL=0` (rust-cache sets it). A next change to measure is `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, which makes the PDBs smaller and linking faster.
+- **Already done before archived PR 7:** debug-profile bundles, NSIS as the only bundle, and `CARGO_INCREMENTAL=0` (rust-cache sets it). PR #71 set `CARGO_PROFILE_DEV_DEBUG=line-tables-only` on GitHub's Windows runners, which makes the PDBs smaller and linking faster.
 
 ## Follow-up: self-hosted runners
 
-Since October 2026 the macOS and Windows checks run on self-hosted runners that keep `target/` between jobs ([Checks and CI](../../development-workflow.md#checks-and-ci)). rust-cache, the Dev Drive step and the 8-core runner apply only when a job runs on GitHub's runners. The `ci.yml` line numbers in this document refer to the file at the time of archived PR 1 and archived PR 7. The feature-unification rule still applies: one set of cargo commands per job keeps each self-hosted runner's `target/` to one build of ggml.
+In October 2026 the macOS and Windows checks moved to self-hosted runners that kept `target/` between jobs. Since then the macOS runners became ephemeral (a new VM for each job, with rust-cache and sccache in the GitHub Actions cache), and PR #71 (2026-10-25) moved the Windows checks back to GitHub's runners: pull requests on `windows-latest`, `main` on an 8-core larger runner ([Checks and CI](../../development-workflow.md#checks-and-ci)). rust-cache and the Dev Drive step apply on GitHub's runners. The `ci.yml` line numbers in this document refer to the file at the time of archived PR 1 and archived PR 7. The feature-unification rule still applies: one set of cargo commands per job keeps each self-hosted runner's `target/` to one build of ggml.
 
 ## Related Issues
 

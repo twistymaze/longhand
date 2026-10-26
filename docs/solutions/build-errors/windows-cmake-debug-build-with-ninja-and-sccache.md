@@ -14,6 +14,7 @@ symptoms:
 root_cause: config_error
 resolution_type: config_change
 severity: high
+last_updated: 2026-10-25
 framework_version: rust 1.95.0, cmake-rs 0.1.58, sccache 0.17.0, MSVC 14.51
 tags: [windows, ci, sccache, ninja, cmake, msvc, c-runtime, self-hosted-runner]
 related_components: [ci, build]
@@ -53,9 +54,9 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
 set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
 ```
 
-The action sets `CMAKE_TOOLCHAIN_FILE` on Windows (`action.yml:56`). cmake-rs then passes it as `-DCMAKE_TOOLCHAIN_FILE`, and it no longer gives `-DCMAKE_C_COMPILER`, so the file names `cl`.
+The action sets `CMAKE_TOOLCHAIN_FILE` on Windows (`action.yml:60`). cmake-rs then passes it as `-DCMAKE_TOOLCHAIN_FILE`, and it no longer gives `-DCMAKE_C_COMPILER`, so the file names `cl`.
 
-cargo does not run a CMake build script again when the toolchain file changes. So the cleanup step keeps a hash of the file in `target/cmake-toolchain.sha256`, a file that the step writes on the runner (`action.yml:79-86`). When the hash changes, it removes each CMake build folder and its fingerprint (`target/<profile>/build/<crate>-<hash>` and `target/<profile>/.fingerprint/<crate>-<hash>`), and cargo runs those build scripts again. The first run after a change builds the CMake crates cold.
+cargo does not run a CMake build script again when the toolchain file changes. On a self-hosted runner that keeps `target/`, the cleanup step ("Remove CMake build folders that cannot be used") keeps a hash of the file in `target/cmake-toolchain.sha256` (`action.yml:86-97`). When the hash changes, it removes each CMake build folder and its fingerprint (`target/<profile>/build/<crate>-<hash>` and `target/<profile>/.fingerprint/<crate>-<hash>`), and cargo runs those build scripts again. The first run after a change builds the CMake crates cold. On GitHub's runners, rust-cache does not keep that hash file, so since PR #71 the hash of the toolchain file is part of the rust-cache key instead, and the step does not compare the hash there ([rust-cache dropped the CMake toolchain hash](../performance-issues/rust-cache-dropped-cmake-toolchain-hash-wiped-warm-windows-builds.md)).
 
 ## Why This Works
 
@@ -64,7 +65,7 @@ cargo does not run a CMake build script again when the toolchain file changes. S
 
 ## Prevention
 
-- A green Windows job on the self-hosted runner does not prove a cold build works: `target/` keeps earlier build outputs. After a change to the compile setup (generator, launcher, flags), remove the CMake build folders once, or run on a clean `target/`.
+- A green Windows job on a runner that keeps `target/`, or that restores it from a cache, does not prove a cold build works: `target/` keeps earlier build outputs. After a change to the compile setup (generator, launcher, flags), remove the CMake build folders once, change the cache key, or run on a clean `target/`. (The Windows checks ran on a self-hosted runner until PR #71 moved them to GitHub's runners.)
 - Give compiler options to sccache on the command line, never through `_CL_` or `CL`.
 - An option that a CMake project's old policies decide goes in the toolchain file as a cache value, not as a policy default.
 - See [the compile cache experiment](../performance-issues/sccache-compile-cache-experiment.md) for the sccache and Ninja setup, and [the NeMo helper doc](nemo-helper-built-for-the-build-machine-cpu.md) for another case where a kept CMake build folder kept old settings.

@@ -1,7 +1,7 @@
 ---
 title: sccache and the release profile in CI, measured on hosted and self-hosted runners
 date: 2026-10-12
-last_updated: 2026-10-20
+last_updated: 2026-10-25
 category: performance-issues
 module: CI workflow (.github/workflows/ci.yml, release-windows.yml, .github/actions/sccache-setup)
 problem_type: performance_issue
@@ -92,10 +92,10 @@ The last step is the time from the last `Compiling` line to `Finished`: the app 
 - **The log is misleading during the last step.** Cargo prints a line when a crate starts. With full LTO, the app crate and the link took minutes with no output, so the last crate that started (trash) seemed slow.
 - **A changed RUSTC_WRAPPER rebuilt everything once on the Windows runner** (12 to 14 min). macOS did not rebuild.
 - **A VM reset empties the local cache.** Two resets during the experiment emptied the Windows cache, and its first "on" runs had 0 hits. Check the cache folder size in the job summary before you trust a self-hosted measurement.
-- **CMake refuses a build folder that another generator made.** The self-hosted Windows runner kept Visual Studio build folders in target/. The sccache setup action removes each CMake build folder that is not a Ninja build.
+- **CMake refuses a build folder that another generator made.** The self-hosted Windows runner kept Visual Studio build folders in target/. The sccache setup action removes each CMake build folder that is not a Ninja build. Since PR #71 it also removes a cached CMake build whose compiler or source folder is missing (another runner image or Dev Drive letter).
 - **The cmake-rs crate does not pass RUSTC_WRAPPER to CMake.** The C/C++ compiles of ggml need `CMAKE_C_COMPILER_LAUNCHER` and `CMAKE_CXX_COMPILER_LAUNCHER`, and the Visual Studio generator ignores both.
 - **Use sccache v0.17.0.** v0.18.0 can panic at startup with "no CA certificates loaded" (mozilla/sccache#2869).
-- **Not measured:** rust-cache alone after a Cargo.lock change, so the share of the warm gain that comes from sccache is not known. The hosted Windows checks.
+- **Not measured:** rust-cache alone after a Cargo.lock change, so the share of the warm gain that comes from sccache is not known. The hosted Windows checks were measured on 2026-10-25, when PR #71 moved them to GitHub's runners: see [rust-cache dropped the CMake toolchain hash](rust-cache-dropped-cmake-toolchain-hash-wiped-warm-windows-builds.md).
 - **A dependency update changes the licence lists.** The macOS licence check fails until `scripts/check-licences.sh` writes them again.
 
 ## Method notes for a later experiment
