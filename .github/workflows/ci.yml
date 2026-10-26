@@ -6,8 +6,9 @@ name: CI
 # example a larger runner). With no variable, a job runs on GitHub's standard
 # runner. A self-hosted macOS runner is ephemeral: each job gets a new VM,
 # and the runner's environment file sets LONGHAND_RUNNER_EPHEMERAL. The
-# self-hosted Windows runner is persistent: it keeps target/ between jobs.
-# Local checks gate
+# Windows check of a pull request always runs on GitHub's standard runner,
+# which is free for a public repository; WINDOWS_RUNNER (a larger runner)
+# applies to main and to runs on demand. Local checks gate
 # day-to-day work (scripts/check-windows.sh included); CI runs when a branch
 # asks to merge, when a change that is not only docs is pushed to main, and
 # on demand: `gh workflow run ci.yml --ref <branch>`.
@@ -39,7 +40,7 @@ on:
         type: boolean
         default: false
       hosted:
-        description: Run the checks on GitHub's runners, not the self-hosted runners
+        description: Run the checks on GitHub's standard runners, not the runners that the repository variables name
         type: boolean
         default: false
 
@@ -69,7 +70,7 @@ jobs:
           - os: macos-latest
             runner: ${{ !inputs.hosted && vars.MACOS_RUNNER || 'macos-latest' }}
           - os: windows-latest
-            runner: ${{ !inputs.hosted && vars.WINDOWS_RUNNER || 'windows-latest' }}
+            runner: ${{ (inputs.hosted || github.event_name == 'pull_request') && 'windows-latest' || vars.WINDOWS_RUNNER || 'windows-latest' }}
     runs-on: ${{ matrix.runner }}
     # The feature ideas check reads the merged pull requests. A job block
     # replaces the workflow block, so it names `contents` again.
@@ -220,6 +221,21 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test -p nemo-runtime --features test-helper
 
+      # On GitHub's Windows runner, the NeMo cache folder (sources, the
+      # SentencePiece, SDK and helper builds) comes from the Actions cache.
+      # build-nemo.sh checks the pinned revisions and builds only what
+      # changed, as it does in a folder that stays between jobs. The key
+      # follows the scripts that pin the revisions and patch the source. Only
+      # main saves it (step "Save the NeMo cache"), so pull requests do not
+      # fill the cache storage. A warm cache saves about 1.5 to 3 minutes.
+      - name: Restore the NeMo cache (Windows)
+        id: nemo-cache
+        if: runner.os == 'Windows' && runner.environment == 'github-hosted'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/longhand-nemo
+          key: nemo-${{ runner.os }}-${{ hashFiles('scripts/build-nemo.sh', 'scripts/patch-nemo.ts', 'scripts/prepare-nemo.ts', 'scripts/prepare-vulkan-runtime.ps1') }}
+
       - name: Build and stage NeMo helper
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
@@ -332,11 +348,20 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo test --workspace --features nemo-runtime/test-helper
 
+      # cargo-nextest runs the test binaries side by side; `cargo test` runs
+      # them one after the other. nextest does not run doctests, and the
+      # macOS job runs them.
+      - name: Install cargo-nextest (Windows)
+        if: runner.os == 'Windows'
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
+        with:
+          tool: cargo-nextest
+
       - name: Workspace Rust tests (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
-        run: cargo test --workspace --features nemo-runtime/test-helper
+        run: cargo nextest run --workspace --features nemo-runtime/test-helper
 
       # The tests just regenerated src/bindings.ts (`export_bindings`).
       - name: Bindings are current
@@ -418,6 +443,16 @@ jobs:
         if: always() && runner.os == 'Windows'
         shell: pwsh
         run: Get-PSDrive -PSProvider FileSystem
+
+      - name: Save the NeMo cache (Windows)
+        if: >-
+          github.event_name == 'push' && runner.os == 'Windows' &&
+          runner.environment == 'github-hosted' &&
+          steps.nemo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/longhand-nemo
+          key: ${{ steps.nemo-cache.outputs.cache-primary-key }}
 
   # The recorder soak writes 1.4 GB as fast as the disk takes it. On demand
   # rather than nightly, since runner minutes are billed:
