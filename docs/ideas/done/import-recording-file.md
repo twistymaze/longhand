@@ -27,3 +27,5 @@ Sometimes a laptop is not available, for example in a hallway or at a table wher
 ## Outcome
 
 Shipped in [#68](https://github.com/twistymaze/longhand/pull/68) on 2026-10-25, as one release. A manual import (Import Audio… or a drop on Home) and a watched folder for each computer both make notes. The formats are m4a, qta (the files of Voice Memos), mp3 and wav. A drag from Voice Memos also works: Longhand takes the promised file from the app ([solution](../../solutions/integration-issues/voice-memos-drop-gives-a-file-promise-not-a-file.md)). A shared import record in the storage folder keeps a deleted note from coming back from the watched folder.
+
+[#72](https://github.com/twistymaze/longhand/pull/72) on 2026-10-26 added a Notes field to the import sheet for one file ([plan](../../plans/2026-10-26-1014-feat-import-sheet-notes-plan.md)). Its text becomes the note's manual notes before processing, so the first summary uses it.
