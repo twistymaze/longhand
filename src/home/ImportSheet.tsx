@@ -253,6 +253,11 @@ export function ImportSheet({
               >
                 Notes
               </span>
+              {/* `px-3`, as in MarkdownField: each block of the editor
+                  extends 0.75rem to the left and right for its backdrop
+                  (note-typography.css). Less padding makes the blocks wider
+                  than the frame, and the frame then shows a horizontal
+                  scroll bar. */}
               <div
                 ref={notesFrame}
                 data-markdown-field
@@ -262,7 +267,7 @@ export function ImportSheet({
                     maxHeight: `calc(${NOTES_MAX_ROWS} * 1.5em + 6px + 2px)`,
                   } as CSSProperties
                 }
-                className="overflow-y-auto rounded-md border border-control-border bg-control px-2 py-[3px] text-[0.85rem] text-label outline-offset-0 focus-within:outline-3 focus-within:outline-accent/50"
+                className="overflow-x-hidden overflow-y-auto rounded-md border border-control-border bg-control px-3 py-[3px] text-[0.85rem] text-label outline-offset-0 focus-within:outline-3 focus-within:outline-accent/50"
               >
                 <NoteEditor markdown="" onChange={setNotes} labelledBy={`${id}-notes`} immediate className="markdown-field" />
               </div>
