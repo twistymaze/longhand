@@ -948,6 +948,7 @@ fn a_database_with_an_importing_row_is_above_the_last_release_version() {
             },
             note_type: None,
             tags: &[],
+            notes: "",
             model: &session_core::RecordingModel {
                 asr_model: "m".into(),
                 live_transcript: false,

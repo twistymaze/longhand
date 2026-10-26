@@ -114,6 +114,8 @@ pub struct NewImport<'a> {
     pub title: &'a Title,
     pub note_type: Option<&'a str>,
     pub tags: &'a [String],
+    /// The notes document from the import sheet. Empty for none.
+    pub notes: &'a str,
     pub model: &'a RecordingModel,
     pub snapshot: Option<&'a serde_json::Value>,
     pub speaker_count: Option<SpeakerCount>,
@@ -596,16 +598,16 @@ impl Store {
     /// Make the row of a note that an import makes (KTD5, KTD13 of the
     /// audio import plan) in one transaction: the state `Importing`, the
     /// recording time of the file as the time the note opened (R16), the
-    /// title, the type, the tags, the import source, and the recognition
-    /// that a recording start records, with no live transcript. The row is
-    /// not queued until [`Store::finish_import`].
+    /// title, the type, the tags, the notes, the import source, and the
+    /// recognition that a recording start records, with no live transcript.
+    /// The row is not queued until [`Store::finish_import`].
     pub fn create_import(&mut self, note: &NewImport) -> Result<()> {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO sessions (id, created_at, state, speaker_count, asr_model, live_transcript,
                recognition_snapshot, started_here, started_at, title, title_source, note_type,
-               tags, import_source)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?2, ?8, ?9, ?10, ?11, ?12)",
+               tags, import_source, notes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?2, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 note.id,
                 note.opened_at.to_rfc3339(),
@@ -621,6 +623,7 @@ impl Store {
                 note.note_type,
                 serde_json::to_string(note.tags)?,
                 serde_json::to_string(note.source)?,
+                note.notes,
             ],
         )?;
         tx.commit()?;

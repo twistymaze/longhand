@@ -2651,6 +2651,7 @@ fn create_import(store: &mut Store, id: &str, recorded: i64, title: Title) {
             title: &title,
             note_type: Some("One on One"),
             tags: &["phone".to_string()],
+            notes: "Weekly sync with Dana",
             model: &import_model(),
             snapshot: Some(&serde_json::json!({"model": "m"})),
             speaker_count: None,
@@ -2670,7 +2671,7 @@ fn proposed(text: &str) -> Title {
 }
 
 #[test]
-fn an_import_row_is_importing_with_its_title_type_tags_and_recording_time() {
+fn an_import_row_is_importing_with_its_title_type_tags_notes_and_recording_time() {
     let mut store = Store::open_in_memory().unwrap();
     create_import(&mut store, "i", -600, proposed("Team sync"));
     let record = store.session("i").unwrap().unwrap();
@@ -2678,6 +2679,7 @@ fn an_import_row_is_importing_with_its_title_type_tags_and_recording_time() {
     assert_eq!(record.title, Some(proposed("Team sync")));
     assert_eq!(record.note_type.as_deref(), Some("One on One"));
     assert_eq!(record.tags, ["phone"]);
+    assert_eq!(store.notes("i").unwrap(), "Weekly sync with Dana");
     // R16: the note starts at the recording time of the file.
     assert_eq!(record.start(&[]), t(-600));
     assert_eq!(record.asr_model.as_deref(), Some("m"));

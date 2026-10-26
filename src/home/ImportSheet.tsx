@@ -1,13 +1,20 @@
 // The import sheet (R2, R2a of the audio import plan): before the import
 // starts, the user can set the note type and the tags. For one file, the
-// sheet also has a title field with the file name. For several files, it
-// lists the file names: the same type and tags apply to each note, and
-// each note gets its title from its own file. Import with no change
-// accepts the default type and no tags. Cancel imports nothing. The sheet
-// fades in as the other dialogs do, and closes at once.
+// sheet also has a title field with the file name, and a small Notes
+// field: the My Notes editor, whose text becomes the first manual notes
+// of the note (the import-sheet notes plan). For several files, it lists
+// the file names: the same type and tags apply to each note, and each note
+// gets its title from its own file. Import with no change accepts the
+// default type and no tags. Cancel imports nothing. The sheet fades in as
+// the other dialogs do, and closes at once.
+//
+// Keys: Cmd+Return (Ctrl+Return on Windows) imports and Escape cancels,
+// from each field. In the Notes field, Return makes a new line and Tab
+// stays in the field, as in My Notes.
 
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { commands, type ImportResult, type NewNoteType, type NoteTypeList, type Result } from "../bindings";
+import { NoteEditor } from "../editor/NoteEditor";
 import { GENERAL, TagLabel, tagKey, withGeneral } from "../lib/Labels";
 import { TagPicker } from "../lib/TagPicker";
 // The last part of a path, on macOS and on Windows. A file path does not
@@ -16,6 +23,29 @@ import { fieldClass, folderName as fileName } from "../settings/ui";
 
 /// The value of General in the type field. A type name is never empty.
 const GENERAL_VALUE = "";
+
+/// The / menu of the editor while it is open. The format toolbar has the
+/// same attribute, but Escape does not close it.
+const SLASH_MENU = "[data-editor-escape-consumer]:not([role=toolbar])";
+
+/// The minimum and the maximum height of the Notes field, in lines. Above
+/// the maximum, the text scrolls inside the field.
+const NOTES_ROWS = 4;
+const NOTES_MAX_ROWS = 7;
+
+const inEditor = (target: EventTarget | null) =>
+  target instanceof Element && target.closest(".prosemirror-editor") !== null;
+
+/// Cmd+Return, or Ctrl+Return on Windows: import.
+const isSubmitKey = (e: KeyboardEvent) => e.key === "Enter" && (e.metaKey || e.ctrlKey);
+
+/// Whether the cursor of the editor is in a task, where Cmd+Return checks
+/// the task.
+function selectionInTask(): boolean {
+  const node = window.getSelection()?.anchorNode;
+  const element = node instanceof Element ? node : node?.parentElement;
+  return element?.closest('li[data-type="taskItem"]') != null;
+}
 
 /// The file name with no extension: the first title of the note (R15).
 function stem(path: string): string {
@@ -49,6 +79,10 @@ export function ImportSheet({
   // type, also when the list is not read yet.
   const [chosen, setChosen] = useState<string | null>(null);
   const [applied, setApplied] = useState<string[]>([]);
+  // The Notes field as Markdown. Only one file has the field.
+  const [notes, setNotes] = useState("");
+  const form = useRef<HTMLFormElement>(null);
+  const notesFrame = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const titleField = useRef<HTMLInputElement>(null);
   const typeField = useRef<HTMLSelectElement>(null);
@@ -67,19 +101,45 @@ export function ImportSheet({
     } else typeField.current?.focus();
   }, []);
 
-  // Escape goes to the window: after a click on a button in the sheet,
-  // WKWebView can leave the focus on the page body. The tag field stops
-  // its own Escape.
+  // Escape and Cmd+Return go to the window: after a click on a button in
+  // the sheet, WKWebView can leave the focus on the page body. The tag
+  // field stops its own Escape, and the link field of the editor's toolbar
+  // prevents the default of its own Escape.
+  //
+  // In the Notes editor, ProseMirror prevents the default of every Return
+  // and Escape, so the sheet records before the editor sees the key
+  // whether the editor uses it: Escape closes an open / menu, Return runs
+  // the command of an open / menu, and Cmd+Return checks a task. The /
+  // menu can leave the page before the key gets to the window.
+  //
+  // A key of an input-method composition belongs to the composition.
   useEffect(() => {
+    let editorUsesKey = false;
+    const before = (e: KeyboardEvent) => {
+      editorUsesKey = false;
+      if (!inEditor(e.target)) return;
+      const slashMenuOpen = document.querySelector(SLASH_MENU) !== null;
+      if (e.key === "Escape") editorUsesKey = slashMenuOpen;
+      else if (isSubmitKey(e)) editorUsesKey = slashMenuOpen || selectionInTask();
+    };
     const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      if (inEditor(e.target) ? editorUsesKey : e.defaultPrevented) return;
       if (e.key === "Escape") {
         e.preventDefault();
         if (running.current) return;
         cancelled.current();
+      } else if (isSubmitKey(e)) {
+        e.preventDefault();
+        form.current?.requestSubmit();
       }
     };
+    window.addEventListener("keydown", before, true);
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", before, true);
+      window.removeEventListener("keydown", onKey);
+    };
   }, []);
 
   const valid = withGeneral(types?.types ?? []).filter((t) => t.valid);
@@ -102,7 +162,9 @@ export function ImportSheet({
     const userTitle = one && edited && edited !== proposed ? edited : null;
     let result: Result<ImportResult, string>;
     try {
-      result = await commands.importFiles(paths, noteType(), applied, userTitle);
+      // A field with no text sends no notes.
+      const typed = notes.trim();
+      result = await commands.importFiles(paths, noteType(), applied, userTitle, one && typed ? typed : null);
     } catch {
       result = { status: "error", error: "Could not import the files." };
     }
@@ -115,11 +177,12 @@ export function ImportSheet({
   return (
     <div className="fixed inset-0 z-20 flex items-start justify-center bg-black/20 px-4 pt-[14vh] pb-4">
       <form
+        ref={form}
         role="dialog"
         aria-modal="true"
         aria-labelledby={`${id}-title`}
         onSubmit={(e) => void submit(e)}
-        className="fade-in flex max-h-[calc(86vh-1rem)] w-[24rem] max-w-[calc(100vw-2rem)] flex-col rounded-xl bg-group p-4 shadow-[0_0_0_0.5px_var(--separator),0_12px_40px_rgb(0_0_0/0.25)]"
+        className={`fade-in flex max-h-[calc(86vh-1rem)] ${one ? "w-[28rem]" : "w-[24rem]"} max-w-[calc(100vw-2rem)] flex-col rounded-xl bg-group p-4 shadow-[0_0_0_0.5px_var(--separator),0_12px_40px_rgb(0_0_0/0.25)]`}
       >
         <h2 id={`${id}-title`} className="shrink-0 font-semibold">
           {one ? "Import Audio" : `Import ${paths.length} Audio Files`}
@@ -179,6 +242,37 @@ export function ImportSheet({
             ))}
             <TagPicker tags={tags} applied={applied} onAdd={(tag) => setApplied((a) => [...a, tag])} />
           </div>
+          {one && (
+            <>
+              {/* Not a <label>: the editor is not a form control. A click
+                  on it puts the focus in the editor, as a label does. */}
+              <span
+                id={`${id}-notes`}
+                className={`${label} self-start pt-[5px]`}
+                onClick={() => notesFrame.current?.querySelector<HTMLElement>('[role="textbox"]')?.focus()}
+              >
+                Notes
+              </span>
+              {/* `px-3`, as in MarkdownField: each block of the editor
+                  extends 0.75rem to the left and right for its backdrop
+                  (note-typography.css). Less padding makes the blocks wider
+                  than the frame, and the frame then shows a horizontal
+                  scroll bar. */}
+              <div
+                ref={notesFrame}
+                data-markdown-field
+                style={
+                  {
+                    "--markdown-field-rows": NOTES_ROWS,
+                    maxHeight: `calc(${NOTES_MAX_ROWS} * 1.5em + 6px + 2px)`,
+                  } as CSSProperties
+                }
+                className="overflow-x-hidden overflow-y-auto rounded-md border border-control-border bg-control px-3 py-[3px] text-[0.85rem] text-label outline-offset-0 focus-within:outline-3 focus-within:outline-accent/50"
+              >
+                <NoteEditor markdown="" onChange={setNotes} labelledBy={`${id}-notes`} immediate className="markdown-field" />
+              </div>
+            </>
+          )}
         </div>
         <div className="mt-4 flex shrink-0 justify-end gap-2">
           <button

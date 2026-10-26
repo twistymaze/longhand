@@ -150,6 +150,7 @@ fn request(source: &Path, origin: Origin) -> Request {
         note_type: None,
         tags: Vec::new(),
         title: None,
+        notes: String::new(),
     }
 }
 
@@ -279,6 +280,25 @@ fn a_sheet_title_is_the_users_title() {
     );
     assert_eq!(record.note_type.as_deref(), Some("One on One"));
     assert_eq!(record.tags, ["phone"]);
+}
+
+#[test]
+fn sheet_notes_are_the_notes_of_the_new_note() {
+    let r = Rig::new();
+    let source = r.file("tone-mono.m4a", "Memo 12.m4a");
+    let imports = r.imports();
+    let mut request = request(&source, Origin::Manual);
+    request.notes = "Weekly sync with Dana".into();
+    let id = imports.import(request, recognition()).unwrap();
+    assert_eq!(lock(&r.store).notes(&id).unwrap(), "Weekly sync with Dana");
+}
+
+#[test]
+fn a_journal_request_of_an_older_build_has_no_notes() {
+    let mut json = serde_json::to_value(request(Path::new("/a/Memo.m4a"), Origin::Manual)).unwrap();
+    json.as_object_mut().unwrap().remove("notes");
+    let request: Request = serde_json::from_value(json).unwrap();
+    assert_eq!(request.notes, "");
 }
 
 // ---------------------------------------------------- crash windows (KTD6)
