@@ -260,12 +260,12 @@ describe("recognition defaults", () => {
   test("a model with no live transcript keeps showing the live preference (AE1)", async () => {
     const { user, tauri } = open();
     await ready();
-    expect(screen.queryByText(/after Stop with these settings/)).toBeNull();
+    expect(screen.queryByText(/only supports/)).toBeNull();
     await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
     expect(timing().value).toBe("during_recording");
     expect(
-      screen.getByText("Transcription runs after Stop with these settings."),
+      screen.getByText("Whisper only supports transcription after Stop."),
     ).toBeTruthy();
     expect(screen.queryByText(/processing choices changed/)).toBeNull();
     expect(lastSave(tauri)).toEqual({
@@ -285,7 +285,7 @@ describe("recognition defaults", () => {
     await user.click(screen.getByRole("radio", { name: "Parakeet" }));
     await ready();
     expect(timing().value).toBe("during_recording");
-    expect(screen.queryByText(/after Stop with these settings/)).toBeNull();
+    expect(screen.queryByText(/only supports/)).toBeNull();
     expect(lastSave(tauri)).toMatchObject({ asr_model: stream, live_transcript: true });
   });
   test("a live preference can be chosen on a model that cannot use it", async () => {
@@ -299,7 +299,7 @@ describe("recognition defaults", () => {
     await ready();
     expect(timing().value).toBe("during_recording");
     expect(
-      screen.getByText("Transcription runs after Stop with these settings."),
+      screen.getByText("Whisper only supports transcription after Stop."),
     ).toBeTruthy();
     expect(lastSave(tauri)).toMatchObject({ asr_model: offline, live_transcript: true });
   });
@@ -334,7 +334,7 @@ describe("recognition defaults", () => {
     await ready();
     expect(language().value).toBe("de");
     expect(
-      screen.getByText(/does not support German\. It detects the language automatically/),
+      screen.getByText(/Parakeet does not support German\. It detects the language automatically/),
     ).toBeTruthy();
     expect(lastSave(tauri)).toMatchObject({ asr_model: stream, recognition_language: "de" });
     expect(screen.queryByText(/No compatible choice/)).toBeNull();
@@ -369,7 +369,7 @@ describe("recognition defaults", () => {
     await ready();
     expect(speakerTiming().value).toBe("during_recording");
     expect(
-      screen.getByText("Speaker recognition runs after Stop with these settings."),
+      screen.getByText("With 9 expected speakers, speaker recognition runs after Stop."),
     ).toBeTruthy();
     expect(lastSave(tauri)).toMatchObject({
       speaker_source: "pyannote",
@@ -392,7 +392,7 @@ describe("recognition defaults", () => {
     await ready();
     expect(speakerTiming().value).toBe("during_recording");
     expect(
-      screen.getByText("Speaker recognition runs after Stop with these settings."),
+      screen.getByText("With 9 expected speakers, speaker recognition runs after Stop."),
     ).toBeTruthy();
     await user.click(screen.getByText("Advanced options"));
     expect(
@@ -426,7 +426,7 @@ describe("recognition defaults", () => {
       (screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value,
     ).toBe("during_recording");
     expect(
-      screen.getByText("Transcription runs after Stop with these settings."),
+      screen.getByText("Whisper only supports transcription after Stop."),
     ).toBeTruthy();
   });
   test("five expected speakers cannot select Sortformer", async () => {
@@ -546,7 +546,7 @@ test("nine speakers keeps recognition enabled with a compatible after-Stop choic
   ) as HTMLSelectElement;
   expect(mode.value).toBe("during_recording");
   expect(
-    screen.getByText("Speaker recognition runs after Stop with these settings."),
+    screen.getByText("With 9 expected speakers, speaker recognition runs after Stop."),
   ).toBeTruthy();
   await user.selectOptions(
     screen.getByLabelText("Transcription timing"),

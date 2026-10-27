@@ -311,14 +311,31 @@ export function RecognitionOptions({
     draft.speaker_source !== "off" &&
     shown.speaker_processing_mode === "during_recording" &&
     draft.speaker_processing_mode !== "during_recording";
-  const afterStop =
-    transcriptAfterStop && speakersAfterStop
-      ? "Transcription and speaker recognition run"
+  // What makes speaker recognition run after Stop: the speaker model
+  // override, the transcription model, or the expected speaker count.
+  const model = selected?.name ?? "This model";
+  const count = draft.speaker_count;
+  const speakerCause = !speakersAfterStop
+    ? null
+    : engine && engine !== "sortformer" && engine !== "nemotron"
+      ? sources.find(([id]) => id === engine)?.[1]
+      : count && selected?.speaker_preferences?.during_recording.length
+        ? count
+        : model;
+  const afterStop = [
+    transcriptAfterStop && speakerCause === model
+      ? `${model} only supports transcription and speaker recognition after Stop.`
       : transcriptAfterStop
-        ? "Transcription runs"
-        : speakersAfterStop
-          ? "Speaker recognition runs"
-          : null;
+        ? `${model} only supports transcription after Stop.`
+        : null,
+    speakerCause === null || (transcriptAfterStop && speakerCause === model)
+      ? null
+      : typeof speakerCause === "object"
+        ? `With ${speakerCause.kind === "exact" ? speakerCause.count : `up to ${speakerCause.max}`} expected speakers, speaker recognition runs after Stop.`
+        : `${speakerCause} only supports speaker recognition after Stop.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <div className="grid min-w-0 gap-6">
       <Group header="Transcription model">
@@ -389,8 +406,8 @@ export function RecognitionOptions({
             </label>
           </div>
           {afterStop && (
-            <p className="text-[0.85rem] text-label-secondary">
-              {afterStop} after Stop with these settings.
+            <p className="text-[0.85rem] text-caution">
+              {afterStop}
             </p>
           )}
           <p className="text-[0.85rem] text-label-secondary">
@@ -479,8 +496,8 @@ export function RecognitionOptions({
                     ))}
                   </select>
                   {shown.language && shown.language !== draft.language && (
-                    <span className="text-[0.85rem] text-label-secondary">
-                      This model does not support{" "}
+                    <span className="text-[0.85rem] text-caution">
+                      {model} does not support{" "}
                       {languageName(shown.language)}. It detects the language
                       automatically.
                     </span>
