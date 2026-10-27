@@ -322,17 +322,19 @@ export function RecognitionOptions({
       : count && selected?.speaker_preferences?.during_recording.length
         ? count
         : model;
+  const both = transcriptAfterStop && speakerCause === model;
+  const speakers = speakerCause === null || both ? null : speakerCause;
   const afterStop = [
-    transcriptAfterStop && speakerCause === model
-      ? `${model} only supports transcription and speaker recognition after Stop.`
+    both
+      ? `Transcription and speaker recognition will run after Stop when using ${model} because it does not support live transcription or live speaker recognition.`
       : transcriptAfterStop
-        ? `${model} only supports transcription after Stop.`
+        ? `Transcription will run after Stop when using ${model} because it does not support live transcription.`
         : null,
-    speakerCause === null || (transcriptAfterStop && speakerCause === model)
+    speakers === null
       ? null
-      : typeof speakerCause === "object"
-        ? `With ${speakerCause.kind === "exact" ? speakerCause.count : `up to ${speakerCause.max}`} expected speakers, speaker recognition runs after Stop.`
-        : `${speakerCause} only supports speaker recognition after Stop.`,
+      : typeof speakers === "object"
+        ? `Speaker recognition will run after Stop with ${speakers.kind === "exact" ? speakers.count : `up to ${speakers.max}`} expected speakers because live speaker recognition does not support that many speakers.`
+        : `Speaker recognition will run after Stop when using ${speakers} because it does not support live speaker recognition.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -497,9 +499,9 @@ export function RecognitionOptions({
                   </select>
                   {shown.language && shown.language !== draft.language && (
                     <span className="text-[0.85rem] text-caution">
-                      {model} does not support{" "}
-                      {languageName(shown.language)}. It detects the language
-                      automatically.
+                      The language will be detected automatically when using{" "}
+                      {model} because it does not support{" "}
+                      {languageName(shown.language)}.
                     </span>
                   )}
                 </label>
