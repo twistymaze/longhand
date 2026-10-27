@@ -71,13 +71,19 @@ export function RecognitionOptions({
     models.find((m) => m.id === asr_model)?.languages.includes(language)
       ? language
       : null;
-  // The live and language preferences. Only a change of their own control
-  // changes them; a model that cannot use one shows what it uses instead.
+  // The live and language preferences, which their controls show. Only a
+  // change of their own control changes them. A model that cannot use one
+  // uses After Stop or automatic language, and a line tells the user.
   const preferences = useRef({
     processing_mode: initial.processing_mode,
     speaker_processing_mode: initial.speaker_processing_mode ?? "after_stop",
     language: initial.language,
   });
+  const [shown, setShown] = useState(preferences.current);
+  const prefer = (change: Partial<typeof preferences.current>) => {
+    preferences.current = { ...preferences.current, ...change };
+    setShown(preferences.current);
+  };
   // The configuration that the selected model uses, which the controls show.
   const [draft, setDraft] = useState(() => ({
     ...initial,
@@ -257,22 +263,19 @@ export function RecognitionOptions({
           : draft.speaker_source,
     } as RecognitionConfig;
     const candidates = valid.filter(
-      (s) =>
-        eligible(s) &&
-        (s.config.speaker_source === "off") === off &&
-        s.config[field] === target[field],
+      (s) => eligible(s) && (s.config.speaker_source === "off") === off,
     );
+    // The best choice with the chosen timing. When none has it, the timing
+    // stays a preference and the best choice without it applies.
     const next = candidates.sort(
-      (a, b) => choiceScore(b, target) - choiceScore(a, target),
+      (a, b) =>
+        Number(b.config[field] === target[field]) -
+          Number(a.config[field] === target[field]) ||
+        choiceScore(b, target) - choiceScore(a, target),
     )[0];
     if (next) {
       // Off is a speaker source, not a timing: the timing preference stays.
-      if (value !== "off") {
-        preferences.current = {
-          ...preferences.current,
-          [field]: value as ProcessingMode,
-        };
-      }
+      if (value !== "off") prefer({ [field]: value as ProcessingMode });
       setDraft(next.config);
       edited.current = true;
       publish(next);
@@ -298,21 +301,24 @@ export function RecognitionOptions({
     const partial = state?.state === "absent" ? state.partial_bytes : 0;
     return sum + Math.max(0, artifact.size_bytes - partial);
   }, 0);
-  const canMode = (
-    field: "processing_mode" | "speaker_processing_mode",
-    value: string,
-  ) =>
-    valid.some(
-      (s) =>
-        eligible(s) &&
-        s.config[field] === value &&
-        (field !== "processing_mode" ||
-          (s.config.speaker_source === "off") ===
-            (draft.speaker_source === "off")) &&
-        (field !== "speaker_processing_mode" ||
-          (s.config.speaker_source !== "off" &&
-            s.config.processing_mode === draft.processing_mode)),
-    );
+  // The live preferences that the current choice cannot use.
+  const transcriptAfterStop =
+    !!current &&
+    shown.processing_mode === "during_recording" &&
+    draft.processing_mode !== "during_recording";
+  const speakersAfterStop =
+    !!current &&
+    draft.speaker_source !== "off" &&
+    shown.speaker_processing_mode === "during_recording" &&
+    draft.speaker_processing_mode !== "during_recording";
+  const afterStop =
+    transcriptAfterStop && speakersAfterStop
+      ? "Transcription and speaker recognition run"
+      : transcriptAfterStop
+        ? "Transcription runs"
+        : speakersAfterStop
+          ? "Speaker recognition runs"
+          : null;
   return (
     <div className="grid min-w-0 gap-6">
       <Group header="Transcription model">
@@ -347,16 +353,12 @@ export function RecognitionOptions({
               <select
                 aria-label="Transcription timing"
                 className={fieldClass}
-                value={draft.processing_mode}
+                value={shown.processing_mode}
                 disabled={loading || disabled}
                 onChange={(e) => chooseMode("processing_mode", e.target.value)}
               >
                 {timings.map(([id, text]) => (
-                  <option
-                    key={id}
-                    value={id}
-                    disabled={!canMode("processing_mode", id)}
-                  >
+                  <option key={id} value={id}>
                     {text}
                   </option>
                 ))}
@@ -370,7 +372,7 @@ export function RecognitionOptions({
                 value={
                   draft.speaker_source === "off"
                     ? "off"
-                    : draft.speaker_processing_mode
+                    : shown.speaker_processing_mode
                 }
                 disabled={loading || disabled}
                 onChange={(e) =>
@@ -379,17 +381,18 @@ export function RecognitionOptions({
               >
                 <option value="off">Off</option>
                 {timings.map(([id, text]) => (
-                  <option
-                    key={id}
-                    value={id}
-                    disabled={!canMode("speaker_processing_mode", id)}
-                  >
+                  <option key={id} value={id}>
                     {text}
                   </option>
                 ))}
               </select>
             </label>
           </div>
+          {afterStop && (
+            <p className="text-[0.85rem] text-label-secondary">
+              {afterStop} after Stop with these settings.
+            </p>
+          )}
           <p className="text-[0.85rem] text-label-secondary">
             Work done during recording reduces the work left after Stop. Speaker
             labels distinguish voices; they do not identify people.
@@ -451,24 +454,37 @@ export function RecognitionOptions({
                     aria-label="Language"
                     className={fieldClass}
                     disabled={disabled}
-                    value={draft.language ?? ""}
+                    value={shown.language ?? ""}
                     onChange={(e) => {
                       invalidate();
                       const language = e.target.value || null;
-                      preferences.current = {
-                        ...preferences.current,
-                        language,
-                      };
-                      setDraft({ ...draft, language });
+                      prefer({ language });
+                      setDraft({
+                        ...draft,
+                        language: usableLanguage(draft.asr_model, language),
+                      });
                     }}
                   >
                     <option value="">Automatic</option>
+                    {shown.language &&
+                      !selected?.languages.includes(shown.language) && (
+                        <option value={shown.language}>
+                          {languageName(shown.language)}
+                        </option>
+                      )}
                     {selected?.languages.map((code) => (
                       <option key={code} value={code}>
                         {languageName(code)}
                       </option>
                     ))}
                   </select>
+                  {shown.language && shown.language !== draft.language && (
+                    <span className="text-[0.85rem] text-label-secondary">
+                      This model does not support{" "}
+                      {languageName(shown.language)}. It detects the language
+                      automatically.
+                    </span>
+                  )}
                 </label>
                 <label className="grid gap-1">
                   Expected speakers

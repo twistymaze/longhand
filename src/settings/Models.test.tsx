@@ -257,16 +257,16 @@ describe("recognition defaults", () => {
     tauri.calls
       .filter((c) => c.cmd === "set_recognition_defaults")
       .slice(-1)[0]?.args.choice as RecognitionChoice;
-  test("a model with no live transcript shows After Stop and keeps the live preference (AE1)", async () => {
+  test("a model with no live transcript keeps showing the live preference (AE1)", async () => {
     const { user, tauri } = open();
     await ready();
+    expect(screen.queryByText(/after Stop with these settings/)).toBeNull();
     await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
-    expect(timing().value).toBe("after_stop");
+    expect(timing().value).toBe("during_recording");
     expect(
-      Array.from(timing().options).find((o) => o.value === "during_recording")
-        ?.disabled,
-    ).toBe(true);
+      screen.getByText("Transcription runs after Stop with these settings."),
+    ).toBeTruthy();
     expect(screen.queryByText(/processing choices changed/)).toBeNull();
     expect(lastSave(tauri)).toEqual({
       asr_model: offline,
@@ -285,7 +285,23 @@ describe("recognition defaults", () => {
     await user.click(screen.getByRole("radio", { name: "Parakeet" }));
     await ready();
     expect(timing().value).toBe("during_recording");
+    expect(screen.queryByText(/after Stop with these settings/)).toBeNull();
     expect(lastSave(tauri)).toMatchObject({ asr_model: stream, live_transcript: true });
+  });
+  test("a live preference can be chosen on a model that cannot use it", async () => {
+    const { user, tauri } = open({}, {
+      ...settings,
+      asr_model: offline,
+      live_transcript: false,
+    } as Settings);
+    await ready();
+    await user.selectOptions(timing(), "during_recording");
+    await ready();
+    expect(timing().value).toBe("during_recording");
+    expect(
+      screen.getByText("Transcription runs after Stop with these settings."),
+    ).toBeTruthy();
+    expect(lastSave(tauri)).toMatchObject({ asr_model: offline, live_transcript: true });
   });
   const germanCatalog = () => {
     const multi = { ...model(offline, "Whisper"), languages: ["en", "de", "fr"] };
@@ -301,7 +317,7 @@ describe("recognition defaults", () => {
     };
     return { catalog, handlers };
   };
-  test("a model without the preferred language shows Automatic and keeps the preference (AE2)", async () => {
+  test("a model without the preferred language keeps showing the preference (AE2)", async () => {
     const { catalog, handlers } = germanCatalog();
     const initial = {
       ...settings,
@@ -316,13 +332,17 @@ describe("recognition defaults", () => {
     expect(language().value).toBe("de");
     await user.click(screen.getByRole("radio", { name: "Parakeet" }));
     await ready();
-    expect(language().value).toBe("");
+    expect(language().value).toBe("de");
+    expect(
+      screen.getByText(/does not support German\. It detects the language automatically/),
+    ).toBeTruthy();
     expect(lastSave(tauri)).toMatchObject({ asr_model: stream, recognition_language: "de" });
     expect(screen.queryByText(/No compatible choice/)).toBeNull();
 
     await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
     expect(language().value).toBe("de");
+    expect(screen.queryByText(/does not support German/)).toBeNull();
   });
   test("a language change on the selected model changes the preference (AE4)", async () => {
     const { catalog, handlers } = germanCatalog();
@@ -347,7 +367,10 @@ describe("recognition defaults", () => {
     await user.clear(count);
     await user.type(count, "9");
     await ready();
-    expect(speakerTiming().value).toBe("after_stop");
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(
+      screen.getByText("Speaker recognition runs after Stop with these settings."),
+    ).toBeTruthy();
     expect(lastSave(tauri)).toMatchObject({
       speaker_source: "pyannote",
       speaker_processing_mode: "during_recording",
@@ -367,7 +390,10 @@ describe("recognition defaults", () => {
       default_speaker_count: { kind: "exact", count: 9 },
     } as Settings);
     await ready();
-    expect(speakerTiming().value).toBe("after_stop");
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(
+      screen.getByText("Speaker recognition runs after Stop with these settings."),
+    ).toBeTruthy();
     await user.click(screen.getByText("Advanced options"));
     expect(
       (screen.getByLabelText("Speaker model override") as HTMLSelectElement).value,
@@ -395,10 +421,13 @@ describe("recognition defaults", () => {
     expect(
       (screen.getByLabelText("Transcription timing") as HTMLSelectElement)
         .value,
-    ).toBe("after_stop");
+    ).toBe("during_recording");
     expect(
       (screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value,
     ).toBe("during_recording");
+    expect(
+      screen.getByText("Transcription runs after Stop with these settings."),
+    ).toBeTruthy();
   });
   test("five expected speakers cannot select Sortformer", async () => {
     const { user } = open(
@@ -515,11 +544,10 @@ test("nine speakers keeps recognition enabled with a compatible after-Stop choic
   const mode = screen.getByLabelText(
     "Speaker recognition",
   ) as HTMLSelectElement;
-  expect(mode.value).toBe("after_stop");
+  expect(mode.value).toBe("during_recording");
   expect(
-    Array.from(mode.options).find((o) => o.value === "during_recording")
-      ?.disabled,
-  ).toBe(true);
+    screen.getByText("Speaker recognition runs after Stop with these settings."),
+  ).toBeTruthy();
   await user.selectOptions(
     screen.getByLabelText("Transcription timing"),
     "after_stop",
