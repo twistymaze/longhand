@@ -303,6 +303,51 @@ describe("recognition defaults", () => {
     ).toBeTruthy();
     expect(lastSave(tauri)).toMatchObject({ asr_model: offline, live_transcript: true });
   });
+  test("a model that causes both fallbacks names itself once", async () => {
+    const whisper = {
+      ...model(offline, "Whisper"),
+      speaker_preferences: { after_stop: ["nemotron" as const], during_recording: [] },
+    };
+    open({}, {
+      ...settings,
+      asr_model: offline,
+      speaker_processing_mode: "during_recording",
+    } as Settings, [models[0], whisper]);
+    await ready();
+    expect(
+      screen.getByText(
+        "Transcription and speaker recognition will run after Stop when using Whisper because it does not support live transcription or live speaker recognition.",
+      ),
+    ).toBeTruthy();
+  });
+  test("a model and a speaker count that cause one fallback each are named apart", async () => {
+    open({}, {
+      ...settings,
+      asr_model: offline,
+      speaker_processing_mode: "during_recording",
+      default_speaker_count: { kind: "exact", count: 9 },
+    } as Settings);
+    await ready();
+    expect(
+      screen.getByText(
+        "Transcription will run after Stop when using Whisper because it does not support live transcription. Speaker recognition will run after Stop with 9 expected speakers because live speaker recognition does not support that many speakers.",
+      ),
+    ).toBeTruthy();
+  });
+  test("a speaker model override with no live mode is named as the cause", async () => {
+    open({}, {
+      ...settings,
+      speaker_source: "pyannote",
+      speaker_processing_mode: "during_recording",
+    } as Settings);
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(
+      screen.getByText(
+        "Speaker recognition will run after Stop when using pyannote / WeSpeaker because it does not support live speaker recognition.",
+      ),
+    ).toBeTruthy();
+  });
   const germanCatalog = () => {
     const multi = { ...model(offline, "Whisper"), languages: ["en", "de", "fr"] };
     const catalog = [models[0], multi];

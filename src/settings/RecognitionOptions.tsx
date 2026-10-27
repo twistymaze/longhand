@@ -132,13 +132,37 @@ export function RecognitionOptions({
   const [valid, setValid] = useState<ExecutionSpec[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Live speaker recognition works for this model only without the expected
+  // speaker count: the count is above the limit of each live speaker model.
+  const [countLimits, setCountLimits] = useState(false);
   const selected = models.find((m) => m.id === draft.asr_model);
   useEffect(() => {
     let active = true;
     setLoading(true);
     onResolved(null);
+    // Live speaker choices without the count, to find a count limit.
+    const uncounted = draft.speaker_count
+      ? Promise.all(
+          sources
+            .filter(([speaker_source]) => speaker_source !== "off")
+            .map(async ([speaker_source]) => {
+              try {
+                const result = await commands.resolveRecognition({
+                  ...draft,
+                  speaker_source,
+                  processing_mode: "after_stop",
+                  speaker_processing_mode: "during_recording",
+                  speaker_count: null,
+                });
+                return result.status === "ok" ? result.data : null;
+              } catch {
+                return null;
+              }
+            }),
+        )
+      : Promise.resolve([]);
     // Resolve each dependent choice against the exact backend catalog.
-    void Promise.all(
+    const resolved = Promise.all(
       sources.flatMap(([speaker_source]) =>
         timings.flatMap(([processing_mode]) =>
           timings.map(async ([speaker_processing_mode]) => {
@@ -165,7 +189,8 @@ export function RecognitionOptions({
           }),
         ),
       ),
-    ).then((results) => {
+    );
+    void Promise.all([resolved, uncounted]).then(([results, live]) => {
       if (!active) return;
       const choices = results
         .map((r) => r.spec)
@@ -186,6 +211,7 @@ export function RecognitionOptions({
         }
       }
       setValid(choices);
+      setCountLimits(live.some((s) => s !== null && eligible(s)));
       const target = wanted(draft);
       const score = (s: ExecutionSpec) => choiceScore(s, target);
       const best = choices
@@ -319,7 +345,7 @@ export function RecognitionOptions({
     ? null
     : engine && engine !== "sortformer" && engine !== "nemotron"
       ? sources.find(([id]) => id === engine)?.[1]
-      : count && selected?.speaker_preferences?.during_recording.length
+      : count && countLimits
         ? count
         : model;
   const both = transcriptAfterStop && speakerCause === model;
