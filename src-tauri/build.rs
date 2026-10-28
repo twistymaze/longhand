@@ -78,7 +78,8 @@ fn stage_changelog() {
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("changelog.json");
     match source {
         Some(src) => {
-            std::fs::copy(&src, &dest)
+            std::fs::read(&src)
+                .and_then(|text| write_if_changed(&dest, &text))
                 .unwrap_or_else(|e| panic!("copy the changelog {}: {e}", src.display()));
         }
         None if std::env::var("LONGHAND_RELEASE").as_deref() == Ok("1") => {
@@ -88,10 +89,20 @@ fn stage_changelog() {
             );
         }
         None => {
-            std::fs::write(&dest, r#"{"format":1,"available":false}"#)
+            write_if_changed(&dest, br#"{"format":1,"available":false}"#)
                 .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
         }
     }
+}
+
+/// Write `text` to `dest` only when `dest` does not hold the same text. Then
+/// the file time does not change, and the `include_str!` of `dest` does not
+/// compile the crate again.
+fn write_if_changed(dest: &std::path::Path, text: &[u8]) -> std::io::Result<()> {
+    if std::fs::read(dest).is_ok_and(|current| current == text) {
+        return Ok(());
+    }
+    std::fs::write(dest, text)
 }
 
 /// Stage the MSVC runtime DLLs into `transcribe-libs/` for app-local deployment.

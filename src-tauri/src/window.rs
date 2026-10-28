@@ -301,32 +301,15 @@ pub fn open_licences(app: &AppHandle) {
 }
 
 fn open_licences_window(app: &AppHandle) {
-    let opened = open_or_build(
-        app.get_webview_window(LICENCES_WINDOW),
-        |window| front(app, window),
-        || {
-            crate::interface_zoom::build(app, |percent| {
-                WebviewWindowBuilder::new(
-                    app,
-                    LICENCES_WINDOW,
-                    WebviewUrl::App("index.html?window=licences".into()),
-                )
-                .visible(false)
-                .zoom_hotkeys_enabled(false)
-                .initialization_script(crate::interface_zoom::initialization(percent))
-                .title("Open Source Licences")
-                .inner_size(680.0, 640.0)
-                .min_inner_size(480.0, 320.0)
-                .center()
-                .build()
-            })
-        },
+    open_page_window(
+        app,
+        LICENCES_WINDOW,
+        "index.html?window=licences",
+        "Open Source Licences",
+        (680.0, 640.0),
+        (480.0, 320.0),
+        "licences",
     );
-    match opened {
-        Ok((window, Opened::Built)) => front(app, &window),
-        Ok((_, Opened::Focused)) => {}
-        Err(e) => log::error!("failed to open the licences window: {e}"),
-    }
 }
 
 /// Show the Recent changes window, and build it first when it is not open
@@ -339,31 +322,50 @@ pub fn open_changelog(app: &AppHandle) {
 }
 
 fn open_changelog_window(app: &AppHandle) {
+    open_page_window(
+        app,
+        CHANGELOG_WINDOW,
+        "index.html?window=changelog",
+        "Recent Changes",
+        (560.0, 640.0),
+        (400.0, 320.0),
+        "Recent changes",
+    );
+}
+
+/// Show the window with this label, and build it first when it is not open.
+/// The window loads `url` and starts hidden; `front` shows it. `name` is the
+/// name of the window in the log.
+fn open_page_window(
+    app: &AppHandle,
+    label: &str,
+    url: &str,
+    title: &str,
+    size: (f64, f64),
+    min_size: (f64, f64),
+    name: &str,
+) {
     let opened = open_or_build(
-        app.get_webview_window(CHANGELOG_WINDOW),
+        app.get_webview_window(label),
         |window| front(app, window),
         || {
             crate::interface_zoom::build(app, |percent| {
-                WebviewWindowBuilder::new(
-                    app,
-                    CHANGELOG_WINDOW,
-                    WebviewUrl::App("index.html?window=changelog".into()),
-                )
-                .visible(false)
-                .zoom_hotkeys_enabled(false)
-                .initialization_script(crate::interface_zoom::initialization(percent))
-                .title("Recent Changes")
-                .inner_size(560.0, 640.0)
-                .min_inner_size(400.0, 320.0)
-                .center()
-                .build()
+                WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+                    .visible(false)
+                    .zoom_hotkeys_enabled(false)
+                    .initialization_script(crate::interface_zoom::initialization(percent))
+                    .title(title)
+                    .inner_size(size.0, size.1)
+                    .min_inner_size(min_size.0, min_size.1)
+                    .center()
+                    .build()
             })
         },
     );
     match opened {
         Ok((window, Opened::Built)) => front(app, &window),
         Ok((_, Opened::Focused)) => {}
-        Err(e) => log::error!("failed to open the Recent changes window: {e}"),
+        Err(e) => log::error!("failed to open the {name} window: {e}"),
     }
 }
 

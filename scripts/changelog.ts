@@ -15,7 +15,7 @@
 // and scripts/lib/changelog.ts writes every text (KTD1).
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { changelog, html, markdown, NOT_AVAILABLE, type Changelog } from "./lib/changelog.ts";
 import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
@@ -60,8 +60,13 @@ export function writeLocal(repository: string, config: string, file: string): st
   } catch (error) {
     reason = error instanceof Error ? error.message : String(error);
   }
-  mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, `${JSON.stringify(data)}\n`);
+  const text = `${JSON.stringify(data)}\n`;
+  // Write only a change, so that the file time does not change and the
+  // build does not run its build script again.
+  if (!existsSync(file) || readFileSync(file, "utf8") !== text) {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, text);
+  }
   return reason;
 }
 

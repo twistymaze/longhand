@@ -61,16 +61,16 @@ pub(super) fn read_response(response: Result<(u16, Vec<u8>), String>) -> Changel
                 "updates: the changelog download gave status {status} and {} bytes",
                 body.len()
             );
-            return changelog::parse("");
+            return Changelog::not_available();
         }
         Err(e) => {
             log::info!("updates: the changelog download failed: {e}");
-            return changelog::parse("");
+            return Changelog::not_available();
         }
     };
     match std::str::from_utf8(&body) {
         Ok(text) => changelog::parse(text),
-        Err(_) => changelog::parse(""),
+        Err(_) => Changelog::not_available(),
     }
 }
 

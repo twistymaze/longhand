@@ -74,13 +74,16 @@ const MONTHS = [
   "December",
 ];
 
-/// The heading text of a git-cliff group: the order comment removed, as the
-/// template's `striptags | trim` did.
-export function heading(group: string): string {
+/// A trailing `(#NN)` PR reference in a line.
+const TRAILING_PR = /\(#(\d+)\)\s*$/;
+
+/// The heading text of a git-cliff group: the `<!-- N -->` order comment
+/// removed.
+function heading(group: string): string {
   return group.replace(/<!--.*?-->/g, "").trim();
 }
 
-/// The first character in upper case, as Tera's `upper_first`.
+/// The first character in upper case. The other characters do not change.
 function upperFirst(text: string): string {
   return text.length === 0 ? text : text[0].toUpperCase() + text.slice(1);
 }
@@ -93,7 +96,7 @@ export function lineText(commit: ContextCommit): string {
 
 /// The PR number of a trailing `(#NN)`, or null.
 export function prNumber(line: string): number | null {
-  const match = /\(#(\d+)\)\s*$/.exec(line);
+  const match = TRAILING_PR.exec(line);
   return match ? Number(match[1]) : null;
 }
 
@@ -122,11 +125,11 @@ function groupOrder(commits: ContextCommit[]): string[] {
   return [...new Set(commits.map((commit) => commit.group!))].sort();
 }
 
-/// The changelog data from the git-cliff JSON and the head commit.
-export function changelog(releases: ContextRelease[], head: Head): Changelog {
+/// The entries from the git-cliff JSON, oldest first.
+function entriesOf(releases: ContextRelease[]): Entry[] {
   const commits = grouped(releases);
   const order = groupOrder(commits);
-  const entries = commits.map((commit) => {
+  return commits.map((commit) => {
     const line = lineText(commit);
     return {
       id: commit.id,
@@ -138,33 +141,49 @@ export function changelog(releases: ContextRelease[], head: Head): Changelog {
       pr: prNumber(line),
     };
   });
-  return { format: FORMAT, available: true, head, entries };
 }
 
-type Section = { group: string; lines: Entry[] };
+/// The changelog data from the git-cliff JSON and the head commit.
+export function changelog(releases: ContextRelease[], head: Head): Changelog {
+  return { format: FORMAT, available: true, head, entries: entriesOf(releases) };
+}
 
-/// The entries under their headings, in heading order, oldest line first.
-function sections(entries: Entry[]): Section[] {
+/// The fields of a change that `byMonth` reads. Both `Entry` and the
+/// frontend's `ChangelogEntry` have them.
+type Groupable = { month: string; group: string; rank: number };
+
+/// One group heading in a month, with its lines.
+export type MonthGroup<E extends Groupable> = { group: string; rank: number; entries: E[] };
+
+/// One month, for example "2026-10" with the name "October 2026".
+export type Month<E extends Groupable> = { month: string; name: string; groups: MonthGroup<E>[] };
+
+/// The entries under their group headings, in rank order. Each group takes
+/// its name from its first line. The lines of a group stay in the order of
+/// `entries`.
+function byGroup<E extends Groupable>(entries: E[]): MonthGroup<E>[] {
   const ranks = [...new Set(entries.map((entry) => entry.rank))].sort((a, b) => a - b);
   return ranks.map((rank) => {
     const lines = entries.filter((entry) => entry.rank === rank);
-    return { group: lines[0].group, lines };
+    return { group: lines[0].group, rank, entries: lines };
   });
 }
 
-/// The entries by month, newest month first.
-function months(entries: Entry[]): { month: string; entries: Entry[] }[] {
+/// The entries by month, newest month first, then by group (`byGroup`).
+export function byMonth<E extends Groupable>(entries: E[]): Month<E>[] {
   const keys = [...new Set(entries.map((entry) => entry.month))].sort().reverse();
-  return keys.map((month) => ({ month, entries: entries.filter((entry) => entry.month === month) }));
+  return keys.map((month) => ({
+    month,
+    name: monthName(month),
+    groups: byGroup(entries.filter((entry) => entry.month === month)),
+  }));
 }
 
 /// The release notes of one release: the commits under their headings.
 export function releaseNotes(releases: ContextRelease[]): string {
-  const data = changelog(releases, { id: "", time: 0 });
-  if (!data.available) return "";
   return (
-    sections(data.entries)
-      .map((section) => `### ${section.group}\n\n${section.lines.map((entry) => `- ${entry.line}`).join("\n")}`)
+    byGroup(entriesOf(releases))
+      .map((group) => `### ${group.group}\n\n${group.entries.map((entry) => `- ${entry.line}`).join("\n")}`)
       .join("\n\n") + "\n"
   );
 }
@@ -176,17 +195,17 @@ function pullUrl(pr: number): string {
 /// A line for Markdown: the trailing `(#NN)` links to the PR.
 function markdownLine(entry: Entry): string {
   if (entry.pr === null) return entry.line;
-  return entry.line.replace(/\(#\d+\)\s*$/, `([#${entry.pr}](${pullUrl(entry.pr)}))`);
+  return entry.line.replace(TRAILING_PR, `([#${entry.pr}](${pullUrl(entry.pr)}))`);
 }
 
 /// The full changelog as Markdown, newest month first.
 export function markdown(data: Changelog): string {
   const parts = ["# Changelog", `The changes to Longhand by month. The latest version is also at ${PAGES_URL}.`];
   if (data.available) {
-    for (const { month, entries } of months(data.entries)) {
-      parts.push(`## ${monthName(month)}`);
-      for (const section of sections(entries)) {
-        parts.push(`### ${section.group}`, section.lines.map((entry) => `- ${markdownLine(entry)}`).join("\n"));
+    for (const { name, groups } of byMonth(data.entries)) {
+      parts.push(`## ${name}`);
+      for (const group of groups) {
+        parts.push(`### ${group.group}`, group.entries.map((entry) => `- ${markdownLine(entry)}`).join("\n"));
       }
     }
   }
@@ -200,7 +219,7 @@ function escape(text: string): string {
 /// A line for HTML: the trailing `(#NN)` links to the PR.
 function htmlLine(entry: Entry): string {
   if (entry.pr === null) return escape(entry.line);
-  const text = entry.line.replace(/\(#\d+\)\s*$/, "");
+  const text = entry.line.replace(TRAILING_PR, "");
   return `${escape(text)}(<a href="${pullUrl(entry.pr)}">#${entry.pr}</a>)`;
 }
 
@@ -208,11 +227,11 @@ function htmlLine(entry: Entry): string {
 export function html(data: Changelog): string {
   const body: string[] = [];
   if (data.available) {
-    for (const { month, entries } of months(data.entries)) {
-      body.push(`<h2>${monthName(month)}</h2>`);
-      for (const section of sections(entries)) {
-        body.push(`<h3>${escape(section.group)}</h3>`, "<ul>");
-        for (const entry of section.lines) body.push(`<li>${htmlLine(entry)}</li>`);
+    for (const { name, groups } of byMonth(data.entries)) {
+      body.push(`<h2>${name}</h2>`);
+      for (const group of groups) {
+        body.push(`<h3>${escape(group.group)}</h3>`, "<ul>");
+        for (const entry of group.entries) body.push(`<li>${htmlLine(entry)}</li>`);
         body.push("</ul>");
       }
     }

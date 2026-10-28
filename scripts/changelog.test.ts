@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -93,6 +93,17 @@ test("local with no v1.0.0 tag writes the not-available file", () => {
   const file = join(temporary("changelog-out-"), "changelog.json");
   assert.ok(writeLocal(repo, CONFIG, file));
   assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { format: 1, available: false });
+});
+
+test("local does not write the file again when its text is the same", () => {
+  const repo = repository(["feat: start", "tag:v1.0.0", "fix: one (#1)"]);
+  const file = join(temporary("changelog-out-"), "changelog.json");
+  assert.equal(writeLocal(repo, CONFIG, file), null);
+  // Set an old file time. A new write would set the time to now.
+  const old = new Date("2020-01-01T00:00:00Z");
+  utimesSync(file, old, old);
+  assert.equal(writeLocal(repo, CONFIG, file), null);
+  assert.equal(statSync(file).mtimeMs, old.getTime());
 });
 
 test("local with no git-cliff on the path writes the not-available file and ends without an error", () => {

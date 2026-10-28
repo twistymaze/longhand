@@ -54,7 +54,7 @@ pub struct Changelog {
 }
 
 impl Changelog {
-    fn not_available() -> Self {
+    pub(crate) fn not_available() -> Self {
         Changelog {
             available: false,
             head: None,
@@ -99,7 +99,7 @@ pub fn parse(text: &str) -> Changelog {
 }
 
 /// The commit ids of the entries in a changelog.
-pub(crate) fn ids(changelog: &Changelog) -> HashSet<String> {
+fn ids(changelog: &Changelog) -> HashSet<String> {
     changelog
         .entries
         .iter()

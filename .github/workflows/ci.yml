@@ -617,7 +617,8 @@ jobs:
       # The changelog of the release: changelog.json for the build and the
       # release assets, CHANGELOG.md for the release assets, and index.html
       # for GitHub Pages. The folder goes into the release-macos artifact
-      # with the other release files. The script fails when it cannot make
+      # with the other release files, and into the release-changelog
+      # artifact for changelog-pages. The script fails when it cannot make
       # the changelog, because a release must have its changelog.
       - name: Release changelog
         if: steps.version.outputs.due == 'true'
@@ -754,6 +755,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # The changelog folder also goes into its own small artifact, so that
+      # changelog-pages does not download the app files.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.version.outputs.due == 'true'
+        with:
+          name: release-changelog
+          path: ${{ runner.temp }}/release/changelog
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Delete the keychain and the notarization key
         if: always()
         run: |
@@ -830,12 +841,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-macos
-          path: ${{ runner.temp }}/release
+          name: release-changelog
+          path: ${{ runner.temp }}/changelog
 
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
-          path: ${{ runner.temp }}/release/changelog
+          path: ${{ runner.temp }}/changelog
 
       - id: deploy
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
