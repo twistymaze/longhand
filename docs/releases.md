@@ -9,13 +9,15 @@ One CI run on `main` does the checks, the build and the publication. `.github/wo
 1. **The checks** (`checks` and `cargo deny`). When a check fails, no later job runs.
 2. **`release-build`** runs in the `release` environment. It can only read the repository. The repository variable `MACOS_RELEASE_RUNNER` selects its runner; with no variable, it runs on `macos-latest`. Set the variable only to an ephemeral self-hosted runner, which gets a new VM for each job and deletes the VM after the job. The build uses the GitHub Actions cache on both types of runner.
    1. `scripts/release-version.ts` uses git-cliff and `cliff.toml` to decide whether a release is due, to get the next patch version and to write the release notes. The script then raises the version when a commit subject has a `+` or `!` marker (see [When a release is due](#when-a-release-is-due)).
-   2. When a release is due, the job builds the app with that version, and signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature.
-   3. The job uploads the DMG, the archive, the signature and the notes as a workflow artifact.
-3. **`release-publish`** runs on `ubuntu-latest` only when a release is due. It is the only job that can write to the repository. It has no secrets and runs no build code. `scripts/publish-release.ts publish` creates a draft release with the tag `v<version>` on the built commit, uploads the 4 files and `latest.json`, and then publishes the draft as the latest release.
+   2. When a release is due, `scripts/changelog.ts write` writes the [changelog](#changelog) of the release. The step fails when it cannot make the changelog.
+   3. The job builds the app with that version and with the changelog (`LONGHAND_CHANGELOG`), and signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature.
+   4. The job uploads the DMG, the archive, the signature, the notes and the changelog files as a workflow artifact.
+3. **`release-publish`** runs on `ubuntu-latest` only when a release is due. It and the `attach` job of `release-windows.yml` are the only jobs that can write to the repository. It has no secrets and runs no build code. `scripts/publish-release.ts publish` creates a draft release with the tag `v<version>` on the built commit, uploads the 4 files, `latest.json`, `changelog.json` and `CHANGELOG.md`, and then publishes the draft as the latest release.
+4. **`changelog-pages`** runs only when `release-publish` published a release. It deploys the changelog page to GitHub Pages. A failed deploy does not fail the CI run, so the Windows installer still builds. The next release deploys the page again.
 
 The tag and the release come into existence only after the macOS build succeeds. A failed build leaves no tag.
 
-After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it builds the unsigned Windows NSIS installer on a standard GitHub-hosted Windows runner and attaches it to the release. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main`.
+After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it downloads the `changelog.json` of the release, builds the unsigned Windows NSIS installer with it on a standard GitHub-hosted Windows runner, and attaches the installer to the release. A release with no `changelog.json` gets no installer. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main`.
 
 CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run. When GitHub replaces a waiting Windows run, that release gets no installer.
 
@@ -47,6 +49,22 @@ The release notes list only the commits that make a release, under these heading
 | Other changes | `refactor`, `revert`, `build` |
 
 A heading with no commits does not appear.
+
+### Changelog
+
+The changelog lists the same lines under the same headings as the release notes, grouped by calendar month instead of by version. It holds the commits on `main` after the `v1.0.0` tag. The month of a change is the month of its commit on `main`, in UTC. Nobody edits it, and no commit adds it to the repository.
+
+git-cliff applies only the rules in `cliff.toml`, and gives the commits as JSON (`git-cliff --context`). `scripts/lib/changelog.ts` writes the release notes and every changelog file from that JSON, so the two always agree. A change to the rules in `cliff.toml` changes both.
+
+`scripts/changelog.ts write` makes three files:
+
+| File | Use |
+|---|---|
+| `changelog.json` | The data of the changelog. Each build contains it: What's new in Settings > About shows the recent months. The update window reads it from the offered release to list what the update adds. It is an asset of each release. |
+| `CHANGELOG.md` | The full changelog as of that release. It is an asset of each release. |
+| `index.html` | The page at https://twistymaze.github.io/longhand/, with the changelog of the latest release. |
+
+A local build makes its own `changelog.json` (`scripts/changelog.ts local`, in `beforeBuildCommand`) when git-cliff and the `v1.0.0` tag are available. Otherwise, What's new shows only the link to the page. A release build without a changelog fails.
 
 ### Minor releases
 
@@ -133,6 +151,8 @@ Do these steps once, in this order. Do a step again only to replace a credential
       ```
 
 A wrong secret makes `release-build` fail at the certificate import or at notarization, and nothing publishes.
+
+5. **Turn on GitHub Pages.** In `twistymaze/longhand`, go to Settings → Pages → Build and deployment, and set Source to "GitHub Actions". The `changelog-pages` job deploys the [changelog](#changelog) page there. Without this setting, the job fails and the CI run still succeeds.
 
 ## Expiry dates
 
