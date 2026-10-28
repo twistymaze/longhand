@@ -26,6 +26,9 @@ Each merged PR that changes the app makes a patch release, so one release has on
 ## Scope of the plan (2026-10-28)
 The plan does a part of this idea. git-cliff generates a changelog by month from the PR titles after v1.0.0, with the rules in `cliff.toml`. Nothing is committed to `main`. Each build contains the changelog: Settings > About shows the last 6 months, and the update window shows the changes since the running build. The full changelog is on a GitHub Pages page and is a file of each release. The plan does not include the model-written summary of each month or the "since the last minor version" view. These stay open in this idea.
 
+## Shipped
+PR [twistymaze/longhand#74](https://github.com/twistymaze/longhand/pull/74) (2026-10-28) shipped the scope of the plan. In each month, the newest line is first under each heading. The page is at https://twistymaze.github.io/longhand/changelog/; a custom domain is a Pages setting (`docs/releases.md`, setup step 5). The model-written monthly summary and the "since the last minor version" view moved to [monthly-changelog-summary](../someday/monthly-changelog-summary.md).
+
 ## Notes / Current state
 - Each release already has notes from git-cliff (`scripts/release-version.ts`, `cliff.toml`). `scripts/publish-release.ts` writes them to the GitHub release and to `notes` in the update manifest. The About pane has a "What's new" link to the GitHub releases page.
 - A summary written by a model fits best in CI, not in the app: it then needs no AI Provider on the user's computer, and the text is the same for all users.
