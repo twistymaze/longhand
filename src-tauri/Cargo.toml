@@ -70,6 +70,9 @@ supervisor = { path = "../crates/supervisor" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 # The generation wrapper of a speaker stream (managers/capture.rs).
 futures-util = "0.3"
+# The download of the offered release's changelog (U6 of the monthly
+# changelog plan), with the version and TLS of crates/summarize.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls"] }
 thiserror.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "time"] }
 tokio-util = "0.7"

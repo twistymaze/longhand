@@ -1,21 +1,14 @@
 # git-cliff configuration for Longhand releases.
-# scripts/release-version.ts uses it to find whether a release is due, to get
-# the next patch version and to write the release notes. The script then
-# raises the version for a `+` or `!` marker (docs/releases.md). Only
-# squash-merged PR titles reach main, so each commit subject is one PR title.
-
-[changelog]
-# The release notes for one release. The release script removes the header
-# and the footer with `--strip all`.
-body = """
-{% for group, commits in commits | group_by(attribute="group") %}
-### {{ group | striptags | trim }}
-{% for commit in commits %}
-- {% if commit.scope %}{{ commit.scope }}: {% endif %}{{ commit.message | upper_first }}\
-{% endfor %}
-{% endfor %}
-"""
-trim = true
+# scripts/release-version.ts uses it to find whether a release is due and to
+# get the next patch version. The script then raises the version for a `+` or
+# `!` marker (docs/releases.md). Only squash-merged PR titles reach main, so
+# each commit subject is one PR title.
+#
+# This file holds only the rules: which commits count, and the group of each
+# commit. git-cliff gives the result as JSON (`--context`), and
+# scripts/lib/changelog.ts writes the release notes and the changelog from it,
+# so the two always agree. The `<!-- N -->` comment in a group sets the order
+# of the headings.
 
 [git]
 # A `+` after the type or scope (`feat+:`, `feat(capture)+:`) marks a minor

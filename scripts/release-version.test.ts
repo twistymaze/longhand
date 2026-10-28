@@ -158,6 +158,30 @@ test("the notes put the commits under three headings in a fixed order", () => {
   assert.ok(!notes.includes("Bug fixes"));
 });
 
+// The exact text that the git-cliff template wrote before the notes moved to
+// scripts/lib/changelog.ts (KTD1 of the monthly changelog plan). The notes
+// must not change.
+test("the notes text is byte-identical to the earlier git-cliff template output", () => {
+  const result = facts([
+    "feat: start",
+    "tag:v1.0.0",
+    "build(deps): update tauri",
+    "perf: load the note list faster",
+    "fix(ui): keep the timer visible (#3)",
+    "feat(capture)+: record system audio (#4)",
+    "docs: explain releases",
+    "feat: add note templates",
+    "feat: Already Capital",
+    "fix: two\n\nbody text",
+  ]);
+  assert.equal(
+    result.notes,
+    "### New features and improvements\n\n- capture: Record system audio (#4)\n- Add note templates\n- Already Capital\n\n" +
+      "### Fixes\n\n- Load the note list faster\n- ui: Keep the timer visible (#3)\n- Two\n\n" +
+      "### Other changes\n\n- deps: Update tauri\n",
+  );
+});
+
 test("a build(deps) commit gives a patch release", () => {
   assert.equal(facts(["feat: start", "tag:v1.0.0", "build(deps): update tauri"]).version, "1.0.1");
 });
@@ -202,7 +226,8 @@ function fakeTools(tags: string[], bumped: string, calls: string[][] = [], subje
     tags: () => tags,
     cliff: (args) => {
       calls.push(args);
-      return args.includes("--bumped-version") ? `${bumped}\n` : "### Fixes\n- Fix one\n";
+      if (args.includes("--bumped-version")) return `${bumped}\n`;
+      return JSON.stringify([{ commits: [{ id: "a1", message: "fix one", group: "<!-- 1 -->Fixes", scope: null, committer: { timestamp: 0 } }] }]);
     },
     subjects: (since) => {
       calls.push(["subjects", since]);
@@ -231,18 +256,18 @@ test("a bumped version that is not X.Y.Z fails", () => {
   assert.throws(() => decide(null, "v1.0.0-rc.1"), /not a version/);
 });
 
-test("a due release requests the notes for its tag with all headers and footers removed", () => {
+test("a due release reads the commits of its tag as JSON and writes the notes", () => {
   const calls: string[][] = [];
   const result = releaseFacts(fakeTools(["v1.0.3"], "v1.0.4", calls));
-  assert.deepEqual(result, { due: true, version: "1.0.4", notes: "### Fixes\n- Fix one\n" });
-  assert.deepEqual(calls, [["--bumped-version"], ["subjects", "v1.0.3"], ["--unreleased", "--tag", "v1.0.4", "--strip", "all"]]);
+  assert.deepEqual(result, { due: true, version: "1.0.4", notes: "### Fixes\n\n- Fix one\n" });
+  assert.deepEqual(calls, [["--bumped-version"], ["subjects", "v1.0.3"], ["--context", "--unreleased", "--tag", "v1.0.4"]]);
 });
 
 test("a feat+ subject raises the release to the next minor, and the notes use that tag", () => {
   const calls: string[][] = [];
   const result = releaseFacts(fakeTools(["v1.1.0"], "v1.1.1", calls, ["fix: typo", "feat(capture)+: record system audio"]));
   assert.equal(result.version, "1.2.0");
-  assert.deepEqual(calls.at(-1), ["--unreleased", "--tag", "v1.2.0", "--strip", "all"]);
+  assert.deepEqual(calls.at(-1), ["--context", "--unreleased", "--tag", "v1.2.0"]);
 });
 
 test("a git-cliff version that is not the next patch fails", () => {

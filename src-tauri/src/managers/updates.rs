@@ -9,6 +9,7 @@
 //! network, the saved archives, the store, the window and the restart.
 
 mod archive;
+mod changes;
 pub mod flow;
 
 use std::path::PathBuf;
@@ -162,6 +163,9 @@ pub struct UpdateManager {
     install_update: Mutex<Option<Update>>,
     /// The recorded install failure, if any.
     failure: Mutex<Option<InstallFailure>>,
+    /// The changes of the last offered version that the window asked for
+    /// (U6 of the monthly changelog plan).
+    offered_changes: changes::Cache,
     busy: Box<dyn Fn() -> bool + Send + Sync>,
     was_busy: AtomicBool,
     messages: mpsc::UnboundedSender<Message>,
@@ -285,6 +289,7 @@ impl UpdateManager {
             update: Mutex::new(None),
             install_update: Mutex::new(None),
             failure: Mutex::new(failure),
+            offered_changes: changes::Cache::default(),
             busy: Box::new(busy),
             was_busy: AtomicBool::new(false),
             messages,
@@ -324,6 +329,14 @@ impl UpdateManager {
 
     fn send(&self, message: Message) {
         let _ = self.messages.send(message);
+    }
+
+    /// The changes that `version` gives, or None when they are not
+    /// available (R13, R14). The app downloads them once for each version.
+    pub async fn offered_changes(&self, version: &str) -> changes::OfferedChanges {
+        self.offered_changes
+            .get(version, || changes::fetch(version))
+            .await
     }
 
     /// "Check for Updates…" (R11).

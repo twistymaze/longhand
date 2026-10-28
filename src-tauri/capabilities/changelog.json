@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "changelog",
+  "description": "Capabilities for the Recent changes window: it opens the PR pages and the full changelog page",
+  "windows": ["changelog"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/twistymaze/longhand/pull/*" },
+        { "url": "https://twistymaze.github.io/longhand/*" }
+      ]
+    }
+  ]
+}

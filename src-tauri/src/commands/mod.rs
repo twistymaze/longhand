@@ -1,6 +1,7 @@
 pub mod alerts;
 pub mod build_info;
 pub mod capture;
+pub mod changelog;
 pub mod clipboard;
 pub mod import;
 pub mod licences;

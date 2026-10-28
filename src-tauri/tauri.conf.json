@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "node scripts/prepare-nemo.ts && npm run build",
+    "beforeBuildCommand": "node scripts/changelog.ts local src-tauri/changelog/changelog.json && node scripts/prepare-nemo.ts && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

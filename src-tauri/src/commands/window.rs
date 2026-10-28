@@ -21,6 +21,14 @@ pub async fn open_licences(app: AppHandle) {
     crate::window::open_licences(&app);
 }
 
+/// Show the Recent changes window, and build it first when it is not open
+/// (R10). Async for the same reason as `open_settings`.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_changelog(app: AppHandle) {
+    crate::window::open_changelog(&app);
+}
+
 /// Destroy the Settings window that calls this. The page calls this when its
 /// own destroy call fails, so that the window still closes. The call needs
 /// no window permission, and it does not send a close request that a

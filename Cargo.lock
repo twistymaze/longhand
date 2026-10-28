@@ -3163,6 +3163,7 @@ dependencies = [
  "pipeline",
  "power",
  "recorder",
+ "reqwest",
  "rfd",
  "secrets",
  "semver",

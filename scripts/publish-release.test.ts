@@ -147,11 +147,13 @@ const args = (version: string) => ({
   archiveName: "Longhand.app.tar.gz",
   signature: "c2ln\n",
   notes: "### Features\n- one feature\n",
+  changelogJson: new Blob(['{"format":1}\n']),
+  changelogMarkdown: new Blob(["# Changelog\n"]),
   now: () => new Date("2026-10-11T15:00:00Z"),
 });
 const quiet = () => {};
 
-test("with no release yet, publish creates v1.0.0 with the 4 assets on the built commit as the latest release", async () => {
+test("with no release yet, publish creates v1.0.0 with the 6 assets on the built commit as the latest release", async () => {
   const { api, state } = fakeRepo();
   assert.equal(await publish(api, args("1.0.0"), quiet), "published");
   assert.equal(state.releases.length, 1);
@@ -170,8 +172,21 @@ test("with no release yet, publish creates v1.0.0 with the 4 assets on the built
     "Longhand.app.tar.gz",
     "Longhand.app.tar.gz.sig",
     "latest.json",
+    "changelog.json",
+    "CHANGELOG.md",
   ]);
   assert.equal(release.files["Longhand.app.tar.gz.sig"], "c2ln\n");
+  assert.equal(release.files["changelog.json"], '{"format":1}\n');
+  assert.equal(release.files["CHANGELOG.md"], "# Changelog\n");
+});
+
+test("publish uploads every asset to the draft before it publishes the release", async () => {
+  const { api, state } = fakeRepo();
+  const draftAtUpload: boolean[] = [];
+  state.beforeUpload = () => draftAtUpload.push(state.releases[0]!.draft);
+  assert.equal(await publish(api, args("1.0.0"), quiet), "published");
+  assert.deepEqual(draftAtUpload, [true, true, true, true, true, true]);
+  assert.equal(state.releases[0]!.draft, false);
 });
 
 test("latest.json names the version, the trimmed signature and the archive of its own release", async () => {
@@ -262,32 +277,72 @@ test("attach fails when no release has the tag", async () => {
   );
 });
 
-test("the CLI reads the repository, the token and the built commit from the environment", async () => {
-  const made: string[] = [];
-  const { api, state } = fakeRepo();
+/// Writes the release files of a CLI publish and returns its arguments.
+function cliFiles(version: string): string[] {
   const dir = `${process.env.TMPDIR ?? "/tmp"}/publish-release-test-${process.pid}`;
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(`${dir}/changelog`, { recursive: true });
   writeFileSync(`${dir}/Longhand_1.0.0_aarch64.dmg`, "dmg");
   writeFileSync(`${dir}/Longhand.app.tar.gz`, "archive");
   writeFileSync(`${dir}/Longhand.app.tar.gz.sig`, "c2ln\n");
   writeFileSync(`${dir}/notes.md`, "notes\n");
-  const env = { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t", GITHUB_SHA: SHA };
-  const makeApi = (repository: string, token: string) => {
-    made.push(`${repository} ${token}`);
-    return api;
-  };
-  const argv = [
+  writeFileSync(`${dir}/changelog/changelog.json`, '{"format":1}\n');
+  writeFileSync(`${dir}/changelog/CHANGELOG.md`, "# Changelog\n");
+  return [
     "publish",
-    "1.0.0",
+    version,
     `${dir}/Longhand_1.0.0_aarch64.dmg`,
     `${dir}/Longhand.app.tar.gz`,
     `${dir}/Longhand.app.tar.gz.sig`,
     `${dir}/notes.md`,
+    `${dir}/changelog/changelog.json`,
+    `${dir}/changelog/CHANGELOG.md`,
   ];
-  await main(argv, env, makeApi, quiet);
+}
+
+const ENV = { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t", GITHUB_SHA: SHA };
+
+test("the CLI reads the repository, the token and the built commit from the environment", async () => {
+  const made: string[] = [];
+  const { api, state } = fakeRepo();
+  const makeApi = (repository: string, token: string) => {
+    made.push(`${repository} ${token}`);
+    return api;
+  };
+  const output: string[] = [];
+  await main(cliFiles("1.0.0"), ENV, makeApi, quiet, (line) => output.push(line));
   assert.deepEqual(made, [`${REPO} t`]);
   assert.partialDeepStrictEqual(state.releases[0], { tag_name: "v1.0.0", target_commitish: SHA, body: "notes\n", draft: false });
   assert.equal(state.releases[0]!.files["Longhand_1.0.0_aarch64.dmg"], "dmg");
+  assert.equal(state.releases[0]!.files["changelog.json"], '{"format":1}\n');
+  assert.equal(state.releases[0]!.files["CHANGELOG.md"], "# Changelog\n");
+  assert.deepEqual(output, ["published=true"]);
+});
+
+test("a CLI publish that a newer CI run follows uploads nothing and reports that it did not publish", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  state.newerRun = true;
+  const output: string[] = [];
+  await main(cliFiles("1.0.1"), ENV, () => api, quiet, (line) => output.push(line));
+  assert.deepEqual(state.releases.map((r) => [r.tag_name, r.assets.length]), [["v1.0.0", 0]]);
+  assert.deepEqual(output, ["published=false"]);
+});
+
+test("a CLI publish whose version is not newer reports that it did not publish", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.1");
+  const output: string[] = [];
+  await main(cliFiles("1.0.1"), ENV, () => api, quiet, (line) => output.push(line));
+  assert.deepEqual(state.releases.map((r) => [r.tag_name, r.assets.length]), [["v1.0.1", 0]]);
+  assert.deepEqual(output, ["published=false"]);
+});
+
+test("the CLI usage names the changelog files of a publish", async () => {
+  const { api } = fakeRepo();
+  await assert.rejects(
+    main(["publish", "1.0.0", "a", "b", "c", "d"], ENV, () => api, quiet),
+    /publish <version> <dmg> <archive> <signature file> <notes file> <changelog\.json> <CHANGELOG\.md>/,
+  );
 });
 
 test("a CLI publish with a failed upload rejects, so the process exits with an error", async () => {
@@ -295,22 +350,16 @@ test("a CLI publish with a failed upload rejects, so the process exits with an e
   state.beforeUpload = () => {
     throw new Error("upload: 502");
   };
-  const dir = `${process.env.TMPDIR ?? "/tmp"}/publish-release-test-${process.pid}`;
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(`${dir}/a.dmg`, "dmg");
-  writeFileSync(`${dir}/a.tar.gz`, "archive");
-  writeFileSync(`${dir}/a.tar.gz.sig`, "sig");
-  writeFileSync(`${dir}/notes.md`, "notes");
-  const env = { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t", GITHUB_SHA: SHA };
-  const argv = ["publish", "1.0.0", `${dir}/a.dmg`, `${dir}/a.tar.gz`, `${dir}/a.tar.gz.sig`, `${dir}/notes.md`];
-  await assert.rejects(main(argv, env, () => api, quiet), /502/);
+  const output: string[] = [];
+  await assert.rejects(main(cliFiles("1.0.0"), ENV, () => api, quiet, (line) => output.push(line)), /502/);
+  assert.deepEqual(output, []);
 });
 
 test("the CLI fails when the environment does not name the repository, the token and the commit", async () => {
   const { api } = fakeRepo();
   await assert.rejects(main(["attach", "v1.0.0", "/b/setup.exe"], {}, () => api, quiet), /GITHUB_REPOSITORY/);
   await assert.rejects(
-    main(["publish", "1.0.0", "a", "b", "c", "d"], { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t" }, () => api, quiet),
+    main(["publish", "1.0.0", "a", "b", "c", "d", "e", "f"], { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t" }, () => api, quiet),
     /GITHUB_SHA/,
   );
 });

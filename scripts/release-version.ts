@@ -6,7 +6,9 @@
 //     the release notes to <notes file>.
 //
 // git-cliff finds whether a release is due and gives the next patch version
-// with the rules in cliff.toml. When the bumped version is the same as the
+// with the rules in cliff.toml. git-cliff gives the commits of the release as
+// JSON, and scripts/lib/changelog.ts writes the notes from it, as it writes
+// the changelog. When the bumped version is the same as the
 // latest release tag, only skipped commits follow that tag, and no release is
 // due. With no release tag, git-cliff returns the initial tag v1.0.0, and the
 // script uses it as it is. Otherwise the script reads the original commit
@@ -14,10 +16,10 @@
 // the type or scope of a release type gives a major, and a `+` after the type
 // or scope of `feat` gives a minor (docs/releases.md).
 
-import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
+import { releaseNotes } from "./lib/changelog.ts";
+import { run } from "./lib/spawn.ts";
 import { compareVersions } from "./lib/version.ts";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
@@ -74,19 +76,8 @@ export function releaseFacts(tools: Tools): ReleaseFacts {
   const latest = latestReleaseTag(tools.tags());
   const { due, version: bumped } = decide(latest, tools.cliff(["--bumped-version"]));
   const version = due && latest !== null ? raise(latest, bumped, tools.subjects(latest)) : bumped;
-  const notes = due ? tools.cliff(["--unreleased", "--tag", `v${version}`, "--strip", "all"]).trim() + "\n" : null;
+  const notes = due ? releaseNotes(JSON.parse(tools.cliff(["--context", "--unreleased", "--tag", `v${version}`]))) : null;
   return { due, version, notes };
-}
-
-function run(command: string[], cwd: string): string {
-  const [program, ...args] = command;
-  const result = spawnSync(program, args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
-  // spawnSync does not throw when it cannot start the program: it sets `error`.
-  if (result.error) throw new Error(`cannot run ${program}: ${result.error.message}`);
-  if (result.status !== 0) {
-    throw new Error(`${command.join(" ")} failed with exit code ${result.status}: ${result.stderr}`);
-  }
-  return result.stdout;
 }
 
 /// The real git and git-cliff in `repository`, with the configuration file `config`.

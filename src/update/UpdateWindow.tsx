@@ -7,11 +7,14 @@
 // then ignores the keyboard: no button gets the focus, and Return and Space
 // do not click. A window that the user asked for (the tray item or "Check
 // for Updates…") has the focus: the default button gets the focus, and
-// Return chooses it.
+// Return chooses it. The links in the list of changes follow the same rule.
 
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { commands, events, type Choice, type UpdateState } from "../bindings";
+import { ChangelogMonths } from "../changelog/ChangelogMonths";
+import { byMonth, type ChangelogMonth, PAGES_URL } from "../changelog/months";
+import { WebLink } from "../settings/About";
 import { AppIcon } from "../settings/icons";
 import { sentence } from "../processing/describe";
 import { Button, formatBytes } from "../settings/ui";
@@ -132,6 +135,46 @@ function useWindowFitsContent(content: RefObject<HTMLElement | null>, shown: boo
   }, [content, shown]);
 }
 
+/// The changes that the offered version gives (U6 of the monthly changelog
+/// plan; R13, R14, R16). The area has a fixed height from the start, so the
+/// window does not change size when the list arrives. The list scrolls in
+/// the area. While the request runs, the area is empty. When the app cannot
+/// get the changes, or the list is empty, the area shows only the link to
+/// the full changelog, and no error.
+function OfferedChanges({ version }: { version: string }) {
+  // Undefined while the request runs. Empty when there is no list.
+  const [months, setMonths] = useState<ChangelogMonth[] | undefined>(undefined);
+  useEffect(() => {
+    // A result that comes after the window shows another state has no effect.
+    let current = true;
+    commands.offeredChanges(version).then(
+      (entries) => {
+        if (current) setMonths(entries ? byMonth(entries) : []);
+      },
+      () => {
+        if (current) setMonths([]);
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [version]);
+  return (
+    <section
+      aria-label={`Changes in Longhand ${version}`}
+      className="mt-3 h-[13.5rem] overflow-y-auto rounded-md border border-separator bg-pane px-3 py-2.5 select-text"
+    >
+      {months === undefined ? null : months.length > 0 ? (
+        <ChangelogMonths months={months} />
+      ) : (
+        <div className="flex h-full items-center justify-center">
+          <WebLink url={PAGES_URL}>Full changelog</WebLink>
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function UpdateWindow() {
   const [state, setState] = useState<UpdateState | null>(null);
   const [withKey, setWithKey] = useState(false);
@@ -181,10 +224,13 @@ export function UpdateWindow() {
       // Without the focus, Return and Space do not click a button that has
       // the focus all the same. With it, Return chooses the default button,
       // and Space clicks the button that has the focus. A click from the
-      // pointer or from VoiceOver always chooses.
+      // pointer or from VoiceOver always chooses. When the user opened the
+      // window, Return and Space on a link in the list of changes open
+      // that link, not the default button.
       onKeyDown={(e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
         if (e.key === " " && withKey) return;
+        if (withKey && e.target instanceof Element && e.target.closest("section")) return;
         e.preventDefault();
         if (e.key === "Enter" && withKey && defaultAction) choose(defaultAction.choice);
       }}
@@ -217,6 +263,7 @@ export function UpdateWindow() {
             <p className="mt-1.5 text-[0.8rem] tabular-nums text-label-secondary">{progressText(view.progress)}</p>
           </div>
         )}
+        {state?.state === "offered" && <OfferedChanges key={state.version} version={state.version} />}
         <div className="flex justify-end gap-2 pt-4">
           {view.buttons.map((b) => (
             <Button

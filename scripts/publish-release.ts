@@ -1,9 +1,13 @@
 // Publishes one Longhand release to the GitHub Releases page of the source
 // repository, and attaches the Windows installer to it later (KTD4).
 //
-//   node scripts/publish-release.ts publish <version> <dmg> <archive> <signature> <notes file>
+//   node scripts/publish-release.ts publish <version> <dmg> <archive> <signature> <notes file> <changelog.json> <CHANGELOG.md>
 //     Publishes the release v<version> on the built commit, with the DMG, the
-//     updater archive, its signature and latest.json as assets.
+//     updater archive, its signature, latest.json, changelog.json and
+//     CHANGELOG.md as assets. The changelog assets always have these names,
+//     so the app can find changelog.json from the version alone (KTD5). The
+//     command prints `published=<true|false>` for $GITHUB_OUTPUT. It writes
+//     its other lines to stderr, so that they do not go into GITHUB_OUTPUT.
 //   node scripts/publish-release.ts attach <tag> <installer>
 //     Uploads the installer to the release with the tag. It replaces an asset
 //     with the same name, so a re-run works. The old asset stays until the new
@@ -33,6 +37,8 @@ import { basename } from "node:path";
 import { compareVersions } from "./lib/version.ts";
 
 export const MANIFEST_NAME = "latest.json";
+export const CHANGELOG_JSON_NAME = "changelog.json";
+export const CHANGELOG_MARKDOWN_NAME = "CHANGELOG.md";
 
 export function tagFor(version: string): string {
   return `v${version}`;
@@ -109,6 +115,8 @@ export async function publish(
     archiveName: string;
     signature: string;
     notes: string;
+    changelogJson: Blob;
+    changelogMarkdown: Blob;
     now: () => Date;
   },
   log: (line: string) => void = console.log,
@@ -148,6 +156,8 @@ export async function publish(
   await api.uploadAsset(release, args.archiveName, args.archive);
   await api.uploadAsset(release, `${args.archiveName}.sig`, args.signature);
   await api.uploadAsset(release, MANIFEST_NAME, `${JSON.stringify(manifest, null, 2)}\n`);
+  await api.uploadAsset(release, CHANGELOG_JSON_NAME, args.changelogJson);
+  await api.uploadAsset(release, CHANGELOG_MARKDOWN_NAME, args.changelogMarkdown);
 
   await api.publishRelease(release);
   log(`published ${tag}`);
@@ -265,19 +275,22 @@ export function githubApi(repository: string, token: string, runId?: string): Re
 }
 
 const USAGE = [
-  "usage: publish-release.ts publish <version> <dmg> <archive> <signature file> <notes file>",
+  "usage: publish-release.ts publish <version> <dmg> <archive> <signature file> <notes file> <changelog.json> <CHANGELOG.md>",
   "       publish-release.ts attach <tag> <installer>",
 ].join("\n");
 
 /// Runs one CLI command. A failure rejects, so the process exits with an error.
+/// `log` gets the progress lines. `output` gets the `published=` line of a
+/// publish, for $GITHUB_OUTPUT.
 export async function main(
   argv: string[],
   env: Record<string, string | undefined>,
   makeApi: (repository: string, token: string, runId?: string) => ReleasesApi = githubApi,
-  log: (line: string) => void = console.log,
+  log: (line: string) => void = console.error,
+  output: (line: string) => void = console.log,
 ): Promise<void> {
   const [command, ...rest] = argv;
-  if (!((command === "publish" && rest.length === 5) || (command === "attach" && rest.length === 2))) {
+  if (!((command === "publish" && rest.length === 7) || (command === "attach" && rest.length === 2))) {
     throw new Error(USAGE);
   }
   const repository = env.GITHUB_REPOSITORY;
@@ -285,10 +298,18 @@ export async function main(
   if (!repository || !token) throw new Error("GITHUB_REPOSITORY and GITHUB_TOKEN must be set");
 
   if (command === "publish") {
-    const [version, dmg, archive, signature, notes] = rest as [string, string, string, string, string];
+    const [version, dmg, archive, signature, notes, changelogJson, changelogMarkdown] = rest as [
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+      string,
+    ];
     const commit = env.GITHUB_SHA;
     if (!commit) throw new Error("GITHUB_SHA must be set to the built commit");
-    await publish(
+    const result = await publish(
       makeApi(repository, token, env.GITHUB_RUN_ID),
       {
         repository,
@@ -300,10 +321,13 @@ export async function main(
         archiveName: basename(archive),
         signature: readFileSync(signature, "utf8"),
         notes: readFileSync(notes, "utf8"),
+        changelogJson: await openAsBlob(changelogJson),
+        changelogMarkdown: await openAsBlob(changelogMarkdown),
         now: () => new Date(),
       },
       log,
     );
+    output(`published=${result === "published"}`);
   } else {
     const [tag, installer] = rest as [string, string];
     await attach(makeApi(repository, token), { tag, installer: await openAsBlob(installer), installerName: basename(installer) }, log);

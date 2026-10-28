@@ -13,6 +13,7 @@ use tauri::{
 pub const MAIN_WINDOW: &str = "main";
 pub const SETTINGS_WINDOW: &str = "settings";
 pub const LICENCES_WINDOW: &str = "licences";
+pub const CHANGELOG_WINDOW: &str = "changelog";
 pub const UPDATE_WINDOW: &str = "update";
 
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
@@ -300,31 +301,71 @@ pub fn open_licences(app: &AppHandle) {
 }
 
 fn open_licences_window(app: &AppHandle) {
+    open_page_window(
+        app,
+        LICENCES_WINDOW,
+        "index.html?window=licences",
+        "Open Source Licences",
+        (680.0, 640.0),
+        (480.0, 320.0),
+        "licences",
+    );
+}
+
+/// Show the Recent changes window, and build it first when it is not open
+/// (U5 and KTD8 of the monthly changelog plan). It loads the same page with
+/// its own query. The page registers no close listener, so a close always
+/// destroys the window.
+pub fn open_changelog(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || open_changelog_window(&app));
+}
+
+fn open_changelog_window(app: &AppHandle) {
+    open_page_window(
+        app,
+        CHANGELOG_WINDOW,
+        "index.html?window=changelog",
+        "Recent Changes",
+        (560.0, 640.0),
+        (400.0, 320.0),
+        "Recent changes",
+    );
+}
+
+/// Show the window with this label, and build it first when it is not open.
+/// The window loads `url` and starts hidden; `front` shows it. `name` is the
+/// name of the window in the log.
+fn open_page_window(
+    app: &AppHandle,
+    label: &str,
+    url: &str,
+    title: &str,
+    size: (f64, f64),
+    min_size: (f64, f64),
+    name: &str,
+) {
     let opened = open_or_build(
-        app.get_webview_window(LICENCES_WINDOW),
+        app.get_webview_window(label),
         |window| front(app, window),
         || {
             crate::interface_zoom::build(app, |percent| {
-                WebviewWindowBuilder::new(
-                    app,
-                    LICENCES_WINDOW,
-                    WebviewUrl::App("index.html?window=licences".into()),
-                )
-                .visible(false)
-                .zoom_hotkeys_enabled(false)
-                .initialization_script(crate::interface_zoom::initialization(percent))
-                .title("Open Source Licences")
-                .inner_size(680.0, 640.0)
-                .min_inner_size(480.0, 320.0)
-                .center()
-                .build()
+                WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+                    .visible(false)
+                    .zoom_hotkeys_enabled(false)
+                    .initialization_script(crate::interface_zoom::initialization(percent))
+                    .title(title)
+                    .inner_size(size.0, size.1)
+                    .min_inner_size(min_size.0, min_size.1)
+                    .center()
+                    .build()
             })
         },
     );
     match opened {
         Ok((window, Opened::Built)) => front(app, &window),
         Ok((_, Opened::Focused)) => {}
-        Err(e) => log::error!("failed to open the licences window: {e}"),
+        Err(e) => log::error!("failed to open the {name} window: {e}"),
     }
 }
 
@@ -416,7 +457,12 @@ static UPDATE_WITH_KEY: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 
 /// The windows that show that the user uses Longhand (KTD3). The widget
 /// panel never becomes key, and the update window does not count.
-const ACTIVE_WINDOWS: [&str; 3] = [MAIN_WINDOW, SETTINGS_WINDOW, LICENCES_WINDOW];
+const ACTIVE_WINDOWS: [&str; 4] = [
+    MAIN_WINDOW,
+    SETTINGS_WINDOW,
+    LICENCES_WINDOW,
+    CHANGELOG_WINDOW,
+];
 
 /// True when a Longhand window is the key window (R1). A key window also
 /// means that the app is not hidden.
@@ -581,9 +627,11 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
             let app = window.app_handle().clone();
             tauri::async_runtime::spawn_blocking(move || crate::shortcut::resume(&app));
         }
-        // The Dock icon goes when the licences window was the last visible
-        // window.
-        WindowEvent::Destroyed if window.label() == LICENCES_WINDOW => {
+        // The Dock icon goes when the licences window or the Recent changes
+        // window was the last visible window.
+        WindowEvent::Destroyed
+            if window.label() == LICENCES_WINDOW || window.label() == CHANGELOG_WINDOW =>
+        {
             hide_dock_icon_if_no_window(window);
         }
         // A Longhand window in front can show a notice that waits (R1).
