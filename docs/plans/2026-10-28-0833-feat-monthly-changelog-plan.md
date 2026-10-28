@@ -47,7 +47,7 @@ A changelog file that the PR author or a CI job commits causes other problems. E
 - R1. Each release generates the changelog from the commits on `main` after the v1.0.0 tag. No person and no CI job commits a generated changelog, and a PR needs no changelog step.
 - R2. git-cliff generates the changelog with the commit rules in `cliff.toml`. A change to those rules changes the release notes and the changelog together.
 - R3. The changelog has one section for each calendar month that has changes, newest month first, with a heading such as "October 2026". The month of a change is the month of its commit date on `main`, in UTC.
-- R4. In a month, the changes show under the headings of the release notes, in the same order: New features and improvements, Fixes, Other changes. A heading with no changes does not show. The commit types that show, and the text of each line, are the same as in the release notes.
+- R4. In a month, the changes show under the headings of the release notes, in the same order. Today these are New features and improvements, Fixes, and Other changes. A heading with no changes does not show. The commit types that show, and the text of each line, are the same as in the release notes.
 - R5. The release notes of each release do not change: they stay grouped by version.
 - R6. The changelog shows no version numbers.
 
@@ -63,14 +63,14 @@ A changelog file that the PR author or a CI job commits causes other problems. E
 **In the app**
 
 - R10. "What's new" in Settings > About opens a Recent changes view in the app, not the GitHub Releases page.
-- R11. Recent changes shows the current month and the 5 months before it, and a link to the full changelog page.
-- R12. Each build contains its changelog, so Recent changes needs no network. A local build generates the changelog from its local history. A build that cannot read the history shows only the link to the full changelog.
+- R11. Recent changes shows the newest month in the build's changelog and the 5 months before it, and a link to the full changelog page.
+- R12. Each build contains its changelog, so Recent changes needs no network. All builds of one release, the macOS build and the Windows installer, contain the same changelog. A release build that cannot make the changelog fails. A local build generates the changelog from its local history. A local build whose history does not contain the v1.0.0 tag cannot read the history, and shows only the link to the full changelog.
 
 **Update window**
 
-- R13. When the update window offers a new version, it also lists the changes in the offered release that are not in the running build, grouped as in R3 and R4.
-- R14. When the app cannot get that list, the window shows a link to the full changelog in place of the list. Install and Relaunch and Remind Me Later work as before.
+- R13. When the update window offers a new version, it also lists the changes in the offered release that are not in the running build, grouped as in R3 and R4. These are the changes after the commit of the running build, in the order of `main`. The window does not compare line text. The data behind the list keeps the commit of each change; R6 applies only to the text that the user sees.- R14. When the app cannot get that list, the window shows a link to the full changelog in place of the list. Install and Relaunch and Remind Me Later work as before.
 - R15. The update window keeps its current text, which names the offered version and the installed version.
+- R16. A long list scrolls inside the update window. The window buttons stay visible, and each PR link can be reached with the keyboard.
 
 ### Success Criteria
 
@@ -97,7 +97,7 @@ flowchart TB
 - F2. A user sees what an update gives
   - **Trigger:** The app offers a new version, automatically or after "Check for Updates…".
   - **Steps:** The update window shows the versions as today, and the changes after the running build, by month. The user installs or chooses Remind Me Later.
-  - **Covered by:** R13, R14, R15
+  - **Covered by:** R13, R14, R15, R16
 
 ### Acceptance Examples
 
@@ -107,7 +107,9 @@ flowchart TB
 - AE4. **Covers R13.** The running build is 1.0.20, and the app offers 1.0.25. The update window lists the changes of 1.0.21 to 1.0.25, and none of the changes that 1.0.20 already contains.
 - AE5. **Covers R14.** The app offers a version but cannot get its changes. The window shows the link to the full changelog, and Install and Relaunch works.
 - AE6. **Covers R7.** A release-type commit has no `(#NN)` reference. Its line shows with no link.
-- AE7. **Covers R12.** A local build made from a checkout with full history shows Recent changes. A build made from a source copy with no git history shows only the link.
+- AE7. **Covers R12.** A local build made from a checkout with full history shows Recent changes. A local build made from a source copy with no git history, or from a shallow clone with no v1.0.0 tag, shows only the link. The Windows installer of a release shows the same changes as the macOS build of that release.
+- AE8. **Covers R11.** A build whose newest change is from January 2027 is opened in August 2027. Recent changes shows August 2026 to January 2027, not an empty view.
+- AE9. **Covers R13.** A change to `cliff.toml` changes the text of old lines. The update window still lists only the changes after the running build's commit.
 
 ### Scope Boundaries
 
@@ -121,8 +123,8 @@ flowchart TB
 ### Dependencies / Assumptions
 
 - GitHub Pages must be turned on once in the repository settings. The user does this step.
-- The publish job needs permission to deploy to Pages. Today, `release-publish` is the only job that can write to the repository (`docs/releases.md`).
-- The release build reads the full history and the tags, as git-cliff already does for the release notes.
+- The publish job needs permission to deploy to Pages. Today, `release-publish` in `.github/workflows/ci.yml` and `attach` in `.github/workflows/release-windows.yml` are the only jobs that can write to the repository.
+- The macOS release build reads the full history and the tags, as git-cliff already does for the release notes. The Windows installer build in `.github/workflows/release-windows.yml` checks out one commit with no history and has no git-cliff, so R12 needs another source for its changelog.
 - A PR title that someone edits in the merge dialog shows as edited (`docs/releases.md`, PR titles).
 
 ### Outstanding Questions
@@ -130,7 +132,8 @@ flowchart TB
 **Deferred to Planning**
 
 - How git-cliff makes month groups. For example, a second template on the same rules, or git-cliff's context output that a script groups by month.
-- How the update window gets the changes of the offered release. For example, it can read the `CHANGELOG.md` file of the release, or a field in `latest.json`. It must also know which changes the running build contains, for example from its commit or its changelog.
+- How the update window gets the changes of the offered release. For example, it can read the `CHANGELOG.md` file of the release, or a field in `latest.json`. The data must keep the commit of each change (R13).
+- How the Windows installer build gets the changelog of its release (R12). For example, it can read the `CHANGELOG.md` file or the changelog data that the macOS release attached.
 - The layout of Recent changes, and how the update window shows a long list without a window that is too tall. Use the `apple-design` skill.
 - How the release deploys the Pages page, and the page's address.
 
