@@ -80,10 +80,12 @@ const MONTHS = [
 /// A trailing `(#NN)` PR reference in a line.
 const TRAILING_PR = /\(#(\d+)\)\s*$/;
 
-/// The heading text of a git-cliff group: the `<!-- N -->` order comment
-/// removed.
+/// The heading text of a git-cliff group: the text after the `<!-- N -->`
+/// order prefix that cliff.toml puts first. This is not a sanitizer: `html`
+/// escapes the heading.
 function heading(group: string): string {
-  return group.replace(/<!--.*?-->/g, "").trim();
+  const end = group.indexOf("-->");
+  return (group.startsWith("<!--") && end >= 0 ? group.slice(end + 3) : group).trim();
 }
 
 /// The first character in upper case. The other characters do not change.
