@@ -1,7 +1,17 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "update",
-  "description": "Capabilities for the update window",
+  "description": "Capabilities for the update window: it opens the PR pages and the full changelog page",
   "windows": ["update"],
-  "permissions": ["core:default", "core:window:allow-set-size"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-size",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/twistymaze/longhand/pull/*" },
+        { "url": "https://twistymaze.github.io/longhand/*" }
+      ]
+    }
+  ]
 }

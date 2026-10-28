@@ -121,19 +121,11 @@ static BUNDLED: LazyLock<Bundled> = LazyLock::new(|| {
 
 /// The time of the commit that the bundled changelog was made from. None
 /// when the bundled changelog is not available.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "U6 of the monthly changelog plan reads it")
-)]
 pub(crate) fn bundled_head_time() -> Option<i64> {
     BUNDLED.changelog.head.as_ref().map(|head| head.time)
 }
 
 /// True when the bundled changelog has an entry with this full commit id.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "U6 of the monthly changelog plan reads it")
-)]
 pub(crate) fn bundled_contains(id: &str) -> bool {
     BUNDLED.ids.contains(id)
 }

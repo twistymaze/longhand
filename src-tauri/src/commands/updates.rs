@@ -3,8 +3,9 @@
 
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
+use crate::commands::changelog::ChangelogEntry;
 use crate::managers::updates::{Choice, UpdateManager, UpdateStateChanged};
 
 /// The current update state, which the window reads once at open, and
@@ -36,4 +37,14 @@ pub async fn show_update_window(app: AppHandle) {
 #[specta::specta]
 pub fn choose_update(manager: State<'_, Arc<UpdateManager>>, choice: Choice) {
     manager.choose(choice);
+}
+
+/// The changes that the offered `version` gives, which the update window
+/// lists (R13). None when the app cannot get them (R14): the window then
+/// shows the link to the full changelog. Async, because it can download.
+#[tauri::command]
+#[specta::specta]
+pub async fn offered_changes(app: AppHandle, version: String) -> Option<Vec<ChangelogEntry>> {
+    let manager = app.state::<Arc<UpdateManager>>().inner().clone();
+    manager.offered_changes(&version).await
 }

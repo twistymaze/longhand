@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test, vi } from "vitest";
 import { mockWindows } from "@tauri-apps/api/mocks";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { UpdateState } from "../bindings";
+import type { ChangelogEntry, UpdateState } from "../bindings";
+import { PAGES_URL, prAddress } from "../changelog/months";
 import { mockTauri } from "../test/tauri";
 import { UpdateWindow } from "./UpdateWindow";
 
@@ -15,7 +17,13 @@ function open(state: UpdateState, withKey = false) {
   return tauri;
 }
 
-const buttons = () => screen.getAllByRole("button").map((b) => b.textContent);
+// The window buttons. The links in the list of changes are buttons too, so
+// the list is left out.
+const buttons = () =>
+  screen
+    .getAllByRole("button")
+    .filter((b) => !b.closest("section"))
+    .map((b) => b.textContent);
 const choices = (tauri: ReturnType<typeof mockTauri>) =>
   tauri.calls.filter((c) => c.cmd === "choose_update").map((c) => c.args.choice);
 
@@ -185,5 +193,124 @@ describe("the update window size", () => {
       measure.mockRestore();
       setViewport(...viewport);
     }
+  });
+});
+
+describe("the changes in an offer (U6 of the monthly changelog plan)", () => {
+  let next = 0;
+  function change(line: string, pr: number | null = null, month = "2026-10"): ChangelogEntry {
+    next += 1;
+    return { id: `id-${next}`, time: next, month, group: "Fixes", rank: 1, line, pr };
+  }
+
+  const offer: UpdateState = { state: "offered", version: NEW, current: CURRENT };
+
+  /// The offer, with `offered_changes` answered by `changes`.
+  function openOffer(changes: () => unknown, withKey = false) {
+    const tauri = mockTauri({
+      update_state: () => ({ state: offer, with_key: withKey }),
+      choose_update: () => null,
+      offered_changes: changes,
+      "plugin:opener|open_url": () => null,
+    });
+    render(<UpdateWindow />);
+    return tauri;
+  }
+
+  const area = () => screen.findByRole("region", { name: `Changes in Longhand ${NEW}` });
+  const opened = (tauri: ReturnType<typeof mockTauri>) =>
+    tauri.calls.filter((c) => c.cmd === "plugin:opener|open_url").map((c) => c.args.url);
+
+  test("while the request runs, the title, the text and both buttons show, and the area is empty", async () => {
+    const tauri = openOffer(() => new Promise(() => {}));
+    expect(await screen.findByText("A new version of Longhand is available")).toBeTruthy();
+    expect(screen.getByText(`Longhand ${NEW} is available. You have ${CURRENT}.`)).toBeTruthy();
+    expect(buttons()).toEqual(["Remind Me Later", "Install and Relaunch"]);
+    expect((await area()).textContent).toBe("");
+    await waitFor(() => expect(tauri.calls.find((c) => c.cmd === "offered_changes")?.args).toEqual({ version: NEW }));
+  });
+
+  // Covers AE5.
+  test("changes that are not available give the full-changelog link, and Install and Relaunch still works", async () => {
+    const tauri = openOffer(() => null);
+    const link = await within(await area()).findByRole("button", { name: /Full changelog/ });
+    await userEvent.setup().click(link);
+    expect(opened(tauri)).toEqual([PAGES_URL]);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Install and Relaunch" }));
+    expect(choices(tauri)).toEqual(["install"]);
+  });
+
+  test("a failed request gives the full-changelog link and no error", async () => {
+    openOffer(() => {
+      throw "no connection";
+    });
+    expect(await within(await area()).findByRole("button", { name: /Full changelog/ })).toBeTruthy();
+    expect(screen.queryByText(/connection|could not|error/i)).toBeNull();
+  });
+
+  test("an empty list gives the full-changelog link and no error", async () => {
+    openOffer(() => []);
+    expect(await within(await area()).findByRole("button", { name: /Full changelog/ })).toBeTruthy();
+    expect(within(await area()).queryAllByRole("listitem")).toHaveLength(0);
+    expect(screen.queryByText(/could not|error/i)).toBeNull();
+  });
+
+  test("the changes show by month and heading", async () => {
+    openOffer(() => [change("Fix the timer", 72), change("Fix the tray", null, "2026-09")]);
+    await within(await area()).findByText("Fix the tray");
+    expect(within(await area()).getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
+      "October 2026",
+      "September 2026",
+    ]);
+    expect(within(await area()).getAllByRole("heading", { level: 3 }).map((h) => h.textContent)).toEqual(["Fixes", "Fixes"]);
+    expect(within(await area()).queryByRole("button", { name: /Full changelog/ })).toBeNull();
+  });
+
+  test("a list of 60 lines scrolls in its area, and both buttons stay in the window", async () => {
+    openOffer(() => Array.from({ length: 60 }, (_, n) => change(`Change ${n + 1}`)));
+    await within(await area()).findByText("Change 60");
+    expect(within(await area()).getAllByRole("listitem")).toHaveLength(60);
+    expect((await area()).className).toContain("overflow-y-auto");
+    // The area has a fixed height, so the list does not change the window size.
+    expect((await area()).className).toMatch(/(^|\s)h-\[/);
+    for (const name of ["Remind Me Later", "Install and Relaunch"]) {
+      expect((await area()).contains(screen.getByRole("button", { name }))).toBe(false);
+    }
+  });
+
+  test("an automatic offer gives no focus to a link or a button", async () => {
+    openOffer(() => [change("Fix the timer", 72)]);
+    await within(await area()).findByText("Fix the timer");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement?.tagName).not.toBe("BUTTON");
+  });
+
+  test("in an automatic offer, Return and Space on a PR line open nothing and choose nothing", async () => {
+    const tauri = openOffer(() => [change("Fix the timer", 72)]);
+    const line = await within(await area()).findByRole("button", { name: /Fix the timer/ });
+    line.focus();
+    await userEvent.setup().keyboard("{Enter} ");
+    expect(choices(tauri)).toEqual([]);
+    expect(opened(tauri)).toEqual([]);
+  });
+
+  test("a click on a PR line opens the PR page", async () => {
+    const tauri = openOffer(() => [change("Fix the timer", 72)]);
+    await userEvent.setup().click(await within(await area()).findByRole("button", { name: /Fix the timer/ }));
+    expect(opened(tauri)).toEqual([prAddress(72)]);
+  });
+
+  test("the window opener allows the same pages as Recent changes", () => {
+    const read = (name: string) =>
+      JSON.parse(readFileSync(`${import.meta.dirname}/../../src-tauri/capabilities/${name}.json`, "utf8"));
+    const opener = (capability: { permissions: unknown[] }) =>
+      (
+        capability.permissions.find(
+          (p) => typeof p === "object" && (p as { identifier: string }).identifier === "opener:allow-open-url",
+        ) as { allow: { url: string }[] }
+      ).allow.map((a) => a.url);
+    const update = read("update");
+    expect(update.windows).toEqual(["update"]);
+    expect(opener(update)).toEqual(opener(read("changelog")));
   });
 });

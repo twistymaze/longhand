@@ -1417,6 +1417,14 @@ async showUpdateWindow() : Promise<void> {
     await TAURI_INVOKE("show_update_window");
 },
 /**
+ * The changes that the offered `version` gives, which the update window
+ * lists (R13). None when the app cannot get them (R14): the window then
+ * shows the link to the full changelog. Async, because it can download.
+ */
+async offeredChanges(version: string) : Promise<ChangelogEntry[] | null> {
+    return await TAURI_INVOKE("offered_changes", { version });
+},
+/**
  * Return the full licence list for the platform of this build.
  */
 async licenceText() : Promise<string> {
