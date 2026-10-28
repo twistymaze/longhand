@@ -307,8 +307,8 @@ jobs:
         if: runner.os == 'macOS'
         run: npm test
 
-      # The release scripts. The version tests run the real git-cliff on
-      # temporary repositories.
+      # The release scripts. The version and changelog tests run the real
+      # git-cliff on temporary repositories.
       - name: Install git-cliff
         if: runner.os == 'macOS'
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
@@ -317,7 +317,7 @@ jobs:
 
       - name: Release script tests
         if: runner.os == 'macOS'
-        run: node --test scripts/release-version.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
+        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts
 
       # The tests of the own version, TOML and frontmatter readers, and of
       # the dependency checks.

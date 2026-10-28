@@ -6,7 +6,9 @@
 //     the release notes to <notes file>.
 //
 // git-cliff finds whether a release is due and gives the next patch version
-// with the rules in cliff.toml. When the bumped version is the same as the
+// with the rules in cliff.toml. git-cliff gives the commits of the release as
+// JSON, and scripts/lib/changelog.ts writes the notes from it, as it writes
+// the changelog. When the bumped version is the same as the
 // latest release tag, only skipped commits follow that tag, and no release is
 // due. With no release tag, git-cliff returns the initial tag v1.0.0, and the
 // script uses it as it is. Otherwise the script reads the original commit
@@ -17,6 +19,7 @@
 import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { releaseNotes } from "./lib/changelog.ts";
 import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
 import { compareVersions } from "./lib/version.ts";
 
@@ -74,7 +77,7 @@ export function releaseFacts(tools: Tools): ReleaseFacts {
   const latest = latestReleaseTag(tools.tags());
   const { due, version: bumped } = decide(latest, tools.cliff(["--bumped-version"]));
   const version = due && latest !== null ? raise(latest, bumped, tools.subjects(latest)) : bumped;
-  const notes = due ? tools.cliff(["--unreleased", "--tag", `v${version}`, "--strip", "all"]).trim() + "\n" : null;
+  const notes = due ? releaseNotes(JSON.parse(tools.cliff(["--context", "--unreleased", "--tag", `v${version}`]))) : null;
   return { due, version, notes };
 }
 
