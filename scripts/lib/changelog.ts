@@ -255,7 +255,7 @@ export function html(data: Changelog): string {
 body { margin: 0 auto; max-width: 44rem; padding: 2rem 1rem 4rem; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--background); }
 h1 { font-size: 1.75rem; margin: 0 0 0.25rem; }
 h2 { font-size: 1.3rem; margin: 2.25rem 0 0.5rem; }
-h3 { font-size: 0.95rem; color: var(--muted); margin: 1.25rem 0 0.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.25rem; }
 ul { margin: 0; padding-left: 1.25rem; }
 li { margin: 0.2rem 0; }
 a { color: var(--link); }
@@ -264,7 +264,7 @@ p { color: var(--muted); margin: 0; }
 </head>
 <body>
 <h1>Longhand changelog</h1>
-<p>The changes to <a href="https://github.com/${REPOSITORY}">Longhand</a> by month.</p>
+<p>The changes to <a href="../">Longhand</a> by month.</p>
 ${body.join("\n")}
 </body>
 </html>

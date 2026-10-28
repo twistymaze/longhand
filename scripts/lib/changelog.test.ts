@@ -87,6 +87,13 @@ test("the page escapes commit text and links the PR, and the Markdown and the da
   assert.ok(data.available && data.entries[0].line === "Stop <script> & \"quotes\" (#9)");
 });
 
+test("the page shows group headings in the text colour and links back to the landing page", () => {
+  const page = html(changelog([{ commits: [commit("a", FIX, "a fix", OCT_31_2330)] }], { id: "h", time: 0 }));
+  const h3 = page.match(/^h3 \{[^}]*\}/m)?.[0] ?? "";
+  assert.ok(h3.length > 0 && !h3.includes("--muted"), h3);
+  assert.ok(page.includes('<a href="../">Longhand</a>'));
+});
+
 test("the Markdown puts the newest line of a group first", () => {
   const releases: ContextRelease[] = [
     { commits: [commit("a", FIX, "first fix", OCT_31_2330), commit("b", FIX, "second fix", OCT_31_2330 + 60)] },
