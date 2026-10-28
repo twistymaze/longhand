@@ -4911,6 +4911,26 @@ mod tests {
         assert!(spec.enabled_live_transcription);
     }
 
+    /// R3, R6: a preferred language that the model in use does not list
+    /// records with automatic language on that model, not with the
+    /// fallback for a configuration that does not resolve.
+    #[test]
+    fn a_language_the_model_in_use_does_not_list_records_with_automatic_language() {
+        let mut settings = selected(PARAKEET, true);
+        settings.recognition_language = Some("de".into());
+        settings.chosen_recognition = settings.in_use();
+        let ready = |_: &models::recognition::ExecutionSpec| true;
+        let spec = recording_spec(
+            settings.recognition_config(),
+            settings.chosen_config(),
+            ready,
+        )
+        .unwrap();
+        assert_eq!(spec.config.asr_model, PARAKEET);
+        assert_eq!(spec.config.language, None);
+        assert!(spec.enabled_live_transcription);
+    }
+
     /// AE1, KTD16: with no model on disk, recording starts with the chosen
     /// configuration and live transcript off, and processing waits.
     #[test]

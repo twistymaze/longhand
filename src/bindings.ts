@@ -9,12 +9,15 @@ async getSettings() : Promise<Settings> {
     return await TAURI_INVOKE("get_settings");
 },
 /**
- * Choose the complete recognition configuration (R18). The configuration
- * in use stays until every file of the chosen configuration is on disk.
+ * Choose the complete recognition configuration (R18). The choice keeps
+ * the live and language preferences also when its model cannot use them;
+ * the configuration that the model can use must resolve. The
+ * configuration in use stays until every file of the chosen
+ * configuration is on disk.
  */
-async setRecognitionDefaults(config: RecognitionConfig) : Promise<Result<Settings, string>> {
+async setRecognitionDefaults(choice: RecognitionChoice) : Promise<Result<Settings, string>> {
     try {
-    return { status: "ok", data: await TAURI_INVOKE("set_recognition_defaults", { config }) };
+    return { status: "ok", data: await TAURI_INVOKE("set_recognition_defaults", { choice }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };

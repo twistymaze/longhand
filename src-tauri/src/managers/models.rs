@@ -158,7 +158,7 @@ pub fn plan_choice(
     let mut kept = needed_keys(Some(&settings.recognition_config()));
     let mut plan = ChoicePlan::default();
     if let Some(config) = settings.chosen_config()
-        && settings.chosen_recognition != settings.in_use()
+        && !settings.chosen_recognition.same_use(&settings.in_use())
     {
         match models::recognition::resolve(&config) {
             Err(e) => {
@@ -428,7 +428,7 @@ impl ModelsManager {
     /// for, and the failure, into `settings` (R19).
     pub fn report_choice(&self, settings: &mut Settings) {
         let state = self.choice();
-        if settings.chosen_recognition == settings.in_use()
+        if settings.chosen_recognition.same_use(&settings.in_use())
             || state.chosen.as_ref() != Some(&settings.chosen_recognition)
         {
             return;
@@ -942,6 +942,35 @@ mod tests {
             None,
         );
         assert_eq!(ids(&plan.download), [SORTFORMER]);
+        assert_eq!(plan.apply, None);
+    }
+
+    /// R3, R6: preferences that the chosen model cannot use are not a
+    /// failure, and the choice applies with them.
+    #[test]
+    fn preferences_the_chosen_model_cannot_use_are_not_a_failure() {
+        use models::recognition::{ProcessingMode, SpeakerSource};
+        let settings = Settings {
+            chosen_recognition: RecognitionChoice {
+                asr_model: "parakeet-unified-en-0.6b-q80".into(),
+                live_transcript: true,
+                speaker_source: SpeakerSource::Pyannote,
+                speaker_processing_mode: ProcessingMode::DuringRecording,
+                recognition_language: Some("de".into()),
+                // A usable value that differs from the configuration in use.
+                default_speaker_count: Some(settings::SpeakerCountSetting::Exact { count: 3 }),
+            },
+            ..Settings::default()
+        };
+        let plan = plan_choice(&settings, |_| Vec::new(), &HashSet::new(), None);
+        assert_eq!(plan.failure, None);
+        assert_eq!(plan.apply.as_ref(), Some(&settings.chosen_recognition));
+
+        // In use, the choice is complete: it does not apply again.
+        let mut after = settings.clone();
+        after.set_in_use(&plan.apply.unwrap());
+        assert!(!after.recognition.differs);
+        let plan = plan_choice(&after, |_| Vec::new(), &HashSet::new(), None);
         assert_eq!(plan.apply, None);
     }
 

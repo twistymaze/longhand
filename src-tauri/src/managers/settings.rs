@@ -465,7 +465,7 @@ impl LocalSettings {
 /// The six values of a recognition configuration, as the settings hold
 /// them (R18): the chosen configuration in the shared settings, or the
 /// configuration in use on this computer.
-#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Type, Debug, Clone, PartialEq, Eq)]
 pub struct RecognitionChoice {
     /// Catalog id of the transcription model (KTD6).
     pub asr_model: String,
@@ -491,24 +491,37 @@ impl Default for RecognitionChoice {
 }
 
 impl RecognitionChoice {
-    /// The choice of a configuration that the Settings window sends.
-    pub fn from_config(config: &models::recognition::RecognitionConfig) -> Self {
-        use models::recognition::ProcessingMode;
+    /// The choice with the language and speaker timing that its model and
+    /// speaker source use. The configuration in use stores this form, so an
+    /// older build on this computer, which applies no fallback, can resolve
+    /// it.
+    pub fn usable(&self) -> Self {
+        let config = self.config();
         Self {
-            asr_model: config.asr_model.clone(),
-            live_transcript: config.processing_mode == ProcessingMode::DuringRecording,
-            speaker_source: config.speaker_source,
             speaker_processing_mode: config.speaker_processing_mode,
-            recognition_language: config.language.clone(),
-            default_speaker_count: config.speaker_count.map(Into::into),
+            recognition_language: config.language,
+            ..self.clone()
         }
     }
 
-    /// The configuration that recognition resolves. Live transcript
-    /// applies only to a model that streams.
+    /// Whether the two choices record with the same configuration.
+    pub fn same_use(&self, other: &Self) -> bool {
+        self.usable() == other.usable()
+    }
+
+    /// The configuration that recognition resolves. Live transcript, live
+    /// speaker recognition and the language are preferences: each one
+    /// applies only when the model and the speaker source can use it, and
+    /// otherwise gives After Stop or automatic language. The choice keeps
+    /// the preference for a model that can use it.
     pub fn config(&self) -> models::recognition::RecognitionConfig {
         use models::recognition::{ProcessingMode, RecognitionConfig};
-        let live_supported = models::model(&self.asr_model).is_some_and(|m| m.streaming);
+        let model = models::model(&self.asr_model);
+        let live_supported = model.is_some_and(|m| m.streaming);
+        let language = self
+            .recognition_language
+            .clone()
+            .filter(|language| model.is_none_or(|m| m.languages.contains(language)));
         RecognitionConfig {
             asr_model: self.asr_model.clone(),
             speaker_source: self.speaker_source,
@@ -518,8 +531,12 @@ impl RecognitionChoice {
                 ProcessingMode::AfterStop
             },
             speaker_count: self.default_speaker_count.map(Into::into),
-            language: self.recognition_language.clone(),
-            speaker_processing_mode: self.speaker_processing_mode,
+            language,
+            speaker_processing_mode: if self.speaker_source.has_live_mode() {
+                self.speaker_processing_mode
+            } else {
+                ProcessingMode::AfterStop
+            },
         }
     }
 
@@ -957,7 +974,7 @@ impl Settings {
             speaker_processing_mode: local.speaker_processing_mode,
             recognition_language: local.recognition_language,
             recognition: RecognitionState {
-                differs: chosen_not_known || chosen_recognition != in_use,
+                differs: chosen_not_known || !chosen_recognition.same_use(&in_use),
                 chosen_not_known,
                 ..RecognitionState::default()
             },
@@ -1054,7 +1071,9 @@ impl Settings {
 
     /// Make `choice` the configuration in use. Only the models manager
     /// calls this, when every model of the chosen configuration is on disk.
+    /// It stores the values that the model can use (`RecognitionChoice::usable`).
     pub fn set_in_use(&mut self, choice: &RecognitionChoice) {
+        let choice = choice.usable();
         self.asr_model = choice.asr_model.clone();
         self.live_transcript = choice.live_transcript;
         self.speaker_source = choice.speaker_source;
@@ -1062,7 +1081,7 @@ impl Settings {
         self.recognition_language = choice.recognition_language.clone();
         self.default_speaker_count = choice.default_speaker_count;
         self.recognition.differs =
-            self.recognition.chosen_not_known || self.chosen_recognition != *choice;
+            self.recognition.chosen_not_known || !self.chosen_recognition.same_use(&choice);
     }
 
     /// Choose the usual microphone, or `None` for "System default" (R1).
@@ -3262,17 +3281,17 @@ mod tests {
 
     #[test]
     fn a_change_of_the_recognition_patches_each_changed_value() {
-        use models::recognition::{ProcessingMode, RecognitionConfig, SpeakerSource};
+        use models::recognition::{ProcessingMode, SpeakerSource};
         let before = Settings::default();
         let mut after = before.clone();
-        after.chosen_recognition = RecognitionChoice::from_config(&RecognitionConfig {
+        after.chosen_recognition = RecognitionChoice {
             asr_model: "whisper-large-v3-turbo-q5km".into(),
+            live_transcript: false,
             speaker_source: SpeakerSource::Sortformer,
-            processing_mode: ProcessingMode::AfterStop,
-            speaker_count: None,
-            language: Some("de".into()),
             speaker_processing_mode: ProcessingMode::AfterStop,
-        });
+            recognition_language: Some("de".into()),
+            default_speaker_count: None,
+        };
         let keys: Vec<&str> = shared_patch(&before, &after)
             .iter()
             .map(SharedValue::key)
@@ -4273,6 +4292,184 @@ mod recognition_tests {
         assert!(!spec.enabled_live_transcription);
         assert!(spec.enabled_live_speaker_analysis);
     }
+
+    const ENGLISH_ONLY: &str = "parakeet-unified-en-0.6b-q80";
+    const MULTILINGUAL: &str = "nemotron-3.5-asr-streaming-0.6b-q80";
+
+    fn choice(
+        asr_model: &str,
+        speaker_source: SpeakerSource,
+        speaker_processing_mode: ProcessingMode,
+        language: Option<&str>,
+        count: Option<u32>,
+    ) -> RecognitionChoice {
+        RecognitionChoice {
+            asr_model: asr_model.into(),
+            live_transcript: true,
+            speaker_source,
+            speaker_processing_mode,
+            recognition_language: language.map(Into::into),
+            default_speaker_count: count.map(|count| SpeakerCountSetting::Exact { count }),
+        }
+    }
+
+    #[test]
+    fn a_language_the_model_does_not_list_falls_back_to_automatic() {
+        let english = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::AfterStop,
+            Some("de"),
+            None,
+        );
+        let config = english.config();
+        assert_eq!(config.language, None);
+        models::recognition::resolve(&config).unwrap();
+        assert_eq!(english.recognition_language.as_deref(), Some("de"));
+
+        let multilingual = RecognitionChoice {
+            asr_model: MULTILINGUAL.into(),
+            ..english
+        };
+        assert_eq!(multilingual.config().language.as_deref(), Some("de"));
+    }
+
+    #[test]
+    fn live_speakers_fall_back_only_when_the_source_has_no_live_mode() {
+        let pyannote = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::DuringRecording,
+            None,
+            Some(9),
+        );
+        let config = pyannote.config();
+        assert_eq!(config.speaker_processing_mode, ProcessingMode::AfterStop);
+        models::recognition::resolve(&config).unwrap();
+        assert_eq!(
+            pyannote.speaker_processing_mode,
+            ProcessingMode::DuringRecording
+        );
+
+        let nemotron = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Nemotron,
+            ProcessingMode::DuringRecording,
+            None,
+            Some(3),
+        );
+        let config = nemotron.config();
+        assert_eq!(
+            config.speaker_processing_mode,
+            ProcessingMode::DuringRecording
+        );
+        models::recognition::resolve(&config).unwrap();
+    }
+
+    #[test]
+    fn a_count_above_the_source_limit_keeps_its_error() {
+        for mode in [ProcessingMode::AfterStop, ProcessingMode::DuringRecording] {
+            let config =
+                choice(ENGLISH_ONLY, SpeakerSource::Nemotron, mode, None, Some(9)).config();
+            assert_eq!(config.speaker_source, SpeakerSource::Nemotron);
+            assert!(matches!(
+                models::recognition::resolve(&config),
+                Err(models::recognition::ResolveError::SpeakerLimit { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn two_unsupported_preferences_fall_back_together() {
+        let both = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::DuringRecording,
+            Some("de"),
+            None,
+        );
+        let config = both.config();
+        assert_eq!(config.language, None);
+        assert_eq!(config.speaker_processing_mode, ProcessingMode::AfterStop);
+        models::recognition::resolve(&config).unwrap();
+        assert_eq!(both.recognition_language.as_deref(), Some("de"));
+        assert_eq!(
+            both.speaker_processing_mode,
+            ProcessingMode::DuringRecording
+        );
+    }
+
+    /// An older build on this computer reads the local values in use as
+    /// they are, with no fallback. They must resolve, so recording starts.
+    #[test]
+    fn the_configuration_in_use_keeps_only_values_its_model_can_use() {
+        let chosen = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::DuringRecording,
+            Some("de"),
+            None,
+        );
+        let mut settings = Settings {
+            chosen_recognition: chosen.clone(),
+            ..Settings::default()
+        };
+        settings.set_in_use(&chosen);
+        assert_eq!(settings.recognition_language, None);
+        assert_eq!(settings.speaker_processing_mode, ProcessingMode::AfterStop);
+        assert!(!settings.recognition.differs);
+        assert_eq!(settings.chosen_recognition, chosen);
+
+        // The configuration as an older build reads it from the local values.
+        let streaming = models::model(ENGLISH_ONLY).unwrap().streaming;
+        models::recognition::resolve(&models::recognition::RecognitionConfig {
+            asr_model: settings.asr_model.clone(),
+            speaker_source: settings.speaker_source,
+            processing_mode: if settings.live_transcript && streaming {
+                ProcessingMode::DuringRecording
+            } else {
+                ProcessingMode::AfterStop
+            },
+            speaker_count: settings.default_speaker_count.map(Into::into),
+            language: settings.recognition_language.clone(),
+            speaker_processing_mode: settings.speaker_processing_mode,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn a_stored_configuration_in_use_with_a_preference_it_cannot_use_does_not_differ() {
+        let chosen = choice(
+            ENGLISH_ONLY,
+            SpeakerSource::Pyannote,
+            ProcessingMode::AfterStop,
+            Some("de"),
+            None,
+        );
+        let local = LocalSettings {
+            asr_model: ENGLISH_ONLY.into(),
+            live_transcript: true,
+            speaker_source: SpeakerSource::Pyannote,
+            speaker_processing_mode: ProcessingMode::AfterStop,
+            recognition_language: Some("de".into()),
+            default_speaker_count: None,
+            ..LocalSettings::default()
+        };
+        assert!(chosen.same_use(&local.in_use()));
+    }
+
+    #[test]
+    fn live_transcript_on_a_model_that_does_not_stream_stays_a_preference() {
+        let whisper = choice(
+            "whisper-large-v3-turbo-q5km",
+            SpeakerSource::Pyannote,
+            ProcessingMode::AfterStop,
+            None,
+            None,
+        );
+        assert_eq!(whisper.config().processing_mode, ProcessingMode::AfterStop);
+        assert!(whisper.live_transcript);
+    }
 }
 
 #[cfg(test)]
@@ -4444,6 +4641,8 @@ mod stale_recognition_tests {
             ..Settings::default()
         };
         expected.set_in_use(&recognition);
+        // The update writes the stored language as it is.
+        expected.recognition_language = recognition.recognition_language.clone();
         // The chosen configuration and the configuration in use are the
         // same after the update, so nothing downloads (R18).
         assert!(!expected.recognition.differs);

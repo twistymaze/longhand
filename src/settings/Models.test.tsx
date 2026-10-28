@@ -13,7 +13,7 @@ import type {
 } from "../bindings";
 import { mockTauri, shortcutStatuses } from "../test/tauri";
 import { Models } from "./Models";
-import { recognitionDefaults } from "./RecognitionOptions";
+import { choiceConfig, recognitionDefaults } from "./RecognitionOptions";
 import { SettingsWindow } from "./SettingsWindow";
 import { useRecognitionDefaultsSave } from "./useAppSettings";
 import { describeLanguages } from "./languages";
@@ -67,8 +67,9 @@ const settings = {
   shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },
 } as unknown as Settings;
 
-/// The settings with `config` chosen and the configuration in use kept.
-function choosing(config: RecognitionConfig, state: Partial<RecognitionState> = {}): Settings {
+/// The settings with `chosen` chosen and the configuration in use kept.
+function choosing(chosen: RecognitionConfig | RecognitionChoice, state: Partial<RecognitionState> = {}): Settings {
+  const config = "live_transcript" in chosen ? choiceConfig(chosen) : chosen;
   return {
     ...settings,
     chosen_recognition: {
@@ -203,7 +204,7 @@ describe("catalog speaker defaults", () => {
       await user.click(screen.getByRole("radio", { name: entry.name }));
       await ready();
       const saved = () => tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
-      expect((saved().slice(-1)[0]?.args.config as RecognitionConfig).speaker_source).toBe("nemotron");
+      expect((saved().slice(-1)[0]?.args.choice as RecognitionChoice).speaker_source).toBe("nemotron");
       await user.click(screen.getByText("Advanced options"));
       const override = screen.getByLabelText("Speaker model override") as HTMLSelectElement;
       expect([...override.options].map((option) => option.textContent)).not.toContain(
@@ -226,7 +227,7 @@ describe("catalog speaker defaults", () => {
         if (source !== "off") {
           await user.selectOptions(screen.getByLabelText("Transcription timing"), "after_stop");
           const saved = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
-          expect((saved[saved.length - 1]?.args.config as RecognitionConfig).speaker_source).toBe(source);
+          expect((saved[saved.length - 1]?.args.choice as RecognitionChoice).speaker_source).toBe(source);
         } else {
           expect((screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value).toBe("off");
         }
@@ -248,65 +249,209 @@ describe("recognition defaults", () => {
     expect(screen.queryByLabelText("Runtime")).toBeNull();
     expect(describeLanguages(["en", "zh"])).toBe("English and Chinese");
   });
-  test("model changes reset incompatible timing visibly and apply the complete configuration", async () => {
+  const timing = () =>
+    screen.getByLabelText("Transcription timing") as HTMLSelectElement;
+  const speakerTiming = () =>
+    screen.getByLabelText("Speaker recognition") as HTMLSelectElement;
+  const lastSave = (tauri: ReturnType<typeof open>["tauri"]) =>
+    tauri.calls
+      .filter((c) => c.cmd === "set_recognition_defaults")
+      .slice(-1)[0]?.args.choice as RecognitionChoice;
+  test("a model with no live transcript keeps showing the live preference (AE1)", async () => {
     const { user, tauri } = open();
     await ready();
+    expect(screen.queryByText(/will run after Stop/)).toBeNull();
     await user.click(screen.getByRole("radio", { name: "Whisper" }));
     await ready();
+    expect(timing().value).toBe("during_recording");
     expect(
-      (screen.getByLabelText("Transcription timing") as HTMLSelectElement)
-        .value,
-    ).toBe("after_stop");
-    expect(screen.getByText(/processing choices changed/)).toBeTruthy();
-
-    const calls = tauri.calls.filter(
-      (c) => c.cmd === "set_recognition_defaults",
-    );
-    expect(calls).toHaveLength(1);
-    expect(calls[0].args.config).toEqual({
+      screen.getByText("Transcription will run after Stop when using Whisper because it does not support live transcription."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/processing choices changed/)).toBeNull();
+    expect(lastSave(tauri)).toEqual({
       asr_model: offline,
+      live_transcript: true,
       speaker_source: "nemotron",
-      processing_mode: "after_stop",
       speaker_processing_mode: "after_stop",
-      speaker_count: null,
-      language: null,
+      recognition_language: null,
+      default_speaker_count: null,
     });
     expect(
       tauri.calls.some(
         (c) => c.cmd === "select_asr_model" || c.cmd === "set_live_transcript",
       ),
     ).toBe(false);
+
+    await user.click(screen.getByRole("radio", { name: "Parakeet" }));
+    await ready();
+    expect(timing().value).toBe("during_recording");
+    expect(screen.queryByText(/will run after Stop/)).toBeNull();
+    expect(lastSave(tauri)).toMatchObject({ asr_model: stream, live_transcript: true });
   });
-  test("a model that does not support the chosen language saves with Automatic", async () => {
-    const multi = { ...model(offline, "Whisper"), languages: ["en", "de"] };
+  test("a live preference can be chosen on a model that cannot use it", async () => {
+    const { user, tauri } = open({}, {
+      ...settings,
+      asr_model: offline,
+      live_transcript: false,
+    } as Settings);
+    await ready();
+    await user.selectOptions(timing(), "during_recording");
+    await ready();
+    expect(timing().value).toBe("during_recording");
+    expect(
+      screen.getByText("Transcription will run after Stop when using Whisper because it does not support live transcription."),
+    ).toBeTruthy();
+    expect(lastSave(tauri)).toMatchObject({ asr_model: offline, live_transcript: true });
+  });
+  test("a model that causes both fallbacks names itself once", async () => {
+    const whisper = {
+      ...model(offline, "Whisper"),
+      speaker_preferences: { after_stop: ["nemotron" as const], during_recording: [] },
+    };
+    open({}, {
+      ...settings,
+      asr_model: offline,
+      speaker_processing_mode: "during_recording",
+    } as Settings, [models[0], whisper]);
+    await ready();
+    expect(
+      screen.getByText(
+        "Transcription and speaker recognition will run after Stop when using Whisper because it does not support live transcription or live speaker recognition.",
+      ),
+    ).toBeTruthy();
+  });
+  test("a model and a speaker count that cause one fallback each are named apart", async () => {
+    open({}, {
+      ...settings,
+      asr_model: offline,
+      speaker_processing_mode: "during_recording",
+      default_speaker_count: { kind: "exact", count: 9 },
+    } as Settings);
+    await ready();
+    expect(
+      screen.getByText(
+        "Transcription will run after Stop when using Whisper because it does not support live transcription. Speaker recognition will run after Stop with 9 expected speakers because live speaker recognition does not support that many speakers.",
+      ),
+    ).toBeTruthy();
+  });
+  test("a speaker model override with no live mode is named as the cause", async () => {
+    open({}, {
+      ...settings,
+      speaker_source: "pyannote",
+      speaker_processing_mode: "during_recording",
+    } as Settings);
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(
+      screen.getByText(
+        "Speaker recognition will run after Stop when using pyannote / WeSpeaker because it does not support live speaker recognition.",
+      ),
+    ).toBeTruthy();
+  });
+  const germanCatalog = () => {
+    const multi = { ...model(offline, "Whisper"), languages: ["en", "de", "fr"] };
     const catalog = [models[0], multi];
+    const handlers = {
+      resolve_recognition: ({ config }: Record<string, unknown>) => {
+        const c = config as RecognitionConfig;
+        const chosen = catalog.find((m) => m.id === c.asr_model)!;
+        if (c.language && !chosen.languages.includes(c.language))
+          throw `${chosen.id} does not support language ${c.language}`;
+        return resolve(c);
+      },
+    };
+    return { catalog, handlers };
+  };
+  test("a model without the preferred language keeps showing the preference (AE2)", async () => {
+    const { catalog, handlers } = germanCatalog();
     const initial = {
       ...settings,
       asr_model: offline,
       live_transcript: false,
       recognition_language: "de",
     } as Settings;
-    const { user, tauri } = open(
-      {
-        resolve_recognition: ({ config }) => {
-          const c = config as RecognitionConfig;
-          const chosen = catalog.find((m) => m.id === c.asr_model)!;
-          if (c.language && !chosen.languages.includes(c.language))
-            throw `${chosen.id} does not support language ${c.language}`;
-          return resolve(c);
-        },
-      },
-      initial,
-      catalog,
-    );
+    const { user, tauri } = open(handlers, initial, catalog);
     await ready();
+    await user.click(screen.getByText("Advanced options"));
+    const language = () => screen.getByLabelText("Language") as HTMLSelectElement;
+    expect(language().value).toBe("de");
     await user.click(screen.getByRole("radio", { name: "Parakeet" }));
     await ready();
-    const saved = tauri.calls
-      .filter((c) => c.cmd === "set_recognition_defaults")
-      .map((c) => c.args.config as RecognitionConfig);
-    expect(saved[saved.length - 1]).toMatchObject({ asr_model: stream, language: null });
+    expect(language().value).toBe("de");
+    expect(
+      screen.getByText(/The language will be detected automatically when using Parakeet because it does not support German\./),
+    ).toBeTruthy();
+    expect(lastSave(tauri)).toMatchObject({ asr_model: stream, recognition_language: "de" });
     expect(screen.queryByText(/No compatible choice/)).toBeNull();
+
+    await user.click(screen.getByRole("radio", { name: "Whisper" }));
+    await ready();
+    expect(language().value).toBe("de");
+    expect(screen.queryByText(/does not support German/)).toBeNull();
+  });
+  test("a language change on the selected model changes the preference (AE4)", async () => {
+    const { catalog, handlers } = germanCatalog();
+    const initial = { ...settings, asr_model: offline, live_transcript: false } as Settings;
+    const { user, tauri } = open(handlers, initial, catalog);
+    await ready();
+    await user.click(screen.getByText("Advanced options"));
+    await user.selectOptions(screen.getByLabelText("Language"), "fr");
+    await ready();
+    expect(lastSave(tauri)).toMatchObject({ asr_model: offline, recognition_language: "fr" });
+  });
+  test("a speaker count above the live limit keeps the live speaker preference (AE3)", async () => {
+    const { user, tauri } = open(
+      {},
+      { ...settings, speaker_processing_mode: "during_recording" } as Settings,
+    );
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    await user.click(screen.getByText("Advanced options"));
+    await user.selectOptions(screen.getByLabelText("Expected speakers"), "exact");
+    const count = screen.getByLabelText("Exact speaker count");
+    await user.clear(count);
+    await user.type(count, "9");
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(
+      screen.getByText("Speaker recognition will run after Stop with 9 expected speakers because live speaker recognition does not support that many speakers."),
+    ).toBeTruthy();
+    expect(lastSave(tauri)).toMatchObject({
+      speaker_source: "pyannote",
+      speaker_processing_mode: "during_recording",
+      default_speaker_count: { kind: "exact", count: 9 },
+    });
+    await user.clear(count);
+    await user.type(count, "3");
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(lastSave(tauri)).toMatchObject({ speaker_source: "nemotron" });
+  });
+  test("reopened settings with a count above the live limit bring live speakers back for a lower count (AE3)", async () => {
+    const { user, tauri } = open({}, {
+      ...settings,
+      speaker_source: "pyannote",
+      speaker_processing_mode: "during_recording",
+      default_speaker_count: { kind: "exact", count: 9 },
+    } as Settings);
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(
+      screen.getByText("Speaker recognition will run after Stop with 9 expected speakers because live speaker recognition does not support that many speakers."),
+    ).toBeTruthy();
+    await user.click(screen.getByText("Advanced options"));
+    expect(
+      (screen.getByLabelText("Speaker model override") as HTMLSelectElement).value,
+    ).toBe("automatic");
+    const count = screen.getByLabelText("Exact speaker count");
+    await user.clear(count);
+    await user.type(count, "3");
+    await ready();
+    expect(speakerTiming().value).toBe("during_recording");
+    expect(lastSave(tauri)).toMatchObject({
+      speaker_source: "nemotron",
+      speaker_processing_mode: "during_recording",
+    });
   });
   test("offline text can have independent live speaker analysis", async () => {
     const { user } = open();
@@ -321,10 +466,13 @@ describe("recognition defaults", () => {
     expect(
       (screen.getByLabelText("Transcription timing") as HTMLSelectElement)
         .value,
-    ).toBe("after_stop");
+    ).toBe("during_recording");
     expect(
       (screen.getByLabelText("Speaker recognition") as HTMLSelectElement).value,
     ).toBe("during_recording");
+    expect(
+      screen.getByText("Transcription will run after Stop when using Whisper because it does not support live transcription."),
+    ).toBeTruthy();
   });
   test("five expected speakers cannot select Sortformer", async () => {
     const { user } = open(
@@ -415,7 +563,7 @@ test("speaker mode uses catalog preferences and Off adds no speaker model", asyn
   expect(
     (
       tauri.calls.find((c) => c.cmd === "set_recognition_defaults")?.args
-        .config as RecognitionConfig
+        .choice as RecognitionChoice
     ).speaker_source,
   ).toBe("nemotron");
   await user.selectOptions(screen.getByLabelText("Speaker recognition"), "off");
@@ -423,7 +571,7 @@ test("speaker mode uses catalog preferences and Off adds no speaker model", asyn
     (
       tauri.calls
         .filter((c) => c.cmd === "set_recognition_defaults")
-        .slice(-1)[0]?.args.config as RecognitionConfig
+        .slice(-1)[0]?.args.choice as RecognitionChoice
     ).speaker_source,
   ).toBe("off");
 });
@@ -441,11 +589,10 @@ test("nine speakers keeps recognition enabled with a compatible after-Stop choic
   const mode = screen.getByLabelText(
     "Speaker recognition",
   ) as HTMLSelectElement;
-  expect(mode.value).toBe("after_stop");
+  expect(mode.value).toBe("during_recording");
   expect(
-    Array.from(mode.options).find((o) => o.value === "during_recording")
-      ?.disabled,
-  ).toBe(true);
+    screen.getByText("Speaker recognition will run after Stop with 9 expected speakers because live speaker recognition does not support that many speakers."),
+  ).toBeTruthy();
   await user.selectOptions(
     screen.getByLabelText("Transcription timing"),
     "after_stop",
@@ -453,7 +600,7 @@ test("nine speakers keeps recognition enabled with a compatible after-Stop choic
   expect(
     (
       tauri.calls.find((c) => c.cmd === "set_recognition_defaults")?.args
-        .config as RecognitionConfig
+        .choice as RecognitionChoice
     ).speaker_source,
   ).toBe("pyannote");
 });
@@ -495,7 +642,7 @@ test("rapid setting changes save in order and keep the latest choice", async () 
   await waitFor(() => expect(calls).toBe(2));
   const saved = tauri.calls.filter((c) => c.cmd === "set_recognition_defaults");
   expect(
-    (saved[1].args.config as RecognitionConfig).speaker_processing_mode,
+    (saved[1].args.choice as RecognitionChoice).speaker_processing_mode,
   ).toBe("during_recording");
 });
 
@@ -584,7 +731,7 @@ test("this computer's own choice does not read the choices again", async () => {
   await user.click(screen.getByRole("radio", { name: "Whisper" }));
   await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "set_recognition_defaults")).toBe(true));
   await ready();
-  const sent = tauri.calls.find((c) => c.cmd === "set_recognition_defaults")!.args.config as RecognitionConfig;
+  const sent = tauri.calls.find((c) => c.cmd === "set_recognition_defaults")!.args.choice as RecognitionChoice;
   const resolves = tauri.calls.filter((c) => c.cmd === "resolve_recognition").length;
   rerender(
     <TestModels models={models} live={{}} settings={choosing(sent)} actions={{ cancel: () => {}, refresh: async () => {} }} />,
@@ -598,7 +745,7 @@ test("a choice from another computer of a configuration that this pane chose bef
   const { user, rerender, tauri } = open();
   await ready();
   const sent = () =>
-    tauri.calls.filter((c) => c.cmd === "set_recognition_defaults").map((c) => c.args.config as RecognitionConfig);
+    tauri.calls.filter((c) => c.cmd === "set_recognition_defaults").map((c) => c.args.choice as RecognitionChoice);
   const show = (s: Settings) =>
     rerender(<TestModels models={models} live={{}} settings={s} actions={{ cancel: () => {}, refresh: async () => {} }} />);
   // This pane chooses Whisper, then Parakeet again, and the settings show each choice.
@@ -638,10 +785,11 @@ test("a read-only state makes the recognition choices read-only", async () => {
 });
 
 test("completed model downloads clear the pending defaults notice", async () => {
+  // The save keeps the live transcript preference, which Whisper cannot use.
   const pending: RecognitionConfig = {
     asr_model: offline,
     speaker_source: "nemotron",
-    processing_mode: "after_stop",
+    processing_mode: "during_recording",
     speaker_processing_mode: "after_stop",
     speaker_count: null,
     language: null,
@@ -894,9 +1042,9 @@ test("transcription saves remain ordered after switching panes", async () => {
     login_item_status: () => "disabled",
     model_statuses: () => models,
     resolve_recognition: ({ config }) => resolve(config as RecognitionConfig),
-    set_recognition_defaults: ({ config }) => {
+    set_recognition_defaults: ({ choice }) => {
       // The models are on disk, so the choice is in use at once.
-      const chosen = choosing(config as RecognitionConfig).chosen_recognition;
+      const chosen = choosing(choice as RecognitionChoice).chosen_recognition;
       saved = { ...saved, ...chosen, chosen_recognition: chosen, recognition: settled };
       return ++saves === 1
         ? new Promise<Settings>((done) => { release = done; })
@@ -919,7 +1067,7 @@ test("transcription saves remain ordered after switching panes", async () => {
   await act(async () => release(first));
   await waitFor(() => expect(saves).toBe(2));
   const calls = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
-  expect((calls[1].args.config as RecognitionConfig).speaker_processing_mode).toBe("during_recording");
+  expect((calls[1].args.choice as RecognitionChoice).speaker_processing_mode).toBe("during_recording");
   await waitFor(() => expect(screen.queryByText("Saving…")).toBeNull());
   expect(saved.speaker_source).toBe("nemotron");
   expect(saved.speaker_processing_mode).toBe("during_recording");
@@ -953,7 +1101,7 @@ for (const failure of ["result", "rejected"] as const) {
     await waitFor(() => expect(saves).toBe(2));
     await waitFor(() => expect(screen.queryByText(new RegExp(message))).toBeNull());
     const calls = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
-    expect((calls[1].args.config as RecognitionConfig).speaker_processing_mode).toBe("during_recording");
+    expect((calls[1].args.choice as RecognitionChoice).speaker_processing_mode).toBe("during_recording");
   });
 }
 
@@ -978,7 +1126,7 @@ test("model keys move focus, wrap, and save the selected model", async () => {
     await waitFor(() => {
       const saves = tauri.calls.filter((call) => call.cmd === "set_recognition_defaults");
       expect(saves).toHaveLength(before + 1);
-      expect((saves[saves.length - 1].args.config as RecognitionConfig).asr_model).toBe(id);
+      expect((saves[saves.length - 1].args.choice as RecognitionChoice).asr_model).toBe(id);
     });
   }
 });
