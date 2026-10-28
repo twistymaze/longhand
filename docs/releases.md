@@ -62,7 +62,7 @@ git-cliff applies only the rules in `cliff.toml`, and gives the commits as JSON 
 |---|---|
 | `changelog.json` | The data of the changelog. Each build contains it: What's new in Settings > About shows the recent months. The update window reads it from the offered release to list what the update adds. It is an asset of each release. |
 | `CHANGELOG.md` | The full changelog as of that release. It is an asset of each release. |
-| `index.html` | The page at https://twistymaze.github.io/longhand/, with the changelog of the latest release. |
+| `index.html` | The page at https://twistymaze.github.io/longhand/changelog/, with the changelog of the latest release. |
 
 A local build makes its own `changelog.json` (`scripts/changelog.ts local`, in `beforeBuildCommand`) when git-cliff and the `v1.0.0` tag are available. Otherwise, What's new shows only the link to the page. A release build without a changelog fails.
 
@@ -153,6 +153,14 @@ Do these steps once, in this order. Do a step again only to replace a credential
 A wrong secret makes `release-build` fail at the certificate import or at notarization, and nothing publishes.
 
 5. **Turn on GitHub Pages.** In `twistymaze/longhand`, go to Settings → Pages → Build and deployment, and set Source to "GitHub Actions". The `changelog-pages` job deploys the [changelog](#changelog) page there. Without this setting, the job fails and the CI run still succeeds.
+
+   To show the page on a custom domain, for example `longhand.ewal.dev`:
+
+   1. At the DNS provider, add a `CNAME` record from the domain to `twistymaze.github.io`. On Cloudflare, set the record to "DNS only" until GitHub has issued the certificate.
+   2. In Settings → Pages → Custom domain, enter the domain and save. When the DNS check passes, select "Enforce HTTPS".
+   3. Optional: verify the domain in the organization settings (Settings → Pages → Verified domains), so that no other repository can use it.
+
+   The app and the docs keep the `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`). GitHub sends that address on to the custom domain, so a change of the custom domain needs no code change and no new build. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
 
 ## Expiry dates
 

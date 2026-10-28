@@ -92,7 +92,7 @@ describe("RecentChangesWindow", () => {
     expect(screen.queryAllByRole("heading")).toEqual([]);
     expect(screen.getAllByRole("button")).toHaveLength(1);
     await userEvent.setup().click(link);
-    await waitFor(() => expect(opened(tauri)).toEqual(["https://twistymaze.github.io/longhand/"]));
+    await waitFor(() => expect(opened(tauri)).toEqual(["https://twistymaze.github.io/longhand/changelog/"]));
   });
 
   test("the window shows no version number", async () => {

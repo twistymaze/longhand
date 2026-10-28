@@ -12,7 +12,10 @@
 // package install.
 
 export const REPOSITORY = "twistymaze/longhand";
-export const PAGES_URL = "https://twistymaze.github.io/longhand/";
+/// The changelog page. Builds keep this address, so it stays on github.io:
+/// GitHub sends it on to the custom domain that the Pages settings name. A
+/// change of that domain needs no change here (docs/releases.md, setup step 5).
+export const PAGES_URL = "https://twistymaze.github.io/longhand/changelog/";
 
 /// The format of `changelog.json`. A reader that gets another number treats
 /// the changelog as not available. Change it only with the readers in

@@ -844,9 +844,19 @@ jobs:
           name: release-changelog
           path: ${{ runner.temp }}/changelog
 
+      # The page is at /changelog/ (PAGES_URL in scripts/lib/changelog.ts),
+      # so the root of the site stays free. Until the root has its own page,
+      # it sends the browser to the changelog.
+      - name: Make the site
+        run: |
+          site="$RUNNER_TEMP/site"
+          mkdir -p "$site/changelog"
+          cp "$RUNNER_TEMP/changelog/index.html" "$site/changelog/index.html"
+          printf '%s\n' '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0; url=changelog/"><title>Longhand</title><a href="changelog/">Longhand changelog</a>' > "$site/index.html"
+
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
         with:
-          path: ${{ runner.temp }}/changelog
+          path: ${{ runner.temp }}/site
 
       - id: deploy
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
