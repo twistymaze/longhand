@@ -4,7 +4,7 @@
   "author": {
     "name": "Erv Walter"
   },
-  "homepage": "https://github.com/twistymaze/longhand",
+  "homepage": "https://longhand.md",
   "repository": "https://github.com/twistymaze/longhand",
   "license": "MIT",
   "keywords": ["longhand", "notes", "transcripts", "summaries"],
@@ -15,7 +15,7 @@
     "developerName": "Erv Walter",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
-    "websiteURL": "https://github.com/twistymaze/longhand",
+    "websiteURL": "https://longhand.md",
     "defaultPrompt": [
       "List my Longhand notes from last week",
       "Add the tag Person::Nathan to my notes about Nathan"

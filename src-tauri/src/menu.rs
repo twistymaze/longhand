@@ -16,15 +16,14 @@ const CHECK_FOR_UPDATES: &str = "app-check-updates";
 /// The data for the standard macOS About panel (R9–R13 of the About Longhand
 /// plan). AppKit shows "Version <version> (<short version>)", so the short
 /// version holds the commit, as in the About pane. The credits text is plain
-/// text, so the repository address cannot be a link there.
+/// text, so the website address cannot be a link there.
 fn about_metadata(version: &str, commit: Option<String>) -> AboutMetadata<'static> {
     AboutMetadata {
         version: Some(version.to_string()),
         short_version: Some(commit.unwrap_or_else(|| "local build".to_string())),
         copyright: Some("Copyright © 2026 Erv Walter".to_string()),
         credits: Some(
-            "Longhand is a note-taking app for meetings and conversations.\n\ngithub.com/twistymaze/longhand"
-                .to_string(),
+            "Longhand is a note-taking app for meetings and conversations.\n\nlonghand.md".to_string(),
         ),
         ..Default::default()
     }
@@ -114,9 +113,7 @@ mod tests {
         assert_eq!(m.copyright.as_deref(), Some("Copyright © 2026 Erv Walter"));
         assert_eq!(
             m.credits.as_deref(),
-            Some(
-                "Longhand is a note-taking app for meetings and conversations.\n\ngithub.com/twistymaze/longhand"
-            )
+            Some("Longhand is a note-taking app for meetings and conversations.\n\nlonghand.md")
         );
     }
 }

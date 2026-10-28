@@ -4,7 +4,7 @@ Longhand is a note-taking app for meetings and conversations. You write the note
 
 Recording and transcription happen on your computer. Your notes are files that you own, and you decide which AI service, if any, sees them.
 
-Longhand is a young project. You are welcome to follow along.
+Longhand is a young project. You are welcome to follow along. The website is [longhand.md](https://longhand.md).
 
 ## The idea
 

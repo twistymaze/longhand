@@ -83,6 +83,13 @@ describe("the Longhand section", () => {
     expect(opened(tauri)).toEqual(["https://github.com/twistymaze/longhand/blob/main/LICENSE"]);
   });
 
+  test("the website link opens longhand.md", async () => {
+    const tauri = mock();
+    render(<About models={models} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Website.*opens in your browser/ }));
+    expect(opened(tauri)).toEqual(["https://longhand.md"]);
+  });
+
   test("the source code link opens the repository", async () => {
     const tauri = mock();
     render(<About models={models} />);
