@@ -68,7 +68,8 @@ A changelog file that the PR author or a CI job commits causes other problems. E
 
 **Update window**
 
-- R13. When the update window offers a new version, it also lists the changes in the offered release that are not in the running build, grouped as in R3 and R4. These are the changes after the commit of the running build, in the order of `main`. The window does not compare line text. The data behind the list keeps the commit of each change; R6 applies only to the text that the user sees.- R14. When the app cannot get that list, the window shows a link to the full changelog in place of the list. Install and Relaunch and Remind Me Later work as before.
+- R13. When the update window offers a new version, it also lists the changes in the offered release that are not in the running build, grouped as in R3 and R4. These are the changes after the commit of the running build, in the order of `main`. The window does not compare line text. The data behind the list keeps the commit of each change; R6 applies only to the text that the user sees.
+- R14. When the app cannot get that list, the window shows a link to the full changelog in place of the list. Install and Relaunch and Remind Me Later work as before.
 - R15. The update window keeps its current text, which names the offered version and the installed version.
 - R16. A long list scrolls inside the update window. The window buttons stay visible, and each PR link can be reached with the keyboard.
 
