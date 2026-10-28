@@ -5,6 +5,7 @@ area: interface
 added: 2026-10-27
 source: "a conversation on 2026-10-27"
 related: [scheduled-release-batches, about-longhand-and-readme]
+plan: docs/plans/2026-10-28-0833-feat-monthly-changelog-plan.md
 ---
 
 # In-app change log
@@ -21,6 +22,9 @@ The release job updates all of this at each release, with no manual step.
 
 ## Why
 Each merged PR that changes the app makes a patch release, so one release has one or two small items. The value that the user gets is from many patches together, and a list of single patches is hard to read.
+
+## Scope of the plan (2026-10-28)
+The plan does a part of this idea. git-cliff generates a changelog by month from the PR titles after v1.0.0, with the rules in `cliff.toml`. Nothing is committed to `main`. Each build contains the changelog: Settings > About shows the last 6 months, and the update window shows the changes since the running build. The full changelog is on a GitHub Pages page and is a file of each release. The plan does not include the model-written summary of each month or the "since the last minor version" view. These stay open in this idea.
 
 ## Notes / Current state
 - Each release already has notes from git-cliff (`scripts/release-version.ts`, `cliff.toml`). `scripts/publish-release.ts` writes them to the GitHub release and to `notes` in the update manifest. The About pane has a "What's new" link to the GitHub releases page.
