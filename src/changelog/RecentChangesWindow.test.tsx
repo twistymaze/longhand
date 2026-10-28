@@ -95,6 +95,17 @@ describe("RecentChangesWindow", () => {
     await waitFor(() => expect(opened(tauri)).toEqual(["https://twistymaze.github.io/longhand/changelog/"]));
   });
 
+  // The link opens the github.io address, which GitHub sends on to the
+  // custom domain. The window never shows that address, so a change of the
+  // custom domain shows no wrong address.
+  test("the full-changelog link does not show its address", async () => {
+    mock({ available: false, head: null, entries: [] });
+    const { container } = render(<RecentChangesWindow />);
+    const link = await screen.findByRole("button", { name: /Full changelog/ });
+    expect(container.textContent).not.toMatch(/github\.io|https?:/);
+    expect(link.getAttribute("title")).toBeNull();
+  });
+
   test("the window shows no version number", async () => {
     mock(available([entry("2026-10", "Add tags"), entry("2026-10", "capture: Fix the timer (#72)", "Fixes", 72)]));
     render(<RecentChangesWindow />);
