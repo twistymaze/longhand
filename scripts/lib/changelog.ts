@@ -169,13 +169,15 @@ function byGroup<E extends Groupable>(entries: E[]): MonthGroup<E>[] {
   });
 }
 
-/// The entries by month, newest month first, then by group (`byGroup`).
+/// The entries by month, newest month first, then by group (`byGroup`). In a
+/// group, the newest line is first. `entries` is oldest first. The release
+/// notes keep their lines oldest first.
 export function byMonth<E extends Groupable>(entries: E[]): Month<E>[] {
   const keys = [...new Set(entries.map((entry) => entry.month))].sort().reverse();
   return keys.map((month) => ({
     month,
     name: monthName(month),
-    groups: byGroup(entries.filter((entry) => entry.month === month)),
+    groups: byGroup(entries.filter((entry) => entry.month === month).reverse()),
   }));
 }
 

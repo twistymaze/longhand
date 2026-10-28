@@ -1,7 +1,7 @@
 // The changelog entries by month and by group (R11, KTD3 of the monthly
 // changelog plan). `byMonth` comes from scripts/lib/changelog.ts, so the order
 // is the order of CHANGELOG.md: months newest first; in a month, the groups in
-// rank order; in a group, the lines in file order (oldest first). The update
+// rank order; in a group, the newest line first. The update
 // window (U6) uses `byMonth` for the changes that an update gives.
 
 import type { ChangelogEntry } from "../bindings";

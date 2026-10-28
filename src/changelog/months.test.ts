@@ -51,7 +51,7 @@ describe("recentMonths", () => {
 });
 
 describe("byMonth", () => {
-  test("puts the groups in rank order and the lines in file order", () => {
+  test("puts the groups in rank order and the lines newest first", () => {
     const entries = [
       entry("2026-10", "First fix", "Fixes"),
       entry("2026-10", "First new"),
@@ -62,7 +62,7 @@ describe("byMonth", () => {
     expect(months.map((m) => m.month)).toEqual(["2026-10", "2026-09"]);
     expect(months[0].groups.map((g) => [g.group, g.entries.map((e) => e.line)])).toEqual([
       ["New", ["First new"]],
-      ["Fixes", ["First fix", "Second fix"]],
+      ["Fixes", ["Second fix", "First fix"]],
     ]);
   });
 

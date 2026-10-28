@@ -87,6 +87,19 @@ test("the page escapes commit text and links the PR, and the Markdown and the da
   assert.ok(data.available && data.entries[0].line === "Stop <script> & \"quotes\" (#9)");
 });
 
+test("the Markdown puts the newest line of a group first", () => {
+  const releases: ContextRelease[] = [
+    { commits: [commit("a", FIX, "first fix", OCT_31_2330), commit("b", FIX, "second fix", OCT_31_2330 + 60)] },
+  ];
+  const text = markdown(changelog(releases, { id: "h", time: 0 }));
+  assert.ok(text.indexOf("- Second fix") < text.indexOf("- First fix"));
+});
+
+test("the release notes keep the lines of a group oldest first", () => {
+  const releases: ContextRelease[] = [{ commits: [commit("a", FIX, "first fix", 0), commit("b", FIX, "second fix", 60)] }];
+  assert.equal(releaseNotes(releases), "### Fixes\n\n- First fix\n- Second fix\n");
+});
+
 test("the release notes put each group under its heading with a blank line between", () => {
   const releases: ContextRelease[] = [
     { commits: [commit("a", OTHER, "update tauri", 0, "deps"), commit("b", FEAT, "add notes", 0), commit("c", FEAT, "more", 0)] },
