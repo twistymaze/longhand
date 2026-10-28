@@ -1,5 +1,6 @@
-// The page has five windows (KTD3). The Settings window loads it with
-// `?window=settings`, the licences window with `?window=licences`, the update
+// The page has six windows (KTD3). The Settings window loads it with
+// `?window=settings`, the licences window with `?window=licences`, the
+// Recent changes window with `?window=changelog`, the update
 // window with `?window=update`, the recording widget with `?window=widget`,
 // and the main window with no query.
 
@@ -7,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useInterfaceZoom } from "./lib/useInterfaceZoom";
 import { commands, events } from "./bindings";
 import { Home } from "./home/Home";
+import { RecentChangesWindow } from "./changelog/RecentChangesWindow";
 import { LicencesWindow } from "./licences/LicencesWindow";
 import { ScopeTonesProvider } from "./lib/Labels";
 import { notesSaved } from "./lib/notesSaves";
@@ -199,6 +201,8 @@ export default function App() {
       </ScopeTonesProvider>
     ) : which === "licences" ? (
       <LicencesWindow />
+    ) : which === "changelog" ? (
+      <RecentChangesWindow />
     ) : which === "update" ? (
       <UpdateWindow />
     ) : (

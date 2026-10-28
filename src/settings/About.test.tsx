@@ -32,7 +32,7 @@ const models = [model("a", "Speech A", "recognition"), model("b", "Voices B", "e
 
 // The mock opener and window commands, with a record of each call.
 function mock() {
-  return mockTauri({ "plugin:opener|open_url": () => null, open_licences: () => null });
+  return mockTauri({ "plugin:opener|open_url": () => null, open_licences: () => null, open_changelog: () => null });
 }
 
 const section = (name: string) => screen.getByRole("heading", { name }).closest("section") as HTMLElement;
@@ -83,16 +83,20 @@ describe("the Longhand section", () => {
     expect(opened(tauri)).toEqual(["https://github.com/twistymaze/longhand/blob/main/LICENSE"]);
   });
 
-  test("the source code and What's new links open the repository and its releases", async () => {
+  test("the source code link opens the repository", async () => {
     const tauri = mock();
     render(<About models={models} />);
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /^Source code.*opens in your browser/ }));
-    await user.click(screen.getByRole("button", { name: /^What's new.*opens in your browser/ }));
-    expect(opened(tauri)).toEqual([
-      "https://github.com/twistymaze/longhand",
-      "https://github.com/twistymaze/longhand/releases",
-    ]);
+    await userEvent.setup().click(screen.getByRole("button", { name: /^Source code.*opens in your browser/ }));
+    expect(opened(tauri)).toEqual(["https://github.com/twistymaze/longhand"]);
+  });
+
+  // Covers F1 and R10.
+  test("What's new opens the Recent changes window once and no browser page", async () => {
+    const tauri = mock();
+    render(<About models={models} />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "What's new" }));
+    await waitFor(() => expect(tauri.calls.filter((c) => c.cmd === "open_changelog")).toHaveLength(1));
+    expect(opened(tauri)).toEqual([]);
   });
 });
 

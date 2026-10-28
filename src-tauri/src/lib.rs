@@ -160,6 +160,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::window::open_settings,
             commands::window::close_settings_window,
             commands::window::open_licences,
+            commands::window::open_changelog,
             commands::build_info::build_info,
             commands::changelog::changelog,
             commands::updates::update_state,
@@ -426,8 +427,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         // Restore the main and Settings windows to their saved size and position.
-        // The licences window keeps its centred default, and the recording
-        // widget its place above the Dock (R3).
+        // The licences and Recent changes windows keep their centred default,
+        // and the recording widget its place above the Dock (R3).
         .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -437,6 +438,7 @@ pub fn run() {
                 )
                 .with_denylist(&[
                     window::LICENCES_WINDOW,
+                    window::CHANGELOG_WINDOW,
                     window::UPDATE_WINDOW,
                     widget::WIDGET_WINDOW,
                 ])

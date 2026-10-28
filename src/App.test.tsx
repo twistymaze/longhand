@@ -144,6 +144,21 @@ describe("App", () => {
     expect(screen.queryByRole("tab", { name: "General" })).toBeNull();
   });
 
+  test("the changelog query shows the Recent changes window and not the main window", async () => {
+    setURL("http://localhost/?window=changelog");
+    mockTauri({
+      changelog: () => ({
+        available: true,
+        head: { id: "head", time: 0 },
+        entries: [{ id: "a", time: 0, month: "2026-10", group: "New", rank: 0, line: "Add tags", pr: null }],
+      }),
+    });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "October 2026" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Notes" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "General" })).toBeNull();
+  });
+
   // Covers AE6 and KTD2.
   test("a recording that starts opens its page, and Back shows Home with the recording row", async () => {
     const status = { current: idle };

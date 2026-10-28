@@ -1371,6 +1371,13 @@ async openLicences() : Promise<void> {
     await TAURI_INVOKE("open_licences");
 },
 /**
+ * Show the Recent changes window, and build it first when it is not open
+ * (R10). Async for the same reason as `open_settings`.
+ */
+async openChangelog() : Promise<void> {
+    await TAURI_INVOKE("open_changelog");
+},
+/**
  * Return the version, the short commit and the release flag of this build.
  */
 async buildInfo() : Promise<BuildInfo> {

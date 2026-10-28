@@ -21,7 +21,6 @@ export function versionText(info: BuildInfo): string {
 export const longhandAddresses = {
   repository: "https://github.com/twistymaze/longhand",
   licence: "https://github.com/twistymaze/longhand/blob/main/LICENSE",
-  releases: "https://github.com/twistymaze/longhand/releases",
 };
 
 /// The two opening paragraphs of README.md (R2). Change them together.
@@ -31,8 +30,9 @@ const description = [
 ];
 
 /// A link that opens a page in the default browser (R6, KTD8 of the
-/// acknowledgements plan). The webview does not go to the page.
-function WebLink({ url, children }: { url: string; children: ReactNode }) {
+/// acknowledgements plan). The webview does not go to the page. The Recent
+/// changes window uses it too.
+export function WebLink({ url, children }: { url: string; children: ReactNode }) {
   return (
     <button
       type="button"
@@ -47,8 +47,8 @@ function WebLink({ url, children }: { url: string; children: ReactNode }) {
 }
 
 /// The first section: what Longhand is, the version and commit of the
-/// running build, the copyright and licence, and the source and release
-/// pages (R1–R8).
+/// running build, the copyright and licence, the source page, and What's
+/// new (R1–R8; R10 of the monthly changelog plan).
 function LonghandSection() {
   const [info, setInfo] = useState<BuildInfo | null>(null);
   useEffect(() => {
@@ -77,7 +77,14 @@ function LonghandSection() {
       <div className="settings-row px-4">
         <div className="flex flex-wrap gap-x-5 gap-y-1 py-2.5">
           <WebLink url={longhandAddresses.repository}>Source code</WebLink>
-          <WebLink url={longhandAddresses.releases}>What's new</WebLink>
+          {/* What's new opens Recent changes in its own window, not a web page (R10, KTD8). */}
+          <button
+            type="button"
+            onClick={() => void commands.openChangelog()}
+            className="rounded-[3px] font-semibold text-accent select-none hover:underline active:opacity-70 outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            What's new
+          </button>
         </div>
       </div>
     </Group>
