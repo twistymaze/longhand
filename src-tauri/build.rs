@@ -19,6 +19,8 @@ fn main() {
     // Must run after transcribe staging because that helper recreates transcribe-libs/.
     stage_vc_runtime_dlls();
 
+    stage_changelog();
+
     // On Windows the app manifest goes to the linker rather than into Tauri's
     // resource file, so every binary in this crate carries it, test binaries
     // included. Without the Common-Controls v6 dependency it declares, a test
@@ -41,6 +43,55 @@ fn embed_windows_manifest() {
     println!("cargo:rerun-if-changed={}", manifest.display());
     println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
     println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
+}
+
+/// Stage the changelog into `OUT_DIR/changelog.json`, so that the binary
+/// contains it (R12, KTD4 of the monthly changelog plan).
+///
+/// The source is the file that `LONGHAND_CHANGELOG` names. When the variable
+/// is not set, the source is `changelog/changelog.json`, which
+/// `beforeBuildCommand` writes for a local build. With no source file, a
+/// release build (`LONGHAND_RELEASE=1`) fails, and another build gets the
+/// "not available" changelog.
+fn stage_changelog() {
+    use std::path::PathBuf;
+
+    println!("cargo:rerun-if-env-changed=LONGHAND_CHANGELOG");
+    println!("cargo:rerun-if-env-changed=LONGHAND_RELEASE");
+
+    let folder = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("changelog");
+    println!("cargo:rerun-if-changed={}", folder.display());
+
+    let source = match std::env::var_os("LONGHAND_CHANGELOG").filter(|v| !v.is_empty()) {
+        Some(named) => {
+            let named = PathBuf::from(named);
+            // Watch the file only when it exists. Cargo runs the script again
+            // on each build when a watched path is missing.
+            if named.exists() {
+                println!("cargo:rerun-if-changed={}", named.display());
+            }
+            Some(named)
+        }
+        None => Some(folder.join("changelog.json")).filter(|local| local.exists()),
+    };
+
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("changelog.json");
+    match source {
+        Some(src) => {
+            std::fs::copy(&src, &dest)
+                .unwrap_or_else(|e| panic!("copy the changelog {}: {e}", src.display()));
+        }
+        None if std::env::var("LONGHAND_RELEASE").as_deref() == Ok("1") => {
+            panic!(
+                "LONGHAND_RELEASE=1 but the build has no changelog; set LONGHAND_CHANGELOG \
+                 to the changelog.json of the release"
+            );
+        }
+        None => {
+            std::fs::write(&dest, r#"{"format":1,"available":false}"#)
+                .unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
+        }
+    }
 }
 
 /// Stage the MSVC runtime DLLs into `transcribe-libs/` for app-local deployment.

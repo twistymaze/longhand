@@ -161,6 +161,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::window::close_settings_window,
             commands::window::open_licences,
             commands::build_info::build_info,
+            commands::changelog::changelog,
             commands::updates::update_state,
             commands::updates::check_for_updates,
             commands::updates::choose_update,

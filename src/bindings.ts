@@ -1377,6 +1377,12 @@ async buildInfo() : Promise<BuildInfo> {
     return await TAURI_INVOKE("build_info");
 },
 /**
+ * Return the changelog that this build contains.
+ */
+async changelog() : Promise<Changelog> {
+    return await TAURI_INVOKE("changelog");
+},
+/**
  * The current update state, which the window reads once at open, and
  * whether the window has the focus.
  */
@@ -1624,6 +1630,59 @@ position_ms: number;
  * jumping by the time spent away.
  */
 recorded_ms: number }
+/**
+ * A changelog, or "not available" (`available` is false, with no head and
+ * no entries).
+ */
+export type Changelog = { available: boolean; head: ChangelogHead | null; 
+/**
+ * The entries in the order of the file (the order of main).
+ */
+entries: ChangelogEntry[] }
+/**
+ * One change in the changelog.
+ */
+export type ChangelogEntry = { 
+/**
+ * The full commit id on main.
+ */
+id: string; 
+/**
+ * The commit time on main, in seconds since 1970 (UTC).
+ */
+time: number; 
+/**
+ * The month of the change, `YYYY-MM`, in UTC.
+ */
+month: string; 
+/**
+ * The heading of the group, for example "Fixes".
+ */
+group: string; 
+/**
+ * The position of the group heading: 0 is the first heading.
+ */
+rank: number; 
+/**
+ * The line text, the same as in the release notes.
+ */
+line: string; 
+/**
+ * The PR number of the line, or none.
+ */
+pr: number | null }
+/**
+ * The commit that the changelog was made from.
+ */
+export type ChangelogHead = { 
+/**
+ * The full commit id.
+ */
+id: string; 
+/**
+ * The commit time, in seconds since 1970 (UTC).
+ */
+time: number }
 /**
  * A choice in the update window. A close of the window is `Close`.
  */
