@@ -224,10 +224,13 @@ export function UpdateWindow() {
       // Without the focus, Return and Space do not click a button that has
       // the focus all the same. With it, Return chooses the default button,
       // and Space clicks the button that has the focus. A click from the
-      // pointer or from VoiceOver always chooses.
+      // pointer or from VoiceOver always chooses. When the user opened the
+      // window, Return and Space on a link in the list of changes open
+      // that link, not the default button.
       onKeyDown={(e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
         if (e.key === " " && withKey) return;
+        if (withKey && e.target instanceof Element && e.target.closest("section")) return;
         e.preventDefault();
         if (e.key === "Enter" && withKey && defaultAction) choose(defaultAction.choice);
       }}

@@ -14,30 +14,22 @@
 // Run it from the repository root. git-cliff applies the rules in cliff.toml,
 // and scripts/lib/changelog.ts writes every text (KTD1).
 
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { changelog, html, markdown, NOT_AVAILABLE, type Changelog } from "./lib/changelog.ts";
-import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
+import { run } from "./lib/spawn.ts";
 
 /// The first release. The changelog holds only the commits after it.
 export const FIRST_RELEASE = "v1.0.0";
-
-function run(program: string, args: string[], cwd: string): string {
-  const result = spawnSync(program, args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
-  if (result.error) throw new Error(`cannot run ${program}: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`${program} ${args.join(" ")} failed with exit code ${result.status}: ${result.stderr}`);
-  return result.stdout;
-}
 
 /// The changelog of the repository at `repository`, with the rules in `config`.
 export function readChangelog(repository: string, config: string): Changelog {
   // A shallow clone can read some history and have no v1.0.0 tag. Then the
   // changelog would be incomplete, so the tag must be there.
-  run("git", ["rev-parse", "--verify", "--quiet", `${FIRST_RELEASE}^{commit}`], repository);
-  const [id, time] = run("git", ["log", "-1", "--format=%H%n%ct"], repository).trim().split("\n");
+  run(["git", "rev-parse", "--verify", "--quiet", `${FIRST_RELEASE}^{commit}`], repository);
+  const [id, time] = run(["git", "log", "-1", "--format=%H%n%ct"], repository).trim().split("\n");
   const releases = JSON.parse(
-    run("git-cliff", ["--config", config, "--repository", repository, "--context", `${FIRST_RELEASE}..HEAD`], repository),
+    run(["git-cliff", "--config", config, "--repository", repository, "--context", `${FIRST_RELEASE}..HEAD`], repository),
   );
   return changelog(releases, { id, time: Number(time) });
 }

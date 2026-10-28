@@ -294,6 +294,15 @@ describe("the changes in an offer (U6 of the monthly changelog plan)", () => {
     expect(opened(tauri)).toEqual([]);
   });
 
+  test("in an offer that the user opened, Return on a PR line opens the PR page and chooses nothing", async () => {
+    const tauri = openOffer(() => [change("Fix the timer", 72)], true);
+    const line = await within(await area()).findByRole("button", { name: /Fix the timer/ });
+    line.focus();
+    await userEvent.setup().keyboard("{Enter}");
+    expect(opened(tauri)).toEqual([prAddress(72)]);
+    expect(choices(tauri)).toEqual([]);
+  });
+
   test("a click on a PR line opens the PR page", async () => {
     const tauri = openOffer(() => [change("Fix the timer", 72)]);
     await userEvent.setup().click(await within(await area()).findByRole("button", { name: /Fix the timer/ }));

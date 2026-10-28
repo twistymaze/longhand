@@ -16,11 +16,10 @@
 // the type or scope of a release type gives a major, and a `+` after the type
 // or scope of `feat` gives a minor (docs/releases.md).
 
-import { spawnSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { releaseNotes } from "./lib/changelog.ts";
-import { MAX_OUTPUT_BYTES } from "./lib/spawn.ts";
+import { run } from "./lib/spawn.ts";
 import { compareVersions } from "./lib/version.ts";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+)$/;
@@ -79,17 +78,6 @@ export function releaseFacts(tools: Tools): ReleaseFacts {
   const version = due && latest !== null ? raise(latest, bumped, tools.subjects(latest)) : bumped;
   const notes = due ? releaseNotes(JSON.parse(tools.cliff(["--context", "--unreleased", "--tag", `v${version}`]))) : null;
   return { due, version, notes };
-}
-
-function run(command: string[], cwd: string): string {
-  const [program, ...args] = command;
-  const result = spawnSync(program, args, { cwd, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES });
-  // spawnSync does not throw when it cannot start the program: it sets `error`.
-  if (result.error) throw new Error(`cannot run ${program}: ${result.error.message}`);
-  if (result.status !== 0) {
-    throw new Error(`${command.join(" ")} failed with exit code ${result.status}: ${result.stderr}`);
-  }
-  return result.stdout;
 }
 
 /// The real git and git-cliff in `repository`, with the configuration file `config`.

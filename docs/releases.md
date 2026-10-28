@@ -17,7 +17,7 @@ One CI run on `main` does the checks, the build and the publication. `.github/wo
 
 The tag and the release come into existence only after the macOS build succeeds. A failed build leaves no tag.
 
-After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it downloads the `changelog.json` of the release, builds the unsigned Windows NSIS installer with it on a standard GitHub-hosted Windows runner, and attaches the installer to the release. A release with no `changelog.json` gets no installer. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main`.
+After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it downloads the `changelog.json` of the release, builds the unsigned Windows NSIS installer with it on a standard GitHub-hosted Windows runner, and attaches the installer to the release. A release with no `changelog.json` gets no installer. A release from before the changelog builds its installer without one. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main`.
 
 CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run. When GitHub replaces a waiting Windows run, that release gets no installer.
 
