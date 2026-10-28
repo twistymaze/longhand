@@ -62,7 +62,7 @@ git-cliff applies only the rules in `cliff.toml`, and gives the commits as JSON 
 |---|---|
 | `changelog.json` | The data of the changelog. Each build contains it: What's new in Settings > About shows the recent months. The update window reads it from the offered release to list what the update adds. It is an asset of each release. |
 | `CHANGELOG.md` | The full changelog as of that release. It is an asset of each release. |
-| `index.html` | The page at https://twistymaze.github.io/longhand/changelog/, with the changelog of the latest release. |
+| `index.html` | The page at https://longhand.md/changelog/, with the changelog of the latest release. |
 
 A local build makes its own `changelog.json` (`scripts/changelog.ts local`, in `beforeBuildCommand`) when git-cliff and the `v1.0.0` tag are available. Otherwise, What's new shows only the link to the page. A release build without a changelog fails.
 
@@ -154,13 +154,14 @@ A wrong secret makes `release-build` fail at the certificate import or at notari
 
 5. **Turn on GitHub Pages.** In `twistymaze/longhand`, go to Settings → Pages → Build and deployment, and set Source to "GitHub Actions". The `changelog-pages` job deploys the [changelog](#changelog) page there. Without this setting, the job fails and the CI run still succeeds.
 
-   To show the page on a custom domain, for example `longhand.ewal.dev`:
+   The site uses the custom domain `longhand.md`. Its DNS is on Cloudflare. To set up a custom domain again, or to move to another one:
 
-   1. At the DNS provider, add a `CNAME` record from the domain to `twistymaze.github.io`. On Cloudflare, set the record to "DNS only" until GitHub has issued the certificate.
-   2. In Settings → Pages → Custom domain, enter the domain and save. When the DNS check passes, select "Enforce HTTPS".
-   3. Optional: verify the domain in the organization settings (Settings → Pages → Verified domains), so that no other repository can use it.
+   1. Verify the domain in the organization settings (Settings → Pages → Add a domain), so that no other repository can use it. GitHub gives a `TXT` record to add at the DNS provider.
+   2. At the DNS provider, add a `CNAME` record from the root (`@`) to `twistymaze.github.io`, and one from `www` to `twistymaze.github.io`. Cloudflare flattens the root `CNAME` into the GitHub addresses, both IPv4 and IPv6. Set both records to "DNS only": GitHub cannot issue the certificate for a proxied record. A DNS provider that cannot flatten a root record needs the A and AAAA records that GitHub lists in its custom domain documentation.
+   3. In Settings → Pages → Custom domain, enter the domain and save. GitHub can show "DNS check unsuccessful" for up to an hour after a DNS change, because it caches older answers. Check with `gh api repos/twistymaze/longhand/pages --jq .https_certificate.state`: `approved` means that the certificate is ready.
+   4. Select "Enforce HTTPS".
 
-   The app and the docs keep the `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`). GitHub sends that address on to the custom domain, so a change of the custom domain needs no code change and no new build. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
+   The app keeps the `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`), and GitHub sends it on to the custom domain. So a change of the custom domain needs no code change and no new build. The docs link to the custom domain. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
 
 ## Expiry dates
 
