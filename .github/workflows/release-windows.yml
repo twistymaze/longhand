@@ -146,13 +146,27 @@ jobs:
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: node scripts/prepare-nemo.ts
 
+      # The installer contains the same changelog as the macOS build of the
+      # release (KTD7 of the monthly changelog plan). This checkout has one
+      # commit and no git-cliff, so the step downloads the changelog.json of
+      # the release. A missing asset fails the step: a release build must
+      # have its changelog.
+      - name: Download the release changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          TAG: ${{ needs.find.outputs.tag }}
+        run: gh release download "$TAG" -R "$REPOSITORY" -p changelog.json -D "$RUNNER_TEMP/changelog"
+
       # No LONGHAND_RELEASE: Windows builds get no updates yet (R19). The
-      # commit shows in About.
+      # commit shows in About. LONGHAND_CHANGELOG puts the changelog of the
+      # release into the binary.
       - name: Tauri build (Windows installer, release)
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
           LONGHAND_BUILD_COMMIT: ${{ needs.find.outputs.commit }}
+          LONGHAND_CHANGELOG: ${{ runner.temp }}/changelog/changelog.json
         # PowerShell removes an unquoted `--` before npm.ps1 gets the
         # arguments, so npm reads the Tauri flags as its own. Quote it.
         run: |
