@@ -614,6 +614,15 @@ jobs:
           mkdir -p "$RELEASE_FILES"
           node scripts/release-version.ts "$RELEASE_FILES/notes.md" | tee -a "$GITHUB_OUTPUT"
 
+      # The changelog of the release: changelog.json for the build and the
+      # release assets, CHANGELOG.md for the release assets, and index.html
+      # for GitHub Pages. The folder goes into the release-macos artifact
+      # with the other release files. The script fails when it cannot make
+      # the changelog, because a release must have its changelog.
+      - name: Release changelog
+        if: steps.version.outputs.due == 'true'
+        run: node scripts/changelog.ts write "$RELEASE_FILES/changelog"
+
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: steps.version.outputs.due == 'true'
 
@@ -680,7 +689,8 @@ jobs:
       # makes this build check for updates (KTD5). The transcribe-cpp build
       # reads TRANSCRIBE_CMAKE_ARGS. GGML_NATIVE=OFF builds the CPU code for
       # all Apple silicon, not for the CPU of the runner, so the app runs on
-      # an M1 when the runner has a newer chip.
+      # an M1 when the runner has a newer chip. LONGHAND_CHANGELOG puts the
+      # changelog of this release into the binary (KTD4).
       - name: Tauri build (release, notarized)
         if: steps.version.outputs.due == 'true'
         env:
@@ -691,6 +701,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           LONGHAND_BUILD_COMMIT: ${{ github.sha }}
           LONGHAND_RELEASE: "1"
+          LONGHAND_CHANGELOG: ${{ runner.temp }}/release/changelog/changelog.json
         run: npm run tauri -- build --bundles app,dmg --config "$RUNNER_TEMP/release.json"
 
       - name: Notarize and staple the DMG
@@ -763,6 +774,9 @@ jobs:
       contents: write
       actions: read
     timeout-minutes: 15
+    # changelog-pages runs only when this job published a release.
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -778,11 +792,50 @@ jobs:
           name: release-macos
           path: ${{ runner.temp }}/release
 
+      # The script prints `published=<true|false>` for GITHUB_OUTPUT and
+      # writes its other lines to stderr. With `shell: bash`, a failed script
+      # fails the pipe
+      # (docs/solutions/workflow-issues/default-run-shell-hides-pipe-failures.md).
       - name: Publish
+        id: publish
+        shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.release-build.outputs.version }}
         run: |
           files="$RUNNER_TEMP/release"
           node scripts/publish-release.ts publish "$VERSION" "$(ls "$files"/*.dmg)" \
-            "$files/Longhand.app.tar.gz" "$files/Longhand.app.tar.gz.sig" "$files/notes.md"
+            "$files/Longhand.app.tar.gz" "$files/Longhand.app.tar.gz.sig" "$files/notes.md" \
+            "$files/changelog/changelog.json" "$files/changelog/CHANGELOG.md" | tee -a "$GITHUB_OUTPUT"
+
+  # Deploys the changelog page to GitHub Pages (KTD6). It runs only when
+  # release-publish published a release. A failed deploy does not fail the
+  # CI run, because release-windows.yml starts only after a successful CI
+  # run. The next release deploys the page again. The workflow-level
+  # concurrency group runs the CI runs on main one at a time, so an older
+  # deploy cannot replace a newer page.
+  changelog-pages:
+    name: Changelog page
+    needs: [release-build, release-publish]
+    if: needs.release-publish.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-macos
+          path: ${{ runner.temp }}/release
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
+        with:
+          path: ${{ runner.temp }}/release/changelog
+
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
