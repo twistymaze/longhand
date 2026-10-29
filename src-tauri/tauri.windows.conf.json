@@ -3,6 +3,11 @@
     "resources": {
       "transcribe-libs": ".",
       "nemo-runtime": "nemo-runtime"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
     }
   }
 }
