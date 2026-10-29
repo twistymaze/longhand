@@ -142,7 +142,7 @@ Each one is answered in the Planning Contract:
 
 ### Sources / Research
 
-- Existing idea: `docs/ideas/next/windows-preview-builds-and-updates.md`.
+- Existing idea: `docs/ideas/done/windows-preview-builds-and-updates.md`.
 - Current flow: `docs/releases.md`, `.github/workflows/release-windows.yml`, `scripts/publish-release.ts` (writes only `darwin-aarch64`), `src-tauri/src/commands/build_info.rs` (the `LONGHAND_RELEASE` flag), `src-tauri/src/managers/updates.rs` and `src-tauri/src/managers/updates/flow.rs` (the busy rule and the install moments).
 - Earlier plans that deferred Windows updates: `docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md`, `docs/plans/2026-10-11-1323-ci-releases-in-source-repository-plan.md`.
 - Microsoft: [Artifact Signing quickstart](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart), [FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq), [signing integrations](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations), [GitHub action](https://github.com/azure/artifact-signing-action).
@@ -401,7 +401,7 @@ Install moments on Windows (KTD7):
 **Files:**
 - `docs/releases.md` (release flow, one-time setup with Appendix A as the Artifact Signing steps, the Expiry dates table, installing the first Windows build, the Windows bullet in "When a release does not publish")
 - `CONCEPTS.md` (Release entry)
-- `docs/ideas/next/windows-preview-builds-and-updates.md` (Notes)
+- `docs/ideas/done/windows-preview-builds-and-updates.md` (Notes)
 
 **Approach:** Move Appendix A into `docs/releases.md` with the final variable names, and state the `main`-only rule of the `release` environment as a condition of signing.
 
