@@ -2834,7 +2834,7 @@ tauri-plugin-single-instance 2.5.4
     Copyright (c) 2017 - Present The Tauri Programme in the Commons Conservancy
 tauri-plugin-store 2.5.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-plugin-updater 2.14.0
+tauri-plugin-updater 2.14.1
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-window-state 2.5.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
