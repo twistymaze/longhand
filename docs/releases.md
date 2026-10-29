@@ -13,7 +13,7 @@ One CI run on `main` does the checks, the build and the publication. `.github/wo
    3. The job builds the app with that version and with the changelog (`LONGHAND_CHANGELOG`), and signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature.
    4. The job uploads the DMG, the archive, the signature, the notes and the changelog files as a workflow artifact.
 3. **`release-publish`** runs on `ubuntu-latest` only when a release is due. It and the `attach` job of `release-windows.yml` are the only jobs that can write to the repository. It has no secrets and runs no build code. `scripts/publish-release.ts publish` creates a draft release with the tag `v<version>` on the built commit, uploads the 4 files, `latest.json`, `changelog.json` and `CHANGELOG.md`, and then publishes the draft as the latest release.
-4. **`changelog-pages`** runs only when `release-publish` published a release. It deploys the changelog page to GitHub Pages. A failed deploy does not fail the CI run, so the Windows installer still builds. The next release deploys the page again.
+4. **`changelog-pages`** ("Website") deploys the website to GitHub Pages: the landing page from `site/` at the root, and the changelog page at `/changelog/`. It runs when `release-publish` published a release. It also runs when a push to `main` changed `site/` or `scripts/site.ts` (the `site-changed` job finds this) and the checks passed; then it makes the changelog page from the `changelog.json` of the latest release. A failed deploy does not fail the CI run, so the Windows installer still builds. The next release or website change deploys the site again.
 
 The tag and the release come into existence only after the macOS build succeeds. A failed build leaves no tag.
 
@@ -152,7 +152,7 @@ Do these steps once, in this order. Do a step again only to replace a credential
 
 A wrong secret makes `release-build` fail at the certificate import or at notarization, and nothing publishes.
 
-5. **Turn on GitHub Pages.** In `twistymaze/longhand`, go to Settings → Pages → Build and deployment, and set Source to "GitHub Actions". The `changelog-pages` job deploys the [changelog](#changelog) page there. Without this setting, the job fails and the CI run still succeeds.
+5. **Turn on GitHub Pages.** In `twistymaze/longhand`, go to Settings → Pages → Build and deployment, and set Source to "GitHub Actions". The `changelog-pages` job deploys the website and the [changelog](#changelog) page there. Without this setting, the job fails and the CI run still succeeds.
 
    The site uses the custom domain `longhand.md`. Its DNS is on Cloudflare. To set up a custom domain again, or to move to another one:
 
@@ -161,7 +161,7 @@ A wrong secret makes `release-build` fail at the certificate import or at notari
    3. In Settings → Pages → Custom domain, enter the domain and save. GitHub can show "DNS check unsuccessful" for up to an hour after a DNS change, because it caches older answers. Check with `gh api repos/twistymaze/longhand/pages --jq .https_certificate.state`: `approved` means that the certificate is ready.
    4. Select "Enforce HTTPS".
 
-   The app keeps the `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`), and GitHub sends it on to the custom domain. So a change of the custom domain needs no code change and no new build. The docs link to the custom domain. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
+   The app opens the changelog at its `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`), and GitHub sends it on to the custom domain. The app's Website link and the About panel name `longhand.md` itself, so a change of the custom domain needs a code change there. The docs link to the custom domain. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
 
 ## Expiry dates
 
