@@ -13,9 +13,11 @@ import "../index.css";
 
 // Only a scene of `scenes` is valid, so a wrong name stops the page with an
 // error, which scripts/screenshots.ts reports.
+// The name comes from the list of scenes, not from the query.
 const requested = new URLSearchParams(window.location.search).get("scene") ?? "library";
-if (!Object.prototype.hasOwnProperty.call(scenes, requested)) throw new Error(`screenshots: no scene named ${requested}`);
-const scene = scenes[requested as SceneName]();
+const name = (Object.keys(scenes) as SceneName[]).find((key) => key === requested);
+if (!name) throw new Error(`screenshots: no scene named ${requested}`);
+const scene = scenes[name]();
 mockTauri(scene.handlers);
 
 // The app draws its title strip on macOS only (main.tsx).
