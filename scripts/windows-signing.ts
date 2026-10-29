@@ -13,14 +13,17 @@ import { basename, join } from "node:path";
 
 const TIMESTAMP_SERVER = "http://timestamp.acs.microsoft.com";
 
-// Files from other vendors that the installer contains, with the publisher
-// that signs them. A listed file that WINDOWS_PUBLISHER signs also passes.
-const VENDOR_FILES: { name: RegExp; publisher: string }[] = [
-  { name: /^msvcp140.*\.dll$/i, publisher: "Microsoft Corporation" },
-  { name: /^vcruntime140.*\.dll$/i, publisher: "Microsoft Corporation" },
-  { name: /^vcomp140.*\.dll$/i, publisher: "Microsoft Corporation" },
+// Files from other vendors that the installer contains, with the publishers
+// that sign them. A listed file that WINDOWS_PUBLISHER signs also passes.
+// Microsoft signs the VC runtime redistributable of the windows-latest runner
+// as "Microsoft Windows Software Compatibility Publisher" (seen in v1.2.13).
+const MICROSOFT = ["Microsoft Corporation", "Microsoft Windows Software Compatibility Publisher"];
+const VENDOR_FILES: { name: RegExp; publishers: string[] }[] = [
+  { name: /^msvcp140.*\.dll$/i, publishers: MICROSOFT },
+  { name: /^vcruntime140.*\.dll$/i, publishers: MICROSOFT },
+  { name: /^vcomp140.*\.dll$/i, publishers: MICROSOFT },
   // The Vulkan loader from the LunarG runtime archive (prepare-vulkan-runtime.ps1).
-  { name: /^vulkan-1\.dll$/i, publisher: "LunarG, Inc." },
+  { name: /^vulkan-1\.dll$/i, publishers: ["LunarG, Inc."] },
 ];
 
 export type Signature = { status: string; subject: string; timestamped: boolean };
@@ -76,8 +79,8 @@ export function signatureFailure(file: string, signature: Signature, publisher: 
   const actual = publisherName(signature.subject);
   if (actual === publisher) return undefined;
   const vendor = VENDOR_FILES.find(item => item.name.test(basename(file)));
-  if (vendor && actual === vendor.publisher) return undefined;
-  const expected = vendor ? `${publisher} or ${vendor.publisher}` : publisher;
+  if (vendor && actual !== undefined && vendor.publishers.includes(actual)) return undefined;
+  const expected = vendor ? [publisher, ...vendor.publishers].join(" or ") : publisher;
   return `publisher ${actual ?? "(none)"}, expected ${expected}`;
 }
 

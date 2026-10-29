@@ -16,7 +16,8 @@ function fixture() {
 const PUBLISHER = "Ervin Walter";
 const OWN = "CN=Ervin Walter, O=Ervin Walter, L=Seattle, S=Washington, C=US";
 const MICROSOFT = "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US";
-const LUNARG = "CN=\"LunarG, Inc.\", O=\"LunarG, Inc.\", L=Boulder, S=Colorado, C=US";
+const MICROSOFT_COMPATIBILITY = "CN=Microsoft Windows Software Compatibility Publisher, O=Microsoft Corporation, L=Redmond, S=Washington, C=US";
+const LUNARG ="CN=\"LunarG, Inc.\", O=\"LunarG, Inc.\", L=Boulder, S=Colorado, C=US";
 const OTHER = "CN=Other Vendor, O=Other Vendor, C=US";
 function signed(subject: string): Signature {
   return { status: "Valid", subject, timestamped: true };
@@ -78,6 +79,8 @@ test("Longhand's own file with another publisher fails", () => {
 test("a Microsoft-signed VC runtime DLL passes with its own publisher", () => {
   for (const name of ["msvcp140.dll", "MSVCP140_1.dll", "vcruntime140.dll", "vcruntime140_1.dll", "VCOMP140.DLL"]) {
     assert.equal(signatureFailure(name, signed(MICROSOFT), PUBLISHER), undefined, name);
+    // The publisher of the redistributable on the windows-latest runner (v1.2.13).
+    assert.equal(signatureFailure(name, signed(MICROSOFT_COMPATIBILITY), PUBLISHER), undefined, name);
   }
   assert.notEqual(signatureFailure("msvcp140.dll", signed(OTHER), PUBLISHER), undefined);
 });
