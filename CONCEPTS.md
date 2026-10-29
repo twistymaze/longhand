@@ -191,7 +191,7 @@ The largest amount of text, in tokens, that the summary model accepts in one req
 A piece of a transcript that does not fit one summary request, summarized alone and then merged with the others. The UI says "Summarizing part 5 of 16". It is not a live transcript "Part".
 
 ### Reply allowance
-The most tokens that the summary model may write in reply to one request, reasoning included (`max_tokens`). It is a maximum, not a cost. When a reply stops at its allowance, Longhand sends the request again with a larger allowance. In code it is the reply reserve.
+The most tokens that the summary model may write in reply to one request, reasoning included (`max_tokens`). It is a maximum, not a cost. When a reply stops at its allowance and a larger allowance is possible, Longhand sends the request again with the larger allowance. In code it is the reply reserve.
 
 ### Thinking
 The AI provider setting that tells a reasoning model how much to reason before it writes: Model default, Off, Low, Medium or High. Model default sends no reasoning control.

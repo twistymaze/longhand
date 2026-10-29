@@ -22,7 +22,7 @@ execution: code
 
 ### Summary
 
-Longhand gives each summary request a reply allowance from the room that is left in the context, instead of a fixed maximum of 8,192 tokens. Each AI provider gets two advanced settings: Thinking, and Requests at the same time. Rig builds the OpenAI-compatible requests natively, so that Rig handles the differences between providers.
+Longhand gives each summary request a reply allowance from the room that is left in the context, instead of a fixed maximum of 8,192 tokens. Each AI provider gets two advanced settings: Thinking, and Requests at the same time. Rig builds the request body for every provider, so that Rig handles the differences between providers.
 
 ### Problem Frame
 
@@ -38,28 +38,31 @@ The Rig migration (`docs/plans/2026-10-18-0955-feat-rig-engine-and-provider-pres
 
 ### Key Decisions
 
-- **One feature, four parts.** The reply allowance, Thinking, requests built by Rig and parallel summary parts ship in one PR, because together they make local summaries fast. Governs R1–R15. (session-settled: user-directed — chosen over the reply allowance, Thinking and Rig requests without parallel summary parts: the user wants all four now)
+- **One feature, four parts.** The reply allowance, Thinking, requests built by Rig and parallel summary parts ship in one PR, because together they make local summaries fast. Governs R1–R17. (session-settled: user-directed — chosen over the reply allowance, Thinking and Rig requests without parallel summary parts: the user wants all four now)
 - **The reply allowance comes from the room left, with limits.** The rule replaces a fixed maximum that did not follow the context limit. Governs R1, R2, R3. (session-settled: user-directed — chosen over a larger fixed fraction with a higher ceiling and over a user setting for the maximum reply: the user wants the allowance to follow the context, with a buffer of at most 90% of the context)
-- **Thinking is a per-provider setting with a default per provider kind.** Local providers start at Low because a summary gains little from long reasoning; hosted providers start at Model default so that their requests do not change. Governs R5, R6, R8. (session-settled: user-approved — chosen over Model default everywhere, over no setting with Low for local providers, and over Off for local providers: the user accepted Low as the local default)
+- **Thinking is a per-provider setting with a default per provider kind.** LM Studio and Ollama start at Low because a summary gains little from long reasoning; every other provider starts at Model default so that its requests do not change. Governs R5, R6, R8. (session-settled: user-approved — chosen over Model default everywhere, over no setting with Low for local providers, and over Off for local providers: the user accepted Low as the local default)
 - **Requests at the same time is a per-provider setting.** Longhand does not know a server's slot count, and a request beyond the server's capacity waits in the server's queue. Governs R12, R13. (session-settled: user-approved — chosen over fixed numbers with no setting, over a count reported by the server, and over a default of 1 everywhere)
 - **Rig builds the requests.** Rig owns the differences between provider APIs; Longhand keeps its prompts, chunking and merge. The byte-parity rule of the Rig migration (R2 and KTD3 of that plan) ends here. Governs R9, R10, R11. (session-settled: user-directed — chosen over keeping hand-built request bodies: the user said that the purpose of Rig was to let Rig handle the complexity of the LLM APIs)
 - **The new settings are advanced.** Most users never change them, because the defaults suit each provider kind. Governs R15.
-- **A refused thinking level is shown, not replaced.** If Longhand silently went back to Model default, it would ignore the user's choice. Governs R7.
+- **A refused level that the user chose is shown, not replaced; a refused automatic Low is dropped.** If Longhand silently went back to Model default, it would ignore the user's choice. The automatic Low is Longhand's choice, so its refusal is a problem that Longhand corrects without a message. Governs R7, R17. (session-settled: user-directed — chosen over sending Low only to models that report thinking support, and over Model default for Ollama: it works on every server and keeps Low for Ollama reasoning models)
+- **Local servers send one request at a time by default.** LM Studio shares one context cache across its slots, and Ollama needs a full context in memory for each parallel request, so two full-size summary parts at the same time do not fit. Governs R12. (session-settled: user-directed — chosen over smaller parts when requests run in parallel, and over a default of 2 with a note in the help text: the split stays unchanged and a user with more room can raise the setting)
 
 ### Requirements
 
 **Reply allowance**
 
-- R1. The reply allowance of a summary request is the context that is left after the prompt, but not more than 90% of the context limit, and not more than the model's output maximum when Longhand knows it.
-- R2. For a hosted provider whose output maximum Longhand does not know, the reply allowance stays below a fixed safe value, so that the provider does not refuse the request.
+- R1. The reply allowance of a summary request is the context that is left after the prompt estimate with its safety margin, but not more than 90% of the context limit, and not more than the model's output maximum when Longhand knows it.
+- R2. For every provider other than LM Studio and Ollama whose output maximum Longhand does not know, the reply allowance stays below a fixed safe value, so that the provider does not refuse the request.
 - R3. Whether a note goes in one request or in summary parts does not change: the split decision uses the same minimum reply room as today, and only the allowance of each request grows.
-- R4. When a reply is cut off at its allowance, Longhand still retries with a larger allowance, as today.
+- R4. When a reply is cut off at its allowance, Longhand retries only when R1 and R2 permit a larger allowance. Otherwise the summary fails at once with a message that names the model's context and the Thinking setting.
+- R16. When a summary request reaches the reply deadline, the summary fails with a message that names the Thinking setting, and Longhand does not send that request again.
 
 **Thinking**
 
 - R5. Each AI provider has a Thinking setting with the values Model default, Off, Low, Medium and High. Model default sends no reasoning control.
 - R6. Thinking starts at Low for LM Studio and Ollama, also for entries that exist before the update, and at Model default for every other provider. A new install and an update give the same defaults.
-- R7. When the model or the provider refuses the chosen Thinking level, the summary fails with a message that names the Thinking setting and asks the user to choose another level.
+- R7. When the model or the provider refuses a Thinking level that the user chose, the summary fails with a message that names the Thinking setting and asks the user to choose another level.
+- R17. When the model or the provider refuses the automatic Low of R6, Longhand sends the request again without a reasoning control and shows no message. It keeps that result for this model, so later requests to the same model send no reasoning control.
 - R8. The Thinking setting applies to every request of a summary, including the summary parts, the merges and the title request.
 
 **Requests built by Rig**
@@ -70,7 +73,7 @@ The Rig migration (`docs/plans/2026-10-18-0955-feat-rig-engine-and-provider-pres
 
 **Parallel summary parts**
 
-- R12. Each AI provider has a Requests at the same time setting. Its default is 4 for OpenAI, Anthropic, Gemini and OpenRouter, 2 for LM Studio and Ollama, and 1 for Custom.
+- R12. Each AI provider has a Requests at the same time setting. Its default is 4 for OpenAI, Anthropic, Gemini and OpenRouter, and 1 for LM Studio, Ollama and Custom.
 - R13. A summary in parts sends up to that number of summary parts at the same time, and also up to that number of merge groups in each merge layer.
 - R14. The summary progress counts finished summary parts and never goes back while the requests run.
 
@@ -86,7 +89,9 @@ The Rig migration (`docs/plans/2026-10-18-0955-feat-rig-engine-and-provider-pres
 - AE4. **Covers R6.** Given an LM Studio entry saved before the update, after the update its Thinking setting shows Low, and its next summary request asks for low reasoning. An OpenRouter entry shows Model default, and its request has no reasoning field.
 - AE5. **Covers R7.** Given Thinking: Off and a hosted model that cannot turn reasoning off, the summary fails with a message that names the Thinking setting. Longhand does not send the request again without the level.
 - AE6. **Covers R10.** Given Custom with Thinking: Low, the request contains `"reasoning_effort": "low"`. Given Custom with Model default, the request contains no reasoning field.
-- AE7. **Covers R12, R13, R14.** Given LM Studio with Requests at the same time 2 and a transcript in 5 summary parts, at most 2 requests run at any moment, and the progress goes from 0 to 5 parts without going back.
+- AE7. **Covers R12, R13, R14.** Given OpenRouter with the default Requests at the same time of 4 and a transcript in 5 summary parts, at most 4 requests run at any moment, and the progress goes from 0 to 5 parts without going back. Given LM Studio with its default of 1, the summary parts go one at a time, as today.
+- AE9. **Covers R6, R17.** Given an Ollama entry saved before the update with a model that cannot think, the first summary after the update has its automatic Low refused, is sent again without a reasoning control, and succeeds with no message. The next summary with that model sends no reasoning control.
+- AE10. **Covers R4.** Given a note in one request whose reply is cut off at an allowance of 90% of the context, the summary fails at once with a message that names the context and the Thinking setting, and the request is not sent again.
 - AE8. **Covers R15.** Given the AI Provider pane with LM Studio active, the Advanced group is closed. When the user opens it, it shows Context limit, Thinking and Requests at the same time.
 
 ### Success Criteria
