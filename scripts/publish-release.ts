@@ -145,11 +145,11 @@ export async function publish(
   log: (line: string) => void = console.log,
 ): Promise<PublishResult> {
   // A build change must not publish a name that the site does not link (R6).
-  for (const [name, fixed] of [
-    [args.dmgName, DMG_NAME],
-    [args.installerName, INSTALLER_NAME],
+  for (const [label, name, fixed] of [
+    ["DMG", args.dmgName, DMG_NAME],
+    ["installer", args.installerName, INSTALLER_NAME],
   ]) {
-    if (name !== fixed) throw new Error(`the installer ${name} must have the name ${fixed}`);
+    if (name !== fixed) throw new Error(`the ${label} ${name} must have the name ${fixed}`);
   }
   const tag = tagFor(args.version);
   const latest = await api.latestRelease();

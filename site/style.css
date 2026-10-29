@@ -253,7 +253,6 @@ h1 {
   transform: scale(0.97);
 }
 
-/* The link keeps a tap height of 44px. */
 :root[data-platform] .download + .download {
   display: inline-flex;
   align-items: center;
