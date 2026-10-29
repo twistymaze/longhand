@@ -44,7 +44,7 @@ Several colleagues of the maintainer now use Longhand on Windows at work. The Wi
 
 **Signing**
 
-- R1. Each Windows installer that a release offers is Authenticode-signed with the Artifact Signing certificate profile and timestamped, and the Longhand executable that it installs is signed too.
+- R1. Each Windows installer that a release offers is Authenticode-signed with the Artifact Signing certificate profile and timestamped, and so is each executable and DLL that it installs: the Longhand executable, the transcription libraries and the NeMo helper with its libraries.
 - R2. Windows shows the validated name as the publisher in the install prompt and in the file properties of the installer and the installed executable.
 - R3. When signing fails, that release gets no Windows installer and no Windows update entry; the Windows workflow fails visibly.
 
@@ -52,7 +52,7 @@ Several colleagues of the maintainer now use Longhand on Windows at work. The Wi
 
 - R4. The Windows app of a release checks for updates and shows the update window with the same schedule, the same What's new content and the same rule as macOS: it never offers or installs an update while a note records or processes.
 - R5. When the user chooses to install, the Windows app closes, installs the update with no admin prompt, and opens again.
-- R6. The update manifest of a release names the Windows update only after the signed installer of that release is attached. Until then, the Windows app finds no update and shows no error.
+- R6. The update manifest of a release names the Windows update only after the signed installer of that release is attached. Until then, the Windows app finds no update and shows no error, in an automatic check and in a manual check, which shows that the app is up to date. The updater plugin reports a missing platform entry as an error, so the app must treat that one error as "no update".
 - R7. When the Windows build of a release fails or GitHub replaces its waiting run, Windows apps stay on their version until a later release has a Windows update.
 - R8. The Windows app accepts only an update signed with the same updater key as macOS.
 
@@ -60,18 +60,18 @@ Several colleagues of the maintainer now use Longhand on Windows at work. The Wi
 
 - R9. The installer installs Longhand for the current user and needs no admin rights.
 - R10. An install of the first signed release over an existing unsigned install keeps the notes, the settings, the saved API keys and the storage folder choice, with no uninstall.
-- R11. The Windows build never delays or blocks the publication of a release or its macOS update.
+- R11. The Windows build never delays or blocks the publication of a release or its macOS update. At no moment does the latest release lack a valid macOS update manifest.
 
 **Setup and documentation**
 
 - R12. `docs/releases.md` gets a step-by-step one-time setup for Artifact Signing and GitHub, at the same level of detail as its Apple steps. Each step says where to click or what command to run, and how to check the result. Appendix A is the draft.
-- R13. The Windows release workflow signs with a federated Azure login from the `release` environment only, so pull request runs cannot sign.
+- R13. The Windows release workflow signs with a federated Azure login from the `release` environment only. The `release` environment must continue to allow deployments only from `main`, so pull request runs and other branches cannot sign.
 - R14. The Expiry dates table in `docs/releases.md` lists the Artifact Signing credentials and how to renew each.
 - R15. `docs/releases.md`, the Release entry in `CONCEPTS.md` and the Windows idea file describe the signed Windows installer and Windows updates in place of the unsigned installer.
 
 **Validation**
 
-- R16. After the PR merges, the first real release is checked on a Windows PC before the website download is turned on: a browser download of the installer shows the publisher name, the install works without admin rights over an older install, and the next release comes as an in-app update.
+- R16. After the PR merges, the first real release is checked on a managed work PC whose policy blocks unsigned apps, before the website download is turned on: a browser download of the installer shows the publisher name, the install works without admin rights over an older install, and the next release comes as an in-app update.
 
 ### Key Flows
 
@@ -90,7 +90,7 @@ Several colleagues of the maintainer now use Longhand on Windows at work. The Wi
 
 ### Acceptance Examples
 
-- AE1. **Covers R6.** Given release 1.9.0 publishes and its Windows build still runs, when a Windows app on 1.8.0 checks for updates, then it finds no update and shows nothing. When the Windows build attaches the signed installer, the next check offers 1.9.0.
+- AE1. **Covers R6.** Given release 1.9.0 publishes and its Windows build still runs, when a Windows app on 1.8.0 checks for updates, then it finds no update and shows nothing. When the user selects Check for Updates in that time, the app shows that it is up to date, not an error. When the Windows build attaches the signed installer, the next check offers 1.9.0.
 - AE2. **Covers R4.** Given a Windows app records a note and an update is available, when the check runs, then the app holds the offer and shows it after the note stops and processing ends.
 - AE3. **Covers R3, R7.** Given signing of release 1.9.0 fails, then 1.9.0 has no Windows installer, and a Windows app on 1.8.0 stays on 1.8.0. When release 1.9.1 builds and signs, the app is offered 1.9.1.
 - AE4. **Covers R10.** Given a colleague runs an unsigned 1.8.0 install with notes, a storage folder and a saved API key, when they run the signed 1.9.0 installer, then Longhand opens on the same notes and folder, and the summary still works with the saved key.
@@ -127,7 +127,7 @@ None.
 **Deferred to Planning**
 
 - The updater signature covers the installer bytes, so Authenticode signing must happen before Tauri writes the updater signature. Choose how the Tauri build calls Artifact Signing for each binary.
-- How the Windows workflow adds the Windows entry to `latest.json` of a release that is already published, and what happens when a newer release publishes while the Windows build of the older one runs.
+- How the Windows app gets its update entry without a change to the manifest that macOS reads (R11), for example a separate Windows-only manifest of the release. Also what happens when a newer release publishes while the Windows build of the older one runs.
 - The Windows build job holds the Azure login during a build. Decide how this keeps the rule that the job that can write to the repository runs no build code.
 - Map the macOS install moments (at the click, at quit, at the next launch) to Windows, where the installer must run while the app is closed.
 - Whether the Windows release build stays on `windows-latest` or uses the 8-core larger runner.
@@ -199,6 +199,7 @@ This draft is from the Microsoft documentation of October 2026. The implementati
 2. In the app, select **Certificates & secrets** > **Federated credentials** > **Add credential**. Choose the scenario **GitHub Actions deploying Azure resources**. **Organization:** `twistymaze`. **Repository:** `longhand`. **Entity type:** **Environment**. **GitHub environment name:** `release`. Name it `longhand-release` and select **Add**.
 3. Go back to the signing account > **Access control (IAM)** > **Add role assignment**. Select the role **Artifact Signing Certificate Profile Signer**, then **Next** > **Select members**, search for `longhand-release-signing`, and select **Review + assign**.
 4. Write down your **Subscription ID** (Subscriptions page).
+5. Check the GitHub side of the trust. In `twistymaze/longhand`, open Settings > Environments > `release`. Under "Deployment branches and tags", the only rule must be `main` (setup step 3 in `docs/releases.md`). Do not loosen this rule: any branch that can use the `release` environment can sign files with your name.
 
 **H. Put the values in GitHub (5 minutes)**
 
