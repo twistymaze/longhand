@@ -467,13 +467,13 @@ impl UpdateManager {
                 Effect::Download { version } => self.start_download(version),
                 Effect::SaveDelays => write_delays(&self.app, &delays),
                 // The `RunEvent::Exit` arm stops processing and installs
-                // (`install_at_exit`), then tauri starts the new build. A
+                // (`install_at_exit`), then `relaunch::request_relaunch` starts the new build. A
                 // recording can start after the busy check above, so the
                 // claim checks again. If the claim fails, the flow holds the
                 // build or asks again (KD6).
                 Effect::Restart => {
                     if self.app.state::<Arc<CaptureManager>>().claim_restart() {
-                        self.app.request_restart();
+                        crate::relaunch::request_relaunch(&self.app);
                     } else {
                         log::info!("updates: a note is open, so the restart waits");
                         self.send(Message::RestartRefused);
@@ -652,7 +652,7 @@ pub fn install_at_launch(app: &AppHandle) {
             log::info!("updates: installed {saved} at launch; restarting");
             // The new copy must not find this copy's single-instance socket.
             tauri_plugin_single_instance::destroy(app);
-            app.restart();
+            crate::relaunch::relaunch_now(app);
         }
         Err(e) => {
             log::error!("updates: cannot install {saved} at launch: {e}");

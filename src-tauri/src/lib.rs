@@ -6,6 +6,7 @@ mod interface_zoom;
 mod managers;
 #[cfg(target_os = "macos")]
 mod menu;
+mod relaunch;
 mod shortcut;
 mod startup;
 mod tray;
