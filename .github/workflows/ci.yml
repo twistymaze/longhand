@@ -819,8 +819,9 @@ jobs:
             "$files/Longhand.app.tar.gz" "$files/Longhand.app.tar.gz.sig" "$files/notes.md" \
             "$files/changelog/changelog.json" "$files/changelog/CHANGELOG.md" | tee -a "$GITHUB_OUTPUT"
 
-  # Finds whether a push to main changed the website (site/, scripts/site.ts
-  # and scripts/lib/changelog.ts), so that changelog-pages also deploys a page change
+  # Finds whether a push to main changed the website (site/, scripts/site.ts,
+  # scripts/lib/changelog.ts, this file or the node-setup action), so that
+  # changelog-pages also deploys a page change, or a fix to a failed deploy,
   # when no release is due (landing page plan, KTD2).
   site-changed:
     name: Site changed
@@ -868,12 +869,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # scripts/site.ts builds the site with Vite, so the job needs the npm
-      # packages. No package cache, so the job restores nothing that a PR
-      # wrote.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: package.json
-          package-manager-cache: false
+      # packages. npm ci needs the npm version that devEngines gives, which
+      # no Node release includes, so the job uses the same setup as the
+      # other jobs. It restores no package cache.
+      - uses: ./.github/actions/node-setup
 
       - name: Install npm packages
         run: npm ci
