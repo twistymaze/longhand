@@ -12,7 +12,7 @@ execution: code
 
 ## Goal Capsule
 
-- **Objective:** On Windows and macOS, a user can open Settings, see the installed version, check for updates, and see that an update waits, from the library window, with no menu bar and no hidden control.
+- **Objective:** On Windows and macOS, a user can open Settings, see the installed version, check for updates, and see that an update waits, from the library window, with no menu bar in that window.
 - **Product authority:** The maintainer settled this scope in the 2026-10-29 session. The Windows tray items and the unchanged macOS app menu are part of the settled scope.
 - **Open blockers:** None.
 
@@ -35,15 +35,15 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 - **A footer under the note list, not a button in the top bar or an always-visible right panel.** It costs about one line of height and no list width, and the right panel keeps its current rule (it shows only for a selected note). (session-settled: user-directed — chosen over a Settings button and update badge in the top bar, and over a right panel that is always visible with a footer: the maintainer chose the status-bar shape.) Governs R1, R2.
 - **The version text opens a menu, and the menu starts the check.** A click on a version label does not start a network check by itself, because the user would not expect a label to start work. (session-settled: user-directed — chosen over a direct check on click: the maintainer wants no action that the user does not see coming.) Governs R4.
 - **The version menu holds only Check for Updates….** What's New and About stay in Settings, where they already are. (session-settled: user-directed — chosen over a menu that also holds What's New and About.) Governs R4.
-- **The macOS app menu does not change.** (session-settled: user-directed — chosen over removing Check for Updates… from it.) Governs R7.
-- **The Windows tray menu keeps Check for Updates… and the Update Available item.** (session-settled: user-directed — the maintainer kept the tray part of commit `5b721aa`.) Governs R8.
+- **The macOS app menu does not change.** (session-settled: user-directed — chosen over removing Check for Updates… from it.) Governs R8.
+- **The Windows tray menu keeps Check for Updates… and the Update Available item.** (session-settled: user-directed — the maintainer kept the tray part of commit `5b721aa`.) Governs R9.
 - **The footer shows no checking state.** The update window that a manual check opens already shows the progress and the result. Governs R4.
 
 ### Requirements
 
 **Footer**
 
-- R1. The library window shows a footer along the bottom of the note list on Windows and macOS. It is always visible, also with no notes, with a note selected, and while a note records.
+- R1. The library window shows a footer along the bottom of the note list on Windows and macOS. It shows whenever the note list shows: also with no notes, with a note selected, and while a note records. It does not show on a note's page.
 - R2. The footer holds a Settings control on the left, which opens the Settings window as the other Settings entry points do.
 - R3. The right side of the footer shows the installed version in muted text, for example "Version 1.2.14", while no update waits.
 
@@ -53,17 +53,21 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 - R5. While a newer version is known and not installed, the version text is replaced by an "Update available: <version>" badge. A click on the badge opens the update window for that version.
 - R6. The badge follows the same state as the tray's Update Available item: it shows when that item shows, and it goes away when that item goes away.
 
+**Keyboard**
+
+- R7. The Settings control, the version text and the badge are buttons in the tab order after the note list. Enter, Space or Down Arrow opens the version menu, and Escape closes it and returns the focus to the version button.
+
 **Menus**
 
-- R7. The Windows main window has no menu bar. The macOS app menu stays as it is on `main`.
-- R8. The tray menu on Windows and macOS holds Open, the recording widget item, Settings…, Check for Updates…, Update Available: <version>… while an update waits, and Quit Longhand.
+- R8. The Windows main window has no menu bar. The macOS app menu stays as it is on `main`.
+- R9. The tray menu on Windows and macOS holds Open, the recording widget item, Settings…, Check for Updates…, Update Available: <version>… while an update waits, and Quit Longhand.
 
 ### Acceptance Examples
 
 - AE1. **Covers R3, R4.** Given Longhand 1.2.14 with no update known, when the user clicks "Version 1.2.14" in the footer, then a menu opens with Check for Updates…, and no check starts until the user selects that item.
 - AE2. **Covers R5, R6.** Given an automatic check found 1.2.15 and the user closed the update window without installing, then the footer shows "Update available: 1.2.15", and a click on it opens the update window for 1.2.15.
 - AE3. **Covers R5, R6.** Given the footer shows "Update available: 1.2.15", when a check finds that no update waits any more, then the footer shows the installed version again.
-- AE4. **Covers R1.** Given a note records, then the footer stays visible and changes only when an update becomes known.
+- AE4. **Covers R1.** Given a note records and the user goes back to the note list, then the footer shows, and it changes only when an update becomes known or stops being known.
 
 ### Scope Boundaries
 
@@ -83,7 +87,7 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 
 - How the footer reads the installed version and the waiting update, and how it stays in step with the tray item (R6).
 - The exact look of the footer, the badge and the menu, within the UI rules in `CLAUDE.md` (invoke `apple-design` first) and the plain-language rule for UI text.
-- How to rework commit `5b721aa`: keep the tray change (R8), and remove the Windows menu bar (R7) and the menu code that only it uses.
+- How to rework commit `5b721aa`: keep the tray change (R9), and remove the Windows menu bar (R8) and the menu code that only it uses.
 
 ### Sources / Research
 
