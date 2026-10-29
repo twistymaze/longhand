@@ -8,10 +8,14 @@
 //     so the app can find changelog.json from the version alone (KTD5). The
 //     command prints `published=<true|false>` for $GITHUB_OUTPUT. It writes
 //     its other lines to stderr, so that they do not go into GITHUB_OUTPUT.
-//   node scripts/publish-release.ts attach <tag> <installer>
-//     Uploads the installer to the release with the tag. It replaces an asset
-//     with the same name, so a re-run works. The old asset stays until the new
-//     one is uploaded, so a failed re-run does not remove the installer.
+//   node scripts/publish-release.ts attach <tag> <installer> <signature file>
+//     Uploads the installer, its updater signature as <installer>.sig, and
+//     latest-windows.json last to the release with the tag (KTD1, KTD8). It
+//     then reads the public latest-windows.json and fails when it differs. It
+//     replaces an asset with the same name, so a re-run works. The old
+//     installer stays until the new one is uploaded, so a failed re-run does
+//     not remove the installer. A re-run deletes the old latest-windows.json
+//     first. The command never changes latest.json.
 //
 // The script reads the repository from GITHUB_REPOSITORY and the token from
 // GITHUB_TOKEN. The publish command reads the built commit from GITHUB_SHA.
@@ -37,6 +41,7 @@ import { basename } from "node:path";
 import { compareVersions } from "./lib/version.ts";
 
 export const MANIFEST_NAME = "latest.json";
+export const WINDOWS_MANIFEST_NAME = "latest-windows.json";
 export const CHANGELOG_JSON_NAME = "changelog.json";
 export const CHANGELOG_MARKDOWN_NAME = "CHANGELOG.md";
 
@@ -55,20 +60,32 @@ export type Manifest = {
   platforms: Record<string, { signature: string; url: string }>;
 };
 
-/// The static update manifest that tauri-plugin-updater reads.
-export function buildManifest(args: {
+type ManifestArgs = {
   version: string;
   notes: string;
   pubDate: string;
   url: string;
   signature: string;
-}): Manifest {
+};
+
+function manifestFor(platform: string, args: ManifestArgs): Manifest {
   return {
     version: args.version,
     notes: args.notes.trim(),
     pub_date: args.pubDate,
-    platforms: { "darwin-aarch64": { signature: args.signature.trim(), url: args.url } },
+    platforms: { [platform]: { signature: args.signature.trim(), url: args.url } },
   };
+}
+
+/// The static update manifest that tauri-plugin-updater reads on macOS.
+export function buildManifest(args: ManifestArgs): Manifest {
+  return manifestFor("darwin-aarch64", args);
+}
+
+/// The update manifest that the Windows app reads (KTD1). Only `attach`
+/// writes it, so latest.json never changes after the publish (R11).
+export function buildWindowsManifest(args: ManifestArgs): Manifest {
+  return manifestFor("windows-x86_64", args);
 }
 
 /// True only when `version` is higher than the latest release's version. No
@@ -79,7 +96,8 @@ export function isNewer(version: string, latestVersion: string | null): boolean 
 }
 
 export type Asset = { id: number; name: string };
-export type Release = { id: number; tag_name: string; draft: boolean; assets: Asset[] };
+/// `body` is the release notes. GitHub sends null when they are empty.
+export type Release = { id: number; tag_name: string; draft: boolean; body?: string | null; assets: Asset[] };
 export type Draft = { tag: string; target: string; name: string; body: string };
 
 /// The GitHub calls that the publish and attach flows make. Tests replace them.
@@ -99,6 +117,9 @@ export type ReleasesApi = {
   deleteRelease(release: Release): Promise<void>;
   /// True when a newer run of this CI workflow on main is queued or running.
   newerRunWaiting(): Promise<boolean>;
+  /// The text at the public download URL of the asset, as an app reads it.
+  /// Null when there is no such asset.
+  readPublicAsset(tag: string, name: string): Promise<string | null>;
 };
 
 export type PublishResult = "published" | "skipped";
@@ -164,27 +185,77 @@ export async function publish(
   return "published";
 }
 
+/// Uploads an asset, or replaces the asset with the same name. The
+/// replacement goes up under a temporary name first, so only a successful
+/// upload removes the earlier asset. A temporary asset that an earlier run
+/// left goes first: GitHub refuses a second asset with the same name.
+async function replaceAsset(
+  api: ReleasesApi,
+  release: Release,
+  name: string,
+  content: Blob | string,
+  log: (line: string) => void,
+): Promise<void> {
+  for (const stale of release.assets.filter((a) => a.name === `${name}.new`)) {
+    log(`deleting the temporary ${stale.name} of an earlier run`);
+    await api.deleteAsset(release, stale);
+  }
+  const olds = release.assets.filter((a) => a.name === name);
+  if (olds.length === 0) {
+    await api.uploadAsset(release, name, content);
+    return;
+  }
+  const upload = await api.uploadAsset(release, `${name}.new`, content);
+  for (const old of olds) {
+    log(`deleting the earlier ${old.name}`);
+    await api.deleteAsset(release, old);
+  }
+  await api.renameAsset(release, upload, name);
+}
+
 export async function attach(
   api: ReleasesApi,
-  args: { tag: string; installer: Blob; installerName: string },
+  args: {
+    repository: string;
+    tag: string;
+    installer: Blob;
+    installerName: string;
+    signature: string;
+    now: () => Date;
+  },
   log: (line: string) => void = console.log,
 ): Promise<void> {
   const release = await api.releaseByTag(args.tag);
   if (!release) throw new Error(`no release has the tag ${args.tag}`);
-  const olds = release.assets.filter((a) => a.name === args.installerName);
-  if (olds.length === 0) {
-    await api.uploadAsset(release, args.installerName, args.installer);
-  } else {
-    // Upload under a temporary name first. Only a successful upload replaces
-    // the earlier installer.
-    const upload = await api.uploadAsset(release, `${args.installerName}.new`, args.installer);
-    for (const old of olds) {
-      log(`deleting the earlier ${old.name}`);
-      await api.deleteAsset(release, old);
-    }
-    await api.renameAsset(release, upload, args.installerName);
+
+  // An old manifest points at the installer that this run replaces. Remove it
+  // first. Windows apps find no update until the new manifest is up (KTD8).
+  for (const old of release.assets.filter((a) => a.name === WINDOWS_MANIFEST_NAME)) {
+    log(`deleting the earlier ${old.name}`);
+    await api.deleteAsset(release, old);
   }
-  log(`attached ${args.installerName} to ${args.tag}`);
+  await replaceAsset(api, release, args.installerName, args.installer, log);
+  await replaceAsset(api, release, `${args.installerName}.sig`, args.signature, log);
+
+  // The manifest goes last, so it never names an installer that is not there.
+  const manifest = `${JSON.stringify(
+    buildWindowsManifest({
+      version: args.tag.replace(/^v/, ""),
+      notes: release.body ?? "",
+      pubDate: args.now().toISOString(),
+      url: assetUrl(args.repository, args.tag, args.installerName),
+      signature: args.signature,
+    }),
+    null,
+    2,
+  )}\n`;
+  await api.uploadAsset(release, WINDOWS_MANIFEST_NAME, manifest);
+
+  const published = await api.readPublicAsset(args.tag, WINDOWS_MANIFEST_NAME);
+  if (published !== manifest) {
+    throw new Error(`the public ${WINDOWS_MANIFEST_NAME} of ${args.tag} differs from the uploaded manifest`);
+  }
+  log(`attached ${args.installerName}, its signature and ${WINDOWS_MANIFEST_NAME} to ${args.tag}`);
 }
 
 /// The releases of the repository through the GitHub REST API. `runId` is the
@@ -271,12 +342,20 @@ export function githubApi(repository: string, token: string, runId?: string): Re
       ).json()) as { workflow_runs: Run[] };
       return recent.workflow_runs.some((r) => r.run_number > current.run_number && r.status !== "completed");
     },
+    async readPublicAsset(tag, name) {
+      // No token: the read is the same as the read of an app.
+      const url = assetUrl(repository, tag, name);
+      const response = await fetch(url);
+      if (response.status === 404) return null;
+      if (!response.ok) throw new Error(`GET ${url}: ${response.status} ${await response.text()}`);
+      return await response.text();
+    },
   };
 }
 
 const USAGE = [
   "usage: publish-release.ts publish <version> <dmg> <archive> <signature file> <notes file> <changelog.json> <CHANGELOG.md>",
-  "       publish-release.ts attach <tag> <installer>",
+  "       publish-release.ts attach <tag> <installer> <signature file>",
 ].join("\n");
 
 /// Runs one CLI command. A failure rejects, so the process exits with an error.
@@ -290,7 +369,7 @@ export async function main(
   output: (line: string) => void = console.log,
 ): Promise<void> {
   const [command, ...rest] = argv;
-  if (!((command === "publish" && rest.length === 7) || (command === "attach" && rest.length === 2))) {
+  if (!((command === "publish" && rest.length === 7) || (command === "attach" && rest.length === 3))) {
     throw new Error(USAGE);
   }
   const repository = env.GITHUB_REPOSITORY;
@@ -329,8 +408,19 @@ export async function main(
     );
     output(`published=${result === "published"}`);
   } else {
-    const [tag, installer] = rest as [string, string];
-    await attach(makeApi(repository, token), { tag, installer: await openAsBlob(installer), installerName: basename(installer) }, log);
+    const [tag, installer, signature] = rest as [string, string, string];
+    await attach(
+      makeApi(repository, token),
+      {
+        repository,
+        tag,
+        installer: await openAsBlob(installer),
+        installerName: basename(installer),
+        signature: readFileSync(signature, "utf8"),
+        now: () => new Date(),
+      },
+      log,
+    );
   }
 }
 

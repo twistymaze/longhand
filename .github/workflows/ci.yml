@@ -317,7 +317,7 @@ jobs:
 
       - name: Release script tests
         if: runner.os == 'macOS'
-        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts scripts/site.test.ts scripts/site-changed.test.ts scripts/theme.test.ts
+        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts scripts/site.test.ts scripts/site-changed.test.ts scripts/theme.test.ts scripts/windows-signing.test.ts
 
       # The tests of the own version, TOML and frontmatter readers, and of
       # the dependency checks.

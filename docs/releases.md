@@ -17,9 +17,16 @@ One CI run on `main` does the checks, the build and the publication. `.github/wo
 
 The tag and the release come into existence only after the macOS build succeeds. A failed build leaves no tag.
 
-After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it downloads the `changelog.json` of the release, builds the unsigned Windows NSIS installer with it on a standard GitHub-hosted Windows runner, and attaches the installer to the release. A release with no `changelog.json` gets no installer. A release from before the changelog builds its installer without one. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main`.
+After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it downloads the `changelog.json` of the release and builds the Windows NSIS installer with it on a standard GitHub-hosted Windows runner:
 
-CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run. When GitHub replaces a waiting Windows run, that release gets no installer.
+1. The `build` job runs in the `release` environment. It compiles the app with the release version and `LONGHAND_RELEASE=1`, so the Windows app checks for updates.
+2. It logs in to Azure with a federated credential (no secret), then runs `tauri bundle`. Tauri signs the executable, the bundled `.exe` and `.dll` files, the uninstaller and the installer with Azure Artifact Signing (`scripts/windows-signing.ts sign`), then writes the updater signature of the installer.
+3. The signature gate installs the installer silently into a temporary folder. `scripts/windows-signing.ts verify` then checks that each `.exe` and `.dll` there, and the installer, has a valid, timestamped signature with your name as publisher. The Microsoft VC runtime DLLs and the Vulkan loader keep the signature of their vendor. When a file fails, the job fails, and the release gets no Windows files.
+4. The `attach` job uploads the installer, then its `.sig`, then the Windows update manifest `latest-windows.json` (`scripts/publish-release.ts attach`). It reads the manifest back from the release. It never changes `latest.json`.
+
+The Windows app reads `latest-windows.json` of the latest release. Until the Windows build attaches it, the Windows app finds no update and shows no error. A release with no `changelog.json` gets no installer. A release from before the changelog builds its installer without one. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main` or delay the macOS update.
+
+CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run. When GitHub replaces a waiting Windows run, that release gets no Windows installer and no Windows update. Windows apps stay on their version until a later release has a Windows update.
 
 When a newer CI run on `main` is queued or running at the time of publication, the publish step publishes nothing. It logs "a newer CI run on main is queued or running" and ends without an error. The newer run publishes these commits in its release. Without this rule, publication can fail: when a newer commit changed a file in `.github/workflows/`, GitHub refuses to let the workflow token create a tag on the older commit (403, "Resource not accessible by integration").
 
@@ -103,7 +110,7 @@ Do these steps once, in this order. Do a step again only to replace a credential
    5. In Keychain Access, select the login keychain and the "My Certificates" tab. Find "Developer ID Application: Ervin Walter (7GLQLN8HXK)" whose expiry date is 5 years from today. Its private key shows under it.
    6. If an older certificate with the same name is in the keychain, delete it (the certificate and its private key) after the new one works. `codesign` refuses a name that matches two identities, so local builds fail until then. Do not revoke the older certificate: apps signed with it continue to work until it expires.
 
-3. **Create the `release` environment.** In `twistymaze/longhand`, go to Settings → Environments → New environment. Name it `release`. Under "Deployment branches and tags", select "Selected branches and tags" and add the rule `main`. Pull request runs then cannot read its secrets.
+3. **Create the `release` environment.** In `twistymaze/longhand`, go to Settings → Environments → New environment. Name it `release`. Under "Deployment branches and tags", select "Selected branches and tags" and add the rule `main`. Pull request runs then cannot read its secrets. Do not loosen this rule: the Azure federated credential (step 6) trusts each job in this environment, so any branch that can use it can sign files with your name.
 
 4. **Add the 6 secrets to the environment.** Each `gh secret set` command asks for the value or reads it from a file, so no value goes into the shell history or a chat.
 
@@ -163,6 +170,61 @@ A wrong secret makes `release-build` fail at the certificate import or at notari
 
    The app opens the changelog at its `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`), and GitHub sends it on to the custom domain. The app's Website link and the About panel name `longhand.md` itself, so a change of the custom domain needs a code change there. The site links its files from the root of the domain (`/style.css`), so it needs a custom domain: at the `github.io` address without one, the site is in `/longhand/` and its files do not load. The docs link to the custom domain. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
 
+6. **Set up Windows signing with Azure Artifact Signing.** Microsoft validates your identity, and Windows then shows your legal name as the publisher of the installer. The Basic tier costs about USD 10 a month, from the moment that you create the account. You need an Azure subscription, your phone with Microsoft Authenticator, and your driver's license or passport. Without this step, the Windows build of each release fails at the Azure login, and the release gets no Windows files.
+
+   1. **Check the billing account.** In the [Azure portal](https://portal.azure.com/), open Cost Management + Billing → Billing scopes → your billing account → Properties. **Account type** must be **Individual**; individual validation is available only in the United States and Canada. The legal name and the sold-to address must be exactly as on your ID. The certificate shows your name, city, state and country.
+   2. **Register the resource provider.** Open Subscriptions → your subscription → Settings → Resource providers. Select **Microsoft.CodeSigning** and **Register**. Wait for **Registered**.
+   3. **Create the signing account.** Open Artifact Signing Accounts → Create. Resource group: `longhand-signing`. Account name: `longhandsigning`. Region: Central US, whose endpoint is `https://cus.codesigning.azure.net`. Pricing: **Basic**. Select Review + Create, then Create.
+   4. **Give yourself the verifier role.** In the signing account, select Access control (IAM) → Add → Add role assignment. Select the role **Artifact Signing Identity Verifier**, add your own user, and select Review + assign.
+   5. **Validate your identity.** In the signing account, select Objects → Identity validations. Change **Organization** to **Individual**, then select New identity → Public. Select the billing account, check the **Certificate subject preview**, and select Create. When the status is **Action Required**, select your name and open the link under "Please complete your verification here". Follow the AU10TIX steps: email PIN, phone number, then a QR code for your phone. Photograph your ID flat, with no flash, and do the face check in even light. Add the Verified ID to Authenticator, then share it through the next QR code. After **Verification Successful**, the status changes to **Completed** when Microsoft finishes its check. This can take some hours, and up to 20 business days when Microsoft asks for documents.
+   6. **Create the certificate profile.** After the status is Completed, select Objects → Certificate profiles → Create → Public Trust. Name: `longhand`. Select your validation under **Verified CN and O**. Leave **Include street address** and **Include postal code** clear. Select Create. Write down the common name (CN) in the subject preview, for example `Ervin Walter`.
+   7. **Let GitHub sign with no secret.** Open Microsoft Entra ID → App registrations → New registration. Name it `longhand-release-signing` and select Register. Write down the Application (client) ID and the Directory (tenant) ID. In the app, select Certificates & secrets → Federated credentials → Add credential, and choose **Other issuer**. The GitHub preset writes the old subject format, which this repository does not use. Enter:
+      - Issuer: `https://token.actions.githubusercontent.com`
+      - Subject identifier: `repo:twistymaze@328897520/longhand@1414511015:environment:release`
+      - Name: `release-environment`
+      - Audience: `api://AzureADTokenExchange`
+
+      Then, in the signing account, select Access control (IAM) → Add role assignment. Select **Artifact Signing Certificate Profile Signer**, add `longhand-release-signing`, and select Review + assign. With the Azure CLI, the same steps are `az ad app create`, `az ad sp create`, `az ad app federated-credential create` and `az role assignment create`.
+   8. **Add the 7 variables to the `release` environment.** These values are not secret. Run each command and paste the value:
+
+      ```sh
+      gh variable set AZURE_CLIENT_ID --env release -R twistymaze/longhand
+      ```
+
+      ```sh
+      gh variable set AZURE_TENANT_ID --env release -R twistymaze/longhand
+      ```
+
+      ```sh
+      gh variable set AZURE_SUBSCRIPTION_ID --env release -R twistymaze/longhand
+      ```
+
+      ```sh
+      gh variable set ARTIFACT_SIGNING_ENDPOINT --env release -R twistymaze/longhand
+      ```
+
+      ```sh
+      gh variable set ARTIFACT_SIGNING_ACCOUNT --env release -R twistymaze/longhand
+      ```
+
+      ```sh
+      gh variable set ARTIFACT_SIGNING_PROFILE --env release -R twistymaze/longhand
+      ```
+
+      `WINDOWS_PUBLISHER` is the common name from step 6.6. The signature gate requires it on each file:
+
+      ```sh
+      gh variable set WINDOWS_PUBLISHER --env release -R twistymaze/longhand
+      ```
+
+      Check that this command lists the 7 names:
+
+      ```sh
+      gh variable list --env release -R twistymaze/longhand
+      ```
+
+   To stop billing, delete the signing account. Files that it signed stay valid, because each signature has a timestamp.
+
 ## Expiry dates
 
 | Credential | Expiry | Renewal |
@@ -170,8 +232,11 @@ A wrong secret makes `release-build` fail at the certificate import or at notari
 | Developer ID Application certificate | 5 years after it is made | Do setup step 2 again, and replace `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` (steps 4.2 and 4.3). The team ID stays the same, so installed builds accept updates, and the microphone and Keychain access stay. |
 | App Store Connect API key (`.p8`) | None. It works until it is revoked. | Make a new key and replace `APPLE_API_KEY`, `APPLE_API_ISSUER` and `APPLE_API_PRIVATE_KEY` (steps 4.4 to 4.6). |
 | Updater key pair | None | See [A lost or leaked updater key](#a-lost-or-leaked-updater-key). |
+| Artifact Signing certificates | 3 days | None: Azure makes new certificates by itself. The timestamp keeps older signatures valid. |
+| Artifact Signing identity validation | Microsoft sends reminders from 60 days before it expires | Renew the validation in the signing account (Objects → Identity validations), then update the certificate profile if the portal asks. |
+| Azure federated credential | None | None. |
 
-Publication uses the workflow's own `GITHUB_TOKEN`, which needs no renewal. When a credential expires, `release-build` fails and nothing publishes. Installed builds continue to work.
+Publication uses the workflow's own `GITHUB_TOKEN`, which needs no renewal. When an Apple credential or the updater key fails, `release-build` fails and nothing publishes. When the identity validation expires, the Windows build fails, and the release keeps only its macOS files. Installed builds continue to work.
 
 ## Install the first build
 
@@ -182,6 +247,8 @@ A local build gets no updates. Install the DMG of the latest release once:
 
 Later releases then come as updates.
 
+On Windows, download the `Longhand_<version>_x64-setup.exe` of the latest release and run it. It installs for the current user and needs no admin rights. It installs over an older unsigned build and keeps the notes, the settings, the saved API keys and the storage folder. Windows updates come only to a build from a signed release; an older unsigned build needs this install once.
+
 Installed preview builds from before 1.0.0 read their update manifest from `twistymaze/longhand-builds`. A one-time step after the first release writes the `latest.json` of 1.0.0 to that repository, so that each preview build updates to 1.0.0 once. After that update, the app reads the update manifest of the latest release in `twistymaze/longhand`. Then the old repository is archived.
 
 ## When a release does not publish
@@ -190,13 +257,13 @@ Installed preview builds from before 1.0.0 read their update manifest from `twis
 - **The checks failed.** `release-build` does not run.
 - **The build failed.** For example, signing or notarization failed. The run publishes nothing and creates no tag. At most a draft release stays, and the next publication of that version deletes it. To publish the release, merge a fix PR with a `fix:` or `ci:` title. Its run on `main` computes the version from all commits since the latest release tag, so it publishes the release that the failed run did not publish.
 - **A re-run.** A re-run uses the workflow and the scripts of the original commit. So a re-run helps only for a fault that needs no code change, for example an outage of the notarization service. A re-run of a run that published its release finds no release due. When a newer release exists, the publish step logs "is not higher than" and ends with "skipped", without an error.
-- **The Windows installer is missing.** The Windows build failed, or GitHub replaced its waiting run. The release keeps its macOS files. To build and attach the installer again, for example after a fix to `release-windows.yml`, run:
+- **The Windows installer is missing.** The Windows build, the Azure login, the signing or the signature gate failed, or GitHub replaced its waiting run. The release keeps its macOS files and its macOS update, and Windows apps stay on their version. To build and attach the installer again, for example after a fix to `release-windows.yml` or to the signing setup, run:
 
   ```sh
   gh workflow run release-windows.yml -f tag=v<version> -R twistymaze/longhand
   ```
 
-  The run replaces an installer of the same name.
+  The run first deletes the `latest-windows.json` of that release, then replaces the installer and its `.sig`, and uploads the manifest last. The rebuild uses the tag's commit. A fix to `scripts/`, the Tauri config or the app needs a new release: merge it in a PR with a `fix:` title.
 
 ## A lost or leaked updater key
 

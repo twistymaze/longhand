@@ -1,7 +1,7 @@
 //! The identity of this build (R7, R8, KTD12; KTD5 of the releases plan).
 //! CI sets `LONGHAND_BUILD_COMMIT` at build time, and also
-//! `LONGHAND_RELEASE=1` for the macOS release build. Only a release build
-//! gets updates.
+//! `LONGHAND_RELEASE=1` for the macOS and Windows release builds. Only a
+//! release build gets updates.
 
 use serde::Serialize;
 use specta::Type;

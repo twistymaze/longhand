@@ -48,10 +48,63 @@ const QUICK_CHECK_TIMEOUT: Duration = LAUNCH_CHECK_TIMEOUT;
 /// The least download progress between two state events.
 const PROGRESS_STEP: u64 = 256 * 1024;
 
-/// The update manifest: `latest.json` of the latest release (KTD5 of the
-/// releases plan).
-pub const MANIFEST_URL: &str =
+/// The macOS update manifest: `latest.json` of the latest release (KTD5 of
+/// the releases plan).
+const MACOS_MANIFEST_URL: &str =
     "https://github.com/twistymaze/longhand/releases/latest/download/latest.json";
+/// The Windows update manifest. Only the Windows release workflow writes it,
+/// after the macOS release publishes (KTD1 of the Windows releases plan).
+const WINDOWS_MANIFEST_URL: &str =
+    "https://github.com/twistymaze/longhand/releases/latest/download/latest-windows.json";
+
+/// The update manifest of the target OS.
+fn manifest_url(windows: bool) -> &'static str {
+    if windows {
+        WINDOWS_MANIFEST_URL
+    } else {
+        MACOS_MANIFEST_URL
+    }
+}
+
+/// True when a check error means "no update" (KTD2 of the Windows releases
+/// plan). On Windows, the latest release has no Windows manifest or no
+/// Windows entry until its Windows build attaches them. On macOS, the
+/// manifest exists when its release does, so each error stays an error.
+fn means_no_update(error: &tauri_plugin_updater::Error, windows: bool) -> bool {
+    use tauri_plugin_updater::Error;
+    windows
+        && matches!(
+            error,
+            Error::ReleaseNotFound | Error::TargetNotFound(_) | Error::TargetsNotFound(_)
+        )
+}
+
+/// The moment of an install (KTD7 of the Windows releases plan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallMoment {
+    /// The "Install and Relaunch" click.
+    Click,
+    /// A quit after "Later".
+    Quit,
+    /// The next launch, with a saved archive.
+    Launch,
+}
+
+/// True when the app opens again after the install. On Windows the
+/// installer opens it; on macOS tauri restarts it after the click.
+fn relaunches(moment: InstallMoment) -> bool {
+    moment != InstallMoment::Quit
+}
+
+/// The moment of an install at exit: the click when the manager recorded
+/// the restart, else a quit.
+fn exit_moment(restart_recorded: bool) -> InstallMoment {
+    if restart_recorded {
+        InstallMoment::Click
+    } else {
+        InstallMoment::Quit
+    }
+}
 
 /// The update state changed. The update window follows it.
 #[derive(Serialize, Type, Debug, Clone, tauri_specta::Event)]
@@ -100,6 +153,13 @@ impl InstallFailure {
             error: error.into(),
             shown: false,
         }
+    }
+
+    /// The record of an install that starts. On Windows the process ends
+    /// when the installer starts, so the app writes this before the install.
+    /// The next launch drops it when the new build runs.
+    fn attempt(version: &str) -> Self {
+        Self::new(version, "The installer did not finish the update.")
     }
 }
 
@@ -168,6 +228,9 @@ pub struct UpdateManager {
     offered_changes: changes::Cache,
     busy: Box<dyn Fn() -> bool + Send + Sync>,
     was_busy: AtomicBool,
+    /// The manager asked for the restart of the Install click. A quit also
+    /// reaches the install at exit, and it does not open the app again.
+    restart_requested: AtomicBool,
     messages: mpsc::UnboundedSender<Message>,
     receiver: Mutex<Option<mpsc::UnboundedReceiver<Message>>>,
 }
@@ -254,15 +317,39 @@ fn write_failure(app: &AppHandle, failure: Option<&InstallFailure>) {
 }
 
 async fn check(app: &AppHandle, timeout: Duration) -> Result<Option<Update>, String> {
-    let url = tauri::Url::parse(MANIFEST_URL).map_err(|e| e.to_string())?;
-    app.updater_builder()
+    let windows = cfg!(windows);
+    let url = tauri::Url::parse(manifest_url(windows)).map_err(|e| e.to_string())?;
+    let result = app
+        .updater_builder()
         .endpoints(vec![url])
         .map_err(|e| e.to_string())?
         .timeout(timeout)
         .build()
         .map_err(|e| e.to_string())?
         .check()
-        .await
+        .await;
+    match result {
+        Err(e) if means_no_update(&e, windows) => {
+            log::info!("updates: no Windows update in the latest release: {e}");
+            Ok(None)
+        }
+        result => result.map_err(|e| e.to_string()),
+    }
+}
+
+/// Write the attempt record, then install. On Windows a started install
+/// ends the process and does not return.
+fn install(
+    app: &AppHandle,
+    update: Update,
+    version: &str,
+    bytes: Vec<u8>,
+    moment: InstallMoment,
+) -> Result<(), String> {
+    write_failure(app, Some(&InstallFailure::attempt(version)));
+    update
+        .restart_after_install(relaunches(moment))
+        .install(bytes)
         .map_err(|e| e.to_string())
 }
 
@@ -292,6 +379,7 @@ impl UpdateManager {
             offered_changes: changes::Cache::default(),
             busy: Box::new(busy),
             was_busy: AtomicBool::new(false),
+            restart_requested: AtomicBool::new(false),
             messages,
             receiver: Mutex::new(Some(receiver)),
         })
@@ -467,12 +555,14 @@ impl UpdateManager {
                 Effect::Download { version } => self.start_download(version),
                 Effect::SaveDelays => write_delays(&self.app, &delays),
                 // The `RunEvent::Exit` arm stops processing and installs
-                // (`install_at_exit`), then `relaunch::request_relaunch` starts the new build. A
+                // (`install_at_exit`), then `relaunch::request_relaunch` starts
+                // the new build (on Windows, the installer starts it). A
                 // recording can start after the busy check above, so the
                 // claim checks again. If the claim fails, the flow holds the
                 // build or asks again (KD6).
                 Effect::Restart => {
                     if self.app.state::<Arc<CaptureManager>>().claim_restart() {
+                        self.restart_requested.store(true, Ordering::SeqCst);
                         crate::relaunch::request_relaunch(&self.app);
                     } else {
                         log::info!("updates: a note is open, so the restart waits");
@@ -577,8 +667,9 @@ impl UpdateManager {
         let Some(dir) = updates_dir(&self.app) else {
             return;
         };
+        let moment = exit_moment(self.restart_requested.load(Ordering::SeqCst));
         let result = archive::load_verified(&dir, &version, &pubkey(&self.app))
-            .and_then(|bytes| update.install(bytes).map_err(|e| e.to_string()));
+            .and_then(|bytes| install(&self.app, update, &version, bytes, moment));
         match result {
             Ok(()) => log::info!("updates: installed {version} at exit"),
             Err(e) => {
@@ -646,7 +737,7 @@ pub fn install_at_launch(app: &AppHandle) {
         return;
     }
     let result = archive::load_verified(&dir, &saved, &pubkey(app))
-        .and_then(|bytes| update.install(bytes).map_err(|e| e.to_string()));
+        .and_then(|bytes| install(app, update, &saved, bytes, InstallMoment::Launch));
     match result {
         Ok(()) => {
             log::info!("updates: installed {saved} at launch; restarting");
@@ -707,12 +798,67 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_is_the_latest_json_of_the_latest_release_of_the_source_repository() {
+    fn each_os_reads_its_own_manifest_of_the_latest_release_of_the_source_repository() {
         assert_eq!(
-            MANIFEST_URL,
+            manifest_url(false),
             "https://github.com/twistymaze/longhand/releases/latest/download/latest.json"
         );
-        assert!(tauri::Url::parse(MANIFEST_URL).is_ok());
+        assert_eq!(
+            manifest_url(true),
+            "https://github.com/twistymaze/longhand/releases/latest/download/latest-windows.json"
+        );
+        for windows in [false, true] {
+            assert!(tauri::Url::parse(manifest_url(windows)).is_ok());
+        }
+    }
+
+    #[test]
+    fn covers_ae1_on_windows_a_missing_manifest_or_platform_entry_means_no_update() {
+        use tauri_plugin_updater::Error;
+        let missing = || {
+            [
+                Error::ReleaseNotFound,
+                Error::TargetNotFound("windows-x86_64".into()),
+                Error::TargetsNotFound(vec!["windows-x86_64".into()]),
+            ]
+        };
+        for error in missing() {
+            assert!(means_no_update(&error, true), "{error}");
+        }
+        // macOS: its manifest exists when its release does.
+        for error in missing() {
+            assert!(!means_no_update(&error, false), "{error}");
+        }
+        assert!(!means_no_update(&Error::Network("timed out".into()), true));
+        assert!(!means_no_update(&Error::SignatureUtf8("bad".into()), true));
+    }
+
+    #[test]
+    fn the_app_opens_again_after_the_click_and_the_launch_install_only() {
+        assert!(relaunches(InstallMoment::Click));
+        assert!(relaunches(InstallMoment::Launch));
+        assert!(!relaunches(InstallMoment::Quit));
+    }
+
+    #[test]
+    fn an_exit_is_the_click_only_when_the_restart_is_recorded() {
+        assert_eq!(exit_moment(true), InstallMoment::Click);
+        // A confirmed held update that installs at a manual quit.
+        assert_eq!(exit_moment(false), InstallMoment::Quit);
+        assert!(!relaunches(exit_moment(false)));
+    }
+
+    #[test]
+    fn an_install_attempt_that_did_not_finish_stops_the_install_at_launch() {
+        // On Windows the process ends when the installer starts, so the
+        // record exists before the result does.
+        let attempt = Some(InstallFailure::attempt("1.0.4"));
+        // The installer did not finish: the old build runs.
+        let kept = failure_at_start(attempt.clone(), "1.0.3");
+        assert!(launch_skips_install(kept.as_ref(), "1.0.3"));
+        assert!(!kept.unwrap().shown, "the error shows once");
+        // The installer finished: the new build runs.
+        assert_eq!(failure_at_start(attempt, "1.0.4"), None);
     }
 
     #[test]

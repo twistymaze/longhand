@@ -65,7 +65,7 @@ The time does not go to compilation. The Rust cache works, and the workspace com
 
 The cost is also high. The repository is private, so all runner minutes are billed. Net Actions cost was about $75 in September 2026 and $88 in the first 10 days of October 2026, which is about $250 a month. About half is macOS. The other half is the Windows 8-core larger runner, which gets no free minutes.
 
-The Windows preview build idea (`docs/ideas/next/windows-preview-builds-and-updates.md`) needs a Windows release build on `main`. A release build compiles all dependencies again with LTO. With the current Windows runner, that would make the time from a merge to a published build much longer.
+The Windows preview build idea (`docs/ideas/done/windows-preview-builds-and-updates.md`) needs a Windows release build on `main`. A release build compiles all dependencies again with LTO. With the current Windows runner, that would make the time from a merge to a published build much longer.
 
 The repository will become public in about one month, with pull requests limited to collaborators. On a public repository, GitHub's standard runners are free, but the Windows larger runner is not. After that change, speed is the main reason for self-hosted runners.
 
@@ -121,7 +121,7 @@ The repository will become public in about one month, with pull requests limited
 
 ### Scope Boundaries
 
-- The Windows preview build itself (code signing, updates, publishing) is not in scope. It stays in `docs/ideas/next/windows-preview-builds-and-updates.md`.
+- The Windows preview build itself (code signing, updates, publishing) is not in scope. It stays in `docs/ideas/done/windows-preview-builds-and-updates.md`.
 - A new VM for each job is deferred: `docs/ideas/done/ephemeral-ci-runner-vms.md`.
 - Moving the signing runner to the Mac mini is deferred: `docs/ideas/done/signing-runner-on-mac-mini.md`.
 - The audit before the repository goes public (history scan for secrets, private files, logs, docs) is not in scope: `docs/ideas/done/pre-public-repo-audit.md`.
@@ -154,7 +154,7 @@ The Planning Contract answers these questions: the macOS VM network (KTD3), the 
 - `.github/workflows/ci.yml`: the current jobs, the Dev Drive and cache steps on Windows, and the `preview` job with its signing secrets.
 - CI runs 38070420175 (PR) and 38071795770 (`main`) on 2026-10-10 gave the job and step times above.
 - The Actions usage report for the `twistymaze` organization gave the September and October 2026 costs.
-- `docs/preview-builds.md` and `docs/ideas/next/windows-preview-builds-and-updates.md`: the current preview build and the planned Windows one.
+- `docs/preview-builds.md` and `docs/ideas/done/windows-preview-builds-and-updates.md`: the current preview build and the planned Windows one.
 - GitHub's pull request access setting: https://github.blog/changelog/2026-02-13-new-repository-settings-for-configuring-pull-request-access/
 - On the Proxmox host, an existing agent VM shows the VLAN pattern: a VLAN tag on the VM's network device.
 

@@ -1,16 +1,20 @@
-# Builds the unsigned Windows installer for a release and attaches it to
-# that release (docs/releases.md). It runs after CI completes successfully
-# for a push to main, and it is a separate workflow so that the long
-# Windows build does not hold back the next CI run on main (KTD2). It has
-# its own concurrency group: when a newer run waits, GitHub replaces an
-# older waiting run, and that release gets no installer.
+# Builds and signs the Windows installer for a release, attaches it to that
+# release, and adds the Windows update manifest latest-windows.json
+# (docs/releases.md). It runs after CI completes successfully for a push to
+# main, and it is a separate workflow so that the long Windows build does
+# not hold back the next CI run on main (KTD2). It has its own concurrency
+# group: when a newer run waits, GitHub replaces an older waiting run, and
+# that release gets no Windows installer and no Windows update.
 #
 # To build the installer of a release again, for example after a fix to
 # this workflow: `gh workflow run release-windows.yml -f tag=v<version>`.
+# The rebuild uses the tag's commit, so a fix to scripts/, the Tauri config
+# or the app needs a new release.
 #
-# The build job can only read the repository. The attach job is the only
-# job that can write, and it runs no build code (R25). Every action is
-# pinned by its full commit SHA.
+# The build job signs through Azure Artifact Signing with a federated login
+# from the release environment, so no signing secret is stored in GitHub.
+# The attach job is the only job that can write to the repository, and it
+# runs no build code (R25). Every action is pinned by its full commit SHA.
 
 name: Release Windows installer
 
@@ -70,9 +74,10 @@ jobs:
           if [ -z "$TAG" ]; then
             echo "No release targets this commit. Nothing to build."
           else
-            # The build job writes the caches of the default branch, so it
-            # builds only a commit that is on main. The target of a release
-            # can be a branch name, so the step resolves it to a SHA first.
+            # The build job writes the caches of the default branch and can
+            # sign, so it builds only a commit that is on main. The target
+            # of a release can be a branch name, so the step resolves it to
+            # a SHA first.
             commit=$(gh api "repos/$REPOSITORY/commits/$commit" --jq .sha)
             status=$(gh api "repos/$REPOSITORY/compare/$commit...main" --jq .status)
             if [ "$status" != "ahead" ] && [ "$status" != "identical" ]; then
@@ -87,13 +92,23 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build the installer
+    name: Build and sign the installer
     needs: find
     if: needs.find.outputs.tag != ''
     # A standard runner: free for a public repository, and clean, so a
     # published file does not depend on the state of a self-hosted runner.
     runs-on: windows-latest
     timeout-minutes: 120
+    # The release environment allows deployments only from main, and the
+    # Azure federated credential trusts only this environment (R13, KTD10).
+    # id-token applies to the whole job, so each step can request the token
+    # that Azure accepts for signing. This is the same trust as the macOS
+    # release job, which compiles while it holds the Apple certificate
+    # (KTD6).
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
     env:
       CARGO_INCREMENTAL: 0
     defaults:
@@ -129,13 +144,25 @@ jobs:
 
       # rust-cache removes non-Cargo files from target during cache save,
       # so the NeMo cache goes in the temp folder. The version goes into the
-      # build through a config file, not a commit (KTD6).
+      # build through a config file, not a commit (KTD6). The config file
+      # also turns on the updater files and the sign command, so local
+      # builds stay unsigned and need no updater key (KTD3). Tauri runs the
+      # sign command for each file that it signs, with the file as %1.
       - name: Record the NeMo cache path and the release config
         env:
           TAG: ${{ needs.find.outputs.tag }}
+          WORKSPACE: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         run: |
           echo "LONGHAND_NEMO_CACHE=$RUNNER_TEMP/longhand-nemo" >> "$GITHUB_ENV"
-          jq -n --arg version "${TAG#v}" '{version: $version}' > "$RUNNER_TEMP/release.json"
+          echo "VERSION=${TAG#v}" >> "$GITHUB_ENV"
+          script=$(cygpath -m "$WORKSPACE/scripts/windows-signing.ts")
+          jq -n --arg version "${TAG#v}" --arg script "$script" '{
+            version: $version,
+            bundle: {
+              createUpdaterArtifacts: true,
+              windows: {signCommand: {cmd: "node", args: [$script, "sign", "%1"]}}
+            }
+          }' > "$RUNNER_TEMP/release.json"
 
       # As in the Windows checks in ci.yml, the helper is prepared in bash
       # before the Tauri build. Under pwsh, the Windows PowerShell child that
@@ -168,30 +195,150 @@ jobs:
           gh release download "$TAG" -R "$REPOSITORY" -p changelog.json -D "$RUNNER_TEMP/changelog"
           echo "LONGHAND_CHANGELOG=$RUNNER_TEMP/changelog/changelog.json" >> "$GITHUB_ENV"
 
-      # No LONGHAND_RELEASE: Windows builds get no updates yet (R19). The
-      # commit shows in About. LONGHAND_CHANGELOG, from the step before,
-      # puts the changelog of the release into the binary.
-      - name: Tauri build (Windows installer, release)
+      # The compile only. The bundle step comes after the Azure login, so a
+      # long cold compile does not use up the login (KTD3). The release
+      # config gives the version, which is compiled into the binary.
+      # LONGHAND_RELEASE makes this build check for updates. The commit
+      # shows in About. LONGHAND_CHANGELOG, from the step before, puts the
+      # changelog of the release into the binary.
+      - name: Tauri build (release, no bundle)
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
           LONGHAND_BUILD_COMMIT: ${{ needs.find.outputs.commit }}
+          LONGHAND_RELEASE: "1"
         # PowerShell removes an unquoted `--` before npm.ps1 gets the
         # arguments, so npm reads the Tauri flags as its own. Quote it.
         run: |
-          npm run tauri '--' build --bundles nsis --config "$env:RUNNER_TEMP/release.json"
+          npm run tauri '--' build --no-bundle --config "$env:RUNNER_TEMP/release.json"
           if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
+
+      # A build with no release config reports version 0.1.0, and each
+      # Windows app would see each release as newer than itself.
+      - name: Check the version of the executable
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          $actual = (Get-Item target/release/longhand.exe).VersionInfo.ProductVersion
+          if ($actual -notmatch "^$([regex]::Escape($env:VERSION))(\.0)?$") {
+            throw "longhand.exe has version $actual, not $env:VERSION"
+          }
+          Write-Output "longhand.exe has version $actual"
+
+      # SignTool from the Windows SDK build tools, and the Artifact Signing
+      # dlib, at pinned versions: the SDK on the runner image can be older
+      # than the dlib needs (KTD4). The dlib signs in to Azure with the
+      # Azure CLI login of the next step; metadata.json excludes the other
+      # credential types, so no other source of credentials is tried.
+      - name: Install SignTool and the Artifact Signing dlib
+        shell: pwsh
+        env:
+          ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP signing
+          nuget install Microsoft.Windows.SDK.BuildTools -Version 10.0.28000.2526 -OutputDirectory $tools -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget install failed" }
+          nuget install Microsoft.ArtifactSigning.Client -Version 1.0.146 -OutputDirectory $tools -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget install failed" }
+          $signtool = Join-Path $tools Microsoft.Windows.SDK.BuildTools.10.0.28000.2526/bin/10.0.28000.0/x64/signtool.exe
+          $dlib = Join-Path $tools Microsoft.ArtifactSigning.Client.1.0.146/bin/x64/Azure.CodeSigning.Dlib.dll
+          foreach ($file in $signtool, $dlib) {
+            if (-not (Test-Path $file)) { throw "$file is missing" }
+          }
+          foreach ($name in 'ENDPOINT', 'ACCOUNT', 'PROFILE') {
+            if (-not (Get-Item "env:$name").Value) { throw "The release environment has no value for $name" }
+          }
+          $metadata = Join-Path $tools metadata.json
+          @{
+            Endpoint = $env:ENDPOINT
+            CodeSigningAccountName = $env:ACCOUNT
+            CertificateProfileName = $env:PROFILE
+            ExcludeCredentials = @(
+              'EnvironmentCredential', 'WorkloadIdentityCredential', 'ManagedIdentityCredential',
+              'SharedTokenCacheCredential', 'VisualStudioCredential', 'VisualStudioCodeCredential',
+              'AzurePowerShellCredential', 'AzureDeveloperCliCredential', 'InteractiveBrowserCredential'
+            )
+          } | ConvertTo-Json | Set-Content -Encoding utf8 $metadata
+          "LONGHAND_SIGNTOOL=$signtool" >> $env:GITHUB_ENV
+          "LONGHAND_SIGNING_DLIB=$dlib" >> $env:GITHUB_ENV
+          "LONGHAND_SIGNING_METADATA=$metadata" >> $env:GITHUB_ENV
+
+      # A federated login: GitHub gives a token for the release
+      # environment, and Azure trusts only that subject (KTD10).
+      - name: Azure login
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Tauri signs the executable, the resource .exe and .dll files, the
+      # uninstaller and the installer, then writes the updater signature of
+      # the signed installer (KTD3). Only this step gets the updater key.
+      - name: Tauri bundle (Windows installer, signed)
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm run tauri '--' bundle --bundles nsis --config "$env:RUNNER_TEMP/release.json"
+          if ($LASTEXITCODE -ne 0) { throw "Tauri bundle failed" }
+
+      # Updater 2.14 and later refuses an update whose signature names a
+      # version other than the version in the manifest.
+      - name: Check the updater signature
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          shopt -s nullglob
+          installers=(target/release/bundle/nsis/*-setup.exe)
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "expected one installer, found ${#installers[@]}"
+            exit 1
+          fi
+          test -s "${installers[0]}.sig"
+          # The whole text first: grep -q can stop reading before the end of
+          # a pipe, and pipefail would then fail the step.
+          comment=$(base64 -d < "${installers[0]}.sig" | tr '\t' '\n')
+          grep -qxF "version:$VERSION" <<< "$comment" \
+            || { echo "the updater signature does not name version $VERSION"; exit 1; }
+          echo "INSTALLER=$(cygpath -m "$PWD/${installers[0]}")" >> "$GITHUB_ENV"
+
+      # The signature gate (KTD5): a silent install into a temporary folder,
+      # then a check of every .exe and .dll there and of the installer. A
+      # failure leaves no artifact, so the release gets no Windows files.
+      - name: Install the installer silently
+        shell: pwsh
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP longhand-install
+          $install = Start-Process -FilePath $env:INSTALLER -ArgumentList '/S', "/D=$folder" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "The silent install failed with exit code $($install.ExitCode)" }
+
+      # In bash, not pwsh: a Windows PowerShell child of pwsh gets the
+      # PowerShell 7 module path, and the script reads the signatures with
+      # Windows PowerShell (see the NeMo helper step).
+      - name: Check the signatures of the installed files
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          WINDOWS_PUBLISHER: ${{ vars.WINDOWS_PUBLISHER }}
+        run: node scripts/windows-signing.ts verify "$RUNNER_TEMP/longhand-install" "$INSTALLER"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-windows
-          path: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}/target/release/bundle/nsis/*.exe
+          path: |
+            ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}/target/release/bundle/nsis/*-setup.exe
+            ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}/target/release/bundle/nsis/*-setup.exe.sig
           if-no-files-found: error
           retention-days: 7
 
-  # Attaches the installer to the release. It is the only job in this
-  # workflow that can write to the repository, and it runs no build code:
-  # no package install and no cargo, only the publish script (R25).
+  # Attaches the installer, its updater signature and latest-windows.json to
+  # the release, in that order (KTD8). It never changes latest.json. It is
+  # the only job in this workflow that can write to the repository, and it
+  # runs no build code: no package install and no cargo, only the publish
+  # script (R25).
   attach:
     name: Attach the installer
     needs: [find, build]
@@ -218,4 +365,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           TAG: ${{ needs.find.outputs.tag }}
-        run: node scripts/publish-release.ts attach "$TAG" "$(ls "$RUNNER_TEMP"/installer/*.exe)"
+        run: |
+          node scripts/publish-release.ts attach "$TAG" \
+            "$(ls "$RUNNER_TEMP"/installer/*-setup.exe)" "$(ls "$RUNNER_TEMP"/installer/*-setup.exe.sig)"

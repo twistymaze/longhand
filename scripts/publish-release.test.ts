@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   attach,
   buildManifest,
+  buildWindowsManifest,
   githubApi,
   isNewer,
   main,
@@ -61,11 +62,16 @@ function fakeRepo() {
     beforeUpload: (_name: string) => {},
     // True when a newer CI run on main is queued or running.
     newerRun: false,
+    // The public download of an asset of a published release, or null when
+    // there is none. A test can replace it.
+    publicContent: (tag: string, name: string): string | null =>
+      state.releases.find((r) => !r.draft && r.tag_name === tag)?.files[name] ?? null,
   };
   const view = (r: FakeRelease): Release => ({
     id: r.id,
     tag_name: r.tag_name,
     draft: r.draft,
+    body: r.body,
     assets: r.assets.map((a) => ({ ...a })),
   });
   const find = (id: number) => state.releases.find((r) => r.id === id)!;
@@ -100,6 +106,8 @@ function fakeRepo() {
     async uploadAsset(release, name, content) {
       state.beforeUpload(name);
       const found = find(release.id);
+      // GitHub refuses a second asset with the same name (422).
+      if (found.assets.some((a) => a.name === name)) throw new Error(`422: ${name} already exists`);
       const asset = { id: nextId++, name };
       found.assets.push(asset);
       found.files[name] = typeof content === "string" ? content : await content.text();
@@ -127,13 +135,16 @@ function fakeRepo() {
     async newerRunWaiting() {
       return state.newerRun;
     },
+    async readPublicAsset(tag, name) {
+      return state.publicContent(tag, name);
+    },
   };
   return { api, state };
 }
 
 /// Adds a published release, as an earlier run would.
-async function seedRelease(api: ReleasesApi, version: string) {
-  const release = await api.createDraft({ tag: `v${version}`, target: SHA, name: `Longhand ${version}`, body: "" });
+async function seedRelease(api: ReleasesApi, version: string, body = "") {
+  const release = await api.createDraft({ tag: `v${version}`, target: SHA, name: `Longhand ${version}`, body });
   await api.publishRelease(release);
 }
 
@@ -240,41 +251,152 @@ test("a failed upload leaves only a draft and fails the publish", async () => {
   assert.deepEqual(state.releases.map((r) => [r.tag_name, r.draft]), [["v1.0.0", true]]);
 });
 
-test("attach uploads the installer to the release with the tag", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  await attach(api, { tag: "v1.0.0", installer: new Blob(["exe"]), installerName: "Longhand_1.0.0_x64-setup.exe" }, quiet);
-  assert.deepEqual(state.releases[0]!.files, { "Longhand_1.0.0_x64-setup.exe": "exe" });
+test("the Windows manifest names the version, the notes, the date, and the windows-x86_64 installer and signature", () => {
+  assert.deepEqual(
+    buildWindowsManifest({
+      version: "1.0.4",
+      notes: "### Bug Fixes\n- one fix\n",
+      pubDate: "2026-10-11T15:00:00.000Z",
+      url: "https://example.test/Longhand_1.0.4_x64-setup.exe",
+      signature: "c2lnbmF0dXJl\n",
+    }),
+    {
+      version: "1.0.4",
+      notes: "### Bug Fixes\n- one fix",
+      pub_date: "2026-10-11T15:00:00.000Z",
+      platforms: { "windows-x86_64": { signature: "c2lnbmF0dXJl", url: "https://example.test/Longhand_1.0.4_x64-setup.exe" } },
+    },
+  );
 });
 
-test("attach replaces an asset with the same name", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  const installer = { tag: "v1.0.0", installerName: "Longhand_1.0.0_x64-setup.exe" };
-  await attach(api, { ...installer, installer: new Blob(["first"]) }, quiet);
-  await attach(api, { ...installer, installer: new Blob(["second"]) }, quiet);
-  assert.deepEqual(state.releases[0]!.assets.map((a) => a.name), ["Longhand_1.0.0_x64-setup.exe"]);
-  assert.equal(state.releases[0]!.files["Longhand_1.0.0_x64-setup.exe"], "second");
+const INSTALLER = "Longhand_1.0.0_x64-setup.exe";
+const attachArgs = (installer: string, signature = "d2lu\n") => ({
+  repository: REPO,
+  tag: "v1.0.0",
+  installer: new Blob([installer]),
+  installerName: INSTALLER,
+  signature,
+  now: () => new Date("2026-10-12T09:00:00Z"),
 });
 
-test("a failed re-upload keeps the earlier installer", async () => {
+/// Records each upload and delete of the fake repository, in order.
+function recordChanges(api: ReleasesApi): string[] {
+  const changes: string[] = [];
+  const upload = api.uploadAsset.bind(api);
+  const remove = api.deleteAsset.bind(api);
+  api.uploadAsset = (release, name, content) => {
+    changes.push(`upload ${name}`);
+    return upload(release, name, content);
+  };
+  api.deleteAsset = (release, asset) => {
+    changes.push(`delete ${asset.name}`);
+    return remove(release, asset);
+  };
+  return changes;
+}
+
+test("attach uploads the installer, its signature, then latest-windows.json for the release with the tag", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0", "### Features\n- one feature\n");
+  const changes = recordChanges(api);
+  await attach(api, attachArgs("exe"), quiet);
+  assert.deepEqual(changes, [`upload ${INSTALLER}`, `upload ${INSTALLER}.sig`, "upload latest-windows.json"]);
+  const files = state.releases[0]!.files;
+  assert.equal(files[INSTALLER], "exe");
+  assert.equal(files[`${INSTALLER}.sig`], "d2lu\n");
+  assert.deepEqual(JSON.parse(files["latest-windows.json"]!) as Manifest, {
+    version: "1.0.0",
+    notes: "### Features\n- one feature",
+    pub_date: "2026-10-12T09:00:00.000Z",
+    platforms: {
+      "windows-x86_64": {
+        signature: "d2lu",
+        url: `https://github.com/${REPO}/releases/download/v1.0.0/${INSTALLER}`,
+      },
+    },
+  });
+});
+
+test("attach never uploads or deletes latest.json", async () => {
+  const { api, state } = fakeRepo();
+  assert.equal(await publish(api, args("1.0.0"), quiet), "published");
+  const macManifest = state.releases[0]!.files["latest.json"];
+  const changes = recordChanges(api);
+  await attach(api, attachArgs("first"), quiet);
+  await attach(api, attachArgs("second"), quiet);
+  assert.equal(changes.filter((c) => c.endsWith(" latest.json")).length, 0);
+  assert.equal(state.releases[0]!.files["latest.json"], macManifest);
+});
+
+test("a re-run deletes the old manifest first, replaces the installer and the signature, and uploads the new manifest last", async () => {
   const { api, state } = fakeRepo();
   await seedRelease(api, "1.0.0");
-  const installer = { tag: "v1.0.0", installerName: "Longhand_1.0.0_x64-setup.exe" };
-  await attach(api, { ...installer, installer: new Blob(["first"]) }, quiet);
+  await attach(api, attachArgs("first", "Zmlyc3Q=\n"), quiet);
+  const changes = recordChanges(api);
+  await attach(api, attachArgs("second", "c2Vjb25k\n"), quiet);
+  assert.deepEqual(changes, [
+    "delete latest-windows.json",
+    `upload ${INSTALLER}.new`,
+    `delete ${INSTALLER}`,
+    `upload ${INSTALLER}.sig.new`,
+    `delete ${INSTALLER}.sig`,
+    "upload latest-windows.json",
+  ]);
+  const release = state.releases[0]!;
+  assert.deepEqual(release.assets.map((a) => a.name).sort(), [INSTALLER, `${INSTALLER}.sig`, "latest-windows.json"].sort());
+  assert.equal(release.files[INSTALLER], "second");
+  assert.equal(release.files[`${INSTALLER}.sig`], "c2Vjb25k\n");
+  assert.equal((JSON.parse(release.files["latest-windows.json"]!) as Manifest).platforms["windows-x86_64"]!.signature, "c2Vjb25k");
+});
+
+test("a failed re-upload keeps the earlier installer and leaves no Windows manifest", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  await attach(api, attachArgs("first"), quiet);
   state.beforeUpload = () => {
     throw new Error("upload failed");
   };
-  await assert.rejects(attach(api, { ...installer, installer: new Blob(["second"]) }, quiet), /upload failed/);
-  assert.equal(state.releases[0]!.files["Longhand_1.0.0_x64-setup.exe"], "first");
+  await assert.rejects(attach(api, attachArgs("second"), quiet), /upload failed/);
+  assert.equal(state.releases[0]!.files[INSTALLER], "first");
+  assert.equal(state.releases[0]!.files["latest-windows.json"], undefined);
 });
 
-test("attach fails when no release has the tag", async () => {
+test("a re-run after a run that stopped after a temporary upload deletes the temporary asset and attaches", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  await attach(api, attachArgs("first"), quiet);
+  // The earlier run uploaded the temporary .sig, then stopped.
+  await api.uploadAsset((await api.releaseByTag("v1.0.0"))!, `${INSTALLER}.sig.new`, "partial");
+  await attach(api, attachArgs("second", "c2Vjb25k\n"), quiet);
+  const after = state.releases[0]!;
+  assert.deepEqual(after.assets.map((a) => a.name).sort(), [INSTALLER, `${INSTALLER}.sig`, "latest-windows.json"].sort());
+  assert.equal(after.files[`${INSTALLER}.sig`], "c2Vjb25k\n");
+});
+
+test("attach fails without uploads when no release has the tag", async () => {
   const { api } = fakeRepo();
-  await assert.rejects(
-    attach(api, { tag: "v1.0.0", installer: new Blob(["exe"]), installerName: "setup.exe" }, quiet),
-    /no release has the tag v1\.0\.0/,
-  );
+  const changes = recordChanges(api);
+  await assert.rejects(attach(api, attachArgs("exe"), quiet), /no release has the tag v1\.0\.0/);
+  assert.deepEqual(changes, []);
+});
+
+test("attach fails when the public latest-windows.json differs from the uploaded manifest", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  state.publicContent = () => "{}\n";
+  await assert.rejects(attach(api, attachArgs("exe"), quiet), /latest-windows\.json of v1\.0\.0 differs/);
+});
+
+test("attach reads back the public latest-windows.json of the tag", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  const reads: string[] = [];
+  state.publicContent = (tag, name) => {
+    reads.push(`${tag} ${name}`);
+    return state.releases[0]!.files[name] ?? null;
+  };
+  await attach(api, attachArgs("exe"), quiet);
+  assert.deepEqual(reads, ["v1.0.0 latest-windows.json"]);
 });
 
 /// Writes the release files of a CLI publish and returns its arguments.
@@ -345,6 +467,28 @@ test("the CLI usage names the changelog files of a publish", async () => {
   );
 });
 
+test("the CLI rejects the old two-argument attach with the usage text", async () => {
+  const { api } = fakeRepo();
+  await assert.rejects(
+    main(["attach", "v1.0.0", "/b/setup.exe"], ENV, () => api, quiet),
+    /attach <tag> <installer> <signature file>/,
+  );
+});
+
+test("a CLI attach uploads the installer, its signature file and the Windows manifest", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  const dir = `${process.env.TMPDIR ?? "/tmp"}/publish-release-test-${process.pid}/installer`;
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(`${dir}/${INSTALLER}`, "exe");
+  writeFileSync(`${dir}/${INSTALLER}.sig`, "d2lu\n");
+  await main(["attach", "v1.0.0", `${dir}/${INSTALLER}`, `${dir}/${INSTALLER}.sig`], ENV, () => api, quiet);
+  const files = state.releases[0]!.files;
+  assert.equal(files[INSTALLER], "exe");
+  assert.equal(files[`${INSTALLER}.sig`], "d2lu\n");
+  assert.equal((JSON.parse(files["latest-windows.json"]!) as Manifest).platforms["windows-x86_64"]!.signature, "d2lu");
+});
+
 test("a CLI publish with a failed upload rejects, so the process exits with an error", async () => {
   const { api, state } = fakeRepo();
   state.beforeUpload = () => {
@@ -357,7 +501,7 @@ test("a CLI publish with a failed upload rejects, so the process exits with an e
 
 test("the CLI fails when the environment does not name the repository, the token and the commit", async () => {
   const { api } = fakeRepo();
-  await assert.rejects(main(["attach", "v1.0.0", "/b/setup.exe"], {}, () => api, quiet), /GITHUB_REPOSITORY/);
+  await assert.rejects(main(["attach", "v1.0.0", "/b/setup.exe", "/b/setup.exe.sig"], {}, () => api, quiet), /GITHUB_REPOSITORY/);
   await assert.rejects(
     main(["publish", "1.0.0", "a", "b", "c", "d", "e", "f"], { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t" }, () => api, quiet),
     /GITHUB_SHA/,
@@ -499,4 +643,22 @@ test("the GitHub binding reads every page of releases", async () => {
     `GET ${API}/releases?per_page=100&page=1`,
     `GET ${API}/releases?per_page=100&page=2`,
   ]);
+});
+
+test("the GitHub binding reads a public asset without the token and treats a 404 as no asset", async () => {
+  const url = `https://github.com/${REPO}/releases/download/v1.0.0/latest-windows.json`;
+  const requests = await withFetch(
+    () => new Response("{}\n"),
+    async () => {
+      assert.equal(await githubApi(REPO, "t").readPublicAsset("v1.0.0", "latest-windows.json"), "{}\n");
+    },
+  );
+  assert.deepEqual(requests.map((r) => r.line), [`GET ${url}`]);
+  assert.equal(requests[0]!.init, undefined);
+  await withFetch(
+    () => new Response("not found", { status: 404 }),
+    async () => {
+      assert.equal(await githubApi(REPO, "t").readPublicAsset("v1.0.0", "latest-windows.json"), null);
+    },
+  );
 });
