@@ -204,6 +204,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        # TEMPORARY: logs why cargo rebuilds each unit. Remove before merge.
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
         run: |
           $ErrorActionPreference = 'Stop'
           $expected = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
