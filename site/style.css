@@ -202,11 +202,36 @@ h1 {
 }
 
 .get {
+  margin-top: 36px;
+}
+
+/* Each download place holds the two installer links twice: Mac first and
+   Windows first. platform.js sets data-platform on the html element, and
+   only the group for that platform shows. A hidden group is out of the tab
+   order, so the keyboard order is the visible order. */
+.downloads {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 14px 22px;
-  margin-top: 36px;
+  gap: 14px;
+}
+
+.windows-first,
+:root[data-platform="windows"] .mac-first {
+  display: none;
+}
+
+:root[data-platform="windows"] .windows-first {
+  display: flex;
+}
+
+/* For a known platform, the first link is the main button. The other
+   installer is a plain link on the line below it. With no platform, both
+   show as equal buttons. */
+:root[data-platform] .downloads {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
 }
 
 .download {
@@ -228,23 +253,30 @@ h1 {
   transform: scale(0.97);
 }
 
-/* A platform that has no release yet: the button shows, but does nothing. */
-.download[aria-disabled="true"],
-.download[aria-disabled="true"]:active {
-  background: var(--rule);
+/* The link keeps a tap height of 44px. */
+:root[data-platform] .download + .download {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0;
+  background: none;
   color: var(--muted);
-  cursor: default;
+  font-weight: 400;
+  font-size: 0.9375rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+:root[data-platform] .download + .download:hover {
+  color: var(--text);
+}
+
+:root[data-platform] .download + .download:active {
   transform: none;
 }
 
-.download .soon {
-  margin-left: 6px;
-  font-weight: 400;
-  font-size: 0.8125rem;
-}
-
 .platforms {
-  margin: 0;
+  margin: 14px 0 0;
   font-size: 0.875rem;
   line-height: 1.45;
   color: var(--muted);
