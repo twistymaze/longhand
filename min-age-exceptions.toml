@@ -126,3 +126,9 @@ ecosystem = "crate"
 name = "transcribe-cpp-sys"
 version = "0.4.1"
 reason = "Goes with transcribe-cpp 0.4.1: ggml with the GGUF loader overflow fixes and the Metal null mapped buffer patch. Remove on 2026-10-29."
+
+[[exception]]
+ecosystem = "crate"
+name = "tauri-plugin-updater"
+version = "2.14.1"
+reason = "GHSA-m665-v7pm-7grj: the updater moves to zip 9 in 2.14.1, and 2.14.0 requires zip 4, which has the fault. Remove on 2026-11-04."
