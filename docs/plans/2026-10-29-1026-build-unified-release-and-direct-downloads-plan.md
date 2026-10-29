@@ -396,8 +396,17 @@ U1 → U2 and U3 (parallel) → U4 → U5 → U7. U6 does not depend on the work
 
 ## Definition of Done
 
-- Every unit's Verification holds, and the Verification Contract gates before the merge pass.
+**Before the maintainer merges**
+
+- Every unit's Verification that does not need a release run holds, and every Verification Contract gate except "Merge run" passes.
 - The PR title is `build: …` and the PR makes a patch release (KTD9).
 - `.github/workflows/release-windows.yml` is gone, and no live doc or script refers to it or to `attach`.
 - No dead code from abandoned attempts is left in the diff.
-- After the merge, the merge run publishes one release with both platforms, and the cache-poisoning CodeQL alerts that the old Windows workflow raised are checked and closed if they no longer apply.
+
+**On the merge run, after the merge**
+
+- The run publishes one release with both platforms: `Longhand_aarch64.dmg`, `Longhand_x64-setup.exe`, both `.sig` files and both manifests.
+- The longhand.md buttons download those files.
+- An installed build finds the update.
+- The cache-poisoning CodeQL alerts that the old Windows workflow raised are checked and closed if they no longer apply.
+- When a check fails, a `fix:` PR follows (R3).
