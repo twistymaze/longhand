@@ -20,8 +20,10 @@ export function LibraryFooter() {
   useEffect(() => {
     // A failed call leaves the version out; Settings still works.
     commands.buildInfo().then((info) => setVersion(info.version), () => {});
-    commands.updateOffer().then(setOffer, () => {});
+    // Read the offer after the listener is registered, so that no change
+    // between the read and the registration is lost.
     const unlisten = events.updateOfferChanged.listen(({ payload }) => setOffer(payload.version));
+    void unlisten.then(() => commands.updateOffer().then(setOffer, () => {}));
     return () => void unlisten.then((f) => f());
   }, []);
 
