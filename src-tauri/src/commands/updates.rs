@@ -23,6 +23,21 @@ pub fn check_for_updates(manager: State<'_, Arc<UpdateManager>>) {
     manager.check_now();
 }
 
+/// The version that the tray's update item offers, which the library
+/// footer shows. `UpdateOfferChanged` sends each change.
+#[tauri::command]
+#[specta::specta]
+pub fn update_offer(manager: State<'_, Arc<UpdateManager>>) -> Option<String> {
+    manager.offer()
+}
+
+/// The footer's update badge: the same action as the tray's update item.
+#[tauri::command]
+#[specta::specta]
+pub fn open_update_offer(manager: State<'_, Arc<UpdateManager>>) {
+    manager.tray_open();
+}
+
 /// The update window's page has set the size that fits its content, so the
 /// window can show. Async because a synchronous command that changes a
 /// window can deadlock on Windows.

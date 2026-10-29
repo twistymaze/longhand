@@ -153,6 +153,13 @@ pub fn recording_tick(app: &AppHandle, note_id: &str, recorded_ms: u64) {
     update_title(app, |title| title.tick(note_id, recorded_ms));
 }
 
+/// Whether a session records now, paused or not. It reads the tray's own
+/// state, so it does not wait for the capture lock.
+pub fn is_recording(app: &AppHandle) -> bool {
+    app.try_state::<TitleState>()
+        .is_some_and(|state| state.lock().recording.is_some())
+}
+
 /// The main window must show the page of this session (R3).
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct ShowSession {
@@ -197,8 +204,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     app.manage(WidgetItem(widget.clone()));
     let menu = Menu::with_items(app, &[&open, &widget, &settings])?;
     // The tray menu is always there, also when "Hide from Dock" hides the
-    // app menu (KTD11). Updates are macOS only.
-    #[cfg(target_os = "macos")]
+    // app menu (KTD11).
     menu.append(&MenuItem::with_id(
         app,
         "check-updates",
@@ -206,7 +212,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?)?;
-    #[cfg(target_os = "macos")]
     app.manage(UpdateMenu {
         menu: menu.clone(),
         item: Mutex::new(None),

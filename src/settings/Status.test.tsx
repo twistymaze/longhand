@@ -48,6 +48,7 @@ const baseSettings: Settings = {
   alert_sound: true,
   show_recording_widget: true,
   hide_from_dock: false,
+  keep_running_in_tray: false,
   watched_folder: null,
   check_updates_automatically: true,
   audio_removal: { kind: "after_days", days: 30 },
@@ -367,10 +368,25 @@ describe("the Window group on other platforms", () => {
     delete (navigator as { userAgent?: string }).userAgent;
   });
 
-  test("has no Hide from Dock switch, and the footer says system tray", () => {
+  test("has no Hide from Dock switch, and the footer says that a close quits", () => {
     const { group } = renderWindowGroup();
     expect(within(group()).queryByRole("switch", { name: "Hide from Dock" })).toBeNull();
-    expect(group().textContent).toContain("Closing the window keeps Longhand running in the system tray.");
+    expect(group().textContent).toContain("Closing the window quits Longhand, except during a recording.");
     expect(group().textContent).not.toContain("menu bar");
+  });
+
+  test("the system tray switch is off by default, and the footer follows it", async () => {
+    const { tauri, group } = renderWindowGroup({
+      set_keep_running_in_tray: (args) => ({ ...baseSettings, keep_running_in_tray: args.enabled as boolean }),
+    });
+    const toggle = within(group()).getByRole("switch", { name: "Keep running in the system tray" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    await userEvent.setup().click(toggle);
+    expect(tauri.calls.filter((c) => c.cmd === "set_keep_running_in_tray").map((c) => c.args)).toEqual([
+      { enabled: true },
+    ]);
+    await waitFor(() =>
+      expect(group().textContent).toContain("Closing the window keeps Longhand running in the system tray."),
+    );
   });
 });

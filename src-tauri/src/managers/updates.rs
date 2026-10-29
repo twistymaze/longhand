@@ -115,6 +115,24 @@ pub struct UpdateStateChanged {
     pub with_key: bool,
 }
 
+/// The version of the tray's update item changed. The library footer
+/// follows it (R5, R6 of the library footer plan).
+#[derive(Serialize, Type, Debug, Clone, tauri_specta::Event)]
+pub struct UpdateOfferChanged {
+    pub version: Option<String>,
+}
+
+/// Record `now` as the offered version, and tell whether it differs from
+/// the last one. Download progress steps the flow often, so the event goes
+/// out only on a change.
+fn offer_changed(last: &mut Option<String>, now: Option<&str>) -> bool {
+    if last.as_deref() == now {
+        return false;
+    }
+    *last = now.map(str::to_string);
+    true
+}
+
 enum Message {
     Timer,
     ManualCheck,
@@ -226,6 +244,8 @@ pub struct UpdateManager {
     /// The changes of the last offered version that the window asked for
     /// (U6 of the monthly changelog plan).
     offered_changes: changes::Cache,
+    /// The offered version that pages last got.
+    announced_offer: Mutex<Option<String>>,
     busy: Box<dyn Fn() -> bool + Send + Sync>,
     was_busy: AtomicBool,
     /// The manager asked for the restart of the Install click. A quit also
@@ -377,6 +397,7 @@ impl UpdateManager {
             install_update: Mutex::new(None),
             failure: Mutex::new(failure),
             offered_changes: changes::Cache::default(),
+            announced_offer: Mutex::new(None),
             busy: Box::new(busy),
             was_busy: AtomicBool::new(false),
             restart_requested: AtomicBool::new(false),
@@ -439,6 +460,11 @@ impl UpdateManager {
     /// The update item of the tray menu (R4).
     pub fn tray_open(&self) {
         self.send(Message::TrayOpen);
+    }
+
+    /// The version of the tray's update item, or `None` with no offer.
+    pub fn offer(&self) -> Option<String> {
+        lock(&self.flow).tray_version().map(str::to_string)
     }
 
     /// The state and whether the window has the focus, read together.
@@ -547,6 +573,12 @@ impl UpdateManager {
         });
         crate::window::show_update_window(&self.app, visible, with_key, asked_now);
         self.note_failure_shown(&state, visible);
+        if offer_changed(&mut lock(&self.announced_offer), tray.as_deref()) {
+            let _ = UpdateOfferChanged {
+                version: tray.clone(),
+            }
+            .emit(&self.app);
+        }
         crate::tray::set_update_item(&self.app, tray);
         for effect in effects {
             match effect {
@@ -795,6 +827,19 @@ mod tests {
             !may_show(false, true, true, || true),
             "the flow does not want it"
         );
+    }
+
+    #[test]
+    fn the_offer_is_announced_only_when_its_version_changes() {
+        let mut last = None;
+        assert!(offer_changed(&mut last, Some("1.2.15")), "an offer appears");
+        assert!(
+            !offer_changed(&mut last, Some("1.2.15")),
+            "a step with the same offer announces nothing"
+        );
+        assert!(offer_changed(&mut last, Some("1.2.16")), "a newer offer");
+        assert!(offer_changed(&mut last, None), "the offer goes away");
+        assert!(!offer_changed(&mut last, None), "still no offer");
     }
 
     #[test]

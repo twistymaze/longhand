@@ -75,6 +75,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,
             commands::settings::set_hide_from_dock,
+            commands::settings::set_keep_running_in_tray,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
             commands::settings::restore_summary_prompt,
@@ -166,6 +167,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::changelog::changelog,
             commands::updates::update_state,
             commands::updates::check_for_updates,
+            commands::updates::update_offer,
+            commands::updates::open_update_offer,
             commands::updates::choose_update,
             commands::updates::show_update_window,
             commands::updates::offered_changes,
@@ -199,6 +202,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             window::MainWindowHidden,
             window::SettingsPaneRequested,
             managers::updates::UpdateStateChanged,
+            managers::updates::UpdateOfferChanged,
         ])
         .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)
 }

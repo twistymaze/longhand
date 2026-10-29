@@ -432,6 +432,7 @@ pub struct LocalSettings {
     /// sound (R9). Local to this computer (KTD1).
     pub alert_sound: bool,
     pub hide_from_dock: bool,
+    pub keep_running_in_tray: bool,
     /// The watched folder of this computer (R4), or `None` when it is off.
     /// It is never written to the shared settings.
     pub watched_folder: Option<String>,
@@ -708,6 +709,10 @@ pub struct Settings {
     /// macOS only: the app has no Dock icon while no window is visible
     /// (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
     pub hide_from_dock: bool,
+    /// Windows only: closing the main window hides it, and the app keeps
+    /// running in the system tray. Off by default: closing the window quits,
+    /// as is usual on Windows. A recording keeps the app running either way.
+    pub keep_running_in_tray: bool,
     /// The watched folder of this computer (R4), or `None` when it is off
     /// (the default). Each new audio file in it becomes a note (R5).
     pub watched_folder: Option<String>,
@@ -928,6 +933,7 @@ impl Default for Settings {
             new_note_records: true,
             alert_sound: true,
             hide_from_dock: false,
+            keep_running_in_tray: false,
             watched_folder: None,
             show_recording_widget: true,
             check_updates_automatically: true,
@@ -984,6 +990,7 @@ impl Settings {
             new_note_records: known_or(&fields.new_note_records, defaults.new_note_records),
             alert_sound: local.alert_sound,
             hide_from_dock: local.hide_from_dock,
+            keep_running_in_tray: local.keep_running_in_tray,
             watched_folder: local.watched_folder,
             show_recording_widget: known_or(
                 &fields.show_recording_widget,
@@ -1049,6 +1056,7 @@ impl Settings {
             apps: self.apps.clone(),
             alert_sound: self.alert_sound,
             hide_from_dock: self.hide_from_dock,
+            keep_running_in_tray: self.keep_running_in_tray,
             watched_folder: self.watched_folder.clone(),
         }
     }
@@ -2735,6 +2743,26 @@ mod tests {
         after.watched_folder = Some("/Users/me/Recordings".into());
         assert!(shared_patch(&before, &after).is_empty());
         assert_eq!(after.local().watched_folder, after.watched_folder);
+    }
+
+    // An older store has no value: the close quits, and nothing migrates.
+    #[test]
+    fn keep_running_in_tray_is_a_local_setting_that_is_off_by_default() {
+        let stored = json!({ "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated, "the new key needs no migration");
+        assert!(!settings.keep_running_in_tray);
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "keep_running_in_tray": true,
+        });
+        let (settings, _) = settings_from_value(&stored);
+        assert!(settings.keep_running_in_tray);
+        let before = Settings::default();
+        let mut after = before.clone();
+        after.keep_running_in_tray = true;
+        assert!(shared_patch(&before, &after).is_empty());
+        assert!(after.local().keep_running_in_tray);
     }
 
     #[test]
