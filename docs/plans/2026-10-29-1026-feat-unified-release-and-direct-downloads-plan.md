@@ -41,15 +41,15 @@ Measured times today, from the push to `main`: the checks take about 11–13 min
 ### Key Decisions
 
 - **One release for both platforms.** A failure of the Windows build fails the release, the same as a failure of the macOS build. A failed Windows build is a defect in CI, and the fix goes in a `fix:` PR. Governs R1, R3, R4, R5. (session-settled: user-directed — chosen over a separate Windows workflow that attaches its installer after publication: Windows and macOS must be almost equally important, and a release with no Windows installer is a defect to fix.)
-- **Release builds start alongside the checks.** The builds do not wait for the checks. Publication waits for the checks and both builds. Code on `main` already passed the checks on its PR, and a failed check still publishes nothing; the only cost is a signing and notarization run that is not used. Governs R1, R2. (session-settled: user-approved — chosen over release builds that start after the checks pass: both platforms come out about 15–20 min after the push, compared with 25–30 min.)
+- **Release builds start alongside the checks.** The builds wait only for the `cargo deny` job (licences, sources, bans; about 1–2 min), not for the checks. Publication waits for the checks and both builds. The deny gate stays before any job that holds a signing credential, because the ruleset of `main` lets an admin push without a PR. A failed check still publishes nothing. Governs R1, R2. (session-settled: user-approved — chosen over release builds that start after the checks pass: both platforms come out about 15–20 min after the push, compared with 25–30 min.)
 - **Fixed installer names.** When both platforms publish together, `releases/latest/download/<name>` always gives a file, so the site needs no step that finds file addresses. Governs R6, R9. (session-settled: user-approved — chosen over versioned names with a site build that finds the newest release that has each file: no blocker remains after the release is unified.)
-- **One button for the detected operating system, and a link to the other installer.** Governs R9–R12. (session-settled: user-directed — chosen over two equal buttons: most visitors see one clear action, and the other platform stays one click away.)
+- **One button for the detected operating system, and a link to the other installer.** Governs R9–R13. (session-settled: user-directed — chosen over two equal buttons: most visitors see one clear action, and the other platform stays one click away.)
 
 ### Requirements
 
 **Release**
 
-- R1. When a push to `main` makes a release due, the macOS and Windows release builds start in parallel with the checks of that CI run.
+- R1. When a push to `main` makes a release due, the macOS and Windows release builds start in parallel with the checks of that CI run, after the `cargo deny` job passes.
 - R2. The release publishes only after every check and both release builds pass. All files go up to a draft first, and the draft becomes the latest release only after the last file is uploaded.
 - R3. When a check, the macOS build or the Windows build fails, nothing publishes and no tag is made. The next run that makes the release due publishes it with both platforms.
 - R4. When GitHub replaces a waiting CI run on `main`, the commits of that run go out in the next release, with both platforms.
@@ -66,12 +66,13 @@ Measured times today, from the push to `main`: the checks take about 11–13 min
 - R9. The page detects the operating system of the visitor. On macOS or Windows, it shows one main button for that system ("Download for Mac" or "Download for Windows"), which downloads the installer directly from `https://github.com/twistymaze/longhand/releases/latest/download/<name>`.
 - R10. Below the main button, a link downloads the installer for the other platform.
 - R11. When the page cannot find macOS or Windows (a phone, Linux, an unknown system, or no JavaScript), it shows both buttons as equals.
-- R12. Both download places on the page use R9–R11: the top of the page and the "Try Longhand in your next meeting" section. The "Coming soon" label goes away.
-- R13. The platform line gives the system requirements for both platforms, as the release builds support them. For example: macOS 15 or later on Apple silicon; the Windows versions that the installer supports.
+- R12. The page shows its final button layout at first paint, with no visible change after load. The detection only promotes one of the two download links and demotes the other; it never adds or removes a link.
+- R13. Both download places on the page use R9–R12: the top of the page and the "Try Longhand in your next meeting" section. The "Coming soon" label goes away.
+- R14. The platform line gives the system requirements for both platforms, as the release builds support them. For example: macOS 15 or later on Apple silicon; the Windows versions that the installer supports.
 
 **Documentation**
 
-- R14. `README.md` and `docs/releases.md` describe the single release for both platforms, the fixed file names and the failure rules of R3.
+- R15. `README.md` and `docs/releases.md` describe the single release for both platforms, the fixed file names and the failure rules of R3.
 
 ### Acceptance Examples
 
@@ -84,19 +85,21 @@ Measured times today, from the push to `main`: the checks take about 11–13 min
 ### Success Criteria
 
 - For a due release, both installers are available about 15–20 min after the push to `main`. macOS is not available much later than today (about 17 min).
-- Every published release has both installers.
+- Every release published after this change has both installers.
 
 ### Scope Boundaries
 
 - One `latest.json` with both platforms in place of `latest-windows.json` is deferred. Installed Windows apps read `latest-windows.json`, so a change needs a migration.
 - An Intel macOS build, an ARM64 Windows build and a Linux build are not in scope. R6's names leave space for them.
-- Visitors on an Intel Mac also see "Download for Mac". A browser cannot reliably tell Apple silicon from Intel. R13's platform line tells them the requirement.
+- Visitors on an Intel Mac also see "Download for Mac". A browser cannot reliably tell Apple silicon from Intel. R14's platform line tells them the requirement.
 - Versioned copies of the installers next to the fixed names are not made.
 - A change to the release title, the release notes or the changelog page is not in scope.
 
 ### Dependencies / Assumptions
 
-- The CI workflow on `main` runs one run at a time (`concurrency: ci-${{ github.ref }}` in `.github/workflows/ci.yml`). With release builds that start alongside the checks, the length of a run on `main` changes little, so the queue of runs on `main` does not get much longer. The separate Windows workflow existed to prevent a long queue (KTD2 of `docs/plans/2026-10-28-2304-feat-windows-signed-releases-and-updates-plan.md`).
+- The CI workflow on `main` runs one run at a time (`concurrency: ci-${{ github.ref }}` in `.github/workflows/ci.yml`). With release builds that start alongside the checks, the length of a run on `main` changes little, so the queue of runs on `main` does not get much longer. The separate Windows workflow existed to prevent a long queue (the header comment of `.github/workflows/release-windows.yml`).
+- The site change and the release change ship in one PR. The site deploys only with a release when one is due, so the new download links go live with the first release that has the fixed names.
+- The macOS check and the macOS release build both use the `longhand-macos-vm` runner label, which has two VM slots on the Mac mini that PR checks also use. A due run on `main` needs both slots at once, so a PR check that holds a slot delays the release. The 15–20 min target assumes both slots are free; planning confirms the slot count or accepts the delay.
 - The Windows release build continues to run in the `release` environment, which allows deployments only from `main`. The Azure federated credential trusts only this environment.
 - The website deploys only with a release or a change to the site (`changelog-pages` in `.github/workflows/ci.yml`). With fixed names, the buttons are static links, so the deploy needs no information about the release files.
 
@@ -104,7 +107,7 @@ Measured times today, from the push to `main`: the checks take about 11–13 min
 
 **Deferred to Planning**
 
-- Which Windows versions the installer supports, for R13.
+- Which Windows versions the installer supports, for R14.
 - How the run finds that a release is due before the checks end, so that runs with no due release start no release build.
 - Whether the release jobs stay in `.github/workflows/ci.yml` or move to their own workflow, with the trust and concurrency rules of `docs/releases.md`.
 - How the macOS updater archive and the Windows `.sig` names change, if they change, with R7.
