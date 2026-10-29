@@ -19,6 +19,7 @@ export function versionText(info: BuildInfo): string {
 
 /// The pages that the Longhand section opens (R5–R7).
 export const longhandAddresses = {
+  website: "https://longhand.md",
   repository: "https://github.com/twistymaze/longhand",
   licence: "https://github.com/twistymaze/longhand/blob/main/LICENSE",
 };
@@ -47,7 +48,7 @@ export function WebLink({ url, children }: { url: string; children: ReactNode })
 }
 
 /// The first section: what Longhand is, the version and commit of the
-/// running build, the copyright and licence, the source page, and What's
+/// running build, the copyright and licence, the website, the source page, and What's
 /// new (R1–R8; R10 of the monthly changelog plan).
 function LonghandSection() {
   const [info, setInfo] = useState<BuildInfo | null>(null);
@@ -76,6 +77,7 @@ function LonghandSection() {
       </div>
       <div className="settings-row px-4">
         <div className="flex flex-wrap gap-x-5 gap-y-1 py-2.5">
+          <WebLink url={longhandAddresses.website}>Website</WebLink>
           <WebLink url={longhandAddresses.repository}>Source code</WebLink>
           {/* What's new opens Recent changes in its own window, not a web page (R10, KTD8). */}
           <button

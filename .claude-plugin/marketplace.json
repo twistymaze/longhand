@@ -11,7 +11,7 @@
       "name": "longhand",
       "description": "Read and change the notes, tags, note types, summary prompts and shared settings in a Longhand storage folder",
       "source": "./plugins/longhand",
-      "homepage": "https://github.com/twistymaze/longhand",
+      "homepage": "https://longhand.md",
       "tags": ["longhand", "notes", "transcripts"]
     }
   ]

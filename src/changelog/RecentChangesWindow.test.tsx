@@ -55,6 +55,17 @@ describe("RecentChangesWindow", () => {
     expect(screen.getByRole("button", { name: /Full changelog/ })).toBeTruthy();
   });
 
+  // A group heading has the normal text colour (R19), and a PR line is a
+  // block, so a wrapped line keeps its bullet at its first line (R20).
+  test("a group heading has the text colour and a PR line is a block", async () => {
+    mock(available([entry("2026-10", "capture: Fix the timer (#72)", "Fixes", 72)]));
+    render(<RecentChangesWindow />);
+    const heading = await screen.findByRole("heading", { level: 3, name: "Fixes" });
+    expect(heading.className).not.toContain("text-label-secondary");
+    expect(heading.className).toContain("text-label");
+    expect(screen.getByRole("button", { name: /Fix the timer/ }).className.split(" ")).toContain("block");
+  });
+
   test("entries in January 2027 and October 2026 show both months and no heading between them", async () => {
     mock(available([entry("2026-10", "October change"), entry("2027-01", "January change")]));
     render(<RecentChangesWindow />);

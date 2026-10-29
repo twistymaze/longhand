@@ -230,8 +230,10 @@ function htmlLine(entry: Entry): string {
   return `${escape(text)}(<a href="${pullUrl(entry.pr)}">#${entry.pr}</a>)`;
 }
 
-/// The GitHub Pages page: one static file with no script.
-export function html(data: Changelog): string {
+/// The months of the changelog as HTML: a heading for each month and for
+/// each group, and a list of lines. The website page (scripts/site.ts) puts
+/// it in the page of the site.
+export function htmlMonths(data: Changelog): string {
   const body: string[] = [];
   if (data.available) {
     for (const { name, groups } of byMonth(data.entries)) {
@@ -243,6 +245,12 @@ export function html(data: Changelog): string {
       }
     }
   }
+  return body.join("\n");
+}
+
+/// The changelog as one static page with no script, next to CHANGELOG.md in
+/// the release files. The website uses htmlMonths in its own page.
+export function html(data: Changelog): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -255,7 +263,7 @@ export function html(data: Changelog): string {
 body { margin: 0 auto; max-width: 44rem; padding: 2rem 1rem 4rem; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--background); }
 h1 { font-size: 1.75rem; margin: 0 0 0.25rem; }
 h2 { font-size: 1.3rem; margin: 2.25rem 0 0.5rem; }
-h3 { font-size: 0.95rem; color: var(--muted); margin: 1.25rem 0 0.25rem; }
+h3 { font-size: 0.95rem; margin: 1.25rem 0 0.25rem; }
 ul { margin: 0; padding-left: 1.25rem; }
 li { margin: 0.2rem 0; }
 a { color: var(--link); }
@@ -264,8 +272,8 @@ p { color: var(--muted); margin: 0; }
 </head>
 <body>
 <h1>Longhand changelog</h1>
-<p>The changes to <a href="https://github.com/${REPOSITORY}">Longhand</a> by month.</p>
-${body.join("\n")}
+<p>The changes to <a href="../">Longhand</a> by month.</p>
+${htmlMonths(data)}
 </body>
 </html>
 `;
