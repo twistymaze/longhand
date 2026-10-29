@@ -55,9 +55,16 @@ runs:
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
           # msvc-toolchain.cmake gives the CMake builds /MD and /Z7, which
           # Rust and sccache need. The file tells why.
+          # The CMake builds record the path of the file. GITHUB_ACTION_PATH
+          # is in the checkout (C:\a or D:\a, as the runner type sets), so
+          # on a Dev Drive the path is the file in the copy of the workspace.
           if [ "$RUNNER_OS" = Windows ]; then
             echo "CMAKE_GENERATOR=Ninja"
-            echo "CMAKE_TOOLCHAIN_FILE=$(cygpath -m "$GITHUB_ACTION_PATH/msvc-toolchain.cmake")"
+            toolchain="$GITHUB_ACTION_PATH/msvc-toolchain.cmake"
+            if [ -n "${DEV_DRIVE_WORKSPACE:-}" ]; then
+              toolchain="$DEV_DRIVE_WORKSPACE/.github/actions/sccache-setup/msvc-toolchain.cmake"
+            fi
+            echo "CMAKE_TOOLCHAIN_FILE=$(cygpath -m "$toolchain")"
           fi
         } >> "$GITHUB_ENV"
 

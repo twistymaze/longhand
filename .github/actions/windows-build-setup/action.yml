@@ -55,9 +55,15 @@ runs:
     # The action's own cache holds only the installer, which downloads in
     # seconds, and it runs on the deprecated Node 20 `actions/cache@v4`.
     # The self-hosted runner's image has the same SDK version and sets VULKAN_SDK.
+    # The action installs into VULKAN_SDK when it is set, else into the
+    # checkout. The checkout is C:\a on the larger runner of main but D:\a
+    # on windows-latest. The CMake builds record the SDK path, so the SDK
+    # goes on the Dev Drive, which has the same path on each runner type.
     - name: Install Vulkan SDK
       if: runner.environment == 'github-hosted'
       uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+      env:
+        VULKAN_SDK: C:/devdrive/VULKAN_SDK
       with:
         version: 1.4.309.0
         cache: false
@@ -101,11 +107,15 @@ runs:
     # Vulkan SDK version above (tag vulkan-sdk-1.4.309.0) and puts it on
     # CMAKE_PREFIX_PATH. CMake with Ninja needs the MSVC environment, so the
     # step comes after it. This takes a few seconds; vcpkg took about 40 s.
+    # The CMake builds record CMAKE_PREFIX_PATH, so on GitHub's runners the
+    # package goes on the Dev Drive, not in RUNNER_TEMP (C:\a\_temp or
+    # D:\a\_temp, as the runner type sets).
     - name: Install SPIRV-Headers
       shell: bash
       run: |
-        src="$RUNNER_TEMP/spirv-headers-src"
-        prefix="$(cygpath -m "$RUNNER_TEMP/spirv-headers")"
+        base="${DEV_DRIVE:-$RUNNER_TEMP}"
+        src="$base/spirv-headers-src"
+        prefix="$(cygpath -m "$base/spirv-headers")"
         rm -rf "$src"
         git init -q "$src"
         git -C "$src" fetch -q --depth 1 https://github.com/KhronosGroup/SPIRV-Headers 09913f088a1197aba4aefd300a876b2ebbaa3391
