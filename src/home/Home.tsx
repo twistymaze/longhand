@@ -528,7 +528,6 @@ export function Home({
               </div>
             )}
           </div>
-          <LibraryFooter />
         </div>
         {selected && (
           <PreviewPanel
@@ -539,6 +538,7 @@ export function Home({
           />
         )}
       </div>
+      <LibraryFooter />
       {deletion.dialog}
       {importing && (
         <ImportSheet

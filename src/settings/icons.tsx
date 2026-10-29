@@ -82,6 +82,14 @@ export const SlidersIcon = ({ className }: IconProps) => (
   </Icon>
 );
 
+/// A gear with eight teeth: Settings.
+export const GearIcon = ({ className }: IconProps) => (
+  <Icon className={className}>
+    <path d="M12.95 6.77L14.51 6.92L14.51 9.08L12.95 9.23L12.37 10.63L13.37 11.84L11.84 13.37L10.63 12.37L9.23 12.95L9.08 14.51L6.92 14.51L6.77 12.95L5.37 12.37L4.16 13.37L2.63 11.84L3.63 10.63L3.05 9.23L1.49 9.08L1.49 6.92L3.05 6.77L3.63 5.37L2.63 4.16L4.16 2.63L5.37 3.63L6.77 3.05L6.92 1.49L9.08 1.49L9.23 3.05L10.63 3.63L11.84 2.63L13.37 4.16L12.37 5.37Z" />
+    <circle cx="8" cy="8" r="2" />
+  </Icon>
+);
+
 /// A microphone on a stand: the Recording pane.
 export const MicrophoneIcon = ({ className }: IconProps) => (
   <Icon className={className}>

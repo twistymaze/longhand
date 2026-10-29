@@ -1,15 +1,17 @@
-// The footer under the note list: Settings, and the version with its
-// Check for Updates… menu, or the waiting update in its place (the library
-// footer plan). It is quiet text that changes only when an update comes or
+// The footer along the bottom of the library window: Settings, and the
+// version with its Check for Updates… menu, or the waiting update in its
+// place (the library footer plan). It changes only when an update comes or
 // goes, so it does not draw the eye during a meeting.
 
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { commands, events } from "../bindings";
 import { Menu } from "../session/SessionMenu";
-import { SlidersIcon } from "../settings/icons";
+import { GearIcon } from "../settings/icons";
 
-const quiet =
-  "min-w-0 truncate rounded-[6px] px-2 py-[3px] text-[0.85rem] text-label-secondary hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent";
+// The text has the size of the top bar's buttons, so the footer reads as
+// part of the app and not as a footnote.
+const control =
+  "min-w-0 truncate rounded-[6px] px-2.5 py-1 hover:bg-fill active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent";
 
 export function LibraryFooter() {
   const [version, setVersion] = useState<string | null>(null);
@@ -45,16 +47,16 @@ export function LibraryFooter() {
   };
 
   return (
-    <div className="flex shrink-0 items-center gap-2 border-t border-separator px-[16px] py-1.5 select-none">
-      <button type="button" className={`${quiet} inline-flex shrink-0 items-center gap-1.5`} onClick={() => void commands.openSettings(null)}>
-        <SlidersIcon className="size-3.5" />
+    <div className="flex shrink-0 items-center gap-2 border-t border-separator px-[16px] py-2 select-none">
+      <button type="button" className={`${control} inline-flex shrink-0 items-center gap-1.5 text-label`} onClick={() => void commands.openSettings(null)}>
+        <GearIcon />
         Settings
       </button>
       <span className="flex-1" />
       {offer !== null ? (
         <button
           type="button"
-          className="min-w-0 truncate rounded-full bg-accent/12 px-2.5 py-[2px] text-[0.8rem] font-medium text-accent hover:bg-accent/20 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
+          className="min-w-0 truncate rounded-full bg-accent/12 px-3 py-1 font-medium text-accent hover:bg-accent/20 outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent"
           onClick={() => void commands.openUpdateOffer()}
         >
           Update available: {offer}
@@ -65,7 +67,7 @@ export function LibraryFooter() {
             <button
               ref={versionButton}
               type="button"
-              className={`${quiet} tabular-nums`}
+              className={`${control} text-label-secondary tabular-nums`}
               aria-haspopup="menu"
               aria-expanded={open}
               onKeyDown={arrowOpens}
