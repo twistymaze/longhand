@@ -33,8 +33,6 @@ pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
             .title_bar_style(tauri::TitleBarStyle::Overlay)
             .hidden_title(true)
             .traffic_light_position(tauri::LogicalPosition::new(20.0, window_button_inset()));
-        #[cfg(target_os = "windows")]
-        let builder = builder.menu(crate::menu::main_window_menu(app)?);
         builder.build()
     })?;
     #[cfg(target_os = "macos")]
