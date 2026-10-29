@@ -228,12 +228,15 @@ jobs:
       # follows the scripts that pin the revisions and patch the source. Only
       # main saves it (step "Save the NeMo cache"), so pull requests do not
       # fill the cache storage. A warm cache saves about 1.5 to 3 minutes.
+      # The folder is on the Dev Drive, which has the same path on each
+      # runner type. The cache version includes the path, and runner.temp is
+      # C:\a\_temp on the larger runner but D:\a\_temp on windows-latest.
       - name: Restore the NeMo cache (Windows)
         id: nemo-cache
         if: runner.os == 'Windows' && runner.environment == 'github-hosted'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/longhand-nemo
+          path: ${{ env.DEV_DRIVE }}/longhand-nemo
           key: nemo-${{ runner.os }}-${{ hashFiles('scripts/build-nemo.sh', 'scripts/patch-nemo.ts', 'scripts/prepare-nemo.ts', 'scripts/prepare-vulkan-runtime.ps1') }}
 
       - name: Build and stage NeMo helper
@@ -241,10 +244,12 @@ jobs:
         env:
           APPLE_SIGNING_IDENTITY: "-"
           # rust-cache removes non-Cargo files from target during cache save,
-          # so where rust-cache runs, the NeMo cache goes in the temp folder.
-          # The persistent runner sets LONGHAND_NEMO_CACHE in its environment
-          # file to a folder that stays between jobs.
-          NEMO_CACHE_IN_TEMP: ${{ runner.temp }}/longhand-nemo
+          # so where rust-cache runs, the NeMo cache goes outside target: on
+          # the Dev Drive on GitHub's Windows runners (see the restore step),
+          # in the temp folder elsewhere. The persistent runner sets
+          # LONGHAND_NEMO_CACHE in its environment file to a folder that
+          # stays between jobs.
+          NEMO_CACHE_IN_TEMP: ${{ env.DEV_DRIVE || runner.temp }}/longhand-nemo
         run: |
           export LONGHAND_NEMO_CACHE="${LONGHAND_NEMO_CACHE:-$NEMO_CACHE_IN_TEMP}"
           echo "LONGHAND_NEMO_CACHE=$LONGHAND_NEMO_CACHE" >> "$GITHUB_ENV"
@@ -438,11 +443,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installed helper inference failed" }
 
       # Shows how much of the Dev Drive and the runner's disks the job used,
-      # to check the drive size.
+      # to check the drive size. The Dev Drive mounts at a folder, so it has
+      # no drive letter in the list, and fsutil gives its free space.
       - name: Disk use (Windows)
         if: always() && runner.os == 'Windows'
         shell: pwsh
-        run: Get-PSDrive -PSProvider FileSystem
+        run: |
+          Get-PSDrive -PSProvider FileSystem
+          # Information only: an fsutil error must not fail the job.
+          if ($env:DEV_DRIVE) { fsutil volume diskfree "$env:DEV_DRIVE\"; $global:LASTEXITCODE = 0 }
 
       - name: Save the NeMo cache (Windows)
         if: >-
@@ -451,7 +460,7 @@ jobs:
           steps.nemo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ runner.temp }}/longhand-nemo
+          path: ${{ env.DEV_DRIVE }}/longhand-nemo
           key: ${{ steps.nemo-cache.outputs.cache-primary-key }}
 
   # The recorder soak writes 1.4 GB as fast as the disk takes it. On demand

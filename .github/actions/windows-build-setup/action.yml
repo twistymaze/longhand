@@ -32,11 +32,18 @@ runs:
     # must come before rust-cache: post steps run in reverse order, so
     # rust-cache saves the cache before this action dismounts the drive.
     # The self-hosted runner has a permanent Dev Drive that holds its work folder.
+    # The drive mounts at a fixed folder, not at the next free drive letter:
+    # the larger runner of main gets D: and windows-latest gets E:, because
+    # its D: is the temp disk. The rust-cache key includes CARGO_HOME and
+    # RUSTUP_HOME, and the sccache keys of Rust crates include the source
+    # paths. With different paths, pull requests (windows-latest) never
+    # restored the caches that main (the larger runner) saved.
     - name: Set up a Dev Drive
       if: runner.environment == 'github-hosted'
       uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4
       with:
         drive-size: 40GB
+        mount-path: C:/devdrive
         workspace-copy: true
         trusted-dev-drive: true
         env-mapping: |
