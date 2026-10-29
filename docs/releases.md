@@ -4,35 +4,32 @@ Each push to `main` that changes the shipped app goes out in a numbered release 
 
 ## Release flow
 
-One CI run on `main` does the checks, the build and the publication. `.github/workflows/ci.yml` runs these jobs in sequence:
+One CI run on `main` does the checks, the builds of both platforms and the publication. A release has the macOS and the Windows files, or it does not publish. `.github/workflows/ci.yml` runs these jobs:
 
-1. **The checks** (`checks` and `cargo deny`). When a check fails, no later job runs.
-2. **`release-build`** runs in the `release` environment. It can only read the repository. The repository variable `MACOS_RELEASE_RUNNER` selects its runner; with no variable, it runs on `macos-latest`. Set the variable only to an ephemeral self-hosted runner, which gets a new VM for each job and deletes the VM after the job. The build uses the GitHub Actions cache on both types of runner.
+1. **`release-version`** runs on `ubuntu-latest` at the start of the run. It has no secrets.
    1. `scripts/release-version.ts` uses git-cliff and `cliff.toml` to decide whether a release is due, to get the next patch version and to write the release notes. The script then raises the version when a commit subject has a `+` or `!` marker (see [When a release is due](#when-a-release-is-due)).
    2. When a release is due, `scripts/changelog.ts write` writes the [changelog](#changelog) of the release. The step fails when it cannot make the changelog.
-   3. The job builds the app with that version and with the changelog (`LONGHAND_CHANGELOG`), and signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature.
-   4. The job uploads the DMG, the archive, the signature, the notes and the changelog files as a workflow artifact.
-3. **`release-publish`** runs on `ubuntu-latest` only when a release is due. It and the `attach` job of `release-windows.yml` are the only jobs that can write to the repository. It has no secrets and runs no build code. `scripts/publish-release.ts publish` creates a draft release with the tag `v<version>` on the built commit, uploads the 4 files, `latest.json`, `changelog.json` and `CHANGELOG.md`, and then publishes the draft as the latest release.
-4. **`changelog-pages`** ("Website") deploys the website to GitHub Pages: the landing page at the root, and the changelog page at `/changelog/`. `scripts/site.ts` builds both pages from `site/` with Vite (`site/vite.config.ts`). The pages share the head, the bar and the footer in `site/partials/`. It runs when `release-publish` published a release. It also runs when a push to `main` changed `site/`, `scripts/site.ts`, `scripts/lib/changelog.ts`, `.github/workflows/ci.yml` or `.github/actions/node-setup/` (so a fix to a failed deploy also deploys) (the `site-changed` job finds this), the checks passed and no release is due; then it makes the changelog page from the `changelog.json` of the latest release. When a release is due, the site deploys only with that release, so the page never describes an app that has no download. To see the site while you change it, run `npm run site`; the dev server makes the changelog from the git history of the checkout. A failed deploy does not fail the CI run, so the Windows installer still builds. The next release or website change deploys the site again.
+   3. It uploads the notes and the changelog as the `release-data` artifact. When no release is due, the release builds and the publication do not run.
+2. **The checks** (`checks` and `cargo deny`) run at the same time.
+3. **`release-build`** (macOS) and **`release-windows`** (Windows) start when `cargo deny` passes and a release is due, at the same time as the checks. `cargo deny` (licences, sources, bans) comes before any job that holds a signing credential. Both jobs run in the `release` environment and can only read the repository. Both build with the version and the changelog of `release-version`, and with `LONGHAND_RELEASE=1`, so the apps check for updates.
+   - `release-build`: the repository variable `MACOS_RELEASE_RUNNER` selects its runner; with no variable, it runs on `macos-latest`. Set the variable only to an ephemeral self-hosted runner, which gets a new VM for each job and deletes the VM after the job. The job signs, notarizes and staples the app and the DMG. Tauri also makes the updater archive `Longhand.app.tar.gz` and its signature. The job uploads the DMG as `Longhand_aarch64.dmg`, the archive and its signature.
+   - `release-windows` runs on GitHub's standard runner `windows-latest`. It logs in to Azure with a federated credential (no secret), then runs `tauri bundle`. Tauri signs the executable, the bundled `.exe` and `.dll` files, the uninstaller and the installer with Azure Artifact Signing (`scripts/windows-signing.ts sign`), then writes the updater signature of the installer. The signature gate installs the installer silently into a temporary folder. `scripts/windows-signing.ts verify` then checks that each `.exe` and `.dll` there, and the installer, has a valid, timestamped signature with your name as publisher. The Microsoft VC runtime DLLs and the Vulkan loader keep the signature of their vendor. The job uploads the installer as `Longhand_x64-setup.exe` and its signature.
+4. **`release-publish`** runs on `ubuntu-latest` only when every check, `cargo deny` and both release builds pass. It is the only job that can write to the repository. It has no secrets and runs no build code. `scripts/publish-release.ts publish` creates a draft release with the tag `v<version>` on the built commit, and uploads the files of both platforms, `latest.json`, `latest-windows.json`, `changelog.json` and `CHANGELOG.md`. It reads both update manifests back from the draft, and then publishes the draft as the latest release.
+5. **`changelog-pages`** ("Website") deploys the website to GitHub Pages: the landing page at the root, and the changelog page at `/changelog/`. `scripts/site.ts` builds both pages from `site/` with Vite (`site/vite.config.ts`). The pages share the head, the bar and the footer in `site/partials/`. It runs when `release-publish` published a release. It also runs when a push to `main` changed `site/`, `scripts/site.ts`, `scripts/lib/changelog.ts`, `.github/workflows/ci.yml` or `.github/actions/node-setup/` (so a fix to a failed deploy also deploys) (the `site-changed` job finds this), the checks and `release-version` passed and no release is due; then it makes the changelog page from the `changelog.json` of the latest release. When a release is due, the site deploys only with that release, so the download links of the page always find their files. To see the site while you change it, run `npm run site`; the dev server makes the changelog from the git history of the checkout. A failed deploy does not fail the CI run. The next release or website change deploys the site again.
 
-The tag and the release come into existence only after the macOS build succeeds. A failed build leaves no tag.
+The installers have fixed names with no version: `Longhand_aarch64.dmg` and `Longhand_x64-setup.exe`. The download buttons of longhand.md link to `https://github.com/twistymaze/longhand/releases/latest/download/<name>`, so they always give the installer of the latest release. Older releases keep their versioned names.
 
-After a CI run on `main` succeeds, `.github/workflows/release-windows.yml` starts. It finds the release whose target is the commit that CI tested. When no release has that commit, it ends without an error. Otherwise, it downloads the `changelog.json` of the release and builds the Windows NSIS installer with it on a standard GitHub-hosted Windows runner:
+The tag and the release come into existence only after the checks and both builds succeed. A failed check or build leaves no tag.
 
-1. The `build` job runs in the `release` environment. It compiles the app with the release version and `LONGHAND_RELEASE=1`, so the Windows app checks for updates.
-2. It logs in to Azure with a federated credential (no secret), then runs `tauri bundle`. Tauri signs the executable, the bundled `.exe` and `.dll` files, the uninstaller and the installer with Azure Artifact Signing (`scripts/windows-signing.ts sign`), then writes the updater signature of the installer.
-3. The signature gate installs the installer silently into a temporary folder. `scripts/windows-signing.ts verify` then checks that each `.exe` and `.dll` there, and the installer, has a valid, timestamped signature with your name as publisher. The Microsoft VC runtime DLLs and the Vulkan loader keep the signature of their vendor. When a file fails, the job fails, and the release gets no Windows files.
-4. The `attach` job uploads the installer, then its `.sig`, then the Windows update manifest `latest-windows.json` (`scripts/publish-release.ts attach`). It reads the manifest back from the release. It never changes `latest.json`.
+The macOS app reads `latest.json` of the latest release, and the Windows app reads `latest-windows.json`. Both manifests publish with the release.
 
-The Windows app reads `latest-windows.json` of the latest release. Until the Windows build attaches it, the Windows app finds no update and shows no error. A release with no `changelog.json` gets no installer. A release from before the changelog builds its installer without one. This workflow has its own concurrency group, so the long Windows build does not hold back the next CI run on `main` or delay the macOS update.
-
-CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run. When GitHub replaces a waiting Windows run, that release gets no Windows installer and no Windows update. Windows apps stay on their version until a later release has a Windows update.
+CI runs on `main` one at a time. When more runs wait, GitHub keeps only the newest waiting run. The commits of a replaced run go out in the release of the next run, with both platforms.
 
 When a newer CI run on `main` is queued or running at the time of publication, the publish step publishes nothing. It logs "a newer CI run on main is queued or running" and ends without an error. The newer run publishes these commits in its release. Without this rule, publication can fail: when a newer commit changed a file in `.github/workflows/`, GitHub refuses to let the workflow token create a tag on the older commit (403, "Resource not accessible by integration").
 
 A push of only docs does not start CI (see [Checks and CI](development-workflow.md#checks-and-ci)). Its changes go out in the next release.
 
-### When a release is due
+## When a release is due
 
 A release is due when no `v<major>.<minor>.<patch>` tag exists, or when the commits since the latest release tag change the version. Other tags, such as old preview tags, do not count. The first release is 1.0.0.
 
@@ -170,7 +167,7 @@ A wrong secret makes `release-build` fail at the certificate import or at notari
 
    The app opens the changelog at its `github.io` address (`PAGES_URL` in `scripts/lib/changelog.ts`), and GitHub sends it on to the custom domain. The app's Website link and the About panel name `longhand.md` itself, so a change of the custom domain needs a code change there. The site links its files from the root of the domain (`/style.css`), so it needs a custom domain: at the `github.io` address without one, the site is in `/longhand/` and its files do not load. The docs link to the custom domain. The old custom domain does not send visitors on by itself: to keep its links working, add a redirect at its DNS provider.
 
-6. **Set up Windows signing with Azure Artifact Signing.** Microsoft validates your identity, and Windows then shows your legal name as the publisher of the installer. The Basic tier costs about USD 10 a month, from the moment that you create the account. You need an Azure subscription, your phone with Microsoft Authenticator, and your driver's license or passport. Without this step, the Windows build of each release fails at the Azure login, and the release gets no Windows files.
+6. **Set up Windows signing with Azure Artifact Signing.** Microsoft validates your identity, and Windows then shows your legal name as the publisher of the installer. The Basic tier costs about USD 10 a month, from the moment that you create the account. You need an Azure subscription, your phone with Microsoft Authenticator, and your driver's license or passport. Without this step, the Windows build of each release fails at the Azure login, and no release publishes.
 
    1. **Check the billing account.** In the [Azure portal](https://portal.azure.com/), open Cost Management + Billing → Billing scopes → your billing account → Properties. **Account type** must be **Individual**; individual validation is available only in the United States and Canada. The legal name and the sold-to address must be exactly as on your ID. The certificate shows your name, city, state and country.
    2. **Register the resource provider.** Open Subscriptions → your subscription → Settings → Resource providers. Select **Microsoft.CodeSigning** and **Register**. Wait for **Registered**.
@@ -236,34 +233,29 @@ A wrong secret makes `release-build` fail at the certificate import or at notari
 | Artifact Signing identity validation | Microsoft sends reminders from 60 days before it expires | Renew the validation in the signing account (Objects → Identity validations), then update the certificate profile if the portal asks. |
 | Azure federated credential | None | None. |
 
-Publication uses the workflow's own `GITHUB_TOKEN`, which needs no renewal. When an Apple credential or the updater key fails, `release-build` fails and nothing publishes. When the identity validation expires, the Windows build fails, and the release keeps only its macOS files. Installed builds continue to work.
+Publication uses the workflow's own `GITHUB_TOKEN`, which needs no renewal. When an Apple credential or the updater key fails, `release-build` fails and nothing publishes. When the identity validation expires, `release-windows` fails, and nothing publishes for either platform. Installed builds continue to work.
 
 ## Install the first build
 
 A local build gets no updates. Install the DMG of the latest release once:
 
-1. Open the [latest release](https://github.com/twistymaze/longhand/releases/latest) and download its DMG.
+1. Download [`Longhand_aarch64.dmg`](https://github.com/twistymaze/longhand/releases/latest/download/Longhand_aarch64.dmg) of the latest release.
 2. Open the DMG and drag Longhand to Applications. Replace the old app.
 
 Later releases then come as updates.
 
-On Windows, download the `Longhand_<version>_x64-setup.exe` of the latest release and run it. It installs for the current user and needs no admin rights. It installs over an older unsigned build and keeps the notes, the settings, the saved API keys and the storage folder. Windows updates come only to a build from a signed release; an older unsigned build needs this install once.
+On Windows, download [`Longhand_x64-setup.exe`](https://github.com/twistymaze/longhand/releases/latest/download/Longhand_x64-setup.exe) of the latest release and run it. It installs for the current user and needs no admin rights. It installs over an older unsigned build and keeps the notes, the settings, the saved API keys and the storage folder. Windows updates come only to a build from a signed release; an older unsigned build needs this install once.
 
 Installed preview builds from before 1.0.0 read their update manifest from `twistymaze/longhand-builds`. A one-time step after the first release writes the `latest.json` of 1.0.0 to that repository, so that each preview build updates to 1.0.0 once. After that update, the app reads the update manifest of the latest release in `twistymaze/longhand`. Then the old repository is archived.
 
 ## When a release does not publish
 
-- **No release is due.** The commits since the latest release tag have only the types `docs`, `ci`, `test`, `chore` or `style`. `release-build` ends after the version step, and `release-publish` does not run. Their changes go out in the next release.
-- **The checks failed.** `release-build` does not run.
-- **The build failed.** For example, signing or notarization failed. The run publishes nothing and creates no tag. At most a draft release stays, and the next publication of that version deletes it. To publish the release, merge a fix PR with a `fix:` or `ci:` title. Its run on `main` computes the version from all commits since the latest release tag, so it publishes the release that the failed run did not publish.
+- **No release is due.** The commits since the latest release tag have only the types `docs`, `ci`, `test`, `chore` or `style`. The release builds and `release-publish` do not run. Their changes go out in the next release.
+- **`cargo deny` failed.** The release builds do not start.
+- **The checks failed.** The release builds can finish, but `release-publish` does not run.
+- **A build failed.** For example, the macOS signing or notarization, the Azure login, the Windows signing or the signature gate failed. A failure on one platform stops the release of both, so that each release has both platforms. A failed Windows build is a defect in CI: fix it. The run publishes nothing and creates no tag. At most a draft release stays, and the next publication of that version deletes it. To publish the release, merge a fix PR with a `fix:` or `ci:` title. Its run on `main` computes the version from all commits since the latest release tag, so it publishes the release that the failed run did not publish.
 - **A re-run.** A re-run uses the workflow and the scripts of the original commit. So a re-run helps only for a fault that needs no code change, for example an outage of the notarization service. A re-run of a run that published its release finds no release due. When a newer release exists, the publish step logs "is not higher than" and ends with "skipped", without an error.
-- **The Windows installer is missing.** The Windows build, the Azure login, the signing or the signature gate failed, or GitHub replaced its waiting run. The release keeps its macOS files and its macOS update, and Windows apps stay on their version. To build and attach the installer again, for example after a fix to `release-windows.yml` or to the signing setup, run:
-
-  ```sh
-  gh workflow run release-windows.yml -f tag=v<version> -R twistymaze/longhand
-  ```
-
-  The run first deletes the `latest-windows.json` of that release, then replaces the installer and its `.sig`, and uploads the manifest last. The rebuild uses the tag's commit. A fix to `scripts/`, the Tauri config or the app needs a new release: merge it in a PR with a `fix:` title.
+- **A manifest differs on the draft.** `release-publish` reads `latest.json` and `latest-windows.json` back from the draft before it publishes. When one differs from the file that it uploaded, it stops, and the draft stays unpublished. The next publication of that version deletes the draft.
 
 ## A lost or leaked updater key
 

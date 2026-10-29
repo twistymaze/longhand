@@ -52,8 +52,8 @@ const PROGRESS_STEP: u64 = 256 * 1024;
 /// the releases plan).
 const MACOS_MANIFEST_URL: &str =
     "https://github.com/twistymaze/longhand/releases/latest/download/latest.json";
-/// The Windows update manifest. Only the Windows release workflow writes it,
-/// after the macOS release publishes (KTD1 of the Windows releases plan).
+/// The Windows update manifest. Each release publishes it with the macOS
+/// files; some older releases have none (unified release plan, R7).
 const WINDOWS_MANIFEST_URL: &str =
     "https://github.com/twistymaze/longhand/releases/latest/download/latest-windows.json";
 
@@ -67,8 +67,8 @@ fn manifest_url(windows: bool) -> &'static str {
 }
 
 /// True when a check error means "no update" (KTD2 of the Windows releases
-/// plan). On Windows, the latest release has no Windows manifest or no
-/// Windows entry until its Windows build attaches them. On macOS, the
+/// plan). On Windows, a release from before the unified release can have
+/// no Windows manifest or no Windows entry. On macOS, the
 /// manifest exists when its release does, so each error stays an error.
 fn means_no_update(error: &tauri_plugin_updater::Error, windows: bool) -> bool {
     use tauri_plugin_updater::Error;
