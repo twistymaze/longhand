@@ -187,6 +187,15 @@ The queue for work that sends requests to the summary endpoint and writes note f
 ### Context limit
 The largest amount of text, in tokens, that the summary model accepts in one request. Longhand asks the endpoint for it (the probe), and a value that the user sets for the provider in Settings > AI Provider wins over the probe. When neither gives a value, Longhand uses 128,000 tokens. Only the user lowers it: when the model rejects a request as too long, the summary stops and asks the user to enter a limit. A summary that runs in parts keeps the limit that it started with while the setting gives the same limit. In code, the limit that a run uses is its budget, and its plan of parts is saved with the note.
 
+### Summary part
+A piece of a transcript that does not fit one summary request, summarized alone and then merged with the others. The UI says "Summarizing part 5 of 16". It is not a live transcript "Part".
+
+### Reply allowance
+The most tokens that the summary model may write in reply to one request, reasoning included (`max_tokens`). It is a maximum, not a cost. When a reply stops at its allowance, Longhand sends the request again with a larger allowance. In code it is the reply reserve.
+
+### Thinking
+The AI provider setting that tells a reasoning model how much to reason before it writes: Model default, Off, Low, Medium or High. Model default sends no reasoning control.
+
 ## Shared settings
 
 ### Shared settings
