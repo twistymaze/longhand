@@ -13,7 +13,7 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** On Windows and macOS, a user can open Settings, see the installed version, check for updates, and see that an update waits, from the library window, with no menu bar in that window.
-- **Means:** A footer component under the note list that reads the installed version and the offered update from the update manager (KTD1, KTD2).
+- **Means:** A footer component along the bottom of the library window that reads the installed version and the offered update from the update manager (KTD1, KTD2).
 - **Product authority:** The maintainer settled this scope in the 2026-10-29 session. The Windows tray items and the unchanged macOS app menu are part of the settled scope. The Product Contract has precedence over the Planning Contract.
 - **Execution profile:** One branch, `worktree-windows-app-menu` (worktree `.claude/worktrees/windows-app-menu`), rebased on `main`. It already holds commit `5b721aa`. One PR with a `feat:` title, as a patch release.
 - **Stop conditions:** Stop and ask when the footer cannot follow the tray item's state without a change to the update flow (`src-tauri/src/managers/updates/flow.rs`).
@@ -36,7 +36,7 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 
 ### Key Decisions
 
-- **A footer under the note list, not a button in the top bar or an always-visible right panel.** It costs about one line of height and no list width, and the right panel keeps its current rule (it shows only for a selected note). (session-settled: user-directed — chosen over a Settings button and update badge in the top bar, and over a right panel that is always visible with a footer: the maintainer chose the status-bar shape.) Governs R1, R2.
+- **A footer along the bottom of the library window, not a button in the top bar or an always-visible right panel.** It costs about one line of height and no list width, and the right panel keeps its current rule (it shows only for a selected note). (session-settled: user-directed — chosen over a Settings button and update badge in the top bar, and over a right panel that is always visible with a footer: the maintainer chose the status-bar shape.) Governs R1, R2.
 - **The version text opens a menu, and the menu starts the check.** A click on a version label does not start a network check by itself, because the user would not expect a label to start work. (session-settled: user-directed — chosen over a direct check on click: the maintainer wants no action that the user does not see coming.) Governs R4.
 - **The version menu holds only Check for Updates….** What's New and About stay in Settings, where they already are. (session-settled: user-directed — chosen over a menu that also holds What's New and About.) Governs R4.
 - **The macOS app menu does not change.** (session-settled: user-directed — chosen over removing Check for Updates… from it.) Governs R8.
@@ -47,7 +47,7 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 
 **Footer**
 
-- R1. The library window shows a footer along the bottom of the note list on Windows and macOS. It shows whenever the note list shows: also with no notes, with a note selected, and while a note records. It does not show on a note's page.
+- R1. The library window shows a footer along its whole bottom edge, under the note list and the preview panel, on Windows and macOS. It is the app's footer: the text has the size of the top bar's buttons, and Settings has a gear icon (session-settled: user-directed after the first build). It shows whenever the note list shows: also with no notes, with a note selected, and while a note records. It does not show on a note's page.
 - R2. The footer holds a Settings control on the left, which opens the Settings window as the other Settings entry points do.
 - R3. The right side of the footer shows the installed version in muted text, for example "Version 1.2.14", while no update waits.
 
@@ -65,6 +65,11 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 
 - R8. The Windows main window has no menu bar. The macOS app menu stays as it is on `main`.
 - R9. The tray menu on Windows and macOS holds Open, the recording widget item, Settings…, Check for Updates…, Update Available: <version>… while an update waits, and Quit Longhand.
+
+**Closing the window**
+
+- R10. On Windows, closing the main window quits Longhand by default, as is usual on Windows. While a note records, a close hides the window and the recording continues. macOS does not change: a close hides the window. (session-settled: user-directed.)
+- R11. Settings, General, Window has a Windows-only switch, "Keep running in the system tray", off by default. When it is on, a close hides the window and Longhand keeps running in the system tray. The group footer says what a close does. The label follows the usual wording of other apps (Slack, Teams) and the Microsoft style guide term for Windows 11.
 
 ### Acceptance Examples
 
@@ -114,7 +119,7 @@ Product Contract preservation: Product Contract unchanged.
 - KTD2. **The badge reuses the tray item's action.** A new `open_update_offer` command calls `UpdateManager::tray_open`, which already opens the update window for the offered release (flow tests `covers_ae3_the_tray_item_opens_the_offer_during_the_remind_delay` and `the_tray_item_does_nothing_while_installing`). The footer menu's item calls the existing `check_for_updates` command, which already brings an open update window to the front. Governs R4, R5.
 - KTD3. **The footer reuses `Menu` from `src/session/SessionMenu.tsx` and `commands.buildInfo()`.** `Menu` with the `floating` prop set to the version button's ref is placed in a portal with `flip()`, so it opens upward near the window bottom, as the Add App menu in `src/settings/Recording.tsx` does. Without `floating`, the list column's `overflow-hidden` would clip it. `Menu` handles the arrow keys and Escape inside the menu, and the caller returns the focus in `onClose`, as `NewNoteButton` does. `buildInfo()` already gives the version that Settings > About shows. Governs R3, R4, R7.
 - KTD4. **Commit `5b721aa` stays, and a new commit reverts its menu-bar part.** The tray change in `src-tauri/src/tray.rs` stays as it is (R9). The new commit restores `src-tauri/src/menu.rs`, `src-tauri/src/window.rs` and the `src/main.tsx` comment to their state on `main`. In `src-tauri/src/lib.rs` it reverts only the two lines that `5b721aa` changed: `#[cfg(target_os = "macos")]` goes back on `mod menu;`, and the `menu::handle_menu_events(&handle);` call is removed. The rest of `lib.rs` keeps U1's registrations. The `Ctrl+,` handler in `src/main.tsx` stays, because Windows still has no app menu. Governs R8, R9.
-- KTD5. **The footer is part of the note-list column in `src/home/Home.tsx`.** It sits below the scrolling list inside the list column, so it shows exactly where the list shows (R1) and the preview panel keeps its width. Governs R1.
+- KTD5. **The footer is a child of the library page in `src/home/Home.tsx`, below the row that holds the note list and the preview panel.** It spans the whole window (R1). Governs R1.
 
 ### Assumptions
 
@@ -148,11 +153,11 @@ Product Contract preservation: Product Contract unchanged.
 
 ### U3. Library footer
 
-- **Goal:** The footer under the note list with Settings, the version menu and the update badge.
+- **Goal:** The footer along the bottom of the library window with Settings, the version menu and the update badge.
 - **Requirements:** R1, R2, R3, R4, R5, R6, R7; AE1, AE2, AE3, AE4.
 - **Dependencies:** U1.
 - **Files:** `src/home/LibraryFooter.tsx` (new), `src/home/LibraryFooter.test.tsx` (new), `src/home/Home.tsx`.
-- **Approach:** Invoke `apple-design` before the visual work. The component reads `buildInfo()` and `updateOffer()` at mount and follows `updateOfferChanged`. Settings calls `commands.openSettings(null)`. The version is a quiet text button with `aria-haspopup="menu"` and `aria-expanded`. Enter and Space open the menu as a button click, and its own ArrowDown key handler opens it too, because `Menu` handles arrows only once it is open. It opens a floating `Menu` (KTD3) with one item, "Check for Updates…", which calls `commands.checkForUpdates()`. With an offer, the badge "Update available: <version>" replaces the version button and calls `commands.openUpdateOffer()`. Settings never truncates; the right side truncates first. No motion beyond the existing `Menu` behavior, and no change while a note's page shows (the footer is not on that page). Place it in the list column of `Home.tsx` below the scrolling list (KTD5).
+- **Approach:** Invoke `apple-design` before the visual work. The component reads `buildInfo()` and `updateOffer()` at mount and follows `updateOfferChanged`. Settings calls `commands.openSettings(null)`. The version is a quiet text button with `aria-haspopup="menu"` and `aria-expanded`. Enter and Space open the menu as a button click, and its own ArrowDown key handler opens it too, because `Menu` handles arrows only once it is open. It opens a floating `Menu` (KTD3) with one item, "Check for Updates…", which calls `commands.checkForUpdates()`. With an offer, the badge "Update available: <version>" replaces the version button and calls `commands.openUpdateOffer()`. Settings never truncates; the right side truncates first. No motion beyond the existing `Menu` behavior, and no change while a note's page shows (the footer is not on that page). Place it in `Home.tsx` below the list and preview row (KTD5).
 - **Patterns:** `src/settings/Recording.tsx` (`<Menu floating={addButton}>`), `src/home/NewNoteButton.tsx` (focus return in `onClose`), `src/settings/About.tsx` (`buildInfo`), `src/home/LibraryNotices.test.tsx` (`mockTauri` and `tauri.emit`).
 - **Test scenarios** in `src/home/LibraryFooter.test.tsx`:
   - Covers AE1: shows "Version 1.2.14"; a click opens a menu with "Check for Updates…"; no `check_for_updates` call happens until the item is selected; then exactly one call.
@@ -163,6 +168,12 @@ Product Contract preservation: Product Contract unchanged.
   - A failed `build_info` call leaves the footer without version text and with Settings still working.
 - **Verification:** `npx vitest run src/home/LibraryFooter.test.tsx src/home/Home.test.tsx`.
 
+
+### U4. Quit on close on Windows
+
+- **Goal:** R10, R11.
+- **Files:** `src-tauri/src/window.rs` (`close_action`), `src-tauri/src/tray.rs` (`is_recording`), `src-tauri/src/managers/settings.rs` (local `keep_running_in_tray`, no migration: a missing value reads as off), `src-tauri/src/commands/settings.rs` (`set_keep_running_in_tray`, refused on macOS), `src/settings/Status.tsx`.
+- **Test scenarios:** `close_action` for each input; the setting is local, off by default and kept when stored; the switch and the footer text on Windows.
 ---
 
 ## Verification Contract
@@ -176,13 +187,13 @@ Product Contract preservation: Product Contract unchanged.
 | Windows app | Build on nebula (`C:\Users\erv\build-menu.ps1`, `--no-bundle`) and run `target\release\longhand.exe` | Before the PR |
 | macOS app | Signed local build per `docs/development-workflow.md#manual-tests` | Before the PR |
 
-Manual checks on both platforms: no menu bar on the Windows main window; the macOS app menu unchanged; the footer under the note list with Settings and the version; the version menu runs a check that opens the update window; the tray menu has Check for Updates….
+Manual checks on both platforms: no menu bar on the Windows main window; the macOS app menu unchanged; the footer along the bottom of the window with Settings and the version; on Windows a close quits, with the switch on it hides to the tray, and during a recording it hides; the version menu runs a check that opens the update window; the tray menu has Check for Updates….
 
 ---
 
 ## Definition of Done
 
-- R1–R9 hold, and AE1–AE4 pass as tests or manual checks.
+- R1–R11 hold, and AE1–AE4 pass as tests or manual checks.
 - All Verification Contract checks pass, and the maintainer has checked the Windows and macOS builds.
 - The branch holds no code from the removed Windows menu bar, and no experimental code from abandoned approaches.
-- The PR title is a `feat:` Conventional Commit without `+`, and it names both the footer and the Windows tray change.
+- The PR title is a `feat:` Conventional Commit without `+`, and it names the footer, the Windows tray change and the close behaviour.
