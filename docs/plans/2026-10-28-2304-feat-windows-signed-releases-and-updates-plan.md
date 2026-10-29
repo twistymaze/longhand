@@ -14,7 +14,11 @@ execution: code
 
 - **Objective:** A Windows user installs Longhand once from a signed installer that shows the publisher's name. After that, each new release comes to the Windows app as an in-app update, with the same rules as on macOS.
 - **Product authority:** This plan. It covers the x64 Windows build of each release only. The Windows download button on longhand.md is a separate step after a real release proves this path (R16).
+- **Means:** The Windows release workflow signs inside the Tauri bundle step and gates publication on a signature check (KTD3, KTD5). The Windows app reads its own update manifest (KTD1).
 - **Open blockers:** The Azure Artifact Signing setup in Appendix A must be complete before a release can sign. Individual identity validation needs an Azure billing account of type Individual in the United States or Canada (A3). The implementation can start before the setup is complete, but no signed release can publish until it is.
+- **Stop conditions:** Stop and ask when a change would alter the macOS release or update path beyond R11, or when the signature check cannot pass without an unsigned file.
+- **Execution profile:** One PR with a `feat` title (ask the user "patch or minor?" before opening it). The workflow cannot sign from a PR branch, so the first end-to-end proof is the first release after the merge (R16).
+- **Product Contract preservation:** Restructured, no scope change: the Deferred to Planning questions are answered in the Planning Contract.
 
 ---
 
@@ -126,13 +130,15 @@ None.
 
 **Deferred to Planning**
 
-- The updater signature covers the installer bytes, so Authenticode signing must happen before Tauri writes the updater signature. Choose how the Tauri build calls Artifact Signing for each binary.
-- How the Windows app gets its update entry without a change to the manifest that macOS reads (R11), for example a separate Windows-only manifest of the release. Also what happens when a newer release publishes while the Windows build of the older one runs.
-- The Windows build job holds the Azure login during a build. Decide how this keeps the rule that the job that can write to the repository runs no build code.
-- Map the macOS install moments (at the click, at quit, at the next launch) to Windows, where the installer must run while the app is closed.
-- Whether the Windows release build stays on `windows-latest` or uses the 8-core larger runner.
-- Whether the update window or its text has macOS-only wording.
-- The exact GitHub variable names and the federated credential subject, for Appendix A.
+Each one is answered in the Planning Contract:
+
+- How the build signs each binary before the updater signature: KTD3, KTD4.
+- How the Windows app gets its update entry without a change to the macOS manifest, and a newer release during an older Windows build: KTD1, KTD8.
+- Which steps can reach the Azure login and the updater key: KTD6.
+- The Windows install moments: KTD7.
+- The runner: KTD9.
+- macOS-only wording: the update window text is neutral; the Settings switch is macOS-only today (U3).
+- GitHub variable names and the federated credential subject: KTD10, Appendix A.
 
 ### Sources / Research
 
@@ -141,6 +147,290 @@ None.
 - Earlier plans that deferred Windows updates: `docs/plans/2026-09-28-1240-feat-preview-builds-and-updates-plan.md`, `docs/plans/2026-10-11-1323-ci-releases-in-source-repository-plan.md`.
 - Microsoft: [Artifact Signing quickstart](https://learn.microsoft.com/en-us/azure/artifact-signing/quickstart), [FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq), [signing integrations](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations), [GitHub action](https://github.com/azure/artifact-signing-action).
 - Tauri: [Windows code signing](https://v2.tauri.app/distribute/sign/windows/).
+
+---
+
+## Planning Contract
+
+### Key Technical Decisions
+
+- KTD1. **The Windows app reads its own manifest, `latest-windows.json`.** The app chooses the manifest URL by target OS: macOS keeps `releases/latest/download/latest.json`, and Windows reads `releases/latest/download/latest-windows.json`. Only the Windows workflow writes the Windows file, so the macOS file never changes after publication (R11). The manifest platform key is `windows-x86_64`. Governs R6, R11.
+- KTD2. **Three updater errors mean "no update" on both platforms.** `ReleaseNotFound` (the manifest file is missing: GitHub answers 404), `TargetsNotFound` and `TargetNotFound` (the manifest has no entry for this platform) become `Ok(None)`. The match happens on the typed error, before `check()` turns it into text. Accepted cost: a GitHub 5xx also gives `ReleaseNotFound`, so a manual check during a GitHub outage shows "up to date". Network errors keep their own variant and still show the error. Governs R6, R7.
+- KTD3. **Sign inside the Tauri bundle step.** The workflow compiles with `tauri build --no-bundle`, then logs in to Azure, then runs `tauri bundle --bundles nsis` with `bundle.windows.signCommand`. The bundler signs the main executable, the resource `.exe` and `.dll` files, the uninstaller and the installer before it writes the updater signature. The sign command comes only from the CI config overlay, so local builds stay unsigned. Signing before `tauri build` does not work: `beforeBuildCommand` runs `prepare-nemo.ts` again and `build.rs` makes `transcribe-libs/` again, so signed files are replaced. If the signature gate (KTD5) shows unsigned resource files, the workflow signs the staged resource folders with the same command between the two steps. Governs R1.
+- KTD4. **SignTool with the Artifact Signing dlib, authenticated through the Azure CLI login.** A wrapper script receives each file from `signCommand` and runs SignTool with the dlib, a generated `metadata.json`, SHA-256 and the Microsoft timestamp server. The dlib authenticates through `DefaultAzureCredential`, which uses the `azure/login` OIDC session, so no client secret exists. Chosen over `artifact-signing-cli`, whose documented authentication is a client secret, and over `azure/artifact-signing-action`, which can only sign files that exist and cannot run inside the bundler. SignTool and the dlib come from NuGet packages with pinned versions, because the runner image's SDK can be older than the minimum version. Governs R1, R13.
+- KTD5. **A signature gate before upload.** After bundling, the workflow installs the installer silently into a temporary folder and checks every `.exe` and `.dll` there, plus the installer. Each file must have a valid, timestamped Authenticode signature. Each file that Longhand builds or bundles without a vendor signature must have the publisher in the `WINDOWS_PUBLISHER` variable. Vendor-signed files (the Microsoft VC runtime) need only a valid signature. The gate fails when it finds no files. A failure leaves no artifact, so nothing is attached. Governs R1, R2, R3.
+- KTD6. **The Windows build job gets the same trust as the macOS release build.** The build job runs in the `release` environment with `id-token: write` and `TAURI_SIGNING_PRIVATE_KEY`, only after the `find` job confirms the commit is on `main` (`docs/solutions/security-issues/dispatched-release-build-could-write-main-caches.md`). The Azure login comes after the compile, so the compile and package installs never hold an Azure token. Each secret goes only to the step that uses it. The `attach` job stays the only job that can write to the repository, and it runs no build code. Governs R13.
+- KTD7. **Windows install moments.** On Windows the updater runs the NSIS installer and ends the process. The Install click and the launch install let NSIS open the app again. The install at quit sets `restart_after_install(false)`, so the app does not open again after the user quit. The app records the install attempt before it starts the installer, because the process ends before the result is known. Governs R5.
+- KTD8. **`attach` uploads the installer, its signature, then the Windows manifest, and reads the manifest back.** The manifest goes last, so a Windows app never finds a manifest that points at a missing installer. After the upload, `attach` reads the public `releases/download/<tag>/latest-windows.json` and fails when the content differs. When a newer release publishes during an older Windows build, the older release gets its installer and manifest, and Windows apps wait for the newer release's Windows build (R7).
+- KTD9. **The Windows release build stays on `windows-latest`.** The macOS-first order means that the Windows build time does not delay macOS users, and the warm build takes about 24 minutes there. The 8-core runner is a later option if Windows updates arrive too late.
+- KTD10. **The Azure federated credential uses the exact subject `repo:twistymaze@328897520/longhand@1414511015:environment:release`.** The repository emits GitHub's immutable subject format (`use_immutable_subject: true`, read from the OIDC customization API on 2026-10-28), so the Azure portal's GitHub preset, which writes `repo:twistymaze/longhand:...`, does not match. Appendix A step G uses "Other issuer" with this subject. Governs R13.
+- KTD11. **The per-user install mode is pinned.** `tauri.windows.conf.json` sets the NSIS `installMode` to `currentUser`, which is also the Tauri default, so a later config change cannot move installs to a per-machine path that needs admin rights. Governs R9.
+
+### High-Level Technical Design
+
+The release flow for one release:
+
+```mermaid
+flowchart TB
+  A[CI on main publishes release vX with latest.json for macOS] --> B[release-windows: find release and check commit is on main]
+  B --> C[build: tauri build --no-bundle with LONGHAND_RELEASE=1]
+  C --> D[azure/login with OIDC from the release environment]
+  D --> E[tauri bundle nsis: signCommand signs exe, resource exe and dll, uninstaller, installer]
+  E --> F[updater signature of the signed installer]
+  F --> G{signature gate: silent install, check every exe and dll}
+  G -- fail --> H[no artifact, workflow fails, release keeps macOS only]
+  G -- pass --> I[attach: upload installer, .sig, then latest-windows.json]
+  I --> J[read back the public latest-windows.json]
+```
+
+What a Windows app does with the manifest:
+
+| Situation | Check result | Manual check shows |
+|---|---|---|
+| Latest release has `latest-windows.json` with a newer version | Update | The update window |
+| Latest release has no `latest-windows.json` yet (404) | No update (KTD2) | Up to date |
+| Manifest has no `windows-x86_64` entry | No update (KTD2) | Up to date |
+| Network error | Error | The error |
+
+Install moments on Windows (KTD7):
+
+| Moment | Installer run | App afterwards |
+|---|---|---|
+| Install and Relaunch click | NSIS passive, `/UPDATE` | Opens again |
+| Later, then quit | NSIS passive, `/UPDATE`, no relaunch | Stays closed |
+| Next launch with a saved update | NSIS passive, `/UPDATE` | Opens again |
+
+### Assumptions
+
+- The Tauri 2.12 NSIS bundler signs resource `.exe` and `.dll` files through `signCommand` (read from the bundler source, not from documentation). KTD3's fallback and KTD5's gate cover the case where it does not.
+- The Artifact Signing dlib accepts the Azure CLI credential from `azure/login` OIDC. If it does not, the wrapper passes the federated token through `AzureCliCredential` explicitly; a client secret stays out of scope (R13).
+
+### Risks
+
+| Risk | Effect | Mitigation |
+|---|---|---|
+| The first signed build runs only after the merge | A fault shows on a real release | macOS ships regardless (R11). Fix, merge with a `fix:` or `ci:` title, and rebuild with `gh workflow run release-windows.yml -f tag=v<version>`. |
+| Appendix A is not complete at merge time | The Windows build of each release fails at the Azure login | R3 holds: no Windows installer. Complete the setup, then rebuild the latest tag. |
+| The Azure token expires during a long step | Signing fails | The login is after the compile (KTD3), and the bundle step takes minutes. |
+| Smart App Control also weighs reputation | A signed build can still be blocked on a new publisher | R16 tests on a managed PC; Microsoft's file submission is the fallback. |
+
+---
+
+## Implementation Units
+
+### U1. Windows update manifest and "no update" errors
+
+**Goal:** The Windows app of a release reads `latest-windows.json`, and a missing manifest or platform entry reads as "no update".
+
+**Requirements:** R4, R6, R7, R8; KTD1, KTD2.
+
+**Dependencies:** None.
+
+**Files:**
+- `src-tauri/src/managers/updates.rs` (manifest URL by target OS, error classification before the error becomes text, tests)
+- `src-tauri/src/commands/build_info.rs` (doc comment: the release flag is set for the macOS and Windows release builds)
+
+**Approach:**
+1. Replace the single `MANIFEST_URL` with one URL per target OS.
+2. Add a pure helper that says whether an updater error means "no update" (the three variants in KTD2), and use it in `check()` before `map_err`.
+3. Keep the flow (`updates/flow.rs`) unchanged: it already shows "up to date" for `Ok(None)` and schedules no retry.
+
+**Patterns to follow:** The pure helpers `installs_at_launch` and `launch_skips_install` in `updates.rs`; the manifest URL pin test.
+
+**Test scenarios:**
+- Covers AE1. `ReleaseNotFound` is classified as no update.
+- `TargetsNotFound` and `TargetNotFound` are classified as no update.
+- A network error and a signature error are not classified as no update.
+- The manifest URL is `.../latest-windows.json` for a Windows target and `.../latest.json` for macOS (pin test per target).
+
+**Verification:** A Windows release build with no Windows manifest shows "up to date" for a manual check; macOS behaviour is unchanged.
+
+### U2. Windows install moments
+
+**Goal:** An update installs on Windows at the click, at quit and at the next launch with the macOS rules, and the app opens again only after the click or the launch install.
+
+**Requirements:** R4, R5; KTD7; AE2.
+
+**Dependencies:** None.
+
+**Files:**
+- `src-tauri/src/managers/updates.rs` (install at exit and at launch)
+- `src-tauri/src/managers/updates/archive.rs` (only if the saved-file names need a Windows change)
+
+**Approach:**
+1. In the install at quit, set `restart_after_install(false)` on Windows.
+2. Write the install-attempt record before `install()` on every path, because the Windows process ends inside `install()`.
+3. Keep the saved archive names: on Windows the bytes are the NSIS installer, and the plugin accepts them.
+
+**Execution note:** Put the relaunch choice in a pure helper (moment in, relaunch yes/no out), so that it has a test on macOS CI.
+
+**Test scenarios:**
+- The relaunch helper returns yes for the click and the launch install, and no for the quit install.
+- The install-attempt record exists before the installer starts (the failure-record test pattern in `updates.rs`).
+- Covers AE2. The busy rule still holds an offer while a note records (existing flow tests stay green).
+
+**Verification:** On Windows, "Later" then quit installs and leaves the app closed; the next launch shows the new version.
+
+### U3. Update settings on Windows
+
+**Goal:** The "Check for updates automatically" switch shows on Windows as on macOS.
+
+**Requirements:** R4.
+
+**Dependencies:** None.
+
+**Files:**
+- `src/settings/Status.tsx`
+- `src/settings/Status.test.tsx`
+- `src/update/UpdateWindow.tsx` (comments that name only macOS)
+
+**Approach:** Remove the macOS-only condition from the Updates group and its read-only computation. The update window text stays as it is.
+
+**Test scenarios:**
+- On a Windows platform, the Updates group and its switch render.
+- On macOS, the group renders as before.
+
+**Verification:** Settings on Windows shows the switch, and turning it off stops automatic checks.
+
+### U4. Windows manifest and attach in the publish script
+
+**Goal:** `attach` publishes the signed installer, its updater signature and `latest-windows.json` in that order, then reads the manifest back.
+
+**Requirements:** R6, R7, R11; KTD1, KTD8.
+
+**Dependencies:** None.
+
+**Files:**
+- `scripts/publish-release.ts`
+- `scripts/publish-release.test.ts`
+
+**Approach:**
+1. Change `attach` to take the tag, the installer and its `.sig`.
+2. Add a Windows manifest builder: version from the tag, the release notes, the `windows-x86_64` entry with the signature text and the installer's asset URL.
+3. Upload the installer, then the `.sig`, then the manifest last, with the existing replace path.
+4. Read `releases/download/<tag>/latest-windows.json` back and fail when it differs.
+5. Never touch `latest.json`.
+
+**Patterns to follow:** `buildManifest`, the `ReleasesApi` seam and the fake repository in the tests; the script uses only Node built-ins.
+
+**Test scenarios:**
+- The Windows manifest has the version, the `windows-x86_64` key, the trimmed signature and the installer URL.
+- `attach` uploads the manifest after the installer and the signature.
+- `attach` never uploads or deletes `latest.json`.
+- A re-run replaces all three files.
+- A missing tag fails without uploads.
+- A read-back that differs fails the command.
+- The CLI rejects the old two-argument form with the usage text.
+
+**Verification:** `node --test scripts/publish-release.test.ts` passes.
+
+### U5. Signing wrapper, signature gate and install mode
+
+**Goal:** One script signs a file for `signCommand` and checks a whole install tree for KTD5.
+
+**Requirements:** R1, R2, R3, R9; KTD3, KTD4, KTD5, KTD11.
+
+**Dependencies:** None.
+
+**Files:**
+- `scripts/windows-signing.ts` (subcommands `sign <file>` and `verify <folder> <installer>`)
+- `scripts/windows-signing.test.ts`
+- `src-tauri/tauri.windows.conf.json` (NSIS `installMode`)
+- `.github/workflows/ci.yml` (add the new test file to the release-script test list)
+
+**Approach:**
+1. `sign` reads the SignTool path, the dlib path and the `metadata.json` path from environment variables and runs SignTool with SHA-256 digests and the Microsoft timestamp server. It fails on a non-zero exit.
+2. `verify` lists every `.exe` and `.dll` under the folder plus the installer, fails on an empty list, and checks each file with PowerShell `Get-AuthenticodeSignature`: valid status, a timestamp, and the `WINDOWS_PUBLISHER` subject except for vendor-signed files.
+3. Keep the file selection and the publisher rule in pure functions.
+
+**Patterns to follow:** `scripts/windows-redist.ts` and its test for Windows-only script logic tested on any OS.
+
+**Test scenarios:**
+- File selection finds `.exe` and `.dll` files in nested folders and ignores other types.
+- An empty folder fails.
+- A file with status other than valid fails, and so does a valid file with no timestamp.
+- Longhand's own file with another publisher fails.
+- A Microsoft-signed VC runtime DLL passes with its own publisher.
+- The `sign` command line has the digest, timestamp, dlib and metadata arguments, with the file as its own argument.
+
+**Verification:** `node --test scripts/windows-signing.test.ts` passes; the workflow gate (U6) reports each checked file.
+
+### U6. Signed Windows release workflow
+
+**Goal:** `release-windows.yml` builds a release build of the app, signs it, gates it and attaches it with the Windows manifest.
+
+**Requirements:** R1, R3, R6, R8, R11, R13; KTD3, KTD4, KTD5, KTD6, KTD8, KTD9.
+
+**Dependencies:** U4, U5.
+
+**Files:**
+- `.github/workflows/release-windows.yml`
+
+**Approach:**
+1. Build job: `environment: release`, job permissions `contents: read` and `id-token: write`.
+2. Extend the release config overlay with `createUpdaterArtifacts: true` and the `signCommand` that runs `node scripts/windows-signing.ts sign %1`.
+3. Install SignTool and the dlib from pinned NuGet versions, and write `metadata.json` from the environment variables.
+4. Run `tauri build --no-bundle` with `LONGHAND_RELEASE=1`, `LONGHAND_CHANGELOG` and the build commit.
+5. Run `azure/login` (pinned by SHA), then `tauri bundle --bundles nsis` with the release config and `TAURI_SIGNING_PRIVATE_KEY` on that step only.
+6. Check that the `.sig` names the release version, as the macOS job does.
+7. Run the signature gate on a silent install into a temporary folder and on the installer.
+8. Upload the installer and the `.sig` as the artifact.
+9. Attach job: `node scripts/publish-release.ts attach` with the tag, the installer and the `.sig`.
+10. Update the header and step comments that say the build is unsigned and gets no updates.
+
+**Execution note:** This is CI configuration; prove it with `actionlint` locally and the first real release (R16). A dispatch rebuild of a tag is the retry path.
+
+**Patterns to follow:** The macOS `release-build` job in `.github/workflows/ci.yml` (environment, per-step secrets, signature version check, cleanup with `if: always()`); `docs/solutions/build-errors/windows-rust-selects-git-linker-after-msvc-setup.md` (Rust steps in `pwsh`).
+
+**Test scenarios:** Test expectation: none -- workflow configuration; the signature gate and `attach` read-back check every run, and U4 and U5 carry the unit tests.
+
+**Verification:** `actionlint` reports no errors; on the first release after the merge, the run attaches three files and the gate log lists every file as signed.
+
+### U7. Documentation
+
+**Goal:** The docs describe signed Windows releases and Windows updates, with the one-time setup step by step.
+
+**Requirements:** R12, R14, R15.
+
+**Dependencies:** U1 to U6.
+
+**Files:**
+- `docs/releases.md` (release flow, one-time setup with Appendix A as the Artifact Signing steps, the Expiry dates table, installing the first Windows build, the Windows bullet in "When a release does not publish")
+- `CONCEPTS.md` (Release entry)
+- `docs/ideas/next/windows-preview-builds-and-updates.md` (Notes)
+
+**Approach:** Move Appendix A into `docs/releases.md` with the final variable names, and state the `main`-only rule of the `release` environment as a condition of signing.
+
+**Test scenarios:** Test expectation: none -- documentation.
+
+**Verification:** A reader can do the setup from `docs/releases.md` alone; `node scripts/ideas.ts check` passes.
+
+---
+
+## Verification Contract
+
+| Gate | Command or check | Applies to |
+|---|---|---|
+| Rust format | `cargo fmt --all --check` | U1, U2 |
+| Rust lint | `cargo clippy --workspace --all-targets` | U1, U2 |
+| Rust tests | `cargo test -p longhand --lib updates` during units; one full workspace run at the end | U1, U2 |
+| Frontend | `npm run typecheck` and `npm test` | U3, U4, U5 |
+| Script tests | `node --test scripts/publish-release.test.ts scripts/windows-signing.test.ts` | U4, U5 |
+| Workflow lint | `actionlint .github/workflows/release-windows.yml .github/workflows/ci.yml` | U5, U6 |
+| Ideas | `node scripts/ideas.ts check` | U7 |
+| CI | All required checks green on the PR, including the Windows checks that compile the `cfg(windows)` code | All |
+| Post-merge | R16 on a managed work PC | Release |
+
+---
+
+## Definition of Done
+
+- U1 to U7 are complete and every gate in the Verification Contract passes.
+- No code path, workflow step or config uploads, deletes or rewrites `latest.json` from the Windows workflow.
+- Local and PR builds stay unsigned and get no updates; only the release workflow signs.
+- The PR title is a `feat` Conventional Commit, with patch or minor chosen by the user.
+- No abandoned-attempt code, temporary debug steps or unused config remain in the diff.
+- After the merge: Appendix A is complete, the first release attaches a signed installer, `.sig` and `latest-windows.json`, and R16 passes before the website download is turned on.
 
 ---
 
@@ -196,7 +486,14 @@ This draft is from the Microsoft documentation of October 2026. The implementati
 **G. Let GitHub sign with no secret (10 minutes)**
 
 1. Search for **Microsoft Entra ID** > **App registrations** > **New registration**. Name it `longhand-release-signing`, keep the defaults, and select **Register**. Write down the **Application (client) ID** and the **Directory (tenant) ID**.
-2. In the app, select **Certificates & secrets** > **Federated credentials** > **Add credential**. Choose the scenario **GitHub Actions deploying Azure resources**. **Organization:** `twistymaze`. **Repository:** `longhand`. **Entity type:** **Environment**. **GitHub environment name:** `release`. Name it `longhand-release` and select **Add**.
+2. In the app, select **Certificates & secrets** > **Federated credentials** > **Add credential**. Choose the scenario **Other issuer**, not the GitHub preset: this repository uses GitHub's newer subject format, which the preset does not write (KTD10). Enter exactly:
+   - **Issuer:** `https://token.actions.githubusercontent.com`
+   - **Type:** **Explicit subject identifier**
+   - **Value:** `repo:twistymaze@328897520/longhand@1414511015:environment:release`
+   - **Name:** `longhand-release`
+   - **Audience:** keep `api://AzureADTokenExchange`
+
+   Select **Add**.
 3. Go back to the signing account > **Access control (IAM)** > **Add role assignment**. Select the role **Artifact Signing Certificate Profile Signer**, then **Next** > **Select members**, search for `longhand-release-signing`, and select **Review + assign**.
 4. Write down your **Subscription ID** (Subscriptions page).
 5. Check the GitHub side of the trust. In `twistymaze/longhand`, open Settings > Environments > `release`. Under "Deployment branches and tags", the only rule must be `main` (setup step 3 in `docs/releases.md`). Do not loosen this rule: any branch that can use the `release` environment can sign files with your name.
@@ -229,7 +526,13 @@ gh variable set ARTIFACT_SIGNING_ACCOUNT --env release -R twistymaze/longhand
 gh variable set ARTIFACT_SIGNING_PROFILE --env release -R twistymaze/longhand
 ```
 
-Check that this command lists the 6 names:
+The publisher name for the signature gate (KTD5) is the common name in the **Certificate subject preview** of step F, for example `Ervin Walter`:
+
+```bash
+gh variable set WINDOWS_PUBLISHER --env release -R twistymaze/longhand
+```
+
+Check that this command lists the 7 names:
 
 ```bash
 gh variable list --env release -R twistymaze/longhand
