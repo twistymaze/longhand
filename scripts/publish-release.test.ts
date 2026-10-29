@@ -2,14 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import {
-  attach,
   buildManifest,
   buildWindowsManifest,
   githubApi,
   isNewer,
   main,
   publish,
-  type Asset,
   type Manifest,
   type Release,
   type ReleasesApi,
@@ -17,6 +15,8 @@ import {
 
 const REPO = "twistymaze/longhand";
 const SHA = "0123456789abcdef0123456789abcdef01234567";
+const DMG = "Longhand_aarch64.dmg";
+const INSTALLER = "Longhand_x64-setup.exe";
 
 test("the manifest names the version, the notes, the date, and the darwin-aarch64 archive and signature", () => {
   assert.deepEqual(
@@ -32,6 +32,24 @@ test("the manifest names the version, the notes, the date, and the darwin-aarch6
       notes: "### Bug Fixes\n- one fix",
       pub_date: "2026-10-11T15:00:00.000Z",
       platforms: { "darwin-aarch64": { signature: "c2lnbmF0dXJl", url: "https://example.test/Longhand.app.tar.gz" } },
+    },
+  );
+});
+
+test("the Windows manifest names the version, the notes, the date, and the windows-x86_64 installer and signature", () => {
+  assert.deepEqual(
+    buildWindowsManifest({
+      version: "1.0.4",
+      notes: "### Bug Fixes\n- one fix\n",
+      pubDate: "2026-10-11T15:00:00.000Z",
+      url: `https://example.test/${INSTALLER}`,
+      signature: "c2lnbmF0dXJl\n",
+    }),
+    {
+      version: "1.0.4",
+      notes: "### Bug Fixes\n- one fix",
+      pub_date: "2026-10-11T15:00:00.000Z",
+      platforms: { "windows-x86_64": { signature: "c2lnbmF0dXJl", url: `https://example.test/${INSTALLER}` } },
     },
   );
 });
@@ -58,14 +76,15 @@ function fakeRepo() {
   let nextId = 1;
   const state = {
     releases: [] as FakeRelease[],
+    // Records each upload, draft and publish, in order.
+    events: [] as string[],
     // Runs before each upload. A test can make it throw.
     beforeUpload: (_name: string) => {},
     // True when a newer CI run on main is queued or running.
     newerRun: false,
-    // The public download of an asset of a published release, or null when
-    // there is none. A test can replace it.
-    publicContent: (tag: string, name: string): string | null =>
-      state.releases.find((r) => !r.draft && r.tag_name === tag)?.files[name] ?? null,
+    // The content that an authenticated read of an asset gives. A test can
+    // replace it.
+    readContent: (release: FakeRelease, name: string): string => release.files[name]!,
   };
   const view = (r: FakeRelease): Release => ({
     id: r.id,
@@ -80,14 +99,11 @@ function fakeRepo() {
       const latest = state.releases.find((r) => r.latest);
       return latest ? view(latest) : null;
     },
-    async releaseByTag(tag) {
-      const found = state.releases.find((r) => !r.draft && r.tag_name === tag);
-      return found ? view(found) : null;
-    },
     async listReleases() {
       return state.releases.map(view);
     },
     async createDraft(draft) {
+      state.events.push(`draft ${draft.tag}`);
       const release: FakeRelease = {
         id: nextId++,
         tag_name: draft.tag,
@@ -111,23 +127,18 @@ function fakeRepo() {
       const asset = { id: nextId++, name };
       found.assets.push(asset);
       found.files[name] = typeof content === "string" ? content : await content.text();
+      state.events.push(`upload ${name}${found.draft ? " to draft" : ""}`);
       return { ...asset };
     },
-    async deleteAsset(release, asset) {
+    async readAsset(release, asset) {
       const found = find(release.id);
-      found.assets = found.assets.filter((a) => a.id !== asset.id);
-      delete found.files[asset.name];
-    },
-    async renameAsset(release, asset, name) {
-      const found = find(release.id);
-      const stored = found.assets.find((a) => a.id === asset.id)!;
-      found.files[name] = found.files[stored.name]!;
-      delete found.files[stored.name];
-      stored.name = name;
+      state.events.push(`read ${asset.name}`);
+      return state.readContent(found, found.assets.find((a) => a.id === asset.id)!.name);
     },
     async publishRelease(release) {
       for (const r of state.releases) r.latest = false;
       Object.assign(find(release.id), { draft: false, latest: true });
+      state.events.push(`publish ${find(release.id).tag_name}`);
     },
     async deleteRelease(release) {
       state.releases = state.releases.filter((r) => r.id !== release.id);
@@ -135,17 +146,15 @@ function fakeRepo() {
     async newerRunWaiting() {
       return state.newerRun;
     },
-    async readPublicAsset(tag, name) {
-      return state.publicContent(tag, name);
-    },
   };
   return { api, state };
 }
 
 /// Adds a published release, as an earlier run would.
-async function seedRelease(api: ReleasesApi, version: string, body = "") {
-  const release = await api.createDraft({ tag: `v${version}`, target: SHA, name: `Longhand ${version}`, body });
+async function seedRelease(api: ReleasesApi, state: { events: string[] }, version: string) {
+  const release = await api.createDraft({ tag: `v${version}`, target: SHA, name: `Longhand ${version}`, body: "" });
   await api.publishRelease(release);
+  state.events.length = 0;
 }
 
 const args = (version: string) => ({
@@ -153,10 +162,13 @@ const args = (version: string) => ({
   version,
   commit: SHA,
   dmg: new Blob(["dmg"]),
-  dmgName: "Longhand_1.0.0_aarch64.dmg",
+  dmgName: DMG,
   archive: new Blob(["archive"]),
   archiveName: "Longhand.app.tar.gz",
   signature: "c2ln\n",
+  installer: new Blob(["exe"]),
+  installerName: INSTALLER,
+  installerSignature: "d2lu\n",
   notes: "### Features\n- one feature\n",
   changelogJson: new Blob(['{"format":1}\n']),
   changelogMarkdown: new Blob(["# Changelog\n"]),
@@ -164,7 +176,19 @@ const args = (version: string) => ({
 });
 const quiet = () => {};
 
-test("with no release yet, publish creates v1.0.0 with the 6 assets on the built commit as the latest release", async () => {
+const ALL_ASSETS = [
+  DMG,
+  "Longhand.app.tar.gz",
+  "Longhand.app.tar.gz.sig",
+  "latest.json",
+  INSTALLER,
+  `${INSTALLER}.sig`,
+  "latest-windows.json",
+  "changelog.json",
+  "CHANGELOG.md",
+];
+
+test("with no release yet, publish creates v1.0.0 with the 9 assets on the built commit as the latest release", async () => {
   const { api, state } = fakeRepo();
   assert.equal(await publish(api, args("1.0.0"), quiet), "published");
   assert.equal(state.releases.length, 1);
@@ -178,61 +202,88 @@ test("with no release yet, publish creates v1.0.0 with the 6 assets on the built
     draft: false,
     latest: true,
   });
-  assert.deepEqual(release.assets.map((a) => a.name), [
-    "Longhand_1.0.0_aarch64.dmg",
-    "Longhand.app.tar.gz",
-    "Longhand.app.tar.gz.sig",
-    "latest.json",
-    "changelog.json",
-    "CHANGELOG.md",
-  ]);
+  assert.deepEqual(release.assets.map((a) => a.name), ALL_ASSETS);
+  assert.equal(release.files[DMG], "dmg");
   assert.equal(release.files["Longhand.app.tar.gz.sig"], "c2ln\n");
+  assert.equal(release.files[INSTALLER], "exe");
+  assert.equal(release.files[`${INSTALLER}.sig`], "d2lu\n");
   assert.equal(release.files["changelog.json"], '{"format":1}\n');
   assert.equal(release.files["CHANGELOG.md"], "# Changelog\n");
 });
 
-test("publish uploads every asset to the draft before it publishes the release", async () => {
+test("publish uploads the 9 assets to the draft in order, and the release becomes the latest only after the last upload", async () => {
   const { api, state } = fakeRepo();
-  const draftAtUpload: boolean[] = [];
-  state.beforeUpload = () => draftAtUpload.push(state.releases[0]!.draft);
-  assert.equal(await publish(api, args("1.0.0"), quiet), "published");
-  assert.deepEqual(draftAtUpload, [true, true, true, true, true, true]);
-  assert.equal(state.releases[0]!.draft, false);
+  await seedRelease(api, state, "1.0.0");
+  const latestAtUpload: (string | undefined)[] = [];
+  state.beforeUpload = () => latestAtUpload.push(state.releases.find((r) => r.latest)?.tag_name);
+  assert.equal(await publish(api, args("1.0.1"), quiet), "published");
+  const uploads = state.events.filter((e) => e.startsWith("upload "));
+  assert.deepEqual(uploads, ALL_ASSETS.map((name) => `upload ${name} to draft`));
+  assert.equal(state.events.at(-1), "publish v1.0.1");
+  assert.ok(state.events.indexOf("publish v1.0.1") > state.events.indexOf("upload CHANGELOG.md to draft"));
+  assert.deepEqual(latestAtUpload, ALL_ASSETS.map(() => "v1.0.0"));
+  assert.equal(state.releases.find((r) => r.latest)?.tag_name, "v1.0.1");
 });
 
-test("latest.json names the version, the trimmed signature and the archive of its own release", async () => {
+test("latest.json names the archive and latest-windows.json names the fixed installer, each with its trimmed signature", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.3");
+  await seedRelease(api, state, "1.0.3");
   assert.equal(await publish(api, args("1.0.4"), quiet), "published");
   const release = state.releases.find((r) => r.tag_name === "v1.0.4")!;
-  const manifest = JSON.parse(release.files["latest.json"]!) as Manifest;
-  assert.equal(manifest.version, "1.0.4");
-  assert.deepEqual(manifest.platforms["darwin-aarch64"], {
-    signature: "c2ln",
-    url: "https://github.com/twistymaze/longhand/releases/download/v1.0.4/Longhand.app.tar.gz",
+  const mac = JSON.parse(release.files["latest.json"]!) as Manifest;
+  assert.equal(mac.version, "1.0.4");
+  assert.deepEqual(mac.platforms, {
+    "darwin-aarch64": {
+      signature: "c2ln",
+      url: `https://github.com/${REPO}/releases/download/v1.0.4/Longhand.app.tar.gz`,
+    },
   });
+  assert.deepEqual(JSON.parse(release.files["latest-windows.json"]!) as Manifest, {
+    version: "1.0.4",
+    notes: "### Features\n- one feature",
+    pub_date: "2026-10-11T15:00:00.000Z",
+    platforms: {
+      "windows-x86_64": {
+        signature: "d2lu",
+        url: `https://github.com/${REPO}/releases/download/v1.0.4/${INSTALLER}`,
+      },
+    },
+  });
+});
+
+test("a DMG or an installer with a versioned name fails the publish before any draft", async () => {
+  for (const bad of [{ dmgName: "Longhand_1.0.0_aarch64.dmg" }, { installerName: "Longhand_1.0.0_x64-setup.exe" }]) {
+    const { api, state } = fakeRepo();
+    await seedRelease(api, state, "0.9.0");
+    const name = Object.values(bad)[0]!;
+    await assert.rejects(publish(api, { ...args("1.0.0"), ...bad }, quiet), new RegExp(name.replaceAll(".", "\\.")));
+    assert.deepEqual(state.events, []);
+    assert.deepEqual(state.releases.map((r) => r.tag_name), ["v0.9.0"]);
+  }
 });
 
 test("a re-run whose version the latest release already has publishes nothing", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.4");
+  await seedRelease(api, state, "1.0.4");
   assert.equal(await publish(api, args("1.0.4"), quiet), "skipped");
   assert.deepEqual(state.releases.map((r) => r.tag_name), ["v1.0.4"]);
+  assert.deepEqual(state.events, []);
 });
 
 test("an older run that finishes after a newer one publishes nothing", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.1.0");
+  await seedRelease(api, state, "1.1.0");
   assert.equal(await publish(api, args("1.0.4"), quiet), "skipped");
   assert.deepEqual(state.releases.map((r) => r.tag_name), ["v1.1.0"]);
 });
 
 test("a run that a newer CI run on main follows publishes nothing", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
+  await seedRelease(api, state, "1.0.0");
   state.newerRun = true;
   assert.equal(await publish(api, args("1.0.1"), quiet), "skipped");
   assert.deepEqual(state.releases.map((r) => r.tag_name), ["v1.0.0"]);
+  assert.deepEqual(state.events, []);
 });
 
 test("a stale draft with the same tag is deleted before the new draft", async () => {
@@ -242,179 +293,61 @@ test("a stale draft with the same tag is deleted before the new draft", async ()
   assert.deepEqual(state.releases.map((r) => [r.id, r.draft]), [[2, false]]);
 });
 
-test("a failed upload leaves only a draft and fails the publish", async () => {
+test("an upload that fails part-way leaves a draft that is not published and keeps the latest release", async () => {
   const { api, state } = fakeRepo();
+  await seedRelease(api, state, "1.0.0");
   state.beforeUpload = (name) => {
-    if (name === "Longhand.app.tar.gz") throw new Error("upload Longhand.app.tar.gz: 502");
+    if (name === INSTALLER) throw new Error(`upload ${INSTALLER}: 502`);
   };
-  await assert.rejects(publish(api, args("1.0.0"), quiet), /502/);
-  assert.deepEqual(state.releases.map((r) => [r.tag_name, r.draft]), [["v1.0.0", true]]);
+  await assert.rejects(publish(api, args("1.0.1"), quiet), /502/);
+  assert.deepEqual(state.releases.map((r) => [r.tag_name, r.draft, r.latest]), [
+    ["v1.0.0", false, true],
+    ["v1.0.1", true, false],
+  ]);
+  assert.equal(state.events.some((e) => e.startsWith("publish ")), false);
 });
 
-test("the Windows manifest names the version, the notes, the date, and the windows-x86_64 installer and signature", () => {
-  assert.deepEqual(
-    buildWindowsManifest({
-      version: "1.0.4",
-      notes: "### Bug Fixes\n- one fix\n",
-      pubDate: "2026-10-11T15:00:00.000Z",
-      url: "https://example.test/Longhand_1.0.4_x64-setup.exe",
-      signature: "c2lnbmF0dXJl\n",
-    }),
-    {
-      version: "1.0.4",
-      notes: "### Bug Fixes\n- one fix",
-      pub_date: "2026-10-11T15:00:00.000Z",
-      platforms: { "windows-x86_64": { signature: "c2lnbmF0dXJl", url: "https://example.test/Longhand_1.0.4_x64-setup.exe" } },
-    },
-  );
-});
-
-const INSTALLER = "Longhand_1.0.0_x64-setup.exe";
-const attachArgs = (installer: string, signature = "d2lu\n") => ({
-  repository: REPO,
-  tag: "v1.0.0",
-  installer: new Blob([installer]),
-  installerName: INSTALLER,
-  signature,
-  now: () => new Date("2026-10-12T09:00:00Z"),
-});
-
-/// Records each upload and delete of the fake repository, in order.
-function recordChanges(api: ReleasesApi): string[] {
-  const changes: string[] = [];
-  const upload = api.uploadAsset.bind(api);
-  const remove = api.deleteAsset.bind(api);
-  api.uploadAsset = (release, name, content) => {
-    changes.push(`upload ${name}`);
-    return upload(release, name, content);
-  };
-  api.deleteAsset = (release, asset) => {
-    changes.push(`delete ${asset.name}`);
-    return remove(release, asset);
-  };
-  return changes;
-}
-
-test("attach uploads the installer, its signature, then latest-windows.json for the release with the tag", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0", "### Features\n- one feature\n");
-  const changes = recordChanges(api);
-  await attach(api, attachArgs("exe"), quiet);
-  assert.deepEqual(changes, [`upload ${INSTALLER}`, `upload ${INSTALLER}.sig`, "upload latest-windows.json"]);
-  const files = state.releases[0]!.files;
-  assert.equal(files[INSTALLER], "exe");
-  assert.equal(files[`${INSTALLER}.sig`], "d2lu\n");
-  assert.deepEqual(JSON.parse(files["latest-windows.json"]!) as Manifest, {
-    version: "1.0.0",
-    notes: "### Features\n- one feature",
-    pub_date: "2026-10-12T09:00:00.000Z",
-    platforms: {
-      "windows-x86_64": {
-        signature: "d2lu",
-        url: `https://github.com/${REPO}/releases/download/v1.0.0/${INSTALLER}`,
-      },
-    },
-  });
-});
-
-test("attach never uploads or deletes latest.json", async () => {
+test("publish reads back both manifests from the draft before it publishes", async () => {
   const { api, state } = fakeRepo();
   assert.equal(await publish(api, args("1.0.0"), quiet), "published");
-  const macManifest = state.releases[0]!.files["latest.json"];
-  const changes = recordChanges(api);
-  await attach(api, attachArgs("first"), quiet);
-  await attach(api, attachArgs("second"), quiet);
-  assert.equal(changes.filter((c) => c.endsWith(" latest.json")).length, 0);
-  assert.equal(state.releases[0]!.files["latest.json"], macManifest);
+  const reads = state.events.filter((e) => e.startsWith("read "));
+  assert.deepEqual(reads.sort(), ["read latest-windows.json", "read latest.json"]);
+  for (const read of reads) assert.ok(state.events.indexOf(read) < state.events.indexOf("publish v1.0.0"));
 });
 
-test("a re-run deletes the old manifest first, replaces the installer and the signature, and uploads the new manifest last", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  await attach(api, attachArgs("first", "Zmlyc3Q=\n"), quiet);
-  const changes = recordChanges(api);
-  await attach(api, attachArgs("second", "c2Vjb25k\n"), quiet);
-  assert.deepEqual(changes, [
-    "delete latest-windows.json",
-    `upload ${INSTALLER}.new`,
-    `delete ${INSTALLER}`,
-    `upload ${INSTALLER}.sig.new`,
-    `delete ${INSTALLER}.sig`,
-    "upload latest-windows.json",
-  ]);
-  const release = state.releases[0]!;
-  assert.deepEqual(release.assets.map((a) => a.name).sort(), [INSTALLER, `${INSTALLER}.sig`, "latest-windows.json"].sort());
-  assert.equal(release.files[INSTALLER], "second");
-  assert.equal(release.files[`${INSTALLER}.sig`], "c2Vjb25k\n");
-  assert.equal((JSON.parse(release.files["latest-windows.json"]!) as Manifest).platforms["windows-x86_64"]!.signature, "c2Vjb25k");
-});
-
-test("a failed re-upload keeps the earlier installer and leaves no Windows manifest", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  await attach(api, attachArgs("first"), quiet);
-  state.beforeUpload = () => {
-    throw new Error("upload failed");
-  };
-  await assert.rejects(attach(api, attachArgs("second"), quiet), /upload failed/);
-  assert.equal(state.releases[0]!.files[INSTALLER], "first");
-  assert.equal(state.releases[0]!.files["latest-windows.json"], undefined);
-});
-
-test("a re-run after a run that stopped after a temporary upload deletes the temporary asset and attaches", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  await attach(api, attachArgs("first"), quiet);
-  // The earlier run uploaded the temporary .sig, then stopped.
-  await api.uploadAsset((await api.releaseByTag("v1.0.0"))!, `${INSTALLER}.sig.new`, "partial");
-  await attach(api, attachArgs("second", "c2Vjb25k\n"), quiet);
-  const after = state.releases[0]!;
-  assert.deepEqual(after.assets.map((a) => a.name).sort(), [INSTALLER, `${INSTALLER}.sig`, "latest-windows.json"].sort());
-  assert.equal(after.files[`${INSTALLER}.sig`], "c2Vjb25k\n");
-});
-
-test("attach fails without uploads when no release has the tag", async () => {
-  const { api } = fakeRepo();
-  const changes = recordChanges(api);
-  await assert.rejects(attach(api, attachArgs("exe"), quiet), /no release has the tag v1\.0\.0/);
-  assert.deepEqual(changes, []);
-});
-
-test("attach fails when the public latest-windows.json differs from the uploaded manifest", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  state.publicContent = () => "{}\n";
-  await assert.rejects(attach(api, attachArgs("exe"), quiet), /latest-windows\.json of v1\.0\.0 differs/);
-});
-
-test("attach reads back the public latest-windows.json of the tag", async () => {
-  const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  const reads: string[] = [];
-  state.publicContent = (tag, name) => {
-    reads.push(`${tag} ${name}`);
-    return state.releases[0]!.files[name] ?? null;
-  };
-  await attach(api, attachArgs("exe"), quiet);
-  assert.deepEqual(reads, ["v1.0.0 latest-windows.json"]);
+test("a draft manifest that differs from the upload fails the publish before the draft is published", async () => {
+  for (const name of ["latest.json", "latest-windows.json"]) {
+    const { api, state } = fakeRepo();
+    await seedRelease(api, state, "1.0.0");
+    state.readContent = (release, asset) => (asset === name ? "{}\n" : release.files[asset]!);
+    await assert.rejects(publish(api, args("1.0.1"), quiet), new RegExp(`${name.replaceAll(".", "\\.")} of the draft v1\\.0\\.1 differs`));
+    assert.equal(state.events.some((e) => e.startsWith("publish ")), false);
+    assert.equal(state.releases.find((r) => r.latest)?.tag_name, "v1.0.0");
+  }
 });
 
 /// Writes the release files of a CLI publish and returns its arguments.
-function cliFiles(version: string): string[] {
+function cliFiles(version: string, names: { dmg?: string; installer?: string } = {}): string[] {
+  const dmg = names.dmg ?? DMG;
+  const installer = names.installer ?? INSTALLER;
   const dir = `${process.env.TMPDIR ?? "/tmp"}/publish-release-test-${process.pid}`;
   mkdirSync(`${dir}/changelog`, { recursive: true });
-  writeFileSync(`${dir}/Longhand_1.0.0_aarch64.dmg`, "dmg");
+  writeFileSync(`${dir}/${dmg}`, "dmg");
   writeFileSync(`${dir}/Longhand.app.tar.gz`, "archive");
   writeFileSync(`${dir}/Longhand.app.tar.gz.sig`, "c2ln\n");
+  writeFileSync(`${dir}/${installer}`, "exe");
+  writeFileSync(`${dir}/${installer}.sig`, "d2lu\n");
   writeFileSync(`${dir}/notes.md`, "notes\n");
   writeFileSync(`${dir}/changelog/changelog.json`, '{"format":1}\n');
   writeFileSync(`${dir}/changelog/CHANGELOG.md`, "# Changelog\n");
   return [
     "publish",
     version,
-    `${dir}/Longhand_1.0.0_aarch64.dmg`,
+    `${dir}/${dmg}`,
     `${dir}/Longhand.app.tar.gz`,
     `${dir}/Longhand.app.tar.gz.sig`,
+    `${dir}/${installer}`,
+    `${dir}/${installer}.sig`,
     `${dir}/notes.md`,
     `${dir}/changelog/changelog.json`,
     `${dir}/changelog/CHANGELOG.md`,
@@ -430,19 +363,39 @@ test("the CLI reads the repository, the token and the built commit from the envi
     made.push(`${repository} ${token}`);
     return api;
   };
-  const output: string[] = [];
-  await main(cliFiles("1.0.0"), ENV, makeApi, quiet, (line) => output.push(line));
+  await main(cliFiles("1.0.0"), ENV, makeApi, quiet, quiet);
   assert.deepEqual(made, [`${REPO} t`]);
   assert.partialDeepStrictEqual(state.releases[0], { tag_name: "v1.0.0", target_commitish: SHA, body: "notes\n", draft: false });
-  assert.equal(state.releases[0]!.files["Longhand_1.0.0_aarch64.dmg"], "dmg");
-  assert.equal(state.releases[0]!.files["changelog.json"], '{"format":1}\n');
-  assert.equal(state.releases[0]!.files["CHANGELOG.md"], "# Changelog\n");
-  assert.deepEqual(output, ["published=true"]);
+  const files = state.releases[0]!.files;
+  assert.equal(files[DMG], "dmg");
+  assert.equal(files["Longhand.app.tar.gz.sig"], "c2ln\n");
+  assert.equal(files[INSTALLER], "exe");
+  assert.equal(files[`${INSTALLER}.sig`], "d2lu\n");
+  assert.equal((JSON.parse(files["latest-windows.json"]!) as Manifest).platforms["windows-x86_64"]!.signature, "d2lu");
+  assert.equal(files["changelog.json"], '{"format":1}\n');
+  assert.equal(files["CHANGELOG.md"], "# Changelog\n");
+});
+
+test("a CLI publish writes published=true right after the release is published and ends without an error", async () => {
+  const { api, state } = fakeRepo();
+  await main(cliFiles("1.0.0"), ENV, () => api, quiet, (line) => state.events.push(`output ${line}`));
+  assert.deepEqual(state.events.slice(-2), ["publish v1.0.0", "output published=true"]);
+});
+
+test("a CLI publish with a versioned installer name fails before any draft", async () => {
+  const { api, state } = fakeRepo();
+  const output: string[] = [];
+  await assert.rejects(
+    main(cliFiles("1.0.0", { installer: "Longhand_1.0.0_x64-setup.exe" }), ENV, () => api, quiet, (line) => output.push(line)),
+    /Longhand_1\.0\.0_x64-setup\.exe/,
+  );
+  assert.deepEqual(state.releases, []);
+  assert.deepEqual(output, []);
 });
 
 test("a CLI publish that a newer CI run follows uploads nothing and reports that it did not publish", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
+  await seedRelease(api, state, "1.0.0");
   state.newerRun = true;
   const output: string[] = [];
   await main(cliFiles("1.0.1"), ENV, () => api, quiet, (line) => output.push(line));
@@ -452,41 +405,29 @@ test("a CLI publish that a newer CI run follows uploads nothing and reports that
 
 test("a CLI publish whose version is not newer reports that it did not publish", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.1");
+  await seedRelease(api, state, "1.0.1");
   const output: string[] = [];
   await main(cliFiles("1.0.1"), ENV, () => api, quiet, (line) => output.push(line));
   assert.deepEqual(state.releases.map((r) => [r.tag_name, r.assets.length]), [["v1.0.1", 0]]);
   assert.deepEqual(output, ["published=false"]);
 });
 
-test("the CLI usage names the changelog files of a publish", async () => {
-  const { api } = fakeRepo();
-  await assert.rejects(
-    main(["publish", "1.0.0", "a", "b", "c", "d"], ENV, () => api, quiet),
-    /publish <version> <dmg> <archive> <signature file> <notes file> <changelog\.json> <CHANGELOG\.md>/,
-  );
-});
+const USAGE_TEXT =
+  /publish <version> <dmg> <archive> <archive\.sig> <installer> <installer\.sig> <notes file> <changelog\.json> <CHANGELOG\.md>/;
 
-test("the CLI rejects the old two-argument attach with the usage text", async () => {
-  const { api } = fakeRepo();
-  await assert.rejects(
-    main(["attach", "v1.0.0", "/b/setup.exe"], ENV, () => api, quiet),
-    /attach <tag> <installer> <signature file>/,
-  );
-});
-
-test("a CLI attach uploads the installer, its signature file and the Windows manifest", async () => {
+test("the CLI rejects the old 7-argument publish with the usage text", async () => {
   const { api, state } = fakeRepo();
-  await seedRelease(api, "1.0.0");
-  const dir = `${process.env.TMPDIR ?? "/tmp"}/publish-release-test-${process.pid}/installer`;
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(`${dir}/${INSTALLER}`, "exe");
-  writeFileSync(`${dir}/${INSTALLER}.sig`, "d2lu\n");
-  await main(["attach", "v1.0.0", `${dir}/${INSTALLER}`, `${dir}/${INSTALLER}.sig`], ENV, () => api, quiet);
-  const files = state.releases[0]!.files;
-  assert.equal(files[INSTALLER], "exe");
-  assert.equal(files[`${INSTALLER}.sig`], "d2lu\n");
-  assert.equal((JSON.parse(files["latest-windows.json"]!) as Manifest).platforms["windows-x86_64"]!.signature, "d2lu");
+  await assert.rejects(main(["publish", "1.0.0", "a", "b", "c", "d", "e", "f"], ENV, () => api, quiet), USAGE_TEXT);
+  assert.deepEqual(state.events, []);
+});
+
+test("the CLI rejects attach with the usage text", async () => {
+  const { api } = fakeRepo();
+  await assert.rejects(main(["attach", "v1.0.0", "/b/setup.exe", "/b/setup.exe.sig"], ENV, () => api, quiet), (error: Error) => {
+    assert.match(error.message, USAGE_TEXT);
+    assert.doesNotMatch(error.message, /attach/);
+    return true;
+  });
 });
 
 test("a CLI publish with a failed upload rejects, so the process exits with an error", async () => {
@@ -501,11 +442,9 @@ test("a CLI publish with a failed upload rejects, so the process exits with an e
 
 test("the CLI fails when the environment does not name the repository, the token and the commit", async () => {
   const { api } = fakeRepo();
-  await assert.rejects(main(["attach", "v1.0.0", "/b/setup.exe", "/b/setup.exe.sig"], {}, () => api, quiet), /GITHUB_REPOSITORY/);
-  await assert.rejects(
-    main(["publish", "1.0.0", "a", "b", "c", "d", "e", "f"], { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t" }, () => api, quiet),
-    /GITHUB_SHA/,
-  );
+  const nine = ["publish", "1.0.0", "a", "b", "c", "d", "e", "f", "g", "h"];
+  await assert.rejects(main(nine, {}, () => api, quiet), /GITHUB_REPOSITORY/);
+  await assert.rejects(main(nine, { GITHUB_REPOSITORY: REPO, GITHUB_TOKEN: "t" }, () => api, quiet), /GITHUB_SHA/);
 });
 
 /// Replaces fetch with `respond` while `run` runs, and records each request.
@@ -567,13 +506,7 @@ test("the GitHub binding finds a newer queued or running CI run on main", async 
   assert.equal(await githubApi(REPO, "t").newerRunWaiting(), false);
 });
 
-test("the GitHub binding treats a 404 from a tag as no release and fails on other errors", async () => {
-  await withFetch(
-    () => new Response("not found", { status: 404 }),
-    async () => {
-      assert.equal(await githubApi(REPO, "t").releaseByTag("v1.0.0"), null);
-    },
-  );
+test("the GitHub binding fails on an error other than a 404", async () => {
   await withFetch(
     () => new Response("server error", { status: 500 }),
     async () => {
@@ -611,24 +544,17 @@ test("the GitHub binding publishes a release as the latest release", async () =>
   assert.deepEqual(JSON.parse(String(requests[0]!.init!.body)), { draft: false, make_latest: "true" });
 });
 
-test("the GitHub binding uploads, deletes and renames an asset", async () => {
-  const asset: Asset = { id: 5, name: "latest.json" };
+test("the GitHub binding uploads an asset", async () => {
   const requests = await withFetch(
     () => Response.json({ id: 7, name: "latest.json" }, { status: 201 }),
     async () => {
-      const api = githubApi(REPO, "t");
       const release = { id: 9, tag_name: "v1.0.0", draft: true, assets: [] };
-      assert.deepEqual(await api.uploadAsset(release, "latest.json", "{}"), { id: 7, name: "latest.json" });
-      await api.deleteAsset(release, asset);
-      await api.renameAsset(release, asset, "setup.exe");
+      assert.deepEqual(await githubApi(REPO, "t").uploadAsset(release, "latest.json", "{}"), { id: 7, name: "latest.json" });
     },
   );
   assert.deepEqual(requests.map((r) => r.line), [
     `POST https://uploads.github.com/repos/${REPO}/releases/9/assets?name=latest.json`,
-    `DELETE ${API}/releases/assets/5`,
-    `PATCH ${API}/releases/assets/5`,
   ]);
-  assert.deepEqual(JSON.parse(String(requests[2]!.init!.body)), { name: "setup.exe" });
 });
 
 test("the GitHub binding reads every page of releases", async () => {
@@ -645,20 +571,23 @@ test("the GitHub binding reads every page of releases", async () => {
   ]);
 });
 
-test("the GitHub binding reads a public asset without the token and treats a 404 as no asset", async () => {
-  const url = `https://github.com/${REPO}/releases/download/v1.0.0/latest-windows.json`;
+test("the GitHub binding reads the content of a draft asset with the token and fails on an error", async () => {
+  const release = { id: 9, tag_name: "v1.0.0", draft: true, assets: [] };
+  const asset = { id: 7, name: "latest-windows.json" };
   const requests = await withFetch(
     () => new Response("{}\n"),
     async () => {
-      assert.equal(await githubApi(REPO, "t").readPublicAsset("v1.0.0", "latest-windows.json"), "{}\n");
+      assert.equal(await githubApi(REPO, "t").readAsset(release, asset), "{}\n");
     },
   );
-  assert.deepEqual(requests.map((r) => r.line), [`GET ${url}`]);
-  assert.equal(requests[0]!.init, undefined);
+  assert.deepEqual(requests.map((r) => r.line), [`GET ${API}/releases/assets/7`]);
+  const headers = requests[0]!.init!.headers as Record<string, string>;
+  assert.equal(headers.Authorization, "Bearer t");
+  assert.equal(headers.Accept, "application/octet-stream");
   await withFetch(
     () => new Response("not found", { status: 404 }),
     async () => {
-      assert.equal(await githubApi(REPO, "t").readPublicAsset("v1.0.0", "latest-windows.json"), null);
+      await assert.rejects(githubApi(REPO, "t").readAsset(release, asset), /404/);
     },
   );
 });

@@ -1,33 +1,33 @@
-// Publishes one Longhand release to the GitHub Releases page of the source
-// repository, and attaches the Windows installer to it later (KTD4).
+// Publishes one Longhand release for macOS and Windows to the GitHub Releases
+// page of the source repository (KTD6).
 //
-//   node scripts/publish-release.ts publish <version> <dmg> <archive> <signature> <notes file> <changelog.json> <CHANGELOG.md>
-//     Publishes the release v<version> on the built commit, with the DMG, the
-//     updater archive, its signature, latest.json, changelog.json and
-//     CHANGELOG.md as assets. The changelog assets always have these names,
-//     so the app can find changelog.json from the version alone (KTD5). The
+//   node scripts/publish-release.ts publish <version> <dmg> <archive> <archive.sig> <installer> <installer.sig> <notes file> <changelog.json> <CHANGELOG.md>
+//     Publishes the release v<version> on the built commit. It uploads these
+//     assets to a draft in this order: the DMG, the macOS updater archive, its
+//     signature, latest.json, the Windows installer, its signature,
+//     latest-windows.json, changelog.json and CHANGELOG.md. Then it publishes
+//     the draft as the latest release. The DMG and the installer must have the
+//     fixed names Longhand_aarch64.dmg and Longhand_x64-setup.exe, because the
+//     site links to these names (R6). The changelog assets always have these
+//     names, so the app can find changelog.json from the version alone. The
 //     command prints `published=<true|false>` for $GITHUB_OUTPUT. It writes
 //     its other lines to stderr, so that they do not go into GITHUB_OUTPUT.
-//   node scripts/publish-release.ts attach <tag> <installer> <signature file>
-//     Uploads the installer, its updater signature as <installer>.sig, and
-//     latest-windows.json last to the release with the tag (KTD1, KTD8). It
-//     then reads the public latest-windows.json and fails when it differs. It
-//     replaces an asset with the same name, so a re-run works. The old
-//     installer stays until the new one is uploaded, so a failed re-run does
-//     not remove the installer. A re-run deletes the old latest-windows.json
-//     first. The command never changes latest.json.
 //
 // The script reads the repository from GITHUB_REPOSITORY and the token from
 // GITHUB_TOKEN. The publish command reads the built commit from GITHUB_SHA.
 // The release job runs in the same workflow run as the build, so GITHUB_SHA
 // is the built commit.
 //
-// The publish order is check, draft, upload, publish. A job that stops early
-// leaves at most a draft, which no user sees and which has no tag. A version
-// that is not higher than the latest release publishes nothing and ends
-// without an error. The concurrency group of the CI workflow keeps two
-// publishes from running at the same time. The script uses only Node built-ins and
-// scripts/lib/, because the publish job runs no package install.
+// The publish order is check, draft, upload, read back, publish. A job that
+// stops early leaves at most a draft, which no user sees and which has no
+// tag. Each check that can fail runs while the release is a draft: the names
+// of the installers, and a read-back of the two manifests from the draft.
+// No step after the publication can fail the command, so `published=true`
+// always means a published release. A version that is not higher than the
+// latest release publishes nothing and ends without an error. The
+// concurrency group of the CI workflow keeps two publishes from running at
+// the same time. The script uses only Node built-ins and scripts/lib/,
+// because the publish job runs no package install.
 //
 // When a newer CI run on main is queued or running, the publish command
 // publishes nothing and ends without an error. That run computes its version
@@ -44,6 +44,9 @@ export const MANIFEST_NAME = "latest.json";
 export const WINDOWS_MANIFEST_NAME = "latest-windows.json";
 export const CHANGELOG_JSON_NAME = "changelog.json";
 export const CHANGELOG_MARKDOWN_NAME = "CHANGELOG.md";
+/// The fixed installer names that the site links to (R6).
+export const DMG_NAME = "Longhand_aarch64.dmg";
+export const INSTALLER_NAME = "Longhand_x64-setup.exe";
 
 export function tagFor(version: string): string {
   return `v${version}`;
@@ -82,8 +85,7 @@ export function buildManifest(args: ManifestArgs): Manifest {
   return manifestFor("darwin-aarch64", args);
 }
 
-/// The update manifest that the Windows app reads (KTD1). Only `attach`
-/// writes it, so latest.json never changes after the publish (R11).
+/// The update manifest that the Windows app reads.
 export function buildWindowsManifest(args: ManifestArgs): Manifest {
   return manifestFor("windows-x86_64", args);
 }
@@ -100,26 +102,21 @@ export type Asset = { id: number; name: string };
 export type Release = { id: number; tag_name: string; draft: boolean; body?: string | null; assets: Asset[] };
 export type Draft = { tag: string; target: string; name: string; body: string };
 
-/// The GitHub calls that the publish and attach flows make. Tests replace them.
+/// The GitHub calls that the publish flow makes. Tests replace them.
 export type ReleasesApi = {
   /// The latest published release, or null when there is none.
   latestRelease(): Promise<Release | null>;
-  /// The published release with the tag, or null when there is none.
-  releaseByTag(tag: string): Promise<Release | null>;
   /// All releases, drafts included.
   listReleases(): Promise<Release[]>;
   createDraft(draft: Draft): Promise<Release>;
   uploadAsset(release: Release, name: string, content: Blob | string): Promise<Asset>;
-  deleteAsset(release: Release, asset: Asset): Promise<void>;
-  renameAsset(release: Release, asset: Asset, name: string): Promise<void>;
+  /// The text of an asset, also of a draft, through the authenticated API.
+  readAsset(release: Release, asset: Asset): Promise<string>;
   /// Publishes the draft and marks it as the latest release.
   publishRelease(release: Release): Promise<void>;
   deleteRelease(release: Release): Promise<void>;
   /// True when a newer run of this CI workflow on main is queued or running.
   newerRunWaiting(): Promise<boolean>;
-  /// The text at the public download URL of the asset, as an app reads it.
-  /// Null when there is no such asset.
-  readPublicAsset(tag: string, name: string): Promise<string | null>;
 };
 
 export type PublishResult = "published" | "skipped";
@@ -134,7 +131,12 @@ export async function publish(
     dmgName: string;
     archive: Blob;
     archiveName: string;
+    /// The updater signature of the archive.
     signature: string;
+    installer: Blob;
+    installerName: string;
+    /// The updater signature of the installer.
+    installerSignature: string;
     notes: string;
     changelogJson: Blob;
     changelogMarkdown: Blob;
@@ -142,6 +144,13 @@ export async function publish(
   },
   log: (line: string) => void = console.log,
 ): Promise<PublishResult> {
+  // A build change must not publish a name that the site does not link (R6).
+  for (const [name, fixed] of [
+    [args.dmgName, DMG_NAME],
+    [args.installerName, INSTALLER_NAME],
+  ]) {
+    if (name !== fixed) throw new Error(`the installer ${name} must have the name ${fixed}`);
+  }
   const tag = tagFor(args.version);
   const latest = await api.latestRelease();
   const latestVersion = latest ? latest.tag_name.replace(/^v/, "") : null;
@@ -166,96 +175,50 @@ export async function publish(
     body: args.notes,
   });
 
-  const manifest = buildManifest({
-    version: args.version,
-    notes: args.notes,
-    pubDate: args.now().toISOString(),
-    url: assetUrl(args.repository, tag, args.archiveName),
-    signature: args.signature,
-  });
+  const pubDate = args.now().toISOString();
+  const text = (manifest: Manifest) => `${JSON.stringify(manifest, null, 2)}\n`;
+  const macManifest = text(
+    buildManifest({
+      version: args.version,
+      notes: args.notes,
+      pubDate,
+      url: assetUrl(args.repository, tag, args.archiveName),
+      signature: args.signature,
+    }),
+  );
+  const windowsManifest = text(
+    buildWindowsManifest({
+      version: args.version,
+      notes: args.notes,
+      pubDate,
+      url: assetUrl(args.repository, tag, args.installerName),
+      signature: args.installerSignature,
+    }),
+  );
   await api.uploadAsset(release, args.dmgName, args.dmg);
   await api.uploadAsset(release, args.archiveName, args.archive);
   await api.uploadAsset(release, `${args.archiveName}.sig`, args.signature);
-  await api.uploadAsset(release, MANIFEST_NAME, `${JSON.stringify(manifest, null, 2)}\n`);
+  const macAsset = await api.uploadAsset(release, MANIFEST_NAME, macManifest);
+  await api.uploadAsset(release, args.installerName, args.installer);
+  await api.uploadAsset(release, `${args.installerName}.sig`, args.installerSignature);
+  const windowsAsset = await api.uploadAsset(release, WINDOWS_MANIFEST_NAME, windowsManifest);
   await api.uploadAsset(release, CHANGELOG_JSON_NAME, args.changelogJson);
   await api.uploadAsset(release, CHANGELOG_MARKDOWN_NAME, args.changelogMarkdown);
+
+  // Installed apps read the manifests. A manifest that GitHub stored with a
+  // change stops the publish while the release is still a draft.
+  for (const [asset, uploaded] of [
+    [macAsset, macManifest],
+    [windowsAsset, windowsManifest],
+  ] as const) {
+    if ((await api.readAsset(release, asset)) !== uploaded) {
+      throw new Error(`the ${asset.name} of the draft ${tag} differs from the uploaded manifest`);
+    }
+  }
 
   await api.publishRelease(release);
   log(`published ${tag}`);
   return "published";
-}
-
-/// Uploads an asset, or replaces the asset with the same name. The
-/// replacement goes up under a temporary name first, so only a successful
-/// upload removes the earlier asset. A temporary asset that an earlier run
-/// left goes first: GitHub refuses a second asset with the same name.
-async function replaceAsset(
-  api: ReleasesApi,
-  release: Release,
-  name: string,
-  content: Blob | string,
-  log: (line: string) => void,
-): Promise<void> {
-  for (const stale of release.assets.filter((a) => a.name === `${name}.new`)) {
-    log(`deleting the temporary ${stale.name} of an earlier run`);
-    await api.deleteAsset(release, stale);
-  }
-  const olds = release.assets.filter((a) => a.name === name);
-  if (olds.length === 0) {
-    await api.uploadAsset(release, name, content);
-    return;
-  }
-  const upload = await api.uploadAsset(release, `${name}.new`, content);
-  for (const old of olds) {
-    log(`deleting the earlier ${old.name}`);
-    await api.deleteAsset(release, old);
-  }
-  await api.renameAsset(release, upload, name);
-}
-
-export async function attach(
-  api: ReleasesApi,
-  args: {
-    repository: string;
-    tag: string;
-    installer: Blob;
-    installerName: string;
-    signature: string;
-    now: () => Date;
-  },
-  log: (line: string) => void = console.log,
-): Promise<void> {
-  const release = await api.releaseByTag(args.tag);
-  if (!release) throw new Error(`no release has the tag ${args.tag}`);
-
-  // An old manifest points at the installer that this run replaces. Remove it
-  // first. Windows apps find no update until the new manifest is up (KTD8).
-  for (const old of release.assets.filter((a) => a.name === WINDOWS_MANIFEST_NAME)) {
-    log(`deleting the earlier ${old.name}`);
-    await api.deleteAsset(release, old);
-  }
-  await replaceAsset(api, release, args.installerName, args.installer, log);
-  await replaceAsset(api, release, `${args.installerName}.sig`, args.signature, log);
-
-  // The manifest goes last, so it never names an installer that is not there.
-  const manifest = `${JSON.stringify(
-    buildWindowsManifest({
-      version: args.tag.replace(/^v/, ""),
-      notes: release.body ?? "",
-      pubDate: args.now().toISOString(),
-      url: assetUrl(args.repository, args.tag, args.installerName),
-      signature: args.signature,
-    }),
-    null,
-    2,
-  )}\n`;
-  await api.uploadAsset(release, WINDOWS_MANIFEST_NAME, manifest);
-
-  const published = await api.readPublicAsset(args.tag, WINDOWS_MANIFEST_NAME);
-  if (published !== manifest) {
-    throw new Error(`the public ${WINDOWS_MANIFEST_NAME} of ${args.tag} differs from the uploaded manifest`);
-  }
-  log(`attached ${args.installerName}, its signature and ${WINDOWS_MANIFEST_NAME} to ${args.tag}`);
 }
 
 /// The releases of the repository through the GitHub REST API. `runId` is the
@@ -287,9 +250,6 @@ export function githubApi(repository: string, token: string, runId?: string): Re
     latestRelease() {
       return releaseOrNull(`${api}/releases/latest`);
     },
-    releaseByTag(tag) {
-      return releaseOrNull(`${api}/releases/tags/${encodeURIComponent(tag)}`);
-    },
     async listReleases() {
       const releases: Release[] = [];
       for (let page = 1; ; page++) {
@@ -319,11 +279,14 @@ export function githubApi(repository: string, token: string, runId?: string): Re
       if (!response.ok) throw new Error(`upload ${name}: ${response.status} ${await response.text()}`);
       return (await response.json()) as Asset;
     },
-    async deleteAsset(_release, asset) {
-      await call("DELETE", `${api}/releases/assets/${asset.id}`, undefined, [404]);
-    },
-    async renameAsset(_release, asset, name) {
-      await call("PATCH", `${api}/releases/assets/${asset.id}`, { name });
+    async readAsset(_release, asset) {
+      // With this Accept header, the API sends the content of the asset, also
+      // of a draft, through a redirect to a signed URL. fetch does not send
+      // the Authorization header to the other origin of the redirect.
+      const url = `${api}/releases/assets/${asset.id}`;
+      const response = await fetch(url, { headers: { ...headers, Accept: "application/octet-stream" } });
+      if (!response.ok) throw new Error(`GET ${url}: ${response.status} ${await response.text()}`);
+      return await response.text();
     },
     async publishRelease(release) {
       // The API takes make_latest as a string.
@@ -342,25 +305,16 @@ export function githubApi(repository: string, token: string, runId?: string): Re
       ).json()) as { workflow_runs: Run[] };
       return recent.workflow_runs.some((r) => r.run_number > current.run_number && r.status !== "completed");
     },
-    async readPublicAsset(tag, name) {
-      // No token: the read is the same as the read of an app.
-      const url = assetUrl(repository, tag, name);
-      const response = await fetch(url);
-      if (response.status === 404) return null;
-      if (!response.ok) throw new Error(`GET ${url}: ${response.status} ${await response.text()}`);
-      return await response.text();
-    },
   };
 }
 
-const USAGE = [
-  "usage: publish-release.ts publish <version> <dmg> <archive> <signature file> <notes file> <changelog.json> <CHANGELOG.md>",
-  "       publish-release.ts attach <tag> <installer> <signature file>",
-].join("\n");
+const USAGE =
+  "usage: publish-release.ts publish <version> <dmg> <archive> <archive.sig> <installer> <installer.sig> <notes file> <changelog.json> <CHANGELOG.md>";
 
-/// Runs one CLI command. A failure rejects, so the process exits with an error.
-/// `log` gets the progress lines. `output` gets the `published=` line of a
-/// publish, for $GITHUB_OUTPUT.
+/// Runs the CLI command. A failure rejects, so the process exits with an
+/// error. `log` gets the progress lines. `output` gets the `published=` line,
+/// for $GITHUB_OUTPUT. It gets `published=true` right after the publication,
+/// and no step after it can fail.
 export async function main(
   argv: string[],
   env: Record<string, string | undefined>,
@@ -369,59 +323,37 @@ export async function main(
   output: (line: string) => void = console.log,
 ): Promise<void> {
   const [command, ...rest] = argv;
-  if (!((command === "publish" && rest.length === 7) || (command === "attach" && rest.length === 3))) {
-    throw new Error(USAGE);
-  }
+  if (command !== "publish" || rest.length !== 9) throw new Error(USAGE);
   const repository = env.GITHUB_REPOSITORY;
   const token = env.GITHUB_TOKEN;
   if (!repository || !token) throw new Error("GITHUB_REPOSITORY and GITHUB_TOKEN must be set");
+  const commit = env.GITHUB_SHA;
+  if (!commit) throw new Error("GITHUB_SHA must be set to the built commit");
 
-  if (command === "publish") {
-    const [version, dmg, archive, signature, notes, changelogJson, changelogMarkdown] = rest as [
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-      string,
-    ];
-    const commit = env.GITHUB_SHA;
-    if (!commit) throw new Error("GITHUB_SHA must be set to the built commit");
-    const result = await publish(
-      makeApi(repository, token, env.GITHUB_RUN_ID),
-      {
-        repository,
-        version,
-        commit,
-        dmg: await openAsBlob(dmg),
-        dmgName: basename(dmg),
-        archive: await openAsBlob(archive),
-        archiveName: basename(archive),
-        signature: readFileSync(signature, "utf8"),
-        notes: readFileSync(notes, "utf8"),
-        changelogJson: await openAsBlob(changelogJson),
-        changelogMarkdown: await openAsBlob(changelogMarkdown),
-        now: () => new Date(),
-      },
-      log,
-    );
-    output(`published=${result === "published"}`);
-  } else {
-    const [tag, installer, signature] = rest as [string, string, string];
-    await attach(
-      makeApi(repository, token),
-      {
-        repository,
-        tag,
-        installer: await openAsBlob(installer),
-        installerName: basename(installer),
-        signature: readFileSync(signature, "utf8"),
-        now: () => new Date(),
-      },
-      log,
-    );
-  }
+  const [version, dmg, archive, signature, installer, installerSignature, notes, changelogJson, changelogMarkdown] =
+    rest as [string, string, string, string, string, string, string, string, string];
+  const result = await publish(
+    makeApi(repository, token, env.GITHUB_RUN_ID),
+    {
+      repository,
+      version,
+      commit,
+      dmg: await openAsBlob(dmg),
+      dmgName: basename(dmg),
+      archive: await openAsBlob(archive),
+      archiveName: basename(archive),
+      signature: readFileSync(signature, "utf8"),
+      installer: await openAsBlob(installer),
+      installerName: basename(installer),
+      installerSignature: readFileSync(installerSignature, "utf8"),
+      notes: readFileSync(notes, "utf8"),
+      changelogJson: await openAsBlob(changelogJson),
+      changelogMarkdown: await openAsBlob(changelogMarkdown),
+      now: () => new Date(),
+    },
+    log,
+  );
+  output(`published=${result === "published"}`);
 }
 
 if (import.meta.main) {
