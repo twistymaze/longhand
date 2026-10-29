@@ -106,6 +106,8 @@ function fakeRepo() {
     async uploadAsset(release, name, content) {
       state.beforeUpload(name);
       const found = find(release.id);
+      // GitHub refuses a second asset with the same name (422).
+      if (found.assets.some((a) => a.name === name)) throw new Error(`422: ${name} already exists`);
       const asset = { id: nextId++, name };
       found.assets.push(asset);
       found.files[name] = typeof content === "string" ? content : await content.text();
@@ -357,6 +359,18 @@ test("a failed re-upload keeps the earlier installer and leaves no Windows manif
   await assert.rejects(attach(api, attachArgs("second"), quiet), /upload failed/);
   assert.equal(state.releases[0]!.files[INSTALLER], "first");
   assert.equal(state.releases[0]!.files["latest-windows.json"], undefined);
+});
+
+test("a re-run after a run that stopped after a temporary upload deletes the temporary asset and attaches", async () => {
+  const { api, state } = fakeRepo();
+  await seedRelease(api, "1.0.0");
+  await attach(api, attachArgs("first"), quiet);
+  // The earlier run uploaded the temporary .sig, then stopped.
+  await api.uploadAsset((await api.releaseByTag("v1.0.0"))!, `${INSTALLER}.sig.new`, "partial");
+  await attach(api, attachArgs("second", "c2Vjb25k\n"), quiet);
+  const after = state.releases[0]!;
+  assert.deepEqual(after.assets.map((a) => a.name).sort(), [INSTALLER, `${INSTALLER}.sig`, "latest-windows.json"].sort());
+  assert.equal(after.files[`${INSTALLER}.sig`], "c2Vjb25k\n");
 });
 
 test("attach fails without uploads when no release has the tag", async () => {

@@ -187,7 +187,8 @@ export async function publish(
 
 /// Uploads an asset, or replaces the asset with the same name. The
 /// replacement goes up under a temporary name first, so only a successful
-/// upload removes the earlier asset.
+/// upload removes the earlier asset. A temporary asset that an earlier run
+/// left goes first: GitHub refuses a second asset with the same name.
 async function replaceAsset(
   api: ReleasesApi,
   release: Release,
@@ -195,6 +196,10 @@ async function replaceAsset(
   content: Blob | string,
   log: (line: string) => void,
 ): Promise<void> {
+  for (const stale of release.assets.filter((a) => a.name === `${name}.new`)) {
+    log(`deleting the temporary ${stale.name} of an earlier run`);
+    await api.deleteAsset(release, stale);
+  }
   const olds = release.assets.filter((a) => a.name === name);
   if (olds.length === 0) {
     await api.uploadAsset(release, name, content);

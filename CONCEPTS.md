@@ -234,7 +234,7 @@ A numbered GitHub Release in `twistymaze/longhand`, which CI publishes from a pu
 The list of the changes in each release since 1.0.0, grouped by calendar month (UTC) and not by version. Its lines and headings are the same as in the release notes, because one script writes both from git-cliff's result. Each build contains the changelog: What's new in Settings > About shows the recent months, and the update window shows the changes that an offered release adds. The full changelog is a file of each release and a page at https://longhand.md/changelog/. Nobody edits it, and it is not a file in the repository.
 
 ### Update manifest
-The file that identifies the newest release: its version, date, archive address and signature. The app reads only this file when it checks for updates. It is `latest.json` of the latest release in `twistymaze/longhand`.
+The file that identifies the newest release: its version, date, archive address and signature. The app reads only this file when it checks for updates. The macOS app reads `latest.json` of the latest release in `twistymaze/longhand`, and the Windows app reads `latest-windows.json` of that release.
 
 ## Flagged ambiguities
 

@@ -299,25 +299,31 @@ jobs:
             exit 1
           fi
           test -s "${installers[0]}.sig"
-          base64 -d < "${installers[0]}.sig" | tr '\t' '\n' \
-            | grep -qxF "version:$VERSION" \
+          # The whole text first: grep -q can stop reading before the end of
+          # a pipe, and pipefail would then fail the step.
+          comment=$(base64 -d < "${installers[0]}.sig" | tr '\t' '\n')
+          grep -qxF "version:$VERSION" <<< "$comment" \
             || { echo "the updater signature does not name version $VERSION"; exit 1; }
+          echo "INSTALLER=$(cygpath -m "$PWD/${installers[0]}")" >> "$GITHUB_ENV"
 
       # The signature gate (KTD5): a silent install into a temporary folder,
       # then a check of every .exe and .dll there and of the installer. A
       # failure leaves no artifact, so the release gets no Windows files.
-      - name: Check the signatures of the installed files
+      - name: Install the installer silently
         shell: pwsh
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP longhand-install
+          $install = Start-Process -FilePath $env:INSTALLER -ArgumentList '/S', "/D=$folder" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "The silent install failed with exit code $($install.ExitCode)" }
+
+      # In bash, not pwsh: a Windows PowerShell child of pwsh gets the
+      # PowerShell 7 module path, and the script reads the signatures with
+      # Windows PowerShell (see the NeMo helper step).
+      - name: Check the signatures of the installed files
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
         env:
           WINDOWS_PUBLISHER: ${{ vars.WINDOWS_PUBLISHER }}
-        run: |
-          $installer = (Get-Item target/release/bundle/nsis/*-setup.exe).FullName
-          $folder = Join-Path $env:RUNNER_TEMP longhand-install
-          $install = Start-Process -FilePath $installer -ArgumentList '/S', "/D=$folder" -Wait -PassThru
-          if ($install.ExitCode -ne 0) { throw "The silent install failed with exit code $($install.ExitCode)" }
-          node scripts/windows-signing.ts verify $folder $installer
-          if ($LASTEXITCODE -ne 0) { throw "The signature check failed" }
+        run: node scripts/windows-signing.ts verify "$RUNNER_TEMP/longhand-install" "$INSTALLER"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
