@@ -168,6 +168,21 @@ h1 {
   transform: scale(0.97);
 }
 
+/* A platform that has no release yet: the button shows, but does nothing. */
+.download[aria-disabled="true"],
+.download[aria-disabled="true"]:active {
+  background: var(--rule);
+  color: var(--muted);
+  cursor: default;
+  transform: none;
+}
+
+.download .soon {
+  margin-left: 6px;
+  font-weight: 400;
+  font-size: 0.8125rem;
+}
+
 .platforms {
   margin: 0;
   font-size: 0.875rem;

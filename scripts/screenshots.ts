@@ -34,22 +34,27 @@ async function main() {
   if (!address) throw new Error("the vite server did not report its address");
   const browser = await webkit.launch();
   try {
-    const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 2, colorScheme: "light" });
-    const errors: string[] = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("console", (message) => {
-      if (message.type() === "error") errors.push(message.text());
-    });
-    for (const scene of SCENES) {
-      errors.length = 0;
-      await page.goto(`${address}src/screenshots/index.html?scene=${scene}`);
-      await page.getByText(READY[scene], { exact: false }).first().waitFor();
-      // Fonts and images finish before the capture.
-      await page.evaluate("document.fonts.ready");
-      if (errors.length > 0) throw new Error(`scene ${scene}: ${errors.join("; ")}`);
-      const file = join(OUT, `${scene}.png`);
-      await page.locator("[data-screenshot]").screenshot({ path: file, omitBackground: true });
-      console.log(`wrote ${file}`);
+    // Each scene in light mode (<scene>.png) and dark mode (<scene>-dark.png),
+    // so the page in dark mode shows the app in dark mode.
+    for (const scheme of ["light", "dark"] as const) {
+      const page = await browser.newPage({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: 2, colorScheme: scheme });
+      const errors: string[] = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(message.text());
+      });
+      for (const scene of SCENES) {
+        errors.length = 0;
+        await page.goto(`${address}src/screenshots/index.html?scene=${scene}`);
+        await page.getByText(READY[scene], { exact: false }).first().waitFor();
+        // Fonts and images finish before the capture.
+        await page.evaluate("document.fonts.ready");
+        if (errors.length > 0) throw new Error(`scene ${scene} (${scheme}): ${errors.join("; ")}`);
+        const file = join(OUT, scheme === "light" ? `${scene}.png` : `${scene}-dark.png`);
+        await page.locator("[data-screenshot]").screenshot({ path: file, omitBackground: true });
+        console.log(`wrote ${file}`);
+      }
+      await page.close();
     }
   } finally {
     await browser.close();

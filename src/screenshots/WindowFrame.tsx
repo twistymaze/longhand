@@ -13,7 +13,16 @@ export const MARGIN = 48;
 
 const BUTTONS = ["#ff5f57", "#febc2e", "#28c840"];
 
+/// The window edge and shadow. In dark mode, macOS draws a light edge on the
+/// window, so the window stays visible on a dark page.
+const SHADOW = {
+  light:
+    "0 0 0 0.5px rgb(0 0 0 / 0.22), 0 1px 2px rgb(0 0 0 / 0.08), 0 10px 22px rgb(0 0 0 / 0.14), 0 22px 44px rgb(0 0 0 / 0.16)",
+  dark: "inset 0 0 0 0.5px rgb(255 255 255 / 0.16), 0 0 0 0.5px rgb(0 0 0 / 0.6), 0 1px 2px rgb(0 0 0 / 0.2), 0 10px 22px rgb(0 0 0 / 0.3), 0 22px 44px rgb(0 0 0 / 0.35)",
+};
+
 export function WindowFrame({ children }: { children: ReactNode }) {
+  const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   return (
     <div data-screenshot style={{ padding: MARGIN, width: "fit-content" }}>
       <div
@@ -23,8 +32,7 @@ export function WindowFrame({ children }: { children: ReactNode }) {
           height: WINDOW.height,
           borderRadius: 16,
           overflow: "hidden",
-          boxShadow:
-            "0 0 0 0.5px rgb(0 0 0 / 0.22), 0 1px 2px rgb(0 0 0 / 0.08), 0 10px 22px rgb(0 0 0 / 0.14), 0 22px 44px rgb(0 0 0 / 0.16)",
+          boxShadow: dark ? SHADOW.dark : SHADOW.light,
         }}
       >
         <div className="flex h-full flex-col bg-window">
