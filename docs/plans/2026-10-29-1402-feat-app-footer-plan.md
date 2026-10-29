@@ -13,7 +13,11 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** On Windows and macOS, a user can open Settings, see the installed version, check for updates, and see that an update waits, from the library window, with no menu bar in that window.
-- **Product authority:** The maintainer settled this scope in the 2026-10-29 session. The Windows tray items and the unchanged macOS app menu are part of the settled scope.
+- **Means:** A footer component under the note list that reads the installed version and the offered update from the update manager (KTD1, KTD2).
+- **Product authority:** The maintainer settled this scope in the 2026-10-29 session. The Windows tray items and the unchanged macOS app menu are part of the settled scope. The Product Contract has precedence over the Planning Contract.
+- **Execution profile:** One branch, `worktree-windows-app-menu` (worktree `.claude/worktrees/windows-app-menu`), rebased on `main`. It already holds commit `5b721aa`. One PR with a `feat:` title, as a patch release.
+- **Stop conditions:** Stop and ask when the footer cannot follow the tray item's state without a change to the update flow (`src-tauri/src/managers/updates/flow.rs`).
+- **Finish:** `ce-work` implements and verifies. The maintainer tests a Windows build on nebula and a macOS build before the PR.
 - **Open blockers:** None.
 
 ---
@@ -83,11 +87,11 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 
 ### Outstanding Questions
 
-**Deferred to Planning**
+**Deferred to Implementation**
 
-- How the footer reads the installed version and the waiting update, and how it stays in step with the tray item (R6).
-- The exact look of the footer, the badge and the menu, within the UI rules in `CLAUDE.md` (invoke `apple-design` first) and the plain-language rule for UI text.
-- How to rework commit `5b721aa`: keep the tray change (R9), and remove the Windows menu bar (R8) and the menu code that only it uses.
+- The exact look of the footer, the badge and the menu, within the UI rules in `CLAUDE.md` (invoke `apple-design` first) and the plain-language rule for UI text. U3 states the constraints.
+
+The planning questions about the update state (R6) and commit `5b721aa` are answered by KTD1, KTD2 and KTD4.
 
 ### Sources / Research
 
@@ -97,3 +101,88 @@ A first fix (commit `5b721aa` on branch `worktree-windows-app-menu`, not pushed)
 - `src/home/Home.tsx`: the library window (top bar, note list, preview panel).
 - `src/update/UpdateWindow.tsx`: the update window, which shows the up-to-date state of a manual check.
 - Rough placement sketch from the session (private): https://claude.ai/artifact/WuKcZssd6vswyfFVWNpXrJ
+
+---
+
+## Planning Contract
+
+Product Contract preservation: Product Contract unchanged.
+
+### Key Technical Decisions
+
+- KTD1. **The update manager announces the offered version with its own event and command.** The footer needs the same version as the tray item (`UpdateFlow::tray_version` in `src-tauri/src/managers/updates/flow.rs`). `UpdateStateChanged` does not carry it, and it fires only when the state or the focus flag changes, so the footer cannot derive the offer from it. The manager emits an `UpdateOfferChanged { version: Option<String> }` event at the point where it calls `crate::tray::set_update_item`, only when the version differs from the last emitted value, and a new `update_offer` command returns the current value for a page that opens later. One source feeds both the tray item and the footer. Governs R5, R6.
+- KTD2. **The badge reuses the tray item's action.** A new `open_update_offer` command calls `UpdateManager::tray_open`, which already opens the update window for the offered release (flow tests `covers_ae3_the_tray_item_opens_the_offer_during_the_remind_delay` and `the_tray_item_does_nothing_while_installing`). The footer menu's item calls the existing `check_for_updates` command, which already brings an open update window to the front. Governs R4, R5.
+- KTD3. **The footer reuses `Menu` from `src/session/SessionMenu.tsx` and `commands.buildInfo()`.** `Menu` already has the floating placement (it flips up near the window bottom), arrow-key and Escape handling, and focus return that `NewNoteButton` uses. `buildInfo()` already gives the version that Settings > About shows. Governs R3, R4, R7.
+- KTD4. **Commit `5b721aa` stays, and a new commit reverts its menu-bar part.** The tray change in `src-tauri/src/tray.rs` stays as it is (R9). The new commit restores `src-tauri/src/menu.rs`, `src-tauri/src/window.rs`, `src-tauri/src/lib.rs` and the `src/main.tsx` comment to their state on `main`. The `Ctrl+,` handler in `src/main.tsx` stays, because Windows still has no app menu. Governs R8, R9.
+- KTD5. **The footer is part of the note-list column in `src/home/Home.tsx`.** It sits below the scrolling list inside the list column, so it shows exactly where the list shows (R1) and the preview panel keeps its width. Governs R1.
+
+### Assumptions
+
+- The footer shows `buildInfo().version` without the commit, for example "Version 1.2.14". A local build shows its local version (0.1.0).
+- No new strings appear in Settings, the tray or the update window.
+
+---
+
+## Implementation Units
+
+### U1. Announce the offered update to pages
+
+- **Goal:** Pages can read and follow the version that the tray's Update Available item shows.
+- **Requirements:** R5, R6.
+- **Dependencies:** None.
+- **Files:** `src-tauri/src/managers/updates.rs`, `src-tauri/src/commands/updates.rs`, `src-tauri/src/lib.rs` (command and event registration), `src/bindings.ts` (generated).
+- **Approach:** Add the `UpdateOfferChanged` event and keep the last emitted version in the manager, so the event fires only on a change (KTD1). Add the `update_offer` command, which reads `tray_version()` under the flow lock, and the `open_update_offer` command, which calls `tray_open` (KTD2). Register both with tauri-specta and regenerate the bindings as the repo does for other commands.
+- **Patterns:** `UpdateStateChanged` and the `update_state` / `check_for_updates` commands in `src-tauri/src/commands/updates.rs`; the queued-text dedupe in `tray::set_update_item`.
+- **Test scenarios:** In `src-tauri/src/managers/updates.rs` tests: a change from no offer to 1.2.15 reports a change; the same version again reports none; a change back to no offer reports a change. Keep the decision in a small pure function so the test needs no app handle.
+- **Verification:** `cargo test -p longhand --lib updates`; the bindings contain `updateOffer`, `openUpdateOffer` and `updateOfferChanged`.
+
+### U2. Remove the Windows menu bar
+
+- **Goal:** The Windows main window has no menu bar; the macOS menu and the tray change stay.
+- **Requirements:** R8, R9.
+- **Dependencies:** None.
+- **Files:** `src-tauri/src/menu.rs`, `src-tauri/src/window.rs`, `src-tauri/src/lib.rs`, `src/main.tsx`.
+- **Approach:** Restore these four files to `main` (KTD4). Keep `src-tauri/src/tray.rs` from `5b721aa`.
+- **Test scenarios:** None new; the existing `menu.rs` tests return with the file.
+- **Verification:** `git diff main -- src-tauri/src/menu.rs src-tauri/src/window.rs src/main.tsx` is empty; `scripts/check-windows.sh` passes; `cargo clippy -p longhand --all-targets -- -D warnings` passes.
+
+### U3. Library footer
+
+- **Goal:** The footer under the note list with Settings, the version menu and the update badge.
+- **Requirements:** R1, R2, R3, R4, R5, R6, R7; AE1, AE2, AE3, AE4.
+- **Dependencies:** U1.
+- **Files:** `src/home/LibraryFooter.tsx` (new), `src/home/LibraryFooter.test.tsx` (new), `src/home/Home.tsx`.
+- **Approach:** Invoke `apple-design` before the visual work. The component reads `buildInfo()` and `updateOffer()` at mount and follows `updateOfferChanged`. Settings calls `commands.openSettings(null)`. The version is a quiet text button that opens `Menu` with one item, "Check for Updates…", which calls `commands.checkForUpdates()`. With an offer, the badge "Update available: <version>" replaces the version button and calls `commands.openUpdateOffer()`. Settings never truncates; the right side truncates first. No motion beyond the existing `Menu` behavior, and no change while a note's page shows (the footer is not on that page). Place it in the list column of `Home.tsx` below the scrolling list (KTD5).
+- **Patterns:** `src/home/NewNoteButton.tsx` (menu button with `Menu`), `src/settings/About.tsx` (`buildInfo`), `src/home/LibraryNotices.test.tsx` (`mockTauri` and `tauri.emit`).
+- **Test scenarios** in `src/home/LibraryFooter.test.tsx`:
+  - Covers AE1: shows "Version 1.2.14"; a click opens a menu with "Check for Updates…"; no `check_for_updates` call happens until the item is selected; then exactly one call.
+  - Covers AE2: with `update_offer` returning "1.2.15", the badge shows "Update available: 1.2.15" and the version button does not; a click calls `open_update_offer`.
+  - Covers AE3: an `update-offer-changed` event with no version replaces the badge with the version again.
+  - Covers R2: Settings calls `open_settings` with no pane.
+  - Covers R7: Enter on the version button opens the menu; Escape closes it and the focus returns to the version button.
+  - A failed `build_info` call leaves the footer without version text and with Settings still working.
+- **Verification:** `npx vitest run src/home/LibraryFooter.test.tsx src/home/Home.test.tsx`.
+
+---
+
+## Verification Contract
+
+| Check | Command | When |
+| --- | --- | --- |
+| Rust tests | `cargo test -p longhand --lib` | After U1 and U2 |
+| Lint | `cargo clippy -p longhand --all-targets -- -D warnings`, `cargo fmt --all --check` | Before each push |
+| Windows lint | `scripts/check-windows.sh` | After U2 |
+| Frontend | `npm run typecheck`, `npm test` | After U3 |
+| Windows app | Build on nebula (`C:\Users\erv\build-menu.ps1`, `--no-bundle`) and run `target\release\longhand.exe` | Before the PR |
+| macOS app | Signed local build per `docs/development-workflow.md#manual-tests` | Before the PR |
+
+Manual checks on both platforms: no menu bar on the Windows main window; the macOS app menu unchanged; the footer under the note list with Settings and the version; the version menu runs a check that opens the update window; the tray menu has Check for Updates….
+
+---
+
+## Definition of Done
+
+- R1–R9 hold, and AE1–AE4 pass as tests or manual checks.
+- All Verification Contract checks pass, and the maintainer has checked the Windows and macOS builds.
+- The branch holds no code from the removed Windows menu bar, and no experimental code from abandoned approaches.
+- The PR title is a `feat:` Conventional Commit without `+`, and it names both the footer and the Windows tray change.
