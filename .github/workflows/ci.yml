@@ -317,7 +317,7 @@ jobs:
 
       - name: Release script tests
         if: runner.os == 'macOS'
-        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts scripts/site.test.ts scripts/site-changed.test.ts scripts/theme.test.ts scripts/windows-signing.test.ts
+        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts scripts/site.test.ts scripts/site-changed.test.ts scripts/theme.test.ts scripts/platform.test.ts scripts/windows-signing.test.ts
 
       # The tests of the own version, TOML and frontmatter readers, and of
       # the dependency checks.
@@ -549,27 +549,21 @@ jobs:
           [[ -f "$script" ]] || script=../scripts/check-new-advisories.ts
           node "$script" . ..
 
-  # Builds the release that a push to main is due for, and signs and
-  # notarizes it (docs/releases.md). The workflow-level concurrency group
-  # runs the CI runs on main one at a time, so the version that this job
-  # computes is still the next one when release-publish publishes it (KTD2).
-  # This job can read the repository only (R25). Only this job can read the
-  # signing secrets: the `release` environment accepts only main. Each
-  # secret goes only to the step that uses it. Every action is pinned by its
-  # full commit SHA, because a moved tag must not get these secrets.
-  release-build:
-    name: Release build
-    # A release builds only when every check passes, the licence gate too.
-    needs: [checks, deny]
+  # Finds whether a push to main is due for a release, its version, its
+  # notes and its changelog (docs/releases.md). The workflow-level
+  # concurrency group runs the CI runs on main one at a time, so the version
+  # that this job computes is still the next one when release-publish
+  # publishes it. This job has no secrets. It runs on GitHub's Linux runner,
+  # so a push with no release uses no macOS runner. When a release is due,
+  # it gives the notes and the changelog to the two release builds and to
+  # release-publish in the release-data artifact.
+  release-version:
+    name: Release version
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # Use only GitHub's runners or an ephemeral self-hosted runner: it gets
-    # a new VM for each job, so the keychain and key files of this job do
-    # not stay on it.
-    runs-on: ${{ vars.MACOS_RELEASE_RUNNER || 'macos-latest' }}
-    environment: release
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-    timeout-minutes: 120
+    timeout-minutes: 10
     # An explicit bash sets pipefail, so a failed version script fails its
     # step and does not become "no release due".
     defaults:
@@ -578,6 +572,78 @@ jobs:
     outputs:
       due: ${{ steps.version.outputs.due }}
       version: ${{ steps.version.outputs.version }}
+    steps:
+      # git-cliff reads the tags and every commit since the latest release tag.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
+        with:
+          tool: git-cliff@2.14.2
+
+      # The scripts use only Node's built-in modules, so the job runs no npm.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+          package-manager-cache: false
+
+      # Whether a release is due, its version and its notes (KTD1). When no
+      # release is due, the other steps skip, and the release builds and
+      # release-publish do not run. The step calls node, not `npm run`, so
+      # that no npm output goes into GITHUB_OUTPUT. With `shell: bash`, a
+      # failed script fails the pipe
+      # (docs/solutions/workflow-issues/default-run-shell-hides-pipe-failures.md).
+      - name: Release version
+        id: version
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-data"
+          node scripts/release-version.ts "$RUNNER_TEMP/release-data/notes.md" | tee -a "$GITHUB_OUTPUT"
+
+      # The changelog of the release: changelog.json for the builds and the
+      # release assets, CHANGELOG.md for the release assets, and index.html
+      # for GitHub Pages. The script fails when it cannot make the changelog,
+      # because a release must have its changelog.
+      - name: Release changelog
+        if: steps.version.outputs.due == 'true'
+        run: node scripts/changelog.ts write "$RUNNER_TEMP/release-data/changelog"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: steps.version.outputs.due == 'true'
+        with:
+          name: release-data
+          path: ${{ runner.temp }}/release-data
+          if-no-files-found: error
+          retention-days: 7
+
+  # Builds the macOS release, and signs and notarizes it (docs/releases.md).
+  # It starts when the licence gate passes, at the same time as the checks;
+  # release-publish publishes nothing unless the checks also pass. This job
+  # can read the repository only (R25). Only the two release builds can read
+  # the signing secrets: the `release` environment accepts only main. Each
+  # secret goes only to the step that uses it. Every action is pinned by its
+  # full commit SHA, because a moved tag must not get these secrets.
+  release-build:
+    name: Release build
+    # The licence gate (licences, sources, bans) comes before any job that
+    # holds a signing credential.
+    needs: [deny, release-version]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.release-version.outputs.due == 'true'
+    # Use only GitHub's runners or an ephemeral self-hosted runner: it gets
+    # a new VM for each job, so the keychain and key files of this job do
+    # not stay on it.
+    runs-on: ${{ vars.MACOS_RELEASE_RUNNER || 'macos-latest' }}
+    environment: release
+    permissions:
+      contents: read
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.release-version.outputs.version }}
     steps:
       # The job-level env cannot use the runner context, so this step sets
       # the temporary paths. rust-cache removes non-Cargo files from target
@@ -591,67 +657,38 @@ jobs:
             echo "RELEASE_FILES=$RUNNER_TEMP/release"
           } >> "$GITHUB_ENV"
 
-      # git-cliff reads the tags and every commit since the latest release tag.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-
-      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
-        with:
-          tool: git-cliff@2.14.2
 
       - uses: ./.github/actions/node-setup
 
-      # Whether a release is due, its version and its notes (KTD1). When no
-      # release is due, the other steps skip and release-publish does not run.
-      # The step calls node, not `npm run`, so that no npm output goes into
-      # GITHUB_OUTPUT. With `shell: bash`, a failed script fails the pipe
-      # (docs/solutions/workflow-issues/default-run-shell-hides-pipe-failures.md).
-      - name: Release version
-        id: version
-        shell: bash
-        run: |
-          mkdir -p "$RELEASE_FILES"
-          node scripts/release-version.ts "$RELEASE_FILES/notes.md" | tee -a "$GITHUB_OUTPUT"
-
-      # The changelog of the release: changelog.json for the build and the
-      # release assets, CHANGELOG.md for the release assets, and index.html
-      # for GitHub Pages. The folder goes into the release-macos artifact
-      # with the other release files, and into the release-changelog
-      # artifact for changelog-pages. The script fails when it cannot make
-      # the changelog, because a release must have its changelog.
-      - name: Release changelog
-        if: steps.version.outputs.due == 'true'
-        run: node scripts/changelog.ts write "$RELEASE_FILES/changelog"
+      # The notes and the changelog of release-version. The build reads
+      # changelog.json (LONGHAND_CHANGELOG).
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-data
+          path: ${{ runner.temp }}/release-data
 
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
-        if: steps.version.outputs.due == 'true'
 
       # A release build has its own artifacts, so it has its own cache key.
-      # A release build runs only after the checks pass, so it saves the
-      # cache only on success. A failed build would save a partial cache
-      # under the exact key, and rust-cache never saves again after an exact
-      # hit, so each later release would restore that partial cache.
+      # It saves the cache only on success. A failed build would save a
+      # partial cache under the exact key, and rust-cache never saves again
+      # after an exact hit, so each later release would restore that partial
+      # cache.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        if: steps.version.outputs.due == 'true'
         with:
           prefix-key: v3-release
           cache-on-failure: false
 
       - uses: ./.github/actions/sccache-setup
-        if: steps.version.outputs.due == 'true'
 
       - name: Install frontend dependencies
-        if: steps.version.outputs.due == 'true'
         run: npm ci
 
       # The version goes into the build through a config file, not a commit
       # (KTD6). The config file also turns on the updater archive, so local
       # builds need no updater key.
       - name: Release config
-        if: steps.version.outputs.due == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           jq -n --arg version "$VERSION" '{version: $version, bundle: {createUpdaterArtifacts: true}}' \
             > "$RUNNER_TEMP/release.json"
@@ -660,7 +697,6 @@ jobs:
       # certificate import would run, so the certificate goes into a
       # temporary keychain first. Steps as in Handy's build.yml.
       - name: Import the Developer ID certificate
-        if: steps.version.outputs.due == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -678,7 +714,6 @@ jobs:
             || { echo "The certificate is not a Developer ID Application identity"; exit 1; }
 
       - name: Write the notarization key
-        if: steps.version.outputs.due == 'true'
         env:
           APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
         run: |
@@ -693,7 +728,6 @@ jobs:
       # an M1 when the runner has a newer chip. LONGHAND_CHANGELOG puts the
       # changelog of this release into the binary (KTD4).
       - name: Tauri build (release, notarized)
-        if: steps.version.outputs.due == 'true'
         env:
           TRANSCRIBE_CMAKE_ARGS: -DGGML_NATIVE=OFF
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
@@ -702,11 +736,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           LONGHAND_BUILD_COMMIT: ${{ github.sha }}
           LONGHAND_RELEASE: "1"
-          LONGHAND_CHANGELOG: ${{ runner.temp }}/release/changelog/changelog.json
+          LONGHAND_CHANGELOG: ${{ runner.temp }}/release-data/changelog/changelog.json
         run: npm run tauri -- build --bundles app,dmg --config "$RUNNER_TEMP/release.json"
 
       - name: Notarize and staple the DMG
-        if: steps.version.outputs.due == 'true'
         env:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -718,9 +751,6 @@ jobs:
           echo "DMG=$dmg" >> "$GITHUB_ENV"
 
       - name: Check the signatures and the notarization
-        if: steps.version.outputs.due == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
         run: |
           app=target/release/bundle/macos/Longhand.app
           codesign --verify --deep --strict "$app"
@@ -740,28 +770,20 @@ jobs:
             || { echo "transcribe-cpp was built for the CPU of the runner: $cache"; exit 1; }
 
       # release-publish gets the files from this artifact and runs no build
-      # code (R25).
+      # code (R25). The DMG gets its fixed name here, so that the download
+      # links of the website always find the newest DMG. The staple is in
+      # the file, so the new name keeps it.
       - name: Collect the release files
-        if: steps.version.outputs.due == 'true'
         run: |
-          cp "$DMG" target/release/bundle/macos/Longhand.app.tar.gz \
+          mkdir -p "$RELEASE_FILES"
+          cp "$DMG" "$RELEASE_FILES/Longhand_aarch64.dmg"
+          cp target/release/bundle/macos/Longhand.app.tar.gz \
             target/release/bundle/macos/Longhand.app.tar.gz.sig "$RELEASE_FILES/"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: steps.version.outputs.due == 'true'
         with:
           name: release-macos
           path: ${{ runner.temp }}/release
-          if-no-files-found: error
-          retention-days: 7
-
-      # The changelog folder also goes into its own small artifact, so that
-      # changelog-pages does not download the app files.
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        if: steps.version.outputs.due == 'true'
-        with:
-          name: release-changelog
-          path: ${{ runner.temp }}/release/changelog
           if-no-files-found: error
           retention-days: 7
 
@@ -771,14 +793,265 @@ jobs:
           security delete-keychain "$KEYCHAIN" 2>/dev/null || true
           rm -f "$APPLE_API_KEY_PATH"
 
-  # Publishes the built release. It is the only job in this workflow that
-  # can write to the repository, and it runs no build code: no package
-  # install and no cargo, only the publish script, which uses only Node's
-  # built-in modules (R25). It needs no secrets, so it has no environment.
+  # Builds the Windows installer of the release and signs it through Azure
+  # Artifact Signing (docs/releases.md). It starts when the licence gate
+  # passes, at the same time as the checks and the macOS release build;
+  # release-publish publishes nothing unless every check and both builds
+  # pass. It signs with a federated login from the release environment, so
+  # no signing secret is stored in GitHub. Every action is pinned by its
+  # full commit SHA.
+  release-windows:
+    name: Release build (Windows)
+    # The licence gate comes before any job that holds a signing credential.
+    needs: [deny, release-version]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.release-version.outputs.due == 'true'
+    # A standard runner: free for a public repository, and clean, so a
+    # published file does not depend on the state of a self-hosted runner.
+    runs-on: windows-latest
+    timeout-minutes: 120
+    # The release environment allows deployments only from main, and the
+    # Azure federated credential trusts only this environment (R13, KTD10).
+    # id-token applies to the whole job, so each step can request the token
+    # that Azure accepts for signing. This is the same trust as the macOS
+    # release job, which compiles while it holds the Apple certificate
+    # (KTD6).
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      CARGO_INCREMENTAL: 0
+      VERSION: ${{ needs.release-version.outputs.version }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # transcribe-cpp builds ggml from source; its deep paths need long-path
+      # support on Windows (as Handy's CI enables it).
+      - name: Enable long paths
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+            -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+          git config --system core.longpaths true
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # The same setup as the Windows checks. A release build has
+      # its own artifacts, so it has its own cache key. It saves the cache
+      # only on success: a partial cache saved under the exact key is never
+      # replaced, so each later release would restore it.
+      - name: Windows build setup
+        uses: ./.github/actions/windows-build-setup
+        with:
+          prefix-key: v3-release-windows
+          cache-on-failure: false
+
+      # After the Windows build setup, so that its post step runs before the
+      # Dev Drive is removed.
+      - uses: ./.github/actions/sccache-setup
+
+      # rust-cache removes non-Cargo files from target during cache save,
+      # so the NeMo cache goes in the temp folder. The version goes into the
+      # build through a config file, not a commit (KTD6). The config file
+      # also turns on the updater files and the sign command, so local
+      # builds stay unsigned and need no updater key (KTD3). Tauri runs the
+      # sign command for each file that it signs, with the file as %1.
+      - name: Record the NeMo cache path and the release config
+        env:
+          WORKSPACE: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          echo "LONGHAND_NEMO_CACHE=$RUNNER_TEMP/longhand-nemo" >> "$GITHUB_ENV"
+          script=$(cygpath -m "$WORKSPACE/scripts/windows-signing.ts")
+          jq -n --arg version "$VERSION" --arg script "$script" '{
+            version: $version,
+            bundle: {
+              createUpdaterArtifacts: true,
+              windows: {signCommand: {cmd: "node", args: [$script, "sign", "%1"]}}
+            }
+          }' > "$RUNNER_TEMP/release.json"
+
+      # As in the Windows checks, the helper is prepared in bash
+      # before the Tauri build. Under pwsh, the Windows PowerShell child that
+      # prepares the Vulkan runtime gets the PowerShell 7 module path, and
+      # Get-FileHash does not load. This step sets LONGHAND_VULKAN_RUNTIME_DIR,
+      # so the Tauri build does not start that child.
+      - name: Build and stage NeMo helper
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: node scripts/prepare-nemo.ts
+
+      # The installer contains the same changelog as the macOS build of the
+      # release (KTD7 of the monthly changelog plan), from release-version.
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-data
+          path: ${{ runner.temp }}/release-data
+
+      - name: Record the changelog path
+        run: echo "LONGHAND_CHANGELOG=$RUNNER_TEMP/release-data/changelog/changelog.json" >> "$GITHUB_ENV"
+
+      # The compile only. The bundle step comes after the Azure login, so a
+      # long cold compile does not use up the login (KTD3). The release
+      # config gives the version, which is compiled into the binary.
+      # LONGHAND_RELEASE makes this build check for updates. The commit
+      # shows in About. LONGHAND_CHANGELOG, from the step before, puts the
+      # changelog of the release into the binary.
+      - name: Tauri build (release, no bundle)
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          LONGHAND_BUILD_COMMIT: ${{ github.sha }}
+          LONGHAND_RELEASE: "1"
+        # PowerShell removes an unquoted `--` before npm.ps1 gets the
+        # arguments, so npm reads the Tauri flags as its own. Quote it.
+        run: |
+          npm run tauri '--' build --no-bundle --config "$env:RUNNER_TEMP/release.json"
+          if ($LASTEXITCODE -ne 0) { throw "Tauri build failed" }
+
+      # A build with no release config reports version 0.1.0, and each
+      # Windows app would see each release as newer than itself.
+      - name: Check the version of the executable
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          $actual = (Get-Item target/release/longhand.exe).VersionInfo.ProductVersion
+          if ($actual -notmatch "^$([regex]::Escape($env:VERSION))(\.0)?$") {
+            throw "longhand.exe has version $actual, not $env:VERSION"
+          }
+          Write-Output "longhand.exe has version $actual"
+
+      # SignTool from the Windows SDK build tools, and the Artifact Signing
+      # dlib, at pinned versions: the SDK on the runner image can be older
+      # than the dlib needs (KTD4). The dlib signs in to Azure with the
+      # Azure CLI login of the next step; metadata.json excludes the other
+      # credential types, so no other source of credentials is tried.
+      - name: Install SignTool and the Artifact Signing dlib
+        shell: pwsh
+        env:
+          ENDPOINT: ${{ vars.ARTIFACT_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.ARTIFACT_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.ARTIFACT_SIGNING_PROFILE }}
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP signing
+          nuget install Microsoft.Windows.SDK.BuildTools -Version 10.0.28000.2526 -OutputDirectory $tools -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget install failed" }
+          nuget install Microsoft.ArtifactSigning.Client -Version 1.0.146 -OutputDirectory $tools -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw "nuget install failed" }
+          $signtool = Join-Path $tools Microsoft.Windows.SDK.BuildTools.10.0.28000.2526/bin/10.0.28000.0/x64/signtool.exe
+          $dlib = Join-Path $tools Microsoft.ArtifactSigning.Client.1.0.146/bin/x64/Azure.CodeSigning.Dlib.dll
+          foreach ($file in $signtool, $dlib) {
+            if (-not (Test-Path $file)) { throw "$file is missing" }
+          }
+          foreach ($name in 'ENDPOINT', 'ACCOUNT', 'PROFILE') {
+            if (-not (Get-Item "env:$name").Value) { throw "The release environment has no value for $name" }
+          }
+          $metadata = Join-Path $tools metadata.json
+          @{
+            Endpoint = $env:ENDPOINT
+            CodeSigningAccountName = $env:ACCOUNT
+            CertificateProfileName = $env:PROFILE
+            ExcludeCredentials = @(
+              'EnvironmentCredential', 'WorkloadIdentityCredential', 'ManagedIdentityCredential',
+              'SharedTokenCacheCredential', 'VisualStudioCredential', 'VisualStudioCodeCredential',
+              'AzurePowerShellCredential', 'AzureDeveloperCliCredential', 'InteractiveBrowserCredential'
+            )
+          } | ConvertTo-Json | Set-Content -Encoding utf8 $metadata
+          "LONGHAND_SIGNTOOL=$signtool" >> $env:GITHUB_ENV
+          "LONGHAND_SIGNING_DLIB=$dlib" >> $env:GITHUB_ENV
+          "LONGHAND_SIGNING_METADATA=$metadata" >> $env:GITHUB_ENV
+
+      # A federated login: GitHub gives a token for the release
+      # environment, and Azure trusts only that subject (KTD10).
+      - name: Azure login
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Tauri signs the executable, the resource .exe and .dll files, the
+      # uninstaller and the installer, then writes the updater signature of
+      # the signed installer (KTD3). Only this step gets the updater key.
+      - name: Tauri bundle (Windows installer, signed)
+        shell: pwsh
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          npm run tauri '--' bundle --bundles nsis --config "$env:RUNNER_TEMP/release.json"
+          if ($LASTEXITCODE -ne 0) { throw "Tauri bundle failed" }
+
+      # Updater 2.14 and later refuses an update whose signature names a
+      # version other than the version in the manifest.
+      - name: Check the updater signature
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        run: |
+          shopt -s nullglob
+          installers=(target/release/bundle/nsis/*-setup.exe)
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "expected one installer, found ${#installers[@]}"
+            exit 1
+          fi
+          test -s "${installers[0]}.sig"
+          # The whole text first: grep -q can stop reading before the end of
+          # a pipe, and pipefail would then fail the step.
+          comment=$(base64 -d < "${installers[0]}.sig" | tr '\t' '\n')
+          grep -qxF "version:$VERSION" <<< "$comment" \
+            || { echo "the updater signature does not name version $VERSION"; exit 1; }
+          echo "INSTALLER=$(cygpath -m "$PWD/${installers[0]}")" >> "$GITHUB_ENV"
+
+      # The signature gate (KTD5): a silent install into a temporary folder,
+      # then a check of every .exe and .dll there and of the installer. A
+      # failure leaves no artifact, so nothing publishes.
+      - name: Install the installer silently
+        shell: pwsh
+        run: |
+          $folder = Join-Path $env:RUNNER_TEMP longhand-install
+          $install = Start-Process -FilePath $env:INSTALLER -ArgumentList '/S', "/D=$folder" -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "The silent install failed with exit code $($install.ExitCode)" }
+
+      # In bash, not pwsh: a Windows PowerShell child of pwsh gets the
+      # PowerShell 7 module path, and the script reads the signatures with
+      # Windows PowerShell (see the NeMo helper step).
+      - name: Check the signatures of the installed files
+        working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
+        env:
+          WINDOWS_PUBLISHER: ${{ vars.WINDOWS_PUBLISHER }}
+        run: node scripts/windows-signing.ts verify "$RUNNER_TEMP/longhand-install" "$INSTALLER"
+
+      # release-publish gets the files from this artifact. The installer gets
+      # its fixed name here, after the signature gate, so that the download
+      # links of the website always find the newest installer. The
+      # Authenticode signature is in the file, and the updater checks only
+      # the signature and the version of the .sig, so the new name keeps
+      # both.
+      - name: Collect the release files
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-windows"
+          cp "$INSTALLER" "$RUNNER_TEMP/release-windows/Longhand_x64-setup.exe"
+          cp "$INSTALLER.sig" "$RUNNER_TEMP/release-windows/Longhand_x64-setup.exe.sig"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-windows
+          path: ${{ runner.temp }}/release-windows
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes the built release with the files of both platforms. It runs
+  # only when every check, the licence gate and both release builds pass, so
+  # a release has both platforms or does not publish. It is the only job in
+  # this workflow that can write to the repository, and it runs no build
+  # code: no package install and no cargo, only the publish script, which
+  # uses only Node's built-in modules (R25). It needs no secrets, so it has
+  # no environment.
   release-publish:
     name: Release publish
-    needs: release-build
-    if: needs.release-build.outputs.due == 'true'
+    needs: [checks, deny, release-version, release-build, release-windows]
+    if: needs.release-version.outputs.due == 'true'
     runs-on: ubuntu-latest
     # actions: read lets the publish step find a newer CI run on main.
     permissions:
@@ -800,8 +1073,18 @@ jobs:
 
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
+          name: release-data
+          path: ${{ runner.temp }}/release-data
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
           name: release-macos
-          path: ${{ runner.temp }}/release
+          path: ${{ runner.temp }}/release-macos
+
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-windows
+          path: ${{ runner.temp }}/release-windows
 
       # The script prints `published=<true|false>` for GITHUB_OUTPUT and
       # writes its other lines to stderr. With `shell: bash`, a failed script
@@ -812,12 +1095,16 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.release-build.outputs.version }}
+          VERSION: ${{ needs.release-version.outputs.version }}
         run: |
-          files="$RUNNER_TEMP/release"
-          node scripts/publish-release.ts publish "$VERSION" "$(ls "$files"/*.dmg)" \
-            "$files/Longhand.app.tar.gz" "$files/Longhand.app.tar.gz.sig" "$files/notes.md" \
-            "$files/changelog/changelog.json" "$files/changelog/CHANGELOG.md" | tee -a "$GITHUB_OUTPUT"
+          data="$RUNNER_TEMP/release-data"
+          mac="$RUNNER_TEMP/release-macos"
+          win="$RUNNER_TEMP/release-windows"
+          node scripts/publish-release.ts publish "$VERSION" \
+            "$mac/Longhand_aarch64.dmg" "$mac/Longhand.app.tar.gz" "$mac/Longhand.app.tar.gz.sig" \
+            "$win/Longhand_x64-setup.exe" "$win/Longhand_x64-setup.exe.sig" \
+            "$data/notes.md" "$data/changelog/changelog.json" "$data/changelog/CHANGELOG.md" \
+            | tee -a "$GITHUB_OUTPUT"
 
   # Finds whether a push to main changed the website (site/, scripts/site.ts,
   # scripts/lib/changelog.ts, this file or the node-setup action), so that
@@ -842,19 +1129,24 @@ jobs:
   # KTD2 of the landing page plan). It runs when release-publish published a
   # release, or when the push changed the website, the checks passed and no
   # release is due. When a release is due, the site deploys only with that
-  # release, so the page never shows an app that has no download. Without a
-  # release it makes the changelog page from the changelog.json of the
-  # latest release. A failed deploy does not fail the CI run, because
-  # release-windows.yml starts only after a successful CI run. The
-  # workflow-level concurrency group runs the CI runs on main one at a time,
-  # so an older deploy cannot replace a newer site.
+  # release, so the download links of the page always find their files.
+  # Without a release it makes the changelog page from the changelog.json of
+  # the latest release. The condition starts with !cancelled(), because the
+  # release jobs are skipped when no release is due, and a skipped need
+  # otherwise skips this job. The site-only path also needs a successful
+  # release-version job: a failed job leaves `due` empty, which is not "no
+  # release due". A failed deploy does not fail the CI run, because the run
+  # of a published release must not show as failed. The workflow-level
+  # concurrency group runs the CI runs on main one at a time, so an older
+  # deploy cannot replace a newer site.
   changelog-pages:
     name: Website
-    needs: [release-build, release-publish, site-changed]
+    needs: [checks, deny, release-version, release-publish, site-changed]
     if: >-
       ${{ !cancelled() && (needs.release-publish.outputs.published == 'true' ||
-      (needs.site-changed.outputs.changed == 'true' && needs.release-build.result == 'success' &&
-      needs.release-build.outputs.due != 'true')) }}
+      (needs.site-changed.outputs.changed == 'true' && needs.checks.result == 'success' &&
+      needs.deny.result == 'success' && needs.release-version.result == 'success' &&
+      needs.release-version.outputs.due != 'true')) }}
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
@@ -880,8 +1172,15 @@ jobs:
       - if: needs.release-publish.outputs.published == 'true'
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          name: release-changelog
-          path: ${{ runner.temp }}/changelog
+          name: release-data
+          path: ${{ runner.temp }}/release-data
+
+      # The changelog of the published release, or else of the latest release.
+      - name: Published release changelog
+        if: needs.release-publish.outputs.published == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/changelog"
+          cp "$RUNNER_TEMP/release-data/changelog/changelog.json" "$RUNNER_TEMP/changelog/"
 
       - name: Latest release changelog
         if: needs.release-publish.outputs.published != 'true'
