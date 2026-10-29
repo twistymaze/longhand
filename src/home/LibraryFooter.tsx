@@ -22,7 +22,11 @@ export function LibraryFooter() {
     commands.buildInfo().then((info) => setVersion(info.version), () => {});
     // Read the offer after the listener is registered, so that no change
     // between the read and the registration is lost.
-    const unlisten = events.updateOfferChanged.listen(({ payload }) => setOffer(payload.version));
+    const unlisten = events.updateOfferChanged.listen(({ payload }) => {
+      setOffer(payload.version);
+      // The badge replaces the version button and its menu.
+      if (payload.version !== null) setOpen(false);
+    });
     void unlisten.then(() => commands.updateOffer().then(setOffer, () => {}));
     return () => void unlisten.then((f) => f());
   }, []);
