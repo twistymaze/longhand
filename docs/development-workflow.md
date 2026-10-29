@@ -93,6 +93,8 @@ The Markdown files of the agent skill in `plugins/` match the docs pattern of th
 
 Docs-only changes need no PR. Commit and push them directly on `main`; CI costs more than it checks for these changes. This includes plans, ideas, solutions, `CONCEPTS.md`, and agent guidance.
 
+The `main` ruleset requires the checks `Checks (macos-latest)`, `Checks (windows-latest)`, `cargo deny` and `PR title`. It does not require that a PR branch is up to date with `main`. This setting was on from 2026-10-24 to 2026-10-28, and the maintainer turned it off: docs-only pushes to `main` are frequent and do not make a PR unsafe to merge, and each branch update starts the slow Windows checks again. [Before a PR](#before-a-pr) rebases a branch when `main` has new code changes.
+
 Commit per unit and push in batches. Continue implementation after a push. Once a PR is open and work is done, run `ce-babysit-pr` on it until the PR is ready to merge. Do this for each PR that you open, also for a small fix.
 
 ### Dependency and upstream upkeep
