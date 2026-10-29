@@ -197,8 +197,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     app.manage(WidgetItem(widget.clone()));
     let menu = Menu::with_items(app, &[&open, &widget, &settings])?;
     // The tray menu is always there, also when "Hide from Dock" hides the
-    // app menu (KTD11). Updates are macOS only.
-    #[cfg(target_os = "macos")]
+    // app menu (KTD11).
     menu.append(&MenuItem::with_id(
         app,
         "check-updates",
@@ -206,7 +205,6 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         true,
         None::<&str>,
     )?)?;
-    #[cfg(target_os = "macos")]
     app.manage(UpdateMenu {
         menu: menu.clone(),
         item: Mutex::new(None),

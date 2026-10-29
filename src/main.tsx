@@ -18,8 +18,8 @@ if (new URLSearchParams(window.location.search).get("window") === "widget") {
   document.documentElement.classList.add("widget-window");
 }
 
-// On macOS the app menu holds Settings… (⌘,). Windows has no app menu, so
-// Ctrl+, opens Settings from any window (KTD3).
+// On macOS the app menu holds Settings… (⌘,). On Windows only the main
+// window has a menu bar, so Ctrl+, opens Settings from any window (KTD3).
 if (!navigator.userAgent.includes("Mac")) {
   window.addEventListener("keydown", (event) => {
     if (event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey && event.key === ",") {

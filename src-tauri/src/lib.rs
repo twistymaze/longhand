@@ -4,7 +4,6 @@ mod commands;
 mod file_promise;
 mod interface_zoom;
 mod managers;
-#[cfg(target_os = "macos")]
 mod menu;
 mod relaunch;
 mod shortcut;
@@ -386,6 +385,7 @@ fn setup_app(
     tray::create_tray(&handle)?;
     #[cfg(target_os = "macos")]
     menu::set_app_menu(&handle)?;
+    menu::handle_menu_events(&handle);
     shortcut::register(&handle);
     // After the tray exists, so the restored alert can mark it.
     alerts.restore(&handle, &capture);
