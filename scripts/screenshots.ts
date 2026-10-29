@@ -18,11 +18,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const OUT = join(ROOT, "site", "public", "screenshots");
 const SCENES = ["recording", "summary", "library"] as const;
 
-/// The text that shows when each scene is drawn.
+/// The text that shows when each scene is drawn. Each text comes from the
+/// last command result that the scene loads, so the capture never shows a
+/// loading state: the notes, the summary, and the summary preview.
 const READY: Record<(typeof SCENES)[number], string> = {
   recording: "Weekly team meeting",
   summary: "Card update flow",
-  library: "Payment retry bug",
+  library: "The team met without Ben.",
 };
 
 async function main() {

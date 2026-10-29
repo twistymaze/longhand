@@ -39,9 +39,11 @@ test("a change only under src/ prints changed=false", () => {
   assert.equal(repo.run(repo.change("src/App.tsx")), "changed=false");
 });
 
-test("a change under site/ prints changed=true", () => {
-  const repo = repository();
-  assert.equal(repo.run(repo.change("site/index.html")), "changed=true");
+test("a change to a file that builds the site prints changed=true", () => {
+  for (const path of ["site/index.html", "scripts/site.ts", "scripts/lib/changelog.ts"]) {
+    const repo = repository();
+    assert.equal(repo.run(repo.change(path)), "changed=true", path);
+  }
 });
 
 test("no base commit prints changed=true", () => {

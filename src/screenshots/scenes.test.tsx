@@ -33,7 +33,9 @@ describe("screenshot scenes", () => {
 
   test("the library scene lists every note, with the team meeting selected", async () => {
     const { unmocked } = renderScene("library");
-    expect(await screen.findByText(/The Lantern Keeper's Bargain/)).toBeTruthy();
+    // The preview text comes from the last command that the scene calls.
+    expect(await screen.findByText(/The team met without Ben\./)).toBeTruthy();
+    expect(screen.getByText(/The Lantern Keeper.s Bargain/)).toBeTruthy();
     expect(screen.getAllByRole("option")).toHaveLength(11);
     expect(unmocked()).toEqual([]);
   });

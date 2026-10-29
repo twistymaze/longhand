@@ -317,7 +317,7 @@ jobs:
 
       - name: Release script tests
         if: runner.os == 'macOS'
-        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts scripts/site.test.ts scripts/site-changed.test.ts
+        run: node --test scripts/release-version.test.ts scripts/changelog.test.ts scripts/publish-release.test.ts scripts/check-pr-title.test.ts scripts/site.test.ts scripts/site-changed.test.ts scripts/theme.test.ts
 
       # The tests of the own version, TOML and frontmatter readers, and of
       # the dependency checks.
@@ -839,9 +839,11 @@ jobs:
   # Deploys the website to GitHub Pages: the landing page at the root and
   # the changelog page at /changelog/ (KTD6 of the monthly changelog plan,
   # KTD2 of the landing page plan). It runs when release-publish published a
-  # release, or when the push changed the website and the checks passed.
-  # Without a release it makes the changelog page from the changelog.json of
-  # the latest release. A failed deploy does not fail the CI run, because
+  # release, or when the push changed the website, the checks passed and no
+  # release is due. When a release is due, the site deploys only with that
+  # release, so the page never shows an app that has no download. Without a
+  # release it makes the changelog page from the changelog.json of the
+  # latest release. A failed deploy does not fail the CI run, because
   # release-windows.yml starts only after a successful CI run. The
   # workflow-level concurrency group runs the CI runs on main one at a time,
   # so an older deploy cannot replace a newer site.
@@ -850,7 +852,8 @@ jobs:
     needs: [release-build, release-publish, site-changed]
     if: >-
       ${{ !cancelled() && (needs.release-publish.outputs.published == 'true' ||
-      (needs.site-changed.outputs.changed == 'true' && needs.release-build.result == 'success')) }}
+      (needs.site-changed.outputs.changed == 'true' && needs.release-build.result == 'success' &&
+      needs.release-build.outputs.due != 'true')) }}
     runs-on: ubuntu-latest
     continue-on-error: true
     permissions:
