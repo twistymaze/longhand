@@ -23,7 +23,8 @@ fn about_metadata(version: &str, commit: Option<String>) -> AboutMetadata<'stati
         short_version: Some(commit.unwrap_or_else(|| "local build".to_string())),
         copyright: Some("Copyright © 2026 Erv Walter".to_string()),
         credits: Some(
-            "Longhand is a note-taking app for meetings and conversations.\n\nlonghand.md".to_string(),
+            "Longhand is a note-taking app for meetings and conversations.\n\nlonghand.md"
+                .to_string(),
         ),
         ..Default::default()
     }
