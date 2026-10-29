@@ -1,0 +1,332 @@
+/* The landing page at longhand.md. The colours are the app's warm
+   neutrals (src/index.css). The page uses system fonts only and loads
+   nothing from other sites. */
+
+:root {
+  color-scheme: light dark;
+  --page: #faf9f6;
+  --band: #f3f1ec;
+  --text: rgb(34 28 20 / 0.9);
+  --muted: rgb(52 42 28 / 0.62);
+  --rule: rgb(60 45 20 / 0.12);
+  --accent: #007aff;
+  --accent-pressed: #0062cc;
+  --serif: ui-serif, "New York", "Iowan Old Style", Charter, Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  /* The screenshots hold a 48-point shadow margin around a 960-point window. */
+  --shot-margin: calc(48 / 1056 * 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #1d1b18;
+    --band: #22201c;
+    --text: rgb(255 250 240 / 0.9);
+    --muted: rgb(255 245 228 / 0.6);
+    --rule: rgb(255 245 225 / 0.1);
+    --accent: #0a84ff;
+    --accent-pressed: #3a9bff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--text);
+  font: 1.0625rem/1.55 var(--sans);
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--serif);
+  font-weight: 600;
+  color: var(--text);
+  margin: 0;
+}
+
+/* The bar and the sections share one column. */
+.bar,
+main > section,
+footer {
+  width: min(1120px, 100% - 32px);
+  margin-inline: auto;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-block: 20px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 1.0625rem;
+}
+
+.brand:hover {
+  text-decoration: none;
+}
+
+.mark {
+  width: 26px;
+  height: 26px;
+  fill: currentColor;
+  border: 1.5px solid currentColor;
+  border-radius: 6px;
+}
+
+.bar nav,
+footer nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  font-size: 0.9375rem;
+}
+
+/* What */
+
+.intro {
+  padding-block: 72px 96px;
+}
+
+.icon {
+  display: block;
+  width: 88px;
+  height: 88px;
+  margin-bottom: 28px;
+}
+
+h1 {
+  max-width: 24ch;
+  text-wrap: balance;
+  font-size: clamp(2.25rem, 1.4rem + 3.6vw, 4rem);
+  line-height: 1.06;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  max-width: 36rem;
+  margin: 28px 0 0;
+  font-size: 1.1875rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.get {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px 22px;
+  margin-top: 36px;
+}
+
+.download {
+  display: inline-block;
+  padding: 11px 20px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+  transition: transform 140ms ease-out, background-color 140ms ease-out;
+}
+
+.download:hover {
+  text-decoration: none;
+  background: var(--accent-pressed);
+}
+
+.download:active {
+  transform: scale(0.97);
+}
+
+.platforms {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* Why */
+
+.why {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 56px;
+  padding-block: 64px;
+  border-top: 1px solid var(--rule);
+}
+
+@media (min-width: 860px) {
+  .why {
+    grid-template-columns: 5fr 7fr;
+    gap: 80px;
+  }
+}
+
+.why h2 {
+  font-size: 1.625rem;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin-bottom: 18px;
+}
+
+.idea p {
+  margin: 0 0 14px;
+}
+
+dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px 40px;
+}
+
+@media (min-width: 620px) {
+  dl {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+dl dt {
+  font-weight: 600;
+  padding-top: 14px;
+  border-top: 1px solid var(--rule);
+}
+
+dl dd {
+  margin: 4px 0 18px;
+  color: var(--muted);
+  font-size: 0.9375rem;
+}
+
+/* How */
+
+.how {
+  padding-block: 64px 32px;
+  border-top: 1px solid var(--rule);
+}
+
+.how > h2 {
+  font-size: 1.625rem;
+  letter-spacing: -0.01em;
+  margin-bottom: 40px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 20px;
+  margin: 0 0 72px;
+}
+
+@media (min-width: 860px) {
+  .step {
+    grid-template-columns: 4fr 9fr;
+    gap: 48px;
+    align-items: start;
+  }
+  .step figcaption {
+    padding-top: 48px;
+  }
+}
+
+.when {
+  display: block;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.step h3 {
+  font-size: 1.375rem;
+  line-height: 1.25;
+  margin-bottom: 10px;
+}
+
+.step p {
+  margin: 0;
+}
+
+/* The image's own shadow margin hangs outside the column, so the window
+   edge lines up with the text. */
+.shot {
+  display: block;
+  margin: calc(var(--shot-margin) * -1);
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Last call */
+
+.last {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-block: 40px;
+  border-top: 1px solid var(--rule);
+}
+
+.last p {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 1.375rem;
+}
+
+footer {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 12px 24px;
+  padding-block: 28px 48px;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+
+footer p {
+  margin: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .download {
+    transition: none;
+  }
+}

@@ -21,6 +21,7 @@
     "typecheck": "tsc --noEmit && tsc -p tsconfig.scripts.json",
     "test": "vitest run",
     "test:scripts": "node --test \"scripts/**/*.test.ts\"",
+    "screenshots": "node scripts/screenshots.ts",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -63,6 +64,7 @@
     "@types/react": "~19.2.18",
     "@types/react-dom": "~19.2.7",
     "@vitejs/plugin-react": "^4.7.0",
+    "playwright-core": "1.53.0",
     "rollup-plugin-license": "3.7.1",
     "typescript": "~5.6.3",
     "vite": "^6.4.4",
