@@ -17,8 +17,10 @@
   --shot-margin: calc(48 / 1056 * 100%);
 }
 
+/* Dark mode follows the system, unless the visitor chose a mode with the
+   button in the bar (theme.js sets data-theme on the html element). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --page: #1d1b18;
     --band: #22201c;
     --text: rgb(255 250 240 / 0.9);
@@ -27,6 +29,21 @@
     --accent: #0a84ff;
     --accent-pressed: #3a9bff;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #1d1b18;
+  --band: #22201c;
+  --text: rgb(255 250 240 / 0.9);
+  --muted: rgb(255 245 228 / 0.6);
+  --rule: rgb(255 245 225 / 0.1);
+  --accent: #0a84ff;
+  --accent-pressed: #3a9bff;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {
@@ -106,10 +123,60 @@ footer {
 
 .bar nav,
 footer nav {
+  align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 22px;
   font-size: 0.9375rem;
+}
+
+.theme {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.theme[hidden] {
+  display: none;
+}
+
+.theme svg {
+  width: 15px;
+  height: 15px;
+}
+
+.theme:hover .theme-label {
+  text-decoration: underline;
+}
+
+/* On a phone, the bar has room for the icon only. The button keeps its
+   name for screen readers. */
+@media (max-width: 520px) {
+  .theme-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .theme svg {
+    width: 18px;
+    height: 18px;
+  }
+}
+
+.theme:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 3px;
 }
 
 /* What */
@@ -299,6 +366,31 @@ dl dd {
 .shot {
   display: block;
   margin: calc(var(--shot-margin) * -1);
+}
+
+/* Each screenshot is in the page twice, in light mode and in dark mode.
+   Only the one for the current mode shows, and a hidden image does not
+   load. */
+.shot[data-mode="dark"] {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .shot[data-mode="light"] {
+    display: none;
+  }
+
+  :root:not([data-theme="light"]) .shot[data-mode="dark"] {
+    display: block;
+  }
+}
+
+:root[data-theme="dark"] .shot[data-mode="light"] {
+  display: none;
+}
+
+:root[data-theme="dark"] .shot[data-mode="dark"] {
+  display: block;
 }
 
 .shot img {

@@ -40,7 +40,7 @@ test("the site has the landing page at its root and the changelog page from chan
 test("the site has the stylesheet, the icon and the three screenshots", () => {
   const out = mkdtempSync(join(tmpdir(), "site-out-"));
   buildSite(SITE, sampleChangelog(), out);
-  for (const file of ["style.css", "icon.png", "screenshots/recording.png", "screenshots/summary.png", "screenshots/library.png", "screenshots/recording-dark.png", "screenshots/summary-dark.png", "screenshots/library-dark.png"]) {
+  for (const file of ["style.css", "theme.js", "icon.png", "screenshots/recording.png", "screenshots/summary.png", "screenshots/library.png", "screenshots/recording-dark.png", "screenshots/summary-dark.png", "screenshots/library-dark.png"]) {
     assert.ok(existsSync(join(out, file)), file);
   }
 });

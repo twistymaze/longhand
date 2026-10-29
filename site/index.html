@@ -8,6 +8,7 @@
 <meta name="color-scheme" content="light dark">
 <link rel="icon" href="icon.png">
 <link rel="stylesheet" href="style.css">
+<script src="theme.js"></script>
 </head>
 <body>
 
@@ -19,6 +20,10 @@
   <nav>
     <a href="changelog/">Changelog</a>
     <a href="https://github.com/twistymaze/longhand">GitHub</a>
+    <button class="theme" type="button" hidden>
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.75a7.25 7.25 0 0 1 0 14.5z" fill="currentColor"/></svg>
+      <span class="theme-label"></span>
+    </button>
   </nav>
 </header>
 
@@ -73,7 +78,8 @@
       <h3>Write only what matters to you</h3>
       <p>Press the shortcut and start typing. Longhand records your microphone, and also the sound of call apps such as Zoom or Teams when you add them. The screen stays quiet, so it does not pull attention away from the people in the room.</p>
     </figcaption>
-    <a class="shot" href="screenshots/recording.png"><picture><source srcset="screenshots/recording-dark.png" media="(prefers-color-scheme: dark)"><img src="screenshots/recording.png" width="1056" height="776" alt="A Longhand note during a meeting: short notes in a list, and a recording timer at the bottom." loading="lazy"></picture></a>
+    <a class="shot" data-mode="light" href="screenshots/recording.png"><img src="screenshots/recording.png" width="1056" height="776" alt="A Longhand note during a meeting: short notes in a list, and a recording timer at the bottom." loading="lazy"></a>
+    <a class="shot" data-mode="dark" href="screenshots/recording-dark.png"><img src="screenshots/recording-dark.png" width="1056" height="776" alt="A Longhand note during a meeting: short notes in a list, and a recording timer at the bottom." loading="lazy"></a>
   </figure>
 
   <figure class="step">
@@ -82,7 +88,8 @@
       <h3>Get the full summary</h3>
       <p>When you stop, Longhand transcribes the audio on your computer and writes a summary from your notes and the transcript. Your notes and the transcript stay beside it, so you can check any detail.</p>
     </figcaption>
-    <a class="shot" href="screenshots/summary.png"><picture><source srcset="screenshots/summary-dark.png" media="(prefers-color-scheme: dark)"><img src="screenshots/summary.png" width="1056" height="776" alt="A finished Longhand note on its Summary tab, with sections for each topic, open questions and follow-ups." loading="lazy"></picture></a>
+    <a class="shot" data-mode="light" href="screenshots/summary.png"><img src="screenshots/summary.png" width="1056" height="776" alt="A finished Longhand note on its Summary tab, with sections for each topic, open questions and follow-ups." loading="lazy"></a>
+    <a class="shot" data-mode="dark" href="screenshots/summary-dark.png"><img src="screenshots/summary-dark.png" width="1056" height="776" alt="A finished Longhand note on its Summary tab, with sections for each topic, open questions and follow-ups." loading="lazy"></a>
   </figure>
 
   <figure class="step">
@@ -91,7 +98,8 @@
       <h3>Find any meeting again</h3>
       <p>Each note has a type and tags, such as a person or a customer. Filter the list, and read a note's summary beside it without opening it.</p>
     </figcaption>
-    <a class="shot" href="screenshots/library.png"><picture><source srcset="screenshots/library-dark.png" media="(prefers-color-scheme: dark)"><img src="screenshots/library.png" width="1056" height="776" alt="The Longhand notes list, grouped by day, with note types, tags and a summary preview." loading="lazy"></picture></a>
+    <a class="shot" data-mode="light" href="screenshots/library.png"><img src="screenshots/library.png" width="1056" height="776" alt="The Longhand notes list, grouped by day, with note types, tags and a summary preview." loading="lazy"></a>
+    <a class="shot" data-mode="dark" href="screenshots/library-dark.png"><img src="screenshots/library-dark.png" width="1056" height="776" alt="The Longhand notes list, grouped by day, with note types, tags and a summary preview." loading="lazy"></a>
   </figure>
 </section>
 
