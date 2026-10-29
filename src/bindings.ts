@@ -1403,6 +1403,19 @@ async checkForUpdates() : Promise<void> {
     await TAURI_INVOKE("check_for_updates");
 },
 /**
+ * The version that the tray's update item offers, which the library
+ * footer shows. `UpdateOfferChanged` sends each change.
+ */
+async updateOffer() : Promise<string | null> {
+    return await TAURI_INVOKE("update_offer");
+},
+/**
+ * The footer's update badge: the same action as the tray's update item.
+ */
+async openUpdateOffer() : Promise<void> {
+    await TAURI_INVOKE("open_update_offer");
+},
+/**
  * A button in the update window, or a close of the window.
  */
 async chooseUpdate(choice: Choice) : Promise<void> {
@@ -1487,6 +1500,7 @@ settingsChanged: SettingsChanged,
 settingsPaneRequested: SettingsPaneRequested,
 shortcutFailed: ShortcutFailed,
 showSession: ShowSession,
+updateOfferChanged: UpdateOfferChanged,
 updateStateChanged: UpdateStateChanged,
 watchedFolderChanged: WatchedFolderChanged,
 widgetPointer: WidgetPointer,
@@ -1511,6 +1525,7 @@ settingsChanged: "settings-changed",
 settingsPaneRequested: "settings-pane-requested",
 shortcutFailed: "shortcut-failed",
 showSession: "show-session",
+updateOfferChanged: "update-offer-changed",
 updateStateChanged: "update-state-changed",
 watchedFolderChanged: "watched-folder-changed",
 widgetPointer: "widget-pointer",
@@ -3319,6 +3334,11 @@ export type UnknownSharedValue = { key: string;
  * The value as JSON text.
  */
 value: string }
+/**
+ * The version of the tray's update item changed. The library footer
+ * follows it (R5, R6 of the library footer plan).
+ */
+export type UpdateOfferChanged = { version: string | null }
 /**
  * What the update window shows, and what the manager does in the
  * background. A state with a view shows the update window.

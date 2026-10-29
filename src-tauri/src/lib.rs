@@ -166,6 +166,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::changelog::changelog,
             commands::updates::update_state,
             commands::updates::check_for_updates,
+            commands::updates::update_offer,
+            commands::updates::open_update_offer,
             commands::updates::choose_update,
             commands::updates::show_update_window,
             commands::updates::offered_changes,
@@ -199,6 +201,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             window::MainWindowHidden,
             window::SettingsPaneRequested,
             managers::updates::UpdateStateChanged,
+            managers::updates::UpdateOfferChanged,
         ])
         .constant("DEFAULT_SHORTCUT", managers::settings::DEFAULT_SHORTCUT)
 }
