@@ -1,7 +1,7 @@
 // Render the website screenshots (U3 of the landing page plan): each scene
 // of src/screenshots in WebKit, the engine of the app's web view, at 2x
-// with a transparent background, into site/screenshots/. Run it on a Mac,
-// so the app's system font is the real one:
+// with a transparent background, into site/public/screenshots/. Run it on a
+// Mac, so the app's system font is the real one:
 //
 //   npm run screenshots
 //
@@ -15,7 +15,7 @@ import { webkit } from "playwright-core";
 import { createServer } from "vite";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const OUT = join(ROOT, "site", "screenshots");
+const OUT = join(ROOT, "site", "public", "screenshots");
 const SCENES = ["recording", "summary", "library"] as const;
 
 /// The text that shows when each scene is drawn.

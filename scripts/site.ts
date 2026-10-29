@@ -1,29 +1,36 @@
 // Writes the website for GitHub Pages (U5 of the landing page plan): the
-// landing page from site/ at the root, and the changelog page from a
-// changelog.json at /changelog/.
+// pages in site/ with their shared partials, and the changelog page with
+// the months of a changelog.json. site/vite.config.ts does the build.
 //
 //   node scripts/site.ts <changelog.json> <folder>
 //
 // The Pages job runs it with the changelog.json of the release it deploys,
-// or of the latest release when only the page changed. Run it from any
-// folder. It uses Node's built-in modules only, so it needs no `npm ci`.
+// or of the latest release when only the page changed. It needs the npm
+// packages (`npm ci`).
 
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { html, type Changelog } from "./lib/changelog.ts";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { build } from "vite";
 
-/// The landing page source.
+/// The website source.
 export const SITE = join(import.meta.dirname, "..", "site");
 
-/// Copies `site` into `out` and writes `out/changelog/index.html` from the
-/// changelog file.
-export function buildSite(site: string, changelogFile: string, out: string): void {
+/// Builds the site in `site` into `out`, with the changelog in
+/// `changelogFile`.
+export async function buildSite(site: string, changelogFile: string, out: string): Promise<void> {
   if (!existsSync(changelogFile)) throw new Error(`site: no changelog file at ${changelogFile}`);
-  const data = JSON.parse(readFileSync(changelogFile, "utf8")) as Changelog;
-  mkdirSync(out, { recursive: true });
-  cpSync(site, out, { recursive: true });
-  mkdirSync(join(out, "changelog"), { recursive: true });
-  writeFileSync(join(out, "changelog", "index.html"), html(data));
+  const before = process.env.SITE_CHANGELOG;
+  process.env.SITE_CHANGELOG = resolve(changelogFile);
+  try {
+    await build({
+      configFile: join(site, "vite.config.ts"),
+      logLevel: "warn",
+      build: { outDir: resolve(out), emptyOutDir: true },
+    });
+  } finally {
+    if (before === undefined) delete process.env.SITE_CHANGELOG;
+    else process.env.SITE_CHANGELOG = before;
+  }
 }
 
 if (import.meta.main) {
@@ -32,6 +39,6 @@ if (import.meta.main) {
     console.error("usage: site.ts <changelog.json> <folder>");
     process.exit(2);
   }
-  buildSite(SITE, changelogFile, out);
+  await buildSite(SITE, changelogFile, out);
   console.log(`site: wrote ${out}`);
 }

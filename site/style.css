@@ -410,6 +410,53 @@ dl dd {
   font-size: 1.375rem;
 }
 
+/* The changelog page (scripts/site.ts writes it into changelog/). */
+
+/* The list starts at the left edge of the bar, as the landing page does. */
+.changelog section {
+  padding-block: 56px 72px;
+}
+
+.changelog section > * {
+  max-width: 44rem;
+}
+
+.changelog h1 {
+  font-size: clamp(2rem, 1.5rem + 2vw, 2.75rem);
+}
+
+.changelog .lede {
+  margin-top: 12px;
+}
+
+.changelog h2 {
+  margin: 56px 0 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--rule);
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+}
+
+.changelog h3 {
+  margin: 24px 0 6px;
+  font-family: var(--sans);
+  font-size: 0.9375rem;
+}
+
+.changelog ul {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.changelog li {
+  margin: 6px 0;
+  padding-left: 2px;
+}
+
+.changelog li::marker {
+  color: var(--muted);
+}
+
 footer {
   display: flex;
   flex-wrap: wrap;

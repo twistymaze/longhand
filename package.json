@@ -22,6 +22,7 @@
     "test": "vitest run",
     "test:scripts": "node --test \"scripts/**/*.test.ts\"",
     "screenshots": "node scripts/screenshots.ts",
+    "site": "vite --config site/vite.config.ts",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -6,7 +6,8 @@
 #
 #   scripts/site-changed.sh <base commit>
 #
-# The website is the site/ folder and scripts/site.ts, which writes it. With
+# The website is the site/ folder, scripts/site.ts, which builds it, and
+# scripts/lib/changelog.ts, which writes the months of the changelog. With
 # no base (a manual run, the first push of a branch) or a base that cannot
 # be fetched, it prints `changed=true`: a deploy of an unchanged site
 # changes nothing.
@@ -29,7 +30,7 @@ if ! git cat-file -e "$base^{commit}" 2>/dev/null &&
   exit 0
 fi
 
-if [[ -n "$(git diff --name-only "$base" HEAD -- site scripts/site.ts)" ]]; then
+if [[ -n "$(git diff --name-only "$base" HEAD -- site scripts/site.ts scripts/lib/changelog.ts)" ]]; then
   echo "changed=true"
 else
   echo "changed=false"

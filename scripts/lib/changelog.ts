@@ -230,8 +230,10 @@ function htmlLine(entry: Entry): string {
   return `${escape(text)}(<a href="${pullUrl(entry.pr)}">#${entry.pr}</a>)`;
 }
 
-/// The GitHub Pages page: one static file with no script.
-export function html(data: Changelog): string {
+/// The months of the changelog as HTML: a heading for each month and for
+/// each group, and a list of lines. The website page (scripts/site.ts) puts
+/// it in the page of the site.
+export function htmlMonths(data: Changelog): string {
   const body: string[] = [];
   if (data.available) {
     for (const { name, groups } of byMonth(data.entries)) {
@@ -243,6 +245,12 @@ export function html(data: Changelog): string {
       }
     }
   }
+  return body.join("\n");
+}
+
+/// The changelog as one static page with no script, next to CHANGELOG.md in
+/// the release files. The website uses htmlMonths in its own page.
+export function html(data: Changelog): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -265,7 +273,7 @@ p { color: var(--muted); margin: 0; }
 <body>
 <h1>Longhand changelog</h1>
 <p>The changes to <a href="../">Longhand</a> by month.</p>
-${body.join("\n")}
+${htmlMonths(data)}
 </body>
 </html>
 `;
