@@ -1,5 +1,6 @@
 // The update window (KTD9): a small window in the form of a macOS alert.
-// It shows the state of the update manager and sends the user's choice.
+// It has the same form on macOS and Windows. It shows the state of the
+// update manager and sends the user's choice.
 // The manager opens and closes the window. A close by the user counts as
 // the left button's choice.
 //

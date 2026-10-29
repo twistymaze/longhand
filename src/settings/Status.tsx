@@ -166,8 +166,8 @@ export function StatusPane({
     void commands.shortcutStatus().then((s) => setShowWindow(s.show_window));
   }, []);
 
-  // Only the Updates group, which shows on macOS only, uses it.
-  const readOnly = isMac() ? readOnlyReason(settings) : null;
+  // Only the Updates group uses it.
+  const readOnly = readOnlyReason(settings);
 
   return (
     <Pane title="General">
@@ -198,18 +198,16 @@ export function StatusPane({
         />
       </Group>
 
-      {isMac() && (
-        <Group
-          header="Updates"
-          footer={
-            readOnly
-              ? `${readOnly} This setting can’t be changed now.`
-              : "Longhand asks before it installs a new version."
-          }
-        >
-          <AutomaticUpdates settings={settings} onSettings={onSettings} />
-        </Group>
-      )}
+      <Group
+        header="Updates"
+        footer={
+          readOnly
+            ? `${readOnly} This setting can’t be changed now.`
+            : "Longhand asks before it installs a new version."
+        }
+      >
+        <AutomaticUpdates settings={settings} onSettings={onSettings} />
+      </Group>
     </Pane>
   );
 }
@@ -274,8 +272,8 @@ function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings
   );
 }
 
-/// The switch for automatic update checks (R10, KD7). Updates are macOS
-/// only, so the group shows on macOS only.
+/// The switch for automatic update checks (R10, KD7). The group shows on
+/// macOS and Windows.
 function AutomaticUpdates({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
   return (
     <SettingSwitch

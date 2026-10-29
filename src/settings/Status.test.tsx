@@ -96,10 +96,14 @@ function renderSetup(r: Readiness, initial: Settings = baseSettings) {
   return { group, rows, opened };
 }
 
-test("the General pane shows its groups in the order Setup, Window", () => {
+test("the General pane shows its groups in the order Setup, Window, Updates", () => {
   mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
   render(<Harness readiness={readiness} />);
-  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["Setup", "Window"]);
+  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
+    "Setup",
+    "Window",
+    "Updates",
+  ]);
 });
 
 test("the General pane shows no setting that belongs to another pane", () => {
@@ -309,6 +313,38 @@ describe("the Updates group on macOS", () => {
     await userEvent.setup().click(toggle);
     expect(await within(group()).findByText(/could not save settings/i)).toBeTruthy();
     expect(toggle.getAttribute("aria-checked")).toBe("true");
+  });
+
+  test("the switch is read-only while the storage folder is not available", () => {
+    mockTauri({ shortcut_status: () => shortcutStatuses, login_item_status: () => "disabled" });
+    const readOnly: Settings = {
+      ...baseSettings,
+      shared: { ...baseSettings.shared, availability: { kind: "read_only", cause: "folder_not_available" } },
+    };
+    render(<Harness readiness={readiness} initial={readOnly} />);
+    const group = screen.getByRole("heading", { name: "Updates" }).closest("section") as HTMLElement;
+    const toggle = within(group).getByRole("switch", { name: "Check for updates automatically" }) as HTMLButtonElement;
+    expect(toggle.disabled).toBe(true);
+    expect(group.textContent).toContain("The storage folder is not available.");
+  });
+});
+
+describe("the Updates group on Windows", () => {
+  beforeEach(() => setUserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+  afterEach(() => {
+    delete (navigator as { userAgent?: string }).userAgent;
+  });
+
+  test("shows after Window, and the switch is on by default", () => {
+    const { group } = renderUpdatesGroup();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual([
+      "Setup",
+      "Window",
+      "Updates",
+    ]);
+    const toggle = within(group()).getByRole("switch", { name: "Check for updates automatically" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(group().textContent).toContain("Longhand asks before it installs a new version.");
   });
 
   test("the switch is read-only while the storage folder is not available", () => {
