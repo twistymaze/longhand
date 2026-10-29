@@ -357,6 +357,19 @@ async setHideFromDock(enabled: boolean) : Promise<Result<Settings, string>> {
 }
 },
 /**
+ * Choose whether closing the main window keeps the app running in the
+ * system tray. The next close reads the new value. macOS always keeps the
+ * app running, so macOS refuses.
+ */
+async setKeepRunningInTray(enabled: boolean) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_keep_running_in_tray", { enabled }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * The built-in summary prompts first, then the custom prompts (R1, R2).
  */
 async summaryPrompts() : Promise<SummaryPromptList> {
@@ -2979,6 +2992,12 @@ alert_sound: boolean;
  * (R2, R3). Off by default: the Dock icon stays, as is usual on macOS.
  */
 hide_from_dock: boolean; 
+/**
+ * Windows only: closing the main window hides it, and the app keeps
+ * running in the system tray. Off by default: closing the window quits,
+ * as is usual on Windows. A recording keeps the app running either way.
+ */
+keep_running_in_tray: boolean; 
 /**
  * The watched folder of this computer (R4), or `None` when it is off
  * (the default). Each new audio file in it becomes a note (R5).

@@ -603,6 +603,21 @@ pub fn set_hide_from_dock(app: AppHandle, enabled: bool) -> Result<Settings, Str
     Ok(updated)
 }
 
+/// Choose whether closing the main window keeps the app running in the
+/// system tray. The next close reads the new value. macOS always keeps the
+/// app running, so macOS refuses.
+#[tauri::command]
+#[specta::specta]
+pub fn set_keep_running_in_tray(app: AppHandle, enabled: bool) -> Result<Settings, String> {
+    if cfg!(target_os = "macos") {
+        return Err("This setting is not available on macOS.".to_string());
+    }
+    settings::update_settings(&app, |s| {
+        s.keep_running_in_tray = enabled;
+        Ok(())
+    })
+}
+
 /// The built-in summary prompts first, then the custom prompts (R1, R2).
 #[tauri::command]
 #[specta::specta]

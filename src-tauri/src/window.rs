@@ -584,15 +584,45 @@ fn show_now(app: &AppHandle, window: &WebviewWindow, focus: bool) {
     let _ = app;
 }
 
+/// What a close of the main window does.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloseAction {
+    /// Hide the window. The app keeps running in the tray.
+    Hide,
+    /// Quit the app, as the tray's Quit item does.
+    Quit,
+}
+
+/// macOS keeps the app running after its window closes, as is usual there.
+/// On Windows the close quits, unless the user chose to keep the app in the
+/// tray. A recording continues in every case: a close never stops a meeting.
+pub fn close_action(macos: bool, keep_running_in_tray: bool, recording: bool) -> CloseAction {
+    if macos || keep_running_in_tray || recording {
+        CloseAction::Hide
+    } else {
+        CloseAction::Quit
+    }
+}
+
 pub fn on_window_event(window: &Window, event: &WindowEvent) {
     match event {
         WindowEvent::CloseRequested { api, .. } if window.label() == MAIN_WINDOW => {
-            // The process stays alive in the tray. This is an optimization only:
-            // processing survives a real quit through checkpoints, not through this.
-            // `RunEvent::ExitRequested` + `prevent_exit()` is deliberately not used
-            // (tauri-apps/tauri#13511: it makes the app unkillable).
+            // When the process stays alive in the tray, this is an optimization
+            // only: processing survives a real quit through checkpoints, not
+            // through this. `RunEvent::ExitRequested` + `prevent_exit()` is
+            // deliberately not used (tauri-apps/tauri#13511: it makes the app
+            // unkillable).
             api.prevent_close();
-            hide_main_window(window);
+            let app = window.app_handle();
+            let keep = crate::managers::settings::get_settings(app).keep_running_in_tray;
+            match close_action(
+                cfg!(target_os = "macos"),
+                keep,
+                crate::tray::is_recording(app),
+            ) {
+                CloseAction::Hide => hide_main_window(window),
+                CloseAction::Quit => app.exit(0),
+            }
         }
         // The Settings page stops the close while it saves, and then
         // destroys the window. If the window is open after
@@ -732,6 +762,14 @@ mod tests {
     use std::cell::{Cell, RefCell};
 
     use super::*;
+
+    #[test]
+    fn a_close_quits_only_on_windows_without_the_tray_setting_or_a_recording() {
+        assert_eq!(close_action(false, false, false), CloseAction::Quit);
+        assert_eq!(close_action(false, true, false), CloseAction::Hide);
+        assert_eq!(close_action(false, false, true), CloseAction::Hide);
+        assert_eq!(close_action(true, false, false), CloseAction::Hide);
+    }
 
     #[test]
     fn new_settings_windows_allow_for_zoom_without_exceeding_the_work_area() {

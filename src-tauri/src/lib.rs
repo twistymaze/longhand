@@ -75,6 +75,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,
             commands::settings::set_hide_from_dock,
+            commands::settings::set_keep_running_in_tray,
             commands::settings::summary_prompts,
             commands::settings::create_summary_prompt,
             commands::settings::restore_summary_prompt,

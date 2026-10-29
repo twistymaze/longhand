@@ -13,9 +13,13 @@ const SHOW_SHORTCUT_TEXT = "This shortcut brings the window back from any app, a
 
 /// The Window group footer: what a window close does on this platform
 /// with this Hide from Dock value (R5).
-function closeBehaviour(hideFromDock: boolean): string {
-  if (!isMac()) return "Closing the window keeps Longhand running in the system tray.";
-  return hideFromDock
+function closeBehaviour(settings: Settings): string {
+  if (!isMac()) {
+    return settings.keep_running_in_tray
+      ? "Closing the window keeps Longhand running in the system tray."
+      : "Closing the window quits Longhand, except during a recording.";
+  }
+  return settings.hide_from_dock
     ? "Closing the window keeps Longhand running only in the menu bar."
     : "Closing the window keeps Longhand in the Dock and the menu bar.";
 }
@@ -173,9 +177,13 @@ export function StatusPane({
     <Pane title="General">
       <SetupGroup readiness={readiness} settings={settings} onRefresh={onRefresh} onNavigate={onNavigate} />
 
-      <Group header="Window" footer={`${closeBehaviour(settings.hide_from_dock)} ${SHOW_SHORTCUT_TEXT}`}>
+      <Group header="Window" footer={`${closeBehaviour(settings)} ${SHOW_SHORTCUT_TEXT}`}>
         <LoginItem />
-        {isMac() && <HideFromDock settings={settings} onSettings={onSettings} />}
+        {isMac() ? (
+          <HideFromDock settings={settings} onSettings={onSettings} />
+        ) : (
+          <KeepRunningInTray settings={settings} onSettings={onSettings} />
+        )}
         <ShortcutField
           kind="show_window"
           label="Show Longhand"
@@ -267,6 +275,20 @@ function HideFromDock({ settings, onSettings }: { settings: Settings; onSettings
       detail="Show Longhand in the Dock only while a window is open"
       checked={settings.hide_from_dock}
       set={commands.setHideFromDock}
+      onSettings={onSettings}
+    />
+  );
+}
+
+/// Windows: whether closing the window keeps Longhand running. Off by
+/// default, so a close quits, as is usual on Windows.
+function KeepRunningInTray({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
+  return (
+    <SettingSwitch
+      label="Keep running in the system tray"
+      detail="When you close the window, Longhand keeps running. Quit it from the tray icon."
+      checked={settings.keep_running_in_tray}
+      set={commands.setKeepRunningInTray}
       onSettings={onSettings}
     />
   );

@@ -153,6 +153,13 @@ pub fn recording_tick(app: &AppHandle, note_id: &str, recorded_ms: u64) {
     update_title(app, |title| title.tick(note_id, recorded_ms));
 }
 
+/// Whether a session records now, paused or not. It reads the tray's own
+/// state, so it does not wait for the capture lock.
+pub fn is_recording(app: &AppHandle) -> bool {
+    app.try_state::<TitleState>()
+        .is_some_and(|state| state.lock().recording.is_some())
+}
+
 /// The main window must show the page of this session (R3).
 #[derive(Serialize, Clone, Type, tauri_specta::Event)]
 pub struct ShowSession {
