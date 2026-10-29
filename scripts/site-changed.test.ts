@@ -40,7 +40,7 @@ test("a change only under src/ prints changed=false", () => {
 });
 
 test("a change to a file that builds the site prints changed=true", () => {
-  for (const path of ["site/index.html", "scripts/site.ts", "scripts/lib/changelog.ts"]) {
+  for (const path of ["site/index.html", "scripts/site.ts", "scripts/lib/changelog.ts", ".github/workflows/ci.yml", ".github/actions/node-setup/action.yml"]) {
     const repo = repository();
     assert.equal(repo.run(repo.change(path)), "changed=true", path);
   }
