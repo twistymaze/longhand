@@ -185,13 +185,6 @@ footer nav {
   padding-block: 72px 96px;
 }
 
-.icon {
-  display: block;
-  width: 88px;
-  height: 88px;
-  margin-bottom: 28px;
-}
-
 h1 {
   max-width: 24ch;
   text-wrap: balance;
