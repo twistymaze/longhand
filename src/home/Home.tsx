@@ -34,6 +34,7 @@ import { ImportSheet } from "./ImportSheet";
 import { CautionBanner, LibraryNotices } from "./LibraryNotices";
 import { NewNoteButton, noteStartRefusal } from "./NewNoteButton";
 import { PreviewPanel } from "./PreviewPanel";
+import { LibraryFooter } from "./LibraryFooter";
 import { type RecordingNow, RecordingRow } from "./RecordingRow";
 import { SessionRow } from "./SessionRow";
 import { useFileDrop } from "./useFileDrop";
@@ -527,6 +528,7 @@ export function Home({
               </div>
             )}
           </div>
+          <LibraryFooter />
         </div>
         {selected && (
           <PreviewPanel

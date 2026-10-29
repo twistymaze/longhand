@@ -363,6 +363,9 @@ function library(): Scene {
         problems: [],
         imports: { watched_folder: null, waiting_for_space: [], failed: [] },
       }),
+      // The footer shows the version, and no update waits.
+      build_info: () => ({ version: "1.2.14", commit: null }),
+      update_offer: () => null,
       session_detail: () => detail(selected),
       session_document: teamDocument,
     },
