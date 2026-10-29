@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
 import { changelog, type ContextRelease } from "./lib/changelog.ts";
+import { DMG_NAME, INSTALLER_NAME } from "./publish-release.ts";
 import { buildSite, SITE } from "./site.ts";
 
 function sampleChangelog(): string {
@@ -86,4 +87,31 @@ test("every file that a page loads is in the site", () => {
   }
   const css = readFileSync(join(SITE, "style.css"), "utf8");
   assert.ok(!/url\(|@import/.test(css), "the stylesheet loads another file");
+});
+
+const MAC_URL = `https://github.com/twistymaze/longhand/releases/latest/download/${DMG_NAME}`;
+const WINDOWS_URL = `https://github.com/twistymaze/longhand/releases/latest/download/${INSTALLER_NAME}`;
+
+/// The download links of one group, in page order.
+function links(group: string): string[] {
+  return [...group.matchAll(/<a class="download" href="([^"]+)">/g)].map((m) => m[1]);
+}
+
+test("the landing page loads the platform script before the page shows", () => {
+  assert.ok(read("index.html").includes('<script src="/platform.js"></script>'));
+  assert.ok(existsSync(join(out, "platform.js")));
+});
+
+// Covers AE1, AE2 and AE3: each download place has the same two links, in
+// a Mac-first group and in a Windows-first group.
+test("both download places link to the installers of the latest release", () => {
+  const page = read("index.html");
+  assert.ok(!/coming soon/i.test(page), "the page says Coming soon");
+  for (const [start, end] of [['<div class="get">', "</p>"], ['<section class="last">', "</section>"]]) {
+    const place = part(page, start, end);
+    const macFirst = part(place, '<div class="downloads mac-first">', "</div>");
+    const windowsFirst = part(place, '<div class="downloads windows-first">', "</div>");
+    assert.deepEqual(links(macFirst), [MAC_URL, WINDOWS_URL], `${start} Mac-first group`);
+    assert.deepEqual(links(windowsFirst), [WINDOWS_URL, MAC_URL], `${start} Windows-first group`);
+  }
 });
