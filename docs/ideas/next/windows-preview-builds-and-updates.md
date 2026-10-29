@@ -5,6 +5,7 @@ area: distribution
 added: 2026-10-09
 source: "a conversation on 2026-10-09 about the first Windows test build (archived PR 48)"
 related: [preview-builds-and-updates]
+plan: docs/plans/2026-10-28-2304-feat-windows-signed-releases-and-updates-plan.md
 ---
 
 # Windows code signing and in-app updates

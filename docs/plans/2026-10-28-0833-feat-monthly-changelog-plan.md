@@ -122,7 +122,7 @@ flowchart TB
 - No notice after an update relaunches.
 - No summary of a month written by a model, and no "since the last minor version" view. These stay open in `docs/ideas/done/in-app-change-log.md`.
 - No change to the release notes, to the version rules or to the release types.
-- No update window on Windows. Windows has no in-app updates yet (`docs/ideas/someday/windows-preview-builds-and-updates.md`). Recent changes in Settings > About works on Windows too.
+- No update window on Windows. Windows has no in-app updates yet (`docs/ideas/next/windows-preview-builds-and-updates.md`). Recent changes in Settings > About works on Windows too.
 
 ### Dependencies / Assumptions
 

@@ -401,7 +401,7 @@ flowchart TB
   - `docs/development-workflow.md`
   - `CONCEPTS.md`
   - `README.md`
-  - `docs/ideas/someday/windows-preview-builds-and-updates.md`
+  - `docs/ideas/next/windows-preview-builds-and-updates.md`
   - `docs/ideas/done/home-signing-runner.md`
   - `docs/ideas/done/signing-runner-on-mac-mini.md`
 - **Approach:**
@@ -498,4 +498,4 @@ flowchart TB
 
 ### Deferred to Follow-Up Work
 
-- Windows code signing and Windows in-app updates (`docs/ideas/someday/windows-preview-builds-and-updates.md`).
+- Windows code signing and Windows in-app updates (`docs/ideas/next/windows-preview-builds-and-updates.md`).
