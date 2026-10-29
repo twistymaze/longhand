@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { before, test } from "node:test";
 import { changelog, type ContextRelease } from "./lib/changelog.ts";
+import { DMG_NAME, INSTALLER_NAME } from "./publish-release.ts";
 import { buildSite, SITE } from "./site.ts";
 
 function sampleChangelog(): string {
@@ -88,8 +89,8 @@ test("every file that a page loads is in the site", () => {
   assert.ok(!/url\(|@import/.test(css), "the stylesheet loads another file");
 });
 
-const MAC_URL = "https://github.com/twistymaze/longhand/releases/latest/download/Longhand_aarch64.dmg";
-const WINDOWS_URL = "https://github.com/twistymaze/longhand/releases/latest/download/Longhand_x64-setup.exe";
+const MAC_URL = `https://github.com/twistymaze/longhand/releases/latest/download/${DMG_NAME}`;
+const WINDOWS_URL = `https://github.com/twistymaze/longhand/releases/latest/download/${INSTALLER_NAME}`;
 
 /// The download links of one group, in page order.
 function links(group: string): string[] {
