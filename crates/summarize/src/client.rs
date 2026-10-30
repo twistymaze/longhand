@@ -333,11 +333,15 @@ pub enum SummarizeError {
     /// the Thinking level (KTD6). `sent` is false when Rig refused the
     /// option before it sent the request.
     #[error(
-        "the model does not accept this Thinking level; choose another level in \
-         Settings > AI Provider > Thinking"
+        "the model does not accept this Thinking level; choose another level in {}",
+        THINKING_SETTING
     )]
     ReasoningRefused { sent: bool },
 }
+
+/// The place of the Thinking setting, for error text that tells the user to
+/// change it. The Thinking row is in the Advanced group.
+pub const THINKING_SETTING: &str = "Settings > AI Provider > Advanced > Thinking";
 
 impl SummarizeError {
     /// The prompt is longer than the model accepts: the model's context is
@@ -796,7 +800,7 @@ impl Client {
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
-            }) => named_cap(excerpt, max_tokens),
+            }) => named_cap(&without_model(excerpt, &self.endpoint.model), max_tokens),
             _ => None,
         };
         let Some(cap) = cap else {
@@ -869,11 +873,16 @@ impl Client {
         let mut guard = EndGuard::new(label, &host, model);
         let result = match self.call_with_retries(rig).await {
             // Only a request with a reasoning option can have a refused
-            // reasoning option.
+            // reasoning option. A refusal that names an output cap is an
+            // output-cap refusal, and `complete_at` sends it again.
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
-            }) if reasoning.is_some() && names_reasoning(&excerpt) => {
+            }) if reasoning.is_some() && {
+                let text = without_model(&excerpt, model);
+                names_reasoning(&text) && named_cap(&text, max_tokens).is_none()
+            } =>
+            {
                 Err(SummarizeError::ReasoningRefused { sent: true })
             }
             other => other,
@@ -1186,6 +1195,18 @@ fn names_reasoning(excerpt: &str) -> bool {
     REASONING_SIGNS.iter().any(|s| lower.contains(s))
 }
 
+/// `excerpt` in lower case, with each occurrence of the model id `model`
+/// removed. The checks of a 400 reply read words and numbers, and must not
+/// read them from the model id, for example "DeepThink-7B".
+fn without_model(excerpt: &str, model: &str) -> String {
+    let lower = excerpt.to_lowercase();
+    let model = model.trim().to_lowercase();
+    if model.is_empty() {
+        return lower;
+    }
+    lower.replace(&model, " ")
+}
+
 /// The Rig reasoning option of `level` (KTD5). Model default sends none.
 fn effort(level: ThinkingLevel) -> Option<Reasoning> {
     match level {
@@ -1421,10 +1442,16 @@ fn finish_name(reason: FinishReason) -> String {
     }
 }
 
-/// `Some` when `error` is a 429 reply (KTD9). The inner value is the wait
-/// that its `Retry-After` header gives in seconds, or `None` when the reply
-/// has no such header. A `Retry-After` date is not read: the retry wait
-/// applies.
+/// The longest `Retry-After` wait that the client waits for. A 429 reply
+/// that asks for a longer wait fails at once (KTD9).
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
+
+/// `Some` when `error` is a 429 reply that the client can send again
+/// (KTD9). The inner value is the wait that its `Retry-After` header gives
+/// in seconds, or `None` when the reply has no such header. A `Retry-After`
+/// date is not read: the retry wait applies. A 429 reply that names a
+/// quota, or that asks for a wait longer than [`MAX_RETRY_AFTER`], gives
+/// `None`: a new try does not help.
 fn rate_limit(error: &ProviderError) -> Option<Option<Duration>> {
     let ProviderError::ProviderResponse(reply) = error else {
         return None;
@@ -1432,15 +1459,22 @@ fn rate_limit(error: &ProviderError) -> Option<Option<Duration>> {
     if reply.status.map(|s| s.as_u16()) != Some(429) {
         return None;
     }
-    Some(
-        reply
-            .headers
-            .as_ref()
-            .and_then(|headers| headers.get("retry-after"))
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .map(Duration::from_secs),
-    )
+    // "insufficient_quota" (OpenAI) and "RESOURCE_EXHAUSTED ... quota"
+    // (Gemini) both contain "quota".
+    if reply.body.to_lowercase().contains("quota") {
+        return None;
+    }
+    let retry_after = reply
+        .headers
+        .as_ref()
+        .and_then(|headers| headers.get("retry-after"))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .map(Duration::from_secs);
+    match retry_after {
+        Some(wait) if wait > MAX_RETRY_AFTER => None,
+        wait => Some(wait),
+    }
 }
 
 /// How a Rig request on `route` failed, as a Longhand error (KTD4). Only a

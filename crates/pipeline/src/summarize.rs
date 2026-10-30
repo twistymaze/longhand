@@ -32,7 +32,8 @@ use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
 use summarize::tokens::ReplyKind;
 use summarize::{
-    Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, context, prompts, tokens,
+    Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, THINKING_SETTING, context,
+    prompts, tokens,
 };
 
 use crate::join::TRANSCRIPT_FILE;
@@ -58,12 +59,17 @@ const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's c
 shorten the prompt or the Background in Settings, or choose a model with a larger context";
 /// The error when a reply is cut off at the largest allowance that the
 /// context and the provider permit (R4, KTD8).
-const REPLY_DOES_NOT_FIT: &str = "the model's reply did not fit in its context; \
-give the model a larger context, or choose a lower Thinking level in Settings > AI Provider > Advanced";
+fn reply_does_not_fit() -> String {
+    format!(
+        "the model's reply did not fit in its context; \
+         give the model a larger context, or choose a lower Thinking level in {THINKING_SETTING}"
+    )
+}
 /// The error when a summary request reaches its reply deadline (R16,
 /// KTD10). The request is not sent again.
-const NO_REPLY_IN_TIME: &str = "the model did not reply in time; \
-choose a lower Thinking level in Settings > AI Provider > Advanced";
+fn no_reply_in_time() -> String {
+    format!("the model did not reply in time; choose a lower Thinking level in {THINKING_SETTING}")
+}
 /// The proposed title, a string, once the title turn has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
@@ -777,7 +783,7 @@ pub fn produce(
                     // asks the endpoint for its limit again: the user can
                     // raise the context length.
                     forget_calls(store, note_id)?;
-                    return Err(StageError::Failed(REPLY_DOES_NOT_FIT.into()));
+                    return Err(StageError::Failed(reply_does_not_fit()));
                 }
                 Err(Stop(e)) => return Err(e),
             }
@@ -1354,7 +1360,7 @@ async fn request(
 
 fn describe(layer: usize, index: usize, total: usize, e: &SummarizeError) -> String {
     let e = match e {
-        SummarizeError::Deadline(_) => NO_REPLY_IN_TIME.to_string(),
+        SummarizeError::Deadline(_) => no_reply_in_time(),
         e => e.to_string(),
     };
     if layer == 0 && total > 1 {
@@ -1479,7 +1485,7 @@ mod tests {
             for (layer, total) in [(0, 1), (0, 3), (1, 1)] {
                 let text = describe(layer, 0, total, &summarize::SummarizeError::Deadline(what));
                 assert!(text.contains("Thinking"), "{text}");
-                assert!(text.contains("Settings > AI Provider > Advanced"), "{text}");
+                assert!(text.contains(summarize::THINKING_SETTING), "{text}");
             }
         }
     }

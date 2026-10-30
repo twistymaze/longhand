@@ -307,6 +307,7 @@ pub struct ProviderEntry {
     pub context_limit_tokens: Option<u32>,
     /// The Thinking level that the user picked (R5). `None` uses the
     /// default of the provider kind, which is never saved (R6, KTD7).
+    #[serde(deserialize_with = "known_thinking")]
     pub thinking: Option<ThinkingLevel>,
     /// How many requests go to the provider at the same time, as the user
     /// set it (R12). `None` uses the default of the provider kind (KTD7).
@@ -333,10 +334,31 @@ impl ProviderEntry {
         }
     }
 
-    /// How many requests go to `provider` at the same time (R12).
+    /// How many requests go to `provider` at the same time (R12). A stored
+    /// number out of [`REQUESTS_AT_ONCE`] gives the nearest number in it.
     pub fn effective_requests_at_once(&self, provider: Provider) -> u32 {
         self.requests_at_once
             .unwrap_or_else(|| provider.default_requests_at_once())
+            .clamp(*REQUESTS_AT_ONCE.start(), *REQUESTS_AT_ONCE.end())
+    }
+}
+
+/// The stored Thinking level. A level that this build does not know, for
+/// example one that a newer build stored, reads as `None`: the default of
+/// the provider kind applies, and the other settings stay.
+fn known_thinking<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ThinkingLevel>, D::Error> {
+    let value = Value::deserialize(d)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match serde_json::from_value::<ThinkingLevel>(value) {
+        Ok(level) => Ok(Some(level)),
+        Err(_) => {
+            log::warn!("the stored Thinking level is not known; the default level applies");
+            Ok(None)
+        }
     }
 }
 
@@ -4170,6 +4192,59 @@ mod tests {
             openrouter.effective_requests_at_once(Provider::OpenRouter),
             4
         );
+    }
+
+    #[test]
+    fn a_thinking_level_from_a_newer_build_loads_as_the_default() {
+        // A newer build can store a level that this build does not know.
+        let stored = json!({
+            "settings_schema_version": 7,
+            "active_provider": "lm_studio",
+            "providers": {
+                "lm_studio": {
+                    "address": "http://localhost:1234/v1",
+                    "model": "qwen3-30b",
+                    "context_limit_tokens": 32_000,
+                    "thinking": "xhigh",
+                    "requests_at_once": 2,
+                },
+                "openai": { "model": "gpt-5", "thinking": "high" },
+            },
+        });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.active_provider, Some(Provider::LmStudio));
+        let lm_studio = &settings.providers.lm_studio;
+        assert_eq!(lm_studio.thinking, None);
+        assert_eq!(
+            lm_studio.address.as_deref(),
+            Some("http://localhost:1234/v1")
+        );
+        assert_eq!(lm_studio.model, "qwen3-30b");
+        assert_eq!(lm_studio.context_limit_tokens, Some(32_000));
+        assert_eq!(lm_studio.requests_at_once, Some(2));
+        assert_eq!(
+            lm_studio.effective_thinking(Provider::LmStudio),
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: false
+            }
+        );
+        assert_eq!(settings.providers.openai.model, "gpt-5");
+        assert_eq!(
+            settings.providers.openai.thinking,
+            Some(ThinkingLevel::High)
+        );
+    }
+
+    #[test]
+    fn a_stored_requests_at_once_out_of_range_is_clamped() {
+        let entry = |count| ProviderEntry {
+            requests_at_once: Some(count),
+            ..ProviderEntry::default()
+        };
+        assert_eq!(entry(0).effective_requests_at_once(Provider::Custom), 1);
+        assert_eq!(entry(20).effective_requests_at_once(Provider::Custom), 8);
+        assert_eq!(entry(3).effective_requests_at_once(Provider::Custom), 3);
     }
 
     #[test]

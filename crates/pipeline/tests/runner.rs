@@ -2060,13 +2060,13 @@ struct Open {
     parts_done: usize,
     /// True when the request of the last part came.
     last_part: bool,
-    /// True when the merge request that holds the last part came.
-    last_group: bool,
+    /// The parts in the merge requests of the first merge layer that came.
+    group_parts: usize,
 }
 
 /// An endpoint that holds each summary part request, and each merge
 /// request of the first merge layer, until `limit` requests are open or the
-/// request of the last part (or the last group) came. A run that sends
+/// request of the last part (or every group request) came. A run that sends
 /// fewer than `limit` requests at the same time gets a server error after
 /// a minute, so the test fails. Part 1 also waits until the other parts
 /// that it was sent with got their replies, so the parts finish out of
@@ -2100,15 +2100,17 @@ fn held(limit: usize) -> (http::Reply, Arc<tokio::sync::watch::Sender<Open>>) {
                 }
                 if group {
                     o.most_groups = o.most_groups.max(o.now);
-                    // Every part replied before the merges, so `parts_done`
-                    // is the part count. The parts have the same size, so
-                    // only the last group can be a group of one, which gets
-                    // no request. The last group request then ends at the
-                    // part before the last.
-                    let last = o.parts_done.saturating_sub(1);
-                    o.last_group |= parts_in(&body).last().is_some_and(|p| *p >= last);
+                    o.group_parts += parts_in(&body).len();
                 }
             });
+            // Every part replied before the merges, so `parts_done` is the
+            // part count. Each group has two parts or more, except the last
+            // group, which can have one part and then gets no request. So
+            // the group requests hold all the parts, or all the parts but
+            // the last. While one group request has not come, at least two
+            // parts are missing. The count reaches the part count less one
+            // only when every group request came, in any order.
+            let all_groups = |o: &Open| o.group_parts + 1 >= o.parts_done;
             let wait = async {
                 let mut seen = open.subscribe();
                 if let Some((k, n)) = part {
@@ -2118,7 +2120,7 @@ fn held(limit: usize) -> (http::Reply, Arc<tokio::sync::watch::Sender<Open>>) {
                         let _ = seen.wait_for(|o| o.parts_done >= others).await;
                     }
                 } else if group {
-                    let _ = seen.wait_for(|o| o.now >= limit || o.last_group).await;
+                    let _ = seen.wait_for(|o| o.now >= limit || all_groups(o)).await;
                 }
             };
             let held_in_time = tokio::time::timeout(std::time::Duration::from_secs(60), wait)
@@ -12112,8 +12114,7 @@ fn failed_with(r: &Rig, text: &str) -> bool {
             e,
             RunnerEvent::SummaryUnavailable { message, .. }
                 if message.contains(text)
-                    && message.contains("Thinking")
-                    && message.contains("Settings > AI Provider > Advanced")
+                    && message.contains(summarize::THINKING_SETTING)
         )
     })
 }

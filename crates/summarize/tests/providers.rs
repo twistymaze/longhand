@@ -790,8 +790,89 @@ async fn a_refused_chosen_level_fails_after_one_request() {
         matches!(err, SummarizeError::ReasoningRefused { .. }),
         "{err:?}"
     );
-    assert!(err.to_string().contains("Thinking"), "{err}");
+    assert!(
+        err.to_string().contains(summarize::THINKING_SETTING),
+        "{err}"
+    );
     assert_eq!(mock.seen.lock().unwrap().len(), 1);
+}
+
+/// A server that refuses a reply cap above 4,096 with a 400 that names
+/// `model`, and accepts a smaller cap.
+fn caps_at_4096(model: &'static str) -> Reply {
+    Reply::With(Arc::new(move |body: &str| {
+        let v: Value = serde_json::from_str(body).unwrap();
+        if v["max_tokens"].as_u64().unwrap_or(0) > 4_096 {
+            (
+                400,
+                format!(
+                    r#"{{"error":{{"message":"max_tokens: 16384 > 4096 for model {model}"}}}}"#
+                ),
+            )
+        } else {
+            (200, chat_reply("fine", "stop"))
+        }
+    }))
+}
+
+/// The client to the server `base` with the model `model`.
+fn client_for(base: &str, model: &str) -> Client {
+    let mut endpoint = endpoint(Provider::Custom, base, None);
+    endpoint.model = model.into();
+    Client::new(endpoint).unwrap()
+}
+
+/// The reply caps of the requests that `mock` got.
+fn caps(mock: &common::Mock) -> Vec<u64> {
+    mock.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.json()["max_tokens"].as_u64().unwrap())
+        .collect()
+}
+
+/// A 400 that names an output cap is an output-cap refusal, also when the
+/// model id contains "think" and the request has a chosen Thinking level.
+#[tokio::test]
+async fn an_output_cap_refusal_that_names_a_thinking_model_is_not_a_reasoning_refusal() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        caps_at_4096("DeepThink-7B"),
+    )]))
+    .await;
+    let client = client_for(&mock.base, "DeepThink-7B");
+    let reply = client
+        .with_thinking(thinking(ThinkingLevel::Low, true))
+        .complete(&label(), &sys_and_user(), 16_384, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "fine");
+    assert_eq!(caps(&mock), [16_384, 4_096]);
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(
+        seen[1].json()["reasoning_effort"],
+        "low",
+        "{}",
+        seen[1].body
+    );
+}
+
+/// A number in the model id is not read as the output cap.
+#[tokio::test]
+async fn a_number_in_the_model_id_is_not_the_learned_output_cap() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        caps_at_4096("q-8192-chat"),
+    )]))
+    .await;
+    let client = client_for(&mock.base, "q-8192-chat");
+    client
+        .complete(&label(), &sys_and_user(), 16_384, None)
+        .await
+        .unwrap();
+    assert_eq!(caps(&mock), [16_384, 4_096]);
+    assert_eq!(client.output_max(), Some(4_096));
 }
 
 /// A 400 that names reasoning is not a reasoning refusal when the request

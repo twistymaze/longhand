@@ -209,6 +209,11 @@ async fn a_request_that_reaches_the_endpoint_is_not_sent_again() {
 /// A responder that answers the first `limited` requests with 429 and the
 /// header lines `headers`, and the next requests with a summary.
 fn rate_limited(limited: usize, headers: &'static str) -> Reply {
+    limited_with(limited, headers, r#"{"error":{"message":"rate limited"}}"#)
+}
+
+/// [`rate_limited`] with the 429 body `body`.
+fn limited_with(limited: usize, headers: &'static str, body: &'static str) -> Reply {
     let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     Reply::Await(Arc::new(move |_| {
         let k = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -217,7 +222,7 @@ fn rate_limited(limited: usize, headers: &'static str) -> Reply {
                 common::Answer {
                     status: 429,
                     headers: headers.into(),
-                    body: r#"{"error":{"message":"rate limited"}}"#.into(),
+                    body: body.into(),
                 }
             } else {
                 common::Answer {
@@ -287,6 +292,57 @@ async fn a_rate_limited_request_with_no_header_uses_the_retry_waits() {
         "{err:?}"
     );
     assert_eq!(mock.seen.lock().unwrap().len(), 3);
+}
+
+/// A 429 reply that names a quota fails at once: a new try gets the same
+/// reply until the user changes the account.
+#[tokio::test]
+async fn a_rate_limited_request_that_names_a_quota_is_not_sent_again() {
+    for body in [
+        r#"{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}"#,
+        r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded for metric"}}"#,
+    ] {
+        let mock = serve(HashMap::from([(
+            "/v1/chat/completions",
+            limited_with(1, "", body),
+        )]))
+        .await;
+        let client = Client::new(endpoint(&mock.base, None))
+            .unwrap()
+            .with_retry_waits(vec![Duration::ZERO; 3]);
+        let err = client
+            .complete(&label(), &hello(), 100, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SummarizeError::Http { status: 429, .. }),
+            "{err:?}"
+        );
+        assert_eq!(mock.seen.lock().unwrap().len(), 1, "{body}");
+    }
+}
+
+/// A 429 reply that asks for a wait longer than `MAX_RETRY_AFTER` fails at
+/// once, so that a summary does not stop for hours.
+#[tokio::test]
+async fn a_rate_limited_request_with_a_long_retry_after_is_not_sent_again() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(1, "Retry-After: 121\r\n"),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 3]);
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 429, .. }),
+        "{err:?}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
