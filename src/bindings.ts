@@ -127,9 +127,10 @@ async setProviderContextLimit(provider: Provider, limit: number | null) : Promis
 }
 },
 /**
- * Save the Thinking level that the user picked for `provider` (R5).
+ * Save the Thinking level that the user picked for `provider` (R5), or
+ * `None` to use the default of the provider (Automatic).
  */
-async setProviderThinking(provider: Provider, level: ThinkingLevel) : Promise<Result<Settings, string>> {
+async setProviderThinking(provider: Provider, level: ThinkingLevel | null) : Promise<Result<Settings, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_provider_thinking", { provider, level }) };
 } catch (e) {
@@ -138,9 +139,10 @@ async setProviderThinking(provider: Provider, level: ThinkingLevel) : Promise<Re
 }
 },
 /**
- * Save how many requests go to `provider` at the same time (R12).
+ * Save how many requests go to `provider` at the same time (R12), or
+ * `None` to use the default of the provider.
  */
-async setProviderRequestsAtOnce(provider: Provider, count: number) : Promise<Result<Settings, string>> {
+async setProviderRequestsAtOnce(provider: Provider, count: number | null) : Promise<Result<Settings, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_provider_requests_at_once", { provider, count }) };
 } catch (e) {

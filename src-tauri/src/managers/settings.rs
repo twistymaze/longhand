@@ -1238,27 +1238,31 @@ impl Settings {
     }
 
     /// Save the Thinking level that the user picked for `provider` (R5).
-    /// A pick equal to the default is saved too (KTD7).
-    pub fn set_provider_thinking(&mut self, provider: Provider, level: ThinkingLevel) {
-        self.providers.get_mut(provider).thinking = Some(level);
+    /// A pick equal to the default is saved too (KTD7). `None` (Automatic)
+    /// removes the pick, so the default of the provider applies.
+    pub fn set_provider_thinking(&mut self, provider: Provider, level: Option<ThinkingLevel>) {
+        self.providers.get_mut(provider).thinking = level;
     }
 
     /// Save how many requests go to `provider` at the same time (R12). A
     /// number out of [`REQUESTS_AT_ONCE`] is refused, and the saved number
-    /// stays.
+    /// stays. `None` removes the number, so the default of the provider
+    /// applies.
     pub fn set_provider_requests_at_once(
         &mut self,
         provider: Provider,
-        count: u32,
+        count: Option<u32>,
     ) -> Result<(), String> {
-        if !REQUESTS_AT_ONCE.contains(&count) {
+        if let Some(count) = count
+            && !REQUESTS_AT_ONCE.contains(&count)
+        {
             return Err(format!(
                 "requests at the same time must be from {} to {}",
                 REQUESTS_AT_ONCE.start(),
                 REQUESTS_AT_ONCE.end()
             ));
         }
-        self.providers.get_mut(provider).requests_at_once = Some(count);
+        self.providers.get_mut(provider).requests_at_once = count;
         Ok(())
     }
 
@@ -4160,7 +4164,7 @@ mod tests {
     fn a_thinking_level_that_the_user_picks_is_stored_and_chosen() {
         // KTD7: a pick equal to the default is stored too.
         let mut settings = Settings::default();
-        settings.set_provider_thinking(Provider::LmStudio, ThinkingLevel::Low);
+        settings.set_provider_thinking(Provider::LmStudio, Some(ThinkingLevel::Low));
         assert_eq!(
             settings.providers.lm_studio.thinking,
             Some(ThinkingLevel::Low)
@@ -4177,20 +4181,35 @@ mod tests {
     }
 
     #[test]
+    fn automatic_thinking_removes_the_pick_and_uses_the_default() {
+        let mut settings = Settings::default();
+        settings.set_provider_thinking(Provider::LmStudio, Some(ThinkingLevel::High));
+        settings.set_provider_thinking(Provider::LmStudio, None);
+        assert_eq!(settings.providers.lm_studio.thinking, None);
+        assert_eq!(
+            settings
+                .providers
+                .lm_studio
+                .effective_thinking(Provider::LmStudio),
+            (ThinkingLevel::Low, false)
+        );
+    }
+
+    #[test]
     fn requests_at_once_accepts_1_to_8_and_keeps_its_value_after_a_refusal() {
         let mut settings = Settings::default();
         settings
-            .set_provider_requests_at_once(Provider::Custom, 1)
+            .set_provider_requests_at_once(Provider::Custom, Some(1))
             .unwrap();
         assert_eq!(settings.providers.custom.requests_at_once, Some(1));
         settings
-            .set_provider_requests_at_once(Provider::Custom, 8)
+            .set_provider_requests_at_once(Provider::Custom, Some(8))
             .unwrap();
         assert_eq!(settings.providers.custom.requests_at_once, Some(8));
         for refused in [0, 9] {
             assert!(
                 settings
-                    .set_provider_requests_at_once(Provider::Custom, refused)
+                    .set_provider_requests_at_once(Provider::Custom, Some(refused))
                     .is_err()
             );
             assert_eq!(settings.providers.custom.requests_at_once, Some(8));
@@ -4202,18 +4221,30 @@ mod tests {
                 .effective_requests_at_once(Provider::Custom),
             8
         );
+        // No value resets the setting to the default of the provider.
+        settings
+            .set_provider_requests_at_once(Provider::Custom, None)
+            .unwrap();
+        assert_eq!(settings.providers.custom.requests_at_once, None);
+        assert_eq!(
+            settings
+                .providers
+                .custom
+                .effective_requests_at_once(Provider::Custom),
+            1
+        );
     }
 
     #[test]
     fn each_provider_keeps_its_own_thinking_and_requests_at_once() {
         let mut settings = Settings::default();
         settings.choose_provider(Some(Provider::Ollama));
-        settings.set_provider_thinking(Provider::Ollama, ThinkingLevel::High);
+        settings.set_provider_thinking(Provider::Ollama, Some(ThinkingLevel::High));
         settings
-            .set_provider_requests_at_once(Provider::Ollama, 2)
+            .set_provider_requests_at_once(Provider::Ollama, Some(2))
             .unwrap();
         settings.choose_provider(Some(Provider::OpenAi));
-        settings.set_provider_thinking(Provider::OpenAi, ThinkingLevel::Off);
+        settings.set_provider_thinking(Provider::OpenAi, Some(ThinkingLevel::Off));
         settings.choose_provider(Some(Provider::Ollama));
         assert_eq!(
             settings.providers.ollama.thinking,

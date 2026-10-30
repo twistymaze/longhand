@@ -139,13 +139,14 @@ pub fn set_provider_context_limit(
     settings::update_settings(&app, |s| s.set_provider_context_limit(provider, limit))
 }
 
-/// Save the Thinking level that the user picked for `provider` (R5).
+/// Save the Thinking level that the user picked for `provider` (R5), or
+/// `None` to use the default of the provider (Automatic).
 #[tauri::command]
 #[specta::specta]
 pub fn set_provider_thinking(
     app: AppHandle,
     provider: Provider,
-    level: ThinkingLevel,
+    level: Option<ThinkingLevel>,
 ) -> Result<Settings, String> {
     settings::update_settings(&app, |s| {
         s.set_provider_thinking(provider, level);
@@ -153,13 +154,14 @@ pub fn set_provider_thinking(
     })
 }
 
-/// Save how many requests go to `provider` at the same time (R12).
+/// Save how many requests go to `provider` at the same time (R12), or
+/// `None` to use the default of the provider.
 #[tauri::command]
 #[specta::specta]
 pub fn set_provider_requests_at_once(
     app: AppHandle,
     provider: Provider,
-    count: u32,
+    count: Option<u32>,
 ) -> Result<Settings, String> {
     settings::update_settings(&app, |s| s.set_provider_requests_at_once(provider, count))
 }

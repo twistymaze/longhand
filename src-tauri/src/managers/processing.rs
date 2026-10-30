@@ -2682,8 +2682,8 @@ mod tests {
         assert_eq!(automatic.requests_at_once, 1);
 
         let mut s = active(Provider::LmStudio, None);
-        s.set_provider_thinking(Provider::LmStudio, ThinkingLevel::Low);
-        s.set_provider_requests_at_once(Provider::LmStudio, 3)
+        s.set_provider_thinking(Provider::LmStudio, Some(ThinkingLevel::Low));
+        s.set_provider_requests_at_once(Provider::LmStudio, Some(3))
             .unwrap();
         let chosen = endpoint_from_settings(s, |_| Ok(None)).unwrap();
         assert_eq!(chosen.thinking, ThinkingLevel::Low);
