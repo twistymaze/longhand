@@ -1722,12 +1722,22 @@ async fn a_session_that_waits_for_its_model_lets_the_next_ready_session_go_first
 
 // ------------------------------------------------------------- summarize (U10)
 
+/// The text of one message content. Rig can send the content as a string
+/// or as an array of text parts.
+fn content_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => String::new(),
+    }
+}
+
 fn user_content(body: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(body).unwrap();
-    v["messages"][1]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string()
+    content_text(&v["messages"][1]["content"])
 }
 
 /// The role and the content of each message of a completion request.
@@ -1740,7 +1750,7 @@ fn request_messages(body: &str) -> Vec<(String, String)> {
         .map(|m| {
             (
                 m["role"].as_str().unwrap_or_default().to_string(),
-                m["content"].as_str().unwrap_or_default().to_string(),
+                content_text(&m["content"]),
             )
         })
         .collect()
@@ -2381,12 +2391,7 @@ fn chat_messages(mock: &http::Mock) -> Vec<(String, String)> {
         .filter(|b| !is_title_call(b))
         .map(|b| {
             let v: serde_json::Value = serde_json::from_str(b).unwrap();
-            let content = |i: usize| {
-                v["messages"][i]["content"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string()
-            };
+            let content = |i: usize| content_text(&v["messages"][i]["content"]);
             (content(0), content(1))
         })
         .collect()
@@ -11586,6 +11591,78 @@ async fn the_title_job_sends_to_the_provider_in_effect_when_it_started() {
     let size = num_ctx(&sent[0]).expect("a context size");
     assert!(size >= ollama_need(&sent[0]) as u64, "{size}");
     assert_eq!(size % 2_048, 0, "{size}");
+}
+
+// ------------------------------------------------------------ Thinking (U3)
+
+use summarize::provider::ThinkingLevel;
+
+/// Send the summaries of the script to `mock` with the Thinking level
+/// `thinking`, chosen by the user or not.
+fn use_thinking(r: &Rig, mock: &http::Mock, thinking: ThinkingLevel, chosen: bool) {
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        thinking,
+        thinking_chosen: chosen,
+        ..endpoint(&mock.base)
+    }));
+}
+
+/// Covers R8 and KTD11: the summary request and the title request carry
+/// the same reasoning field.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_summary_and_the_title_request_carry_the_thinking_level() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    use_thinking(&r, &mock, ThinkingLevel::Low, false);
+    saved_session(&r, None).await;
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+
+    let sent = bodies_on(&mock, "/v1/chat/completions");
+    assert_eq!(sent.iter().filter(|b| is_title_body(b)).count(), 1);
+    assert!(sent.iter().any(|b| !is_title_body(b)));
+    for body in &sent {
+        assert_eq!(body["reasoning_effort"], "low", "{body}");
+    }
+}
+
+/// Covers AE5 and R7.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_chosen_thinking_level_fails_the_summary_with_a_message_that_names_thinking() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::Json(
+            400,
+            r#"{"error":{"message":"reasoning_effort 'none' is not supported"}}"#.into(),
+        ),
+    )]))
+    .await;
+    use_thinking(&r, &mock, ThinkingLevel::Off, true);
+    // The summary failing costs the summary, not the note (KD13).
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::SummaryUnavailable { message, .. } if message.contains("Thinking")
+    )));
+    let stub = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert_eq!(stub.meta, session_core::folder::SummaryMeta::stub());
+    assert!(stub.body.contains("Thinking"), "{}", stub.body);
+    let sent = bodies_on(&mock, "/v1/chat/completions");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["reasoning_effort"], "none", "{}", sent[0]);
 }
 
 // ---------------------------------------------------------------- imported notes

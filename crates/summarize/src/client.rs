@@ -18,13 +18,15 @@
 //! [`SummarizeError`] made from a Rig result holds only text that Longhand
 //! writes, never the text of a Rig or reqwest error.
 
+use std::collections::HashSet;
 use std::net::IpAddr;
+use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use reqwest::Url;
 use rig_core::ProviderError;
 use rig_core::completion::{
-    CompletionRequest, CompletionResponse, FinishReason, Message as RigMessage,
+    CompletionRequest, CompletionResponse, Effort, FinishReason, Message as RigMessage, Reasoning,
 };
 use rig_core::driver::Model;
 use rig_core::http_client::HttpClientExt;
@@ -40,7 +42,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tokio::time::timeout;
 
-use crate::provider::{Provider, Route};
+use crate::provider::{Provider, Route, ThinkingLevel};
 use crate::transport::{Recording, Transport, TransportError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,6 +286,12 @@ pub(crate) fn error_text(error: &SummarizeError) -> String {
         SummarizeError::Deadline(what) => format!("no {what} within the deadline"),
         SummarizeError::TooLarge(_) => "reply too large".into(),
         SummarizeError::Transport(_) => "connection error".into(),
+        SummarizeError::ReasoningRefused { sent: true } => {
+            "reasoning option refused, HTTP 400".into()
+        }
+        SummarizeError::ReasoningRefused { sent: false } => {
+            "reasoning option refused before the request".into()
+        }
         _ => "error".into(),
     }
 }
@@ -320,6 +328,14 @@ pub enum SummarizeError {
     Transport(String),
     #[error("the endpoint's reply is not a chat completion: {0}")]
     Malformed(String),
+    /// The model or the provider does not accept the reasoning option of
+    /// the Thinking level (KTD6). `sent` is false when Rig refused the
+    /// option before it sent the request.
+    #[error(
+        "the model does not accept this Thinking level; choose another level in \
+         Settings > AI Provider > Thinking"
+    )]
+    ReasoningRefused { sent: bool },
 }
 
 impl SummarizeError {
@@ -334,6 +350,26 @@ impl SummarizeError {
 pub struct Message {
     pub role: &'static str,
     pub content: String,
+}
+
+/// The Thinking level of the requests of a client (R5), and whether the
+/// user chose it (KTD7). The default is Model default, which sends no
+/// reasoning option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Thinking {
+    pub level: ThinkingLevel,
+    /// `false` when the level is the default of the provider kind. A
+    /// refusal of such a level is dropped (R17).
+    pub chosen: bool,
+}
+
+impl Default for Thinking {
+    fn default() -> Self {
+        Self {
+            level: ThinkingLevel::ModelDefault,
+            chosen: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -482,6 +518,8 @@ pub struct Client {
     /// The waits before each new try of a request that could not reach the
     /// endpoint. Empty: a request is sent once.
     retry_waits: Vec<Duration>,
+    /// The Thinking level of the summary requests.
+    thinking: Thinking,
 }
 
 impl Client {
@@ -520,7 +558,14 @@ impl Client {
             completion,
             probe,
             retry_waits: Vec::new(),
+            thinking: Thinking::default(),
         })
+    }
+
+    /// Send each summary request with the Thinking level `thinking` (R8).
+    pub fn with_thinking(mut self, thinking: Thinking) -> Self {
+        self.thinking = thinking;
+        self
     }
 
     /// Try a request again after each of `waits` when the connection to the
@@ -668,13 +713,20 @@ impl Client {
             role: "user",
             content: "Reply with OK.".into(),
         }];
-        self.complete_with(label, &messages, "max_tokens", 1, None)
+        self.complete_with(label, &messages, "max_tokens", 1, None, None)
             .await
     }
 
     /// Send `messages` and return the reply, with at most `max_tokens` in
     /// the reply. `num_ctx` is the context size for an Ollama request
     /// (KTD7). The other providers do not use it.
+    ///
+    /// The request has the Thinking level of the client (R8). When the
+    /// model or the provider refuses an automatic level, the client sends
+    /// the request again with no reasoning option, and later requests to
+    /// the same model send none until Longhand quits (R17, KTD6). A level
+    /// that the user chose is always sent, and its refusal is
+    /// [`SummarizeError::ReasoningRefused`] (R7).
     pub async fn complete(
         &self,
         label: &Label,
@@ -682,23 +734,81 @@ impl Client {
         max_tokens: u32,
         num_ctx: Option<u32>,
     ) -> Result<Completion, SummarizeError> {
+        let Thinking { level, chosen } = self.thinking;
+        let model = RefusedModel::of(self);
+        let level = if !chosen && model.was_refused() {
+            ThinkingLevel::ModelDefault
+        } else {
+            level
+        };
         match self
-            .complete_with(label, messages, "max_tokens", max_tokens, num_ctx)
+            .complete_at(label, messages, max_tokens, num_ctx, level)
             .await
         {
+            Err(SummarizeError::ReasoningRefused { .. }) if !chosen => {
+                log::info!(
+                    "{} refused the automatic Thinking level for model {}; sending the request again with no reasoning option",
+                    self.host(),
+                    self.endpoint.model
+                );
+                model.remember();
+                self.complete_at(
+                    label,
+                    messages,
+                    max_tokens,
+                    num_ctx,
+                    ThinkingLevel::ModelDefault,
+                )
+                .await
+            }
+            other => other,
+        }
+    }
+
+    /// [`Self::complete`] with the Thinking level `level`. When Rig refuses
+    /// an effort level before it sends the request, the request goes with
+    /// the thinking budget of the level (KTD5).
+    async fn complete_at(
+        &self,
+        label: &Label,
+        messages: &[Message],
+        max_tokens: u32,
+        num_ctx: Option<u32>,
+        level: ThinkingLevel,
+    ) -> Result<Completion, SummarizeError> {
+        let result = self
+            .complete_capped(label, messages, max_tokens, num_ctx, effort(level))
+            .await;
+        match (result, budget(level, max_tokens)) {
+            (Err(SummarizeError::ReasoningRefused { sent: false }), Some(budget)) => {
+                self.complete_capped(label, messages, max_tokens, num_ctx, Some(budget))
+                    .await
+            }
+            (result, _) => result,
+        }
+    }
+
+    /// Send the request with the reasoning option `reasoning`. A request
+    /// that the endpoint refuses because of `max_tokens` goes once more
+    /// with `max_completion_tokens` (R11).
+    async fn complete_capped(
+        &self,
+        label: &Label,
+        messages: &[Message],
+        max_tokens: u32,
+        num_ctx: Option<u32>,
+        reasoning: Option<Reasoning>,
+    ) -> Result<Completion, SummarizeError> {
+        let with = |cap_field: &'static str| {
+            self.complete_with(label, messages, cap_field, max_tokens, num_ctx, reasoning)
+        };
+        match with("max_tokens").await {
             // Some hosted reasoning models refuse `max_tokens` by name.
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
             }) if self.route == Route::OpenAiChat && excerpt.contains("max_completion_tokens") => {
-                self.complete_with(
-                    label,
-                    messages,
-                    "max_completion_tokens",
-                    max_tokens,
-                    num_ctx,
-                )
-                .await
+                with("max_completion_tokens").await
             }
             other => other,
         }
@@ -711,12 +821,25 @@ impl Client {
         cap_field: &str,
         max_tokens: u32,
         num_ctx: Option<u32>,
+        reasoning: Option<Reasoning>,
     ) -> Result<Completion, SummarizeError> {
-        let request = rig_request(self.route, messages, cap_field, max_tokens, num_ctx);
+        let request = rig_request(
+            self.route, messages, cap_field, max_tokens, num_ctx, reasoning,
+        );
         let (host, model) = (self.host(), &self.endpoint.model);
         log::info!("{}", start_line(label, &host, model));
         let mut guard = EndGuard::new(label, &host, model);
-        let result = self.call_with_retries(request).await;
+        let result = match self.call_with_retries(request).await {
+            // Only a request with a reasoning option can have a refused
+            // reasoning option.
+            Err(SummarizeError::Http {
+                status: 400,
+                excerpt,
+            }) if reasoning.is_some() && names_reasoning(&excerpt) => {
+                Err(SummarizeError::ReasoningRefused { sent: true })
+            }
+            other => other,
+        };
         log::info!(
             "{}",
             end_line(
@@ -999,6 +1122,82 @@ fn http_error(route: Route, status: u16, body: &[u8]) -> SummarizeError {
     }
 }
 
+/// Texts in a 400 reply that name the reasoning option of a request:
+/// `reasoning_effort`, `reasoning` or `think`, and Ollama's "does not
+/// support thinking" (KTD6).
+const REASONING_SIGNS: &[&str] = &["reasoning", "think"];
+
+/// True when `excerpt`, the start of an error body, names the reasoning
+/// option.
+fn names_reasoning(excerpt: &str) -> bool {
+    let lower = excerpt.to_lowercase();
+    REASONING_SIGNS.iter().any(|s| lower.contains(s))
+}
+
+/// The Rig reasoning option of `level` (KTD5). Model default sends none.
+fn effort(level: ThinkingLevel) -> Option<Reasoning> {
+    match level {
+        ThinkingLevel::ModelDefault => None,
+        ThinkingLevel::Off => Some(Reasoning::Off),
+        ThinkingLevel::Low => Some(Effort::Low.into()),
+        ThinkingLevel::Medium => Some(Effort::Medium.into()),
+        ThinkingLevel::High => Some(Effort::High.into()),
+    }
+}
+
+/// The thinking budget of `level` for a model that takes only a budget:
+/// 1,024, 4,096 or 16,384 tokens, but not more than half of the reply cap
+/// `max_tokens` (KTD5). `None` for a level with no effort.
+fn budget(level: ThinkingLevel, max_tokens: u32) -> Option<Reasoning> {
+    let tokens = match level {
+        ThinkingLevel::Low => 1_024,
+        ThinkingLevel::Medium => 4_096,
+        ThinkingLevel::High => 16_384,
+        ThinkingLevel::ModelDefault | ThinkingLevel::Off => return None,
+    };
+    Some(Reasoning::Budget {
+        tokens: tokens.min(max_tokens / 2),
+    })
+}
+
+/// The provider, the address and the model of each automatic Thinking
+/// level that was refused since Longhand started (R17, KTD6). The set is
+/// lost at quit.
+static REFUSED: LazyLock<Mutex<HashSet<RefusedModel>>> = LazyLock::new(Default::default);
+
+/// One entry of [`REFUSED`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RefusedModel {
+    provider: Provider,
+    address: String,
+    model: String,
+}
+
+impl RefusedModel {
+    /// The entry for the requests of `client`.
+    fn of(client: &Client) -> Self {
+        Self {
+            provider: client.endpoint.provider,
+            address: client.address().trim_end_matches('/').to_string(),
+            model: client.endpoint.model.clone(),
+        }
+    }
+
+    fn was_refused(&self) -> bool {
+        REFUSED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(self)
+    }
+
+    fn remember(self) {
+        REFUSED
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(self);
+    }
+}
+
 /// The start of a provider's error body, as the user sees it.
 fn excerpt(text: &str) -> String {
     let excerpt: String = text.chars().take(200).collect();
@@ -1013,13 +1212,14 @@ const UNREADABLE: &str = "the reply could not be read";
 /// and puts the reply cap in the field of the route. A `cap_field` other
 /// than `max_tokens` replaces that field on the OpenAI-compatible route.
 /// Ollama gets `num_ctx` when there is one, and always `truncate: false`
-/// (KTD7).
+/// (KTD7). Rig puts `reasoning` in the field of the provider (KTD5).
 fn rig_request(
     route: Route,
     messages: &[Message],
     cap_field: &str,
     max_tokens: u32,
     num_ctx: Option<u32>,
+    reasoning: Option<Reasoning>,
 ) -> CompletionRequest {
     let mut history: Vec<RigMessage> = messages
         .iter()
@@ -1030,7 +1230,10 @@ fn rig_request(
         })
         .collect();
     let prompt = history.pop().unwrap_or_else(|| RigMessage::user(""));
-    let request = CompletionRequest::new(prompt).messages(history);
+    let mut request = CompletionRequest::new(prompt).messages(history);
+    if let Some(reasoning) = reasoning {
+        request = request.reasoning(reasoning);
+    }
     match route {
         // Rig writes the cap only as `max_tokens` here, so another field
         // name goes in the additional parameters instead.
@@ -1123,6 +1326,10 @@ fn failure(route: Route, error: &ProviderError) -> Failure {
             }
             None => SummarizeError::Malformed(format!("an error reply: {}", excerpt(&reply.body))),
         }),
+        // Rig refused the reasoning option before it sent the request.
+        ProviderError::UnsupportedOption(option) if option.option == "reasoning" => {
+            answered(SummarizeError::ReasoningRefused { sent: false })
+        }
         ProviderError::Request(_) | ProviderError::Url(_) | ProviderError::UnsupportedOption(_) => {
             answered(SummarizeError::Transport(
                 "the request could not be made".into(),

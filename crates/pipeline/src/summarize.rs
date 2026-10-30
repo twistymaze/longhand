@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
-use summarize::client::{Label, Message, RequestKind};
+use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
 use summarize::provider::ThinkingLevel;
 use summarize::{
@@ -295,7 +295,7 @@ pub fn send_title_request(
     // endpoint that cannot be reached does not stop the other jobs of the
     // summary queue.
     let client = match Client::new(client_endpoint(endpoint)) {
-        Ok(client) => client,
+        Ok(client) => client.with_thinking(thinking(endpoint)),
         Err(e) => return Ok(Err(e.to_string())),
     };
     if client.crosses_network_unencrypted() {
@@ -331,6 +331,15 @@ fn client_endpoint(endpoint: &SummaryEndpoint) -> Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
+    }
+}
+
+/// The Thinking level of the summary requests and the title request of
+/// `endpoint` (R8, KTD11).
+fn thinking(endpoint: &SummaryEndpoint) -> Thinking {
+    Thinking {
+        level: endpoint.thinking,
+        chosen: endpoint.thinking_chosen,
     }
 }
 
@@ -612,7 +621,8 @@ pub fn produce(
     }
     let client = Client::new(client_endpoint(&endpoint))
         .map_err(|e| StageError::Failed(e.to_string()))?
-        .with_retry_waits(endpoint.retry_waits.clone());
+        .with_retry_waits(endpoint.retry_waits.clone())
+        .with_thinking(thinking(&endpoint));
     if client.crosses_network_unencrypted() {
         log::warn!(
             "summarizing {note_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
