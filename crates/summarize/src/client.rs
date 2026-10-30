@@ -903,7 +903,9 @@ impl Client {
 
     /// Send `request` through Rig, and send it again after each retry wait
     /// while it cannot reach the endpoint. Each try has the total deadline
-    /// (KTD1).
+    /// (KTD1). A 429 reply is also sent again, after its `Retry-After`
+    /// value, or after the retry wait when it has none (KTD9). It uses the
+    /// same retry waits, so the number of tries has the same limit.
     async fn call_with_retries(
         &self,
         request: CompletionRequest,
@@ -917,6 +919,18 @@ impl Client {
                 Ok(response) => return completion(self.route, &response),
                 Err(error) => error,
             };
+            if let Some(retry_after) = rate_limit(&error)
+                && let Some(wait) = waits.next()
+            {
+                let wait = retry_after.unwrap_or(*wait);
+                log::warn!(
+                    "{} limited the request rate; sending the request again in {} ms",
+                    self.host(),
+                    wait.as_millis()
+                );
+                tokio::time::sleep(wait).await;
+                continue;
+            }
             match failure(self.route, &error) {
                 Failure::Answered(e) => return Err(e),
                 Failure::NotReached(text) => {
@@ -1394,6 +1408,28 @@ fn finish_name(reason: FinishReason) -> String {
 /// How a Rig request on `route` failed, as a Longhand error (KTD4). Only a
 /// transport error that proves the endpoint did not receive the request
 /// can be sent again.
+/// `Some` when `error` is a 429 reply (KTD9). The inner value is the wait
+/// that its `Retry-After` header gives in seconds, or `None` when the reply
+/// has no such header. A `Retry-After` date is not read: the retry wait
+/// applies.
+fn rate_limit(error: &ProviderError) -> Option<Option<Duration>> {
+    let ProviderError::ProviderResponse(reply) = error else {
+        return None;
+    };
+    if reply.status.map(|s| s.as_u16()) != Some(429) {
+        return None;
+    }
+    Some(
+        reply
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("retry-after"))
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map(Duration::from_secs),
+    )
+}
+
 fn failure(route: Route, error: &ProviderError) -> Failure {
     let answered = |e| Failure::Answered(e);
     match error {

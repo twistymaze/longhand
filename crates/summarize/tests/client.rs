@@ -206,6 +206,89 @@ async fn a_request_that_reaches_the_endpoint_is_not_sent_again() {
     assert_eq!(mock.seen.lock().unwrap().len(), 1);
 }
 
+/// A responder that answers the first `limited` requests with 429 and the
+/// header lines `headers`, and the next requests with a summary.
+fn rate_limited(limited: usize, headers: &'static str) -> Reply {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Reply::Await(Arc::new(move |_| {
+        let k = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if k < limited {
+                common::Answer {
+                    status: 429,
+                    headers: headers.into(),
+                    body: r#"{"error":{"message":"rate limited"}}"#.into(),
+                }
+            } else {
+                common::Answer {
+                    status: 200,
+                    headers: String::new(),
+                    body: completion("After the limit."),
+                }
+            }
+        })
+    }))
+}
+
+/// Covers KTD9: a 429 reply is sent again after its `Retry-After` value,
+/// not after the retry wait. The wait of one hour shows that the client
+/// used the header.
+#[tokio::test]
+async fn a_rate_limited_request_is_sent_again_after_its_retry_after_value() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(1, "Retry-After: 0\r\n"),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_secs(3600); 3]);
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "After the limit.");
+    assert_eq!(mock.seen.lock().unwrap().len(), 2);
+}
+
+/// Covers KTD9: a 429 reply with no `Retry-After` header is sent again
+/// after the retry waits, and fails when the waits are used up.
+#[tokio::test]
+async fn a_rate_limited_request_with_no_header_uses_the_retry_waits() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(2, ""),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 2]);
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "After the limit.");
+    assert_eq!(mock.seen.lock().unwrap().len(), 3);
+
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(3, ""),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 2]);
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 429, .. }),
+        "{err:?}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 3);
+}
+
 #[tokio::test]
 async fn an_endpoint_that_never_answers_hits_the_deadline() {
     let mock = serve(HashMap::from([("/v1/chat/completions", Reply::Hang)])).await;

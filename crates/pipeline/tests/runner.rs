@@ -2037,6 +2037,343 @@ async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_starts_there(
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
+/// The part number and the part count that a summary part request names,
+/// or `None` for another request.
+fn part_named(body: &str) -> Option<(usize, usize)> {
+    let text = user_content(body);
+    let rest = text.split("Write notes on part ").nth(1)?;
+    let (k, rest) = rest.split_once(" of ")?;
+    let total: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some((k.parse().ok()?, total.parse().ok()?))
+}
+
+/// What a held endpoint saw. The counts change as requests come and go.
+#[derive(Debug, Default, Clone)]
+struct Open {
+    /// The requests that are open now.
+    now: usize,
+    /// The most part requests that were open at the same time.
+    most_parts: usize,
+    /// The most merge requests of the first merge layer that were open at
+    /// the same time.
+    most_groups: usize,
+    /// The part requests that got a reply.
+    parts_done: usize,
+    /// True when the request of the last part came.
+    last_part: bool,
+    /// True when the merge request that holds the last part came.
+    last_group: bool,
+}
+
+/// An endpoint that holds each summary part request, and each merge
+/// request of the first merge layer, until `limit` requests are open or the
+/// request of the last part (or the last group) came. A run that sends
+/// fewer than `limit` requests at the same time gets a server error after
+/// a minute, so the test fails. Part 1 also waits until the other parts
+/// that it was sent with got their replies, so the parts finish out of
+/// order. A part request gets "Notes on part K.", a merge request
+/// "Merged notes.", and a title request a server error.
+fn held(limit: usize) -> (http::Reply, Arc<tokio::sync::watch::Sender<Open>>) {
+    let open = Arc::new(tokio::sync::watch::channel(Open::default()).0);
+    let state = Arc::clone(&open);
+    let reply = http::Reply::Await(Arc::new(move |body: String| {
+        let open = Arc::clone(&state);
+        Box::pin(async move {
+            let answer = |status, text: &str| http::Answer {
+                status,
+                headers: String::new(),
+                body: if status == 200 {
+                    http::completion(text)
+                } else {
+                    format!(r#"{{"error":"{text}"}}"#)
+                },
+            };
+            if is_title_call(&body) {
+                return answer(500, "no titles here");
+            }
+            let part = part_named(&body);
+            let group = part.is_none() && user_content(&body).contains("Notes on part ");
+            open.send_modify(|o| {
+                o.now += 1;
+                if let Some((k, n)) = part {
+                    o.most_parts = o.most_parts.max(o.now);
+                    o.last_part |= k == n;
+                }
+                if group {
+                    o.most_groups = o.most_groups.max(o.now);
+                    // Every part replied before the merges, so `parts_done`
+                    // is the part count. The parts have the same size, so
+                    // only the last group can be a group of one, which gets
+                    // no request. The last group request then ends at the
+                    // part before the last.
+                    let last = o.parts_done.saturating_sub(1);
+                    o.last_group |= parts_in(&body).last().is_some_and(|p| *p >= last);
+                }
+            });
+            let wait = async {
+                let mut seen = open.subscribe();
+                if let Some((k, n)) = part {
+                    let _ = seen.wait_for(|o| o.now >= limit || o.last_part).await;
+                    if k == 1 {
+                        let others = limit.min(n) - 1;
+                        let _ = seen.wait_for(|o| o.parts_done >= others).await;
+                    }
+                } else if group {
+                    let _ = seen.wait_for(|o| o.now >= limit || o.last_group).await;
+                }
+            };
+            let held_in_time = tokio::time::timeout(std::time::Duration::from_secs(60), wait)
+                .await
+                .is_ok();
+            open.send_modify(|o| {
+                o.now -= 1;
+                if part.is_some() {
+                    o.parts_done += 1;
+                }
+            });
+            if !held_in_time {
+                return answer(500, "fewer requests than the limit came");
+            }
+            match part {
+                Some((k, _)) => answer(200, &format!("Notes on part {k}.")),
+                None => answer(200, "Merged notes."),
+            }
+        })
+    }));
+    (reply, open)
+}
+
+/// The part numbers in a merge request, in the order of the request.
+fn parts_in(body: &str) -> Vec<usize> {
+    user_content(body)
+        .split("Notes on part ")
+        .skip(1)
+        .filter_map(|rest| rest.split('.').next()?.parse().ok())
+        .collect()
+}
+
+/// The part numbers of the first merge layer: the parts of each merge
+/// request in the order of the request, and the requests in the order of
+/// their first part. The requests can come in any order.
+fn merged_parts(bodies: &[String]) -> Vec<usize> {
+    let mut groups: Vec<Vec<usize>> = bodies
+        .iter()
+        .filter(|b| !is_title_call(b) && part_named(b).is_none())
+        .map(|b| parts_in(b))
+        .filter(|parts| !parts.is_empty())
+        .collect();
+    groups.sort_by_key(|parts| parts[0]);
+    groups.concat()
+}
+
+/// Run the long session against [`held`] with `limit` requests at the same
+/// time. Returns the rig, the mock, the counts, and the part count.
+async fn run_held(limit: u32) -> (Rig, http::Mock, Open, usize) {
+    let r = rig().await;
+    let (reply, open) = held(limit as usize);
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        requests_at_once: limit,
+        ..endpoint(&mock.base)
+    }));
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let parts = chat_calls(&mock)
+        .iter()
+        .filter(|c| c.contains("<transcript part="))
+        .count();
+    let counts = open.borrow().clone();
+    (r, mock, counts, parts)
+}
+
+/// The summary progress events of the rig, in order.
+fn summary_steps(r: &Rig) -> Vec<(SummaryStep, usize, usize)> {
+    r.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            RunnerEvent::Progress {
+                stage: Stage::Summarize,
+                summary_step: Some(step),
+                done,
+                total,
+                ..
+            } => Some((*step, *done, *total)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Covers AE7, R13, R14. With 4 requests at the same time, 4 part
+/// requests are open together and never more. The parts finish out of
+/// order, and the merge still has them in order. The part progress never
+/// goes back and ends at every part.
+#[tokio::test(flavor = "multi_thread")]
+async fn four_parts_are_sent_at_the_same_time_and_merged_in_order() {
+    let (r, mock, open, parts) = run_held(4).await;
+    assert!(parts >= 5, "{parts} parts");
+    assert_eq!(open.most_parts, 4, "{open:?}");
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert!(summary.body.contains("Merged notes."), "{}", summary.body);
+    // The first merge layer has each part once, in order.
+    assert_eq!(
+        merged_parts(&completions(&mock)),
+        (1..=parts).collect::<Vec<_>>()
+    );
+    let steps: Vec<(usize, usize)> = summary_steps(&r)
+        .into_iter()
+        .filter(|s| s.0 == SummaryStep::Parts)
+        .map(|s| (s.1, s.2))
+        .collect();
+    assert_eq!(steps.first(), Some(&(0, parts)), "{steps:?}");
+    assert_eq!(steps.last(), Some(&(parts, parts)), "{steps:?}");
+    assert!(
+        steps.windows(2).all(|w| w[0].0 <= w[1].0),
+        "the part count never goes back: {steps:?}"
+    );
+}
+
+/// Covers R13: the merge requests of one merge layer also go at the same
+/// time.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_merge_groups_of_a_layer_are_sent_at_the_same_time() {
+    let (_r, mock, open, _) = run_held(4).await;
+    let groups = completions(&mock)
+        .iter()
+        .filter(|b| !is_title_call(b) && !parts_in(b).is_empty())
+        .count();
+    assert!(groups >= 2, "{groups} groups");
+    assert_eq!(open.most_groups, groups.min(4), "{open:?}");
+}
+
+/// Covers R13: no more requests than the limit are open at the same time.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_at_the_same_time_never_opens_a_third_request() {
+    let (_r, _mock, open, parts) = run_held(2).await;
+    assert!(parts > 2, "{parts} parts");
+    assert_eq!(open.most_parts, 2, "{open:?}");
+}
+
+/// Covers AE7: with the LM Studio default of 1, the parts go one at a
+/// time, as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_at_the_same_time_sends_the_parts_one_by_one() {
+    let (_r, _mock, open, parts) = run_held(1).await;
+    assert!(parts > 2, "{parts} parts");
+    assert_eq!(open.most_parts, 1, "{open:?}");
+    assert_eq!(open.most_groups, 1, "{open:?}");
+}
+
+/// Covers KTD9: a failed part stops the run and drops the parts still
+/// open. The parts that finished keep their results, and the next run
+/// sends only the parts that have none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_part_drops_the_open_parts_and_the_next_run_sends_only_the_missing_parts() {
+    let r = rig().await;
+    let done = Arc::new(tokio::sync::watch::channel(0usize).0);
+    let first_run = Arc::new(AtomicBool::new(true));
+    let (seen_done, first) = (Arc::clone(&done), Arc::clone(&first_run));
+    let reply = http::Reply::Await(Arc::new(move |body: String| {
+        let (done, first) = (Arc::clone(&seen_done), first.load(Ordering::SeqCst));
+        Box::pin(async move {
+            let ok = |text: String| http::Answer {
+                status: 200,
+                headers: String::new(),
+                body: http::completion(&text),
+            };
+            if is_title_call(&body) {
+                return http::Answer {
+                    status: 500,
+                    headers: String::new(),
+                    body: r#"{"error":"no titles here"}"#.into(),
+                };
+            }
+            match part_named(&body) {
+                // In the first run, parts 1 and 3 reply, and parts 4, 5 and
+                // 6 get no reply. Parts 5 and 6 go only when the run saved
+                // the results of parts 1 and 3. Part 2 then fails.
+                Some((k @ (1 | 3), _)) if first => ok(format!("Notes on part {k}.")),
+                Some((2, _)) if first => {
+                    // A run that sends one part at a time never gets parts 5
+                    // and 6 before part 2 replies: it fails after a minute.
+                    let mut seen = done.subscribe();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        seen.wait_for(|n| *n >= 2),
+                    )
+                    .await;
+                    http::Answer {
+                        status: 500,
+                        headers: String::new(),
+                        body: r#"{"error":"overloaded"}"#.into(),
+                    }
+                }
+                Some((k, _)) if first => {
+                    if k == 5 || k == 6 {
+                        done.send_modify(|n| *n += 1);
+                    }
+                    std::future::pending().await
+                }
+                Some((k, _)) => ok(format!("Notes on part {k}.")),
+                None => ok("Merged notes.".into()),
+            }
+        })
+    }));
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        requests_at_once: 4,
+        ..endpoint(&mock.base)
+    }));
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let path = saved_folder(&r, "s").join("summary.md");
+    let stub = summary_at(&path);
+    assert!(stub.body.contains("part 2 of"), "{}", stub.body);
+    let first_calls = completions(&mock).len();
+    let sent: Vec<usize> = completions(&mock)
+        .iter()
+        .filter_map(|b| part_named(b).map(|p| p.0))
+        .collect();
+    // Parts 1 to 4 went first, and parts 5 and 6 when 1 and 3 finished.
+    let mut sorted = sent.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![1, 2, 3, 4, 5, 6], "{sent:?}");
+
+    first_run.store(false, Ordering::SeqCst);
+    r.runner.regenerate_summary("s").await.unwrap();
+    let again: Vec<usize> = completions(&mock)[first_calls..]
+        .iter()
+        .filter_map(|b| part_named(b))
+        .map(|p| p.0)
+        .collect();
+    let total = part_named(&completions(&mock)[0]).unwrap().1;
+    let mut sorted = again.clone();
+    sorted.sort_unstable();
+    let missing: Vec<usize> = (1..=total).filter(|k| *k != 1 && *k != 3).collect();
+    assert_eq!(sorted, missing, "{again:?}");
+    assert_eq!(
+        merged_parts(&completions(&mock)[first_calls..]),
+        (1..=total).collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        summary_at(&path).meta,
+        session_core::folder::SummaryMeta::Complete { .. }
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_locked_keychain_blocks_and_unlocking_resumes_without_redoing_work() {
     let r = rig().await;
