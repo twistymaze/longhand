@@ -1,8 +1,14 @@
 // The summary's markdown, parsed into blocks rendered as React elements.
 // The body comes from a model, so nothing is ever injected as HTML; only
-// headings, lists, paragraphs, and bold, italic and code runs are kept.
+// headings, lists, paragraphs, and bold, italic, code and link runs are
+// kept. A link keeps only a web or mail address.
 
-export type Inline = { kind: "text" | "strong" | "em" | "code"; text: string };
+import { findAutolinkMatches } from "../editor/plugins/autolink";
+import { isOpenableHref } from "../lib/links";
+
+export type Inline =
+  | { kind: "text" | "strong" | "em" | "code"; text: string }
+  | { kind: "link"; text: string; href: string };
 
 /// A list item. Its child lists hold the items that are indented below it.
 export type ListItem = { content: Inline[]; children: ListBlock[] };
@@ -114,9 +120,9 @@ export function parseMarkdown(text: string): Block[] {
   return blocks;
 }
 
-// Groups: 1 and 2 strong, 3 and 4 em, 5 code. An `_` or `__` inside a word
-// is text: it opens only after a character that is not a letter or number,
-// and closes only before one.
+// Groups: 1 and 2 strong, 3 and 4 em, 5 code, 6 and 7 the text and address
+// of a link. An `_` or `__` inside a word is text: it opens only after a
+// character that is not a letter or number, and closes only before one.
 const INLINE_PATTERN = new RegExp(
   [
     String.raw`\*\*(.+?)\*\*`,
@@ -124,24 +130,42 @@ const INLINE_PATTERN = new RegExp(
     String.raw`\*(?!\s)(.+?)(?<!\s)\*`,
     String.raw`(?<![\p{L}\p{N}_])_(?!\s)(.+?)(?<!\s)_(?![\p{L}\p{N}_])`,
     "`([^`]+)`",
+    String.raw`\[([^\]]+)\]\(([^)\s]+)\)`,
   ].join("|"),
   "gu",
 );
+
+/// Plain text, with each web address that starts with `http://` or
+/// `https://` as a link. A bare domain, such as a file name, stays text.
+function textRuns(text: string): Inline[] {
+  const out: Inline[] = [];
+  let last = 0;
+  for (const { start, end, href } of findAutolinkMatches(text)) {
+    if (!/^https?:\/\//i.test(text.slice(start, end))) continue;
+    if (start > last) out.push({ kind: "text", text: text.slice(last, start) });
+    out.push({ kind: "link", text: text.slice(start, end), href });
+    last = end;
+  }
+  if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
+  return out;
+}
 
 export function parseInline(text: string): Inline[] {
   const out: Inline[] = [];
   let last = 0;
   for (const m of text.matchAll(INLINE_PATTERN)) {
     const at = m.index ?? 0;
-    if (at > last) out.push({ kind: "text", text: text.slice(last, at) });
+    if (at > last) out.push(...textRuns(text.slice(last, at)));
     const strong = m[1] ?? m[2];
     const em = m[3] ?? m[4];
     if (strong !== undefined) out.push({ kind: "strong", text: strong });
     else if (em !== undefined) out.push({ kind: "em", text: em });
-    else out.push({ kind: "code", text: m[5] });
+    else if (m[5] !== undefined) out.push({ kind: "code", text: m[5] });
+    else if (isOpenableHref(m[7])) out.push({ kind: "link", text: m[6], href: m[7] });
+    else out.push({ kind: "text", text: m[6] });
     last = at + m[0].length;
   }
-  if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
+  if (last < text.length) out.push(...textRuns(text.slice(last)));
   return out;
 }
 

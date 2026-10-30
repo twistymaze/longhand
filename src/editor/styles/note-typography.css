@@ -358,8 +358,14 @@
 
   &:hover {
     color: color-mix(in oklab, var(--accent), transparent 20%);
-    cursor: pointer;
   }
+}
+
+/* The hand pointer shows only where a click opens the link: in a read-only
+   editor, or while the open key is held (link-open.ts). */
+.note-typography[contenteditable="false"] a,
+.note-typography[data-open-links] a {
+  cursor: pointer;
 }
 
 .note-typography strong {
