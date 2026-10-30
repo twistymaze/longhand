@@ -126,6 +126,30 @@ async setProviderContextLimit(provider: Provider, limit: number | null) : Promis
     else return { status: "error", error: e  as any };
 }
 },
+/**
+ * Save the Thinking level that the user picked for `provider` (R5), or
+ * `None` to use the default of the provider (Automatic).
+ */
+async setProviderThinking(provider: Provider, level: ThinkingLevel | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_provider_thinking", { provider, level }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Save how many requests go to `provider` at the same time (R12), or
+ * `None` to use the default of the provider.
+ */
+async setProviderRequestsAtOnce(provider: Provider, count: number | null) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_provider_requests_at_once", { provider, count }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
 async setDefaultSpeakerCount(count: SpeakerCountSetting | null) : Promise<Result<Settings, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("set_default_speaker_count", { count }) };
@@ -2455,7 +2479,17 @@ model: string;
  * The context limit that the user entered. It overrides the limit
  * that the provider reports (R15).
  */
-context_limit_tokens: number | null }
+context_limit_tokens: number | null; 
+/**
+ * The Thinking level that the user picked (R5). `None` uses the
+ * default of the provider kind, which is never saved (R6, KTD7).
+ */
+thinking: ThinkingLevel | null; 
+/**
+ * How many requests go to the provider at the same time, as the user
+ * set it (R12). `None` uses the default of the provider kind (KTD7).
+ */
+requests_at_once: number | null }
 /**
  * Why the shared settings are read-only.
  */
@@ -3311,6 +3345,11 @@ key: string;
  * The number of notes with the tag (R31).
  */
 count: number }
+/**
+ * How much the model thinks before it replies (R5). Model default sends
+ * no reasoning control.
+ */
+export type ThinkingLevel = "model_default" | "off" | "low" | "medium" | "high"
 /**
  * The transcription model of a Transcribe Again run, for the dialog.
  */

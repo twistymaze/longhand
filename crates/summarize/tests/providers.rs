@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{Reply, anthropic_reply, chat_reply, closed_base, gemini_reply, ollama_reply, serve};
-use serde_json::json;
+use serde_json::{Value, json};
 use summarize::chunk::{Line, Turn};
-use summarize::client::{Label, Message, RequestKind};
+use summarize::client::{Label, Message, RequestKind, Thinking};
+use summarize::provider::ThinkingLevel;
 use summarize::{Client, Endpoint, Limits, Provider, SummarizeError, prompts};
 
 const GEMINI_PATH: &str = "/v1beta/models/m:generateContent?key=k-secret";
@@ -91,21 +92,41 @@ fn one_turn() -> Vec<Line> {
     ]
 }
 
-/// The body that the client sent before Rig, for `messages`, `model` and
-/// the reply cap `cap`.
-fn body_before_rig(model: &str, messages: &[Message], cap: u32) -> String {
-    let mut body = json!({
-        "model": model,
-        "messages": messages,
-        "stream": false,
-    });
-    body["max_tokens"] = json!(cap);
-    serde_json::to_string(&body).unwrap()
+/// The text of one message in a Chat Completions body. Rig can send the
+/// content as a string or as an array of text parts.
+fn text_of(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|part| {
+                assert_eq!(part["type"], "text", "{part}");
+                part["text"].as_str().unwrap().to_string()
+            })
+            .collect(),
+        other => panic!("no message text in {other}"),
+    }
+}
+
+/// Assert that the Chat Completions `body` that Rig built holds `model`,
+/// each of `messages` with its role and text, and the reply cap `cap` as
+/// `max_tokens` (R9, R11). Longhand writes no `stream` field.
+fn assert_chat_body(body: &Value, model: &str, messages: &[Message], cap: u32) {
+    assert_eq!(body["model"], model, "{body}");
+    let sent = body["messages"].as_array().unwrap();
+    assert_eq!(sent.len(), messages.len(), "{body}");
+    for (sent, message) in sent.iter().zip(messages) {
+        assert_eq!(sent["role"], message.role, "{body}");
+        assert_eq!(text_of(&sent["content"]), message.content, "{body}");
+    }
+    assert_eq!(body["max_tokens"], cap, "{body}");
+    assert!(body.get("max_completion_tokens").is_none(), "{body}");
+    assert!(body.get("stream").is_none(), "{body}");
 }
 
 /// Covers AE7.
 #[tokio::test]
-async fn custom_sends_the_chat_completions_body_of_today_with_the_bearer_key() {
+async fn custom_sends_a_chat_completions_body_built_by_rig_with_the_bearer_key() {
     let mock = serve(HashMap::from([(
         "/v1/chat/completions",
         Reply::Json(200, chat_reply("fine", "stop")),
@@ -126,8 +147,7 @@ async fn custom_sends_the_chat_completions_body_of_today_with_the_bearer_key() {
         assert_eq!(sent.method, "POST");
         assert_eq!(sent.path, "/v1/chat/completions");
         assert_eq!(sent.authorization.as_deref(), Some("Bearer sk-test"));
-        assert_eq!(sent.body, body_before_rig("m", messages, 900));
-        assert!(sent.json()["messages"][0]["content"].is_string());
+        assert_chat_body(&sent.json(), "m", messages, 900);
     }
 }
 
@@ -237,7 +257,7 @@ async fn the_openai_preset_sends_chat_completions_not_responses() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].path, "/v1/chat/completions");
     assert_eq!(seen[0].authorization.as_deref(), Some("Bearer sk-test"));
-    assert_eq!(seen[0].body, body_before_rig("m", &sys_and_user(), 100));
+    assert_chat_body(&seen[0].json(), "m", &sys_and_user(), 100);
 }
 
 #[tokio::test]
@@ -450,7 +470,30 @@ async fn a_refused_max_tokens_is_sent_once_more_with_max_completion_tokens() {
     let second = seen[1].json();
     assert_eq!(second["max_completion_tokens"], 50, "{second}");
     assert!(second.get("max_tokens").is_none(), "{second}");
-    assert_eq!(second["stream"], false);
+    assert!(second.get("stream").is_none(), "{second}");
+}
+
+#[tokio::test]
+async fn a_request_refused_again_for_max_completion_tokens_is_not_sent_a_third_time() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(
+            400,
+            r#"{"error":{"message":"Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."}}"#.into(),
+        ),
+    )]))
+    .await;
+    let err = client(Provider::Custom, &mock.base, None)
+        .complete(&label(), &sys_and_user(), 50, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 400, .. }),
+        "{err:?}"
+    );
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].json()["max_completion_tokens"], 50);
 }
 
 #[tokio::test]
@@ -543,7 +586,312 @@ async fn lm_studio_and_custom_with_no_saved_key_send_no_authorization_header() {
     assert_eq!(seen.len(), 4);
     for sent in seen.iter() {
         assert_eq!(sent.authorization, None, "{}", sent.body);
+        assert_chat_body(&sent.json(), "m", &sys_and_user(), 100);
     }
+}
+
+// ------------------------------------------------------------ Thinking (U3)
+
+fn thinking(level: ThinkingLevel, chosen: bool) -> Thinking {
+    Thinking { level, chosen }
+}
+
+/// Send one request with `thinking` for `provider` and `model` to a server
+/// that accepts it, and return the body that the server got.
+async fn body_with(provider: Provider, model: &str, cap: u32, thinking: Thinking) -> Value {
+    let reply = match provider {
+        Provider::Anthropic => anthropic_reply("fine", "end_turn"),
+        Provider::Ollama => ollama_reply("fine", "stop"),
+        _ => chat_reply("fine", "stop"),
+    };
+    let mock = serve(HashMap::from([(
+        path_for(provider),
+        Reply::Json(200, reply),
+    )]))
+    .await;
+    let mut endpoint = endpoint(provider, &mock.base, Some("k"));
+    endpoint.model = model.into();
+    let reply = Client::new(endpoint)
+        .unwrap()
+        .with_thinking(thinking)
+        .complete(&label(), &sys_and_user(), cap, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "fine");
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    seen[0].json()
+}
+
+/// Covers AE6.
+#[tokio::test]
+async fn custom_sends_the_thinking_level_as_reasoning_effort_and_model_default_sends_none() {
+    let low = body_with(
+        Provider::Custom,
+        "m",
+        100,
+        thinking(ThinkingLevel::Low, true),
+    )
+    .await;
+    assert_eq!(low["reasoning_effort"], "low", "{low}");
+
+    let default = body_with(
+        Provider::Custom,
+        "m",
+        100,
+        thinking(ThinkingLevel::ModelDefault, true),
+    )
+    .await;
+    assert!(default.get("reasoning_effort").is_none(), "{default}");
+    assert!(default.get("reasoning").is_none(), "{default}");
+}
+
+#[tokio::test]
+async fn lm_studio_sends_thinking_off_as_reasoning_effort_none() {
+    let off = body_with(
+        Provider::LmStudio,
+        "m",
+        100,
+        thinking(ThinkingLevel::Off, false),
+    )
+    .await;
+    assert_eq!(off["reasoning_effort"], "none", "{off}");
+}
+
+#[tokio::test]
+async fn ollama_sends_the_thinking_level_as_think() {
+    let low = body_with(
+        Provider::Ollama,
+        "m",
+        100,
+        thinking(ThinkingLevel::Low, false),
+    )
+    .await;
+    assert_eq!(low["think"], "low", "{low}");
+    let off = body_with(
+        Provider::Ollama,
+        "m",
+        100,
+        thinking(ThinkingLevel::Off, true),
+    )
+    .await;
+    assert_eq!(off["think"], false, "{off}");
+}
+
+/// KTD5: a model that takes only a thinking budget gets 1,024, 4,096 or
+/// 16,384 tokens, not more than half the reply cap.
+#[tokio::test]
+async fn a_budget_only_anthropic_model_gets_a_thinking_budget_for_the_level() {
+    let medium = body_with(
+        Provider::Anthropic,
+        "claude-haiku-4-5",
+        10_000,
+        thinking(ThinkingLevel::Medium, true),
+    )
+    .await;
+    assert_eq!(medium["thinking"]["type"], "enabled", "{medium}");
+    assert_eq!(medium["thinking"]["budget_tokens"], 4_096, "{medium}");
+    assert!(medium.get("output_config").is_none(), "{medium}");
+
+    let high = body_with(
+        Provider::Anthropic,
+        "claude-haiku-4-5",
+        6_000,
+        thinking(ThinkingLevel::High, true),
+    )
+    .await;
+    assert_eq!(high["thinking"]["budget_tokens"], 3_000, "{high}");
+}
+
+/// An Ollama server that refuses every request with `think` for a model
+/// that cannot think.
+fn refuses_think() -> Reply {
+    Reply::With(Arc::new(|body: &str| {
+        let body: Value = serde_json::from_str(body).unwrap();
+        if body.get("think").is_some() {
+            (400, r#"{"error":"\"m\" does not support thinking"}"#.into())
+        } else {
+            (200, ollama_reply("fine", "stop"))
+        }
+    }))
+}
+
+/// Covers AE9 and R17. Each test has its own server address, so the
+/// remembered refusal of one test does not change another test.
+#[tokio::test]
+async fn a_refused_automatic_level_is_sent_again_without_it_and_is_not_sent_again_later() {
+    let mock = serve(HashMap::from([("/api/chat", refuses_think())])).await;
+    let automatic = || {
+        client(Provider::Ollama, &mock.base, None)
+            .with_thinking(thinking(ThinkingLevel::Low, false))
+    };
+    let first = automatic()
+        .complete(&label(), &sys_and_user(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(first.text, "fine");
+    // A later request to the same model, for example for a second note.
+    let second = automatic()
+        .complete(&label(), &sys_and_user(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(second.text, "fine");
+
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 3, "one refusal, one resend, one later request");
+    assert_eq!(seen[0].json()["think"], "low");
+    assert!(seen[1].json().get("think").is_none(), "{}", seen[1].body);
+    assert!(seen[2].json().get("think").is_none(), "{}", seen[2].body);
+}
+
+/// Covers R7 after R17: the user's choice is sent although the automatic
+/// level was refused before, and its refusal is an error.
+#[tokio::test]
+async fn a_chosen_level_is_sent_after_an_automatic_refusal_and_its_refusal_is_an_error() {
+    let mock = serve(HashMap::from([("/api/chat", refuses_think())])).await;
+    client(Provider::Ollama, &mock.base, None)
+        .with_thinking(thinking(ThinkingLevel::Low, false))
+        .complete(&label(), &sys_and_user(), 100, None)
+        .await
+        .unwrap();
+    let err = client(Provider::Ollama, &mock.base, None)
+        .with_thinking(thinking(ThinkingLevel::Low, true))
+        .complete(&label(), &sys_and_user(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::ReasoningRefused { .. }),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("Thinking"), "{err}");
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 3);
+    assert_eq!(seen[2].json()["think"], "low");
+}
+
+/// Covers AE5.
+#[tokio::test]
+async fn a_refused_chosen_level_fails_after_one_request() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(
+            400,
+            r#"{"error":{"message":"reasoning_effort 'none' is not supported by this model"}}"#
+                .into(),
+        ),
+    )]))
+    .await;
+    let err = client(Provider::LmStudio, &mock.base, None)
+        .with_thinking(thinking(ThinkingLevel::Off, true))
+        .complete(&label(), &sys_and_user(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::ReasoningRefused { .. }),
+        "{err:?}"
+    );
+    assert!(
+        err.to_string().contains(summarize::THINKING_SETTING),
+        "{err}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+}
+
+/// A server that refuses a reply cap above 4,096 with a 400 that names
+/// `model`, and accepts a smaller cap.
+fn caps_at_4096(model: &'static str) -> Reply {
+    Reply::With(Arc::new(move |body: &str| {
+        let v: Value = serde_json::from_str(body).unwrap();
+        if v["max_tokens"].as_u64().unwrap_or(0) > 4_096 {
+            (
+                400,
+                format!(
+                    r#"{{"error":{{"message":"max_tokens: 16384 > 4096 for model {model}"}}}}"#
+                ),
+            )
+        } else {
+            (200, chat_reply("fine", "stop"))
+        }
+    }))
+}
+
+/// The client to the server `base` with the model `model`.
+fn client_for(base: &str, model: &str) -> Client {
+    let mut endpoint = endpoint(Provider::Custom, base, None);
+    endpoint.model = model.into();
+    Client::new(endpoint).unwrap()
+}
+
+/// The reply caps of the requests that `mock` got.
+fn caps(mock: &common::Mock) -> Vec<u64> {
+    mock.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| s.json()["max_tokens"].as_u64().unwrap())
+        .collect()
+}
+
+/// A 400 that names an output cap is an output-cap refusal, also when the
+/// model id contains "think" and the request has a chosen Thinking level.
+#[tokio::test]
+async fn an_output_cap_refusal_that_names_a_thinking_model_is_not_a_reasoning_refusal() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        caps_at_4096("DeepThink-7B"),
+    )]))
+    .await;
+    let client = client_for(&mock.base, "DeepThink-7B");
+    let reply = client
+        .with_thinking(thinking(ThinkingLevel::Low, true))
+        .complete(&label(), &sys_and_user(), 16_384, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "fine");
+    assert_eq!(caps(&mock), [16_384, 4_096]);
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(
+        seen[1].json()["reasoning_effort"],
+        "low",
+        "{}",
+        seen[1].body
+    );
+}
+
+/// A number in the model id is not read as the output cap.
+#[tokio::test]
+async fn a_number_in_the_model_id_is_not_the_learned_output_cap() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        caps_at_4096("q-8192-chat"),
+    )]))
+    .await;
+    let client = client_for(&mock.base, "q-8192-chat");
+    client
+        .complete(&label(), &sys_and_user(), 16_384, None)
+        .await
+        .unwrap();
+    assert_eq!(caps(&mock), [16_384, 4_096]);
+    assert_eq!(client.output_max(), Some(4_096));
+}
+
+/// A 400 that names reasoning is not a reasoning refusal when the request
+/// had no reasoning option.
+#[tokio::test]
+async fn a_400_that_names_reasoning_without_a_level_is_an_http_error() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(400, r#"{"error":"reasoning_effort is wrong"}"#.into()),
+    )]))
+    .await;
+    let err = client(Provider::Custom, &mock.base, None)
+        .complete(&label(), &sys_and_user(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 400, .. }),
+        "{err:?}"
+    );
 }
 
 #[test]

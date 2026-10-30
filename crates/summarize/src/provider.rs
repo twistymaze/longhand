@@ -91,6 +91,24 @@ impl Provider {
         !self.is_cloud()
     }
 
+    /// The Thinking level of a provider entry that has no level from the
+    /// user: Low for the local providers, Model default for the others
+    /// (R6).
+    pub fn default_thinking(self) -> ThinkingLevel {
+        if self.is_local() {
+            ThinkingLevel::Low
+        } else {
+            ThinkingLevel::ModelDefault
+        }
+    }
+
+    /// How many requests go to the provider at the same time when the user
+    /// set no number: 4 for the cloud providers, 1 for the local providers
+    /// and Custom (R12).
+    pub fn default_requests_at_once(self) -> u32 {
+        if self.is_cloud() { 4 } else { 1 }
+    }
+
     /// The kind of request that Rig sends to this provider.
     pub(crate) fn route(self) -> Route {
         match self {
@@ -100,6 +118,18 @@ impl Provider {
             Self::Ollama => Route::Ollama,
         }
     }
+}
+
+/// How much the model thinks before it replies (R5). Model default sends
+/// no reasoning control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingLevel {
+    ModelDefault,
+    Off,
+    Low,
+    Medium,
+    High,
 }
 
 /// The kind of a summary request. Each kind has its own reply format and
@@ -138,5 +168,31 @@ mod tests {
             assert_eq!(provider.takes_key(), !provider.is_local());
             assert_eq!(provider.address_editable(), !provider.is_cloud());
         }
+    }
+
+    #[test]
+    fn each_provider_kind_has_its_own_defaults() {
+        // Covers R6, R12.
+        for provider in Provider::ALL {
+            let (thinking, requests) = match provider {
+                Provider::LmStudio | Provider::Ollama => (ThinkingLevel::Low, 1),
+                Provider::Custom => (ThinkingLevel::ModelDefault, 1),
+                _ => (ThinkingLevel::ModelDefault, 4),
+            };
+            assert_eq!(provider.default_thinking(), thinking, "{provider:?}");
+            assert_eq!(
+                provider.default_requests_at_once(),
+                requests,
+                "{provider:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_thinking_level_is_stored_by_its_snake_case_name() {
+        let json = serde_json::to_value(ThinkingLevel::ModelDefault).unwrap();
+        assert_eq!(json, serde_json::json!("model_default"));
+        let low: ThinkingLevel = serde_json::from_value(serde_json::json!("low")).unwrap();
+        assert_eq!(low, ThinkingLevel::Low);
     }
 }

@@ -20,8 +20,9 @@ use serde_json::{Map, Value};
 use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
-use summarize::Provider;
 use summarize::prompts::TOPIC_SUMMARY_ID;
+use summarize::provider::ThinkingLevel;
+use summarize::{Provider, Thinking};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
@@ -304,6 +305,61 @@ pub struct ProviderEntry {
     /// The context limit that the user entered. It overrides the limit
     /// that the provider reports (R15).
     pub context_limit_tokens: Option<u32>,
+    /// The Thinking level that the user picked (R5). `None` uses the
+    /// default of the provider kind, which is never saved (R6, KTD7).
+    #[serde(deserialize_with = "known_thinking")]
+    pub thinking: Option<ThinkingLevel>,
+    /// How many requests go to the provider at the same time, as the user
+    /// set it (R12). `None` uses the default of the provider kind (KTD7).
+    pub requests_at_once: Option<u32>,
+}
+
+/// The range of the Requests at the same time setting (R12).
+pub const REQUESTS_AT_ONCE: std::ops::RangeInclusive<u32> = 1..=8;
+
+impl ProviderEntry {
+    /// The Thinking level that requests to `provider` use, and whether the
+    /// user chose it. A level that is not chosen is the default of the
+    /// provider kind (R6, KTD7).
+    pub fn effective_thinking(&self, provider: Provider) -> Thinking {
+        match self.thinking {
+            Some(level) => Thinking {
+                level,
+                chosen: true,
+            },
+            None => Thinking {
+                level: provider.default_thinking(),
+                chosen: false,
+            },
+        }
+    }
+
+    /// How many requests go to `provider` at the same time (R12). A stored
+    /// number out of [`REQUESTS_AT_ONCE`] gives the nearest number in it.
+    pub fn effective_requests_at_once(&self, provider: Provider) -> u32 {
+        self.requests_at_once
+            .unwrap_or_else(|| provider.default_requests_at_once())
+            .clamp(*REQUESTS_AT_ONCE.start(), *REQUESTS_AT_ONCE.end())
+    }
+}
+
+/// The stored Thinking level. A level that this build does not know, for
+/// example one that a newer build stored, reads as `None`: the default of
+/// the provider kind applies, and the other settings stay.
+fn known_thinking<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ThinkingLevel>, D::Error> {
+    let value = Value::deserialize(d)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match serde_json::from_value::<ThinkingLevel>(value) {
+        Ok(level) => Ok(Some(level)),
+        Err(_) => {
+            log::warn!("the stored Thinking level is not known; the default level applies");
+            Ok(None)
+        }
+    }
 }
 
 /// One [`ProviderEntry`] for each provider (R10, KTD6). Each field name is
@@ -1209,6 +1265,35 @@ impl Settings {
         Ok(())
     }
 
+    /// Save the Thinking level that the user picked for `provider` (R5).
+    /// A pick equal to the default is saved too (KTD7). `None` (Automatic)
+    /// removes the pick, so the default of the provider applies.
+    pub fn set_provider_thinking(&mut self, provider: Provider, level: Option<ThinkingLevel>) {
+        self.providers.get_mut(provider).thinking = level;
+    }
+
+    /// Save how many requests go to `provider` at the same time (R12). A
+    /// number out of [`REQUESTS_AT_ONCE`] is refused, and the saved number
+    /// stays. `None` removes the number, so the default of the provider
+    /// applies.
+    pub fn set_provider_requests_at_once(
+        &mut self,
+        provider: Provider,
+        count: Option<u32>,
+    ) -> Result<(), String> {
+        if let Some(count) = count
+            && !REQUESTS_AT_ONCE.contains(&count)
+        {
+            return Err(format!(
+                "requests at the same time must be from {} to {}",
+                REQUESTS_AT_ONCE.start(),
+                REQUESTS_AT_ONCE.end()
+            ));
+        }
+        self.providers.get_mut(provider).requests_at_once = count;
+        Ok(())
+    }
+
     /// Save the address that the connection check of `provider` resolved
     /// (KTD9, R14). Only Custom gets a changed address, and only while its
     /// address is still `started`, the address that the check used. A
@@ -1582,6 +1667,7 @@ fn migrate_endpoint(settings: &mut LocalSettings, stored: &Value) {
         address,
         model: model.to_string(),
         context_limit_tokens: limit,
+        ..Default::default()
     };
 }
 
@@ -3887,6 +3973,7 @@ mod tests {
                 address: Some("https://litellm.ewal.io/v1".into()),
                 model: "qwen3-30b".into(),
                 context_limit_tokens: Some(64000),
+                ..Default::default()
             }
         );
         assert_eq!(
@@ -3919,6 +4006,7 @@ mod tests {
                 address: None,
                 model: "gpt-4o".into(),
                 context_limit_tokens: Some(32000),
+                ..Default::default()
             }
         );
         assert_eq!(settings.legacy_key_provider, Some(Provider::OpenAi));
@@ -3973,7 +4061,7 @@ mod tests {
         assert_eq!(written["active_provider"], json!("custom"));
         assert_eq!(
             written["providers"]["custom"],
-            json!({ "address": "https://litellm.ewal.io/v1", "model": "qwen3-30b", "context_limit_tokens": null })
+            json!({ "address": "https://litellm.ewal.io/v1", "model": "qwen3-30b", "context_limit_tokens": null, "thinking": null, "requests_at_once": null })
         );
     }
 
@@ -4066,6 +4154,218 @@ mod tests {
             settings.providers.custom.context_limit_tokens,
             Some(200_000)
         );
+    }
+
+    #[test]
+    fn a_version_7_entry_with_no_new_fields_uses_the_defaults_of_its_kind() {
+        // Covers AE4, R6, R12, KTD7. No new field means no write.
+        let stored = json!({
+            "settings_schema_version": 7,
+            "active_provider": "lm_studio",
+            "providers": {
+                "lm_studio": { "model": "qwen3-30b" },
+                "openrouter": { "model": "openai/gpt-5" },
+            },
+        });
+        let (settings, updated) = settings_from_value(&stored);
+        assert!(!updated);
+        let lm_studio = &settings.providers.lm_studio;
+        assert_eq!(lm_studio.thinking, None);
+        assert_eq!(lm_studio.requests_at_once, None);
+        assert_eq!(
+            lm_studio.effective_thinking(Provider::LmStudio),
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: false
+            }
+        );
+        assert_eq!(lm_studio.effective_requests_at_once(Provider::LmStudio), 1);
+        let openrouter = &settings.providers.openrouter;
+        assert_eq!(
+            openrouter.effective_thinking(Provider::OpenRouter),
+            Thinking {
+                level: ThinkingLevel::ModelDefault,
+                chosen: false
+            }
+        );
+        assert_eq!(
+            openrouter.effective_requests_at_once(Provider::OpenRouter),
+            4
+        );
+    }
+
+    #[test]
+    fn a_thinking_level_from_a_newer_build_loads_as_the_default() {
+        // A newer build can store a level that this build does not know.
+        let stored = json!({
+            "settings_schema_version": 7,
+            "active_provider": "lm_studio",
+            "providers": {
+                "lm_studio": {
+                    "address": "http://localhost:1234/v1",
+                    "model": "qwen3-30b",
+                    "context_limit_tokens": 32_000,
+                    "thinking": "xhigh",
+                    "requests_at_once": 2,
+                },
+                "openai": { "model": "gpt-5", "thinking": "high" },
+            },
+        });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.active_provider, Some(Provider::LmStudio));
+        let lm_studio = &settings.providers.lm_studio;
+        assert_eq!(lm_studio.thinking, None);
+        assert_eq!(
+            lm_studio.address.as_deref(),
+            Some("http://localhost:1234/v1")
+        );
+        assert_eq!(lm_studio.model, "qwen3-30b");
+        assert_eq!(lm_studio.context_limit_tokens, Some(32_000));
+        assert_eq!(lm_studio.requests_at_once, Some(2));
+        assert_eq!(
+            lm_studio.effective_thinking(Provider::LmStudio),
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: false
+            }
+        );
+        assert_eq!(settings.providers.openai.model, "gpt-5");
+        assert_eq!(
+            settings.providers.openai.thinking,
+            Some(ThinkingLevel::High)
+        );
+    }
+
+    #[test]
+    fn a_stored_requests_at_once_out_of_range_is_clamped() {
+        let entry = |count| ProviderEntry {
+            requests_at_once: Some(count),
+            ..ProviderEntry::default()
+        };
+        assert_eq!(entry(0).effective_requests_at_once(Provider::Custom), 1);
+        assert_eq!(entry(20).effective_requests_at_once(Provider::Custom), 8);
+        assert_eq!(entry(3).effective_requests_at_once(Provider::Custom), 3);
+    }
+
+    #[test]
+    fn a_thinking_level_that_the_user_picks_is_stored_and_chosen() {
+        // KTD7: a pick equal to the default is stored too.
+        let mut settings = Settings::default();
+        settings.set_provider_thinking(Provider::LmStudio, Some(ThinkingLevel::Low));
+        assert_eq!(
+            settings.providers.lm_studio.thinking,
+            Some(ThinkingLevel::Low)
+        );
+        assert_eq!(
+            settings
+                .providers
+                .lm_studio
+                .effective_thinking(Provider::LmStudio),
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: true
+            }
+        );
+        let written = serde_json::to_value(settings.local()).unwrap();
+        assert_eq!(written["providers"]["lm_studio"]["thinking"], json!("low"));
+    }
+
+    #[test]
+    fn automatic_thinking_removes_the_pick_and_uses_the_default() {
+        let mut settings = Settings::default();
+        settings.set_provider_thinking(Provider::LmStudio, Some(ThinkingLevel::High));
+        settings.set_provider_thinking(Provider::LmStudio, None);
+        assert_eq!(settings.providers.lm_studio.thinking, None);
+        assert_eq!(
+            settings
+                .providers
+                .lm_studio
+                .effective_thinking(Provider::LmStudio),
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: false
+            }
+        );
+    }
+
+    #[test]
+    fn requests_at_once_accepts_1_to_8_and_keeps_its_value_after_a_refusal() {
+        let mut settings = Settings::default();
+        settings
+            .set_provider_requests_at_once(Provider::Custom, Some(1))
+            .unwrap();
+        assert_eq!(settings.providers.custom.requests_at_once, Some(1));
+        settings
+            .set_provider_requests_at_once(Provider::Custom, Some(8))
+            .unwrap();
+        assert_eq!(settings.providers.custom.requests_at_once, Some(8));
+        for refused in [0, 9] {
+            assert!(
+                settings
+                    .set_provider_requests_at_once(Provider::Custom, Some(refused))
+                    .is_err()
+            );
+            assert_eq!(settings.providers.custom.requests_at_once, Some(8));
+        }
+        assert_eq!(
+            settings
+                .providers
+                .custom
+                .effective_requests_at_once(Provider::Custom),
+            8
+        );
+        // No value resets the setting to the default of the provider.
+        settings
+            .set_provider_requests_at_once(Provider::Custom, None)
+            .unwrap();
+        assert_eq!(settings.providers.custom.requests_at_once, None);
+        assert_eq!(
+            settings
+                .providers
+                .custom
+                .effective_requests_at_once(Provider::Custom),
+            1
+        );
+    }
+
+    #[test]
+    fn each_provider_keeps_its_own_thinking_and_requests_at_once() {
+        let mut settings = Settings::default();
+        settings.choose_provider(Some(Provider::Ollama));
+        settings.set_provider_thinking(Provider::Ollama, Some(ThinkingLevel::High));
+        settings
+            .set_provider_requests_at_once(Provider::Ollama, Some(2))
+            .unwrap();
+        settings.choose_provider(Some(Provider::OpenAi));
+        settings.set_provider_thinking(Provider::OpenAi, Some(ThinkingLevel::Off));
+        settings.choose_provider(Some(Provider::Ollama));
+        assert_eq!(
+            settings.providers.ollama.thinking,
+            Some(ThinkingLevel::High)
+        );
+        assert_eq!(settings.providers.ollama.requests_at_once, Some(2));
+        assert_eq!(settings.providers.openai.thinking, Some(ThinkingLevel::Off));
+        assert_eq!(settings.providers.openai.requests_at_once, None);
+    }
+
+    #[test]
+    fn an_entry_with_an_unknown_field_beside_the_new_fields_still_loads() {
+        let stored = json!({
+            "settings_schema_version": CURRENT_SETTINGS_SCHEMA_VERSION,
+            "active_provider": "ollama",
+            "providers": { "ollama": {
+                "model": "qwen3",
+                "thinking": "medium",
+                "requests_at_once": 3,
+                "a_field_from_another_build": true,
+            } },
+        });
+        let (settings, _) = settings_from_value(&stored);
+        assert_eq!(settings.active_provider, Some(Provider::Ollama));
+        let ollama = &settings.providers.ollama;
+        assert_eq!(ollama.model, "qwen3");
+        assert_eq!(ollama.thinking, Some(ThinkingLevel::Medium));
+        assert_eq!(ollama.requests_at_once, Some(3));
     }
 
     #[test]
@@ -4660,6 +4960,7 @@ mod stale_recognition_tests {
                     address: Some("http://localhost:11434/v1".into()),
                     model: "llama3".into(),
                     context_limit_tokens: None,
+                    ..Default::default()
                 },
                 ..ProviderEntries::default()
             },

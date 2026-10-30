@@ -6,7 +6,7 @@
 use summarize::chunk::{Chunk, Line, Turn};
 use summarize::client::Message;
 use summarize::prompts::{self, BACKGROUND_TEXT_LIMIT, PROMPT_TEXT_LIMIT, Prompt};
-use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
+use summarize::tokens::{estimate, estimate_messages, prompt_allowance, split_reserve};
 
 /// A custom prompt text that must reach only the final call.
 const CUSTOM: &str = "Write a haiku about the session. CUSTOM-MARKER";
@@ -311,7 +311,7 @@ fn a_prompt_text_and_a_background_at_their_limits_fit_at_16384_tokens_but_not_at
         "{with} {without}"
     );
 
-    let allowance = |limit| prompt_allowance(limit, reply_reserve(limit));
+    let allowance = |limit| prompt_allowance(limit, split_reserve(limit));
     // The "prompt too long" check of the final call passes at 16,384.
     assert!(with * 2 <= allowance(16_384), "{with}");
     let room = allowance(16_384)
@@ -324,7 +324,7 @@ fn a_prompt_text_and_a_background_at_their_limits_fit_at_16384_tokens_but_not_at
 
 #[test]
 fn the_notes_are_cut_shorter_to_leave_room_for_the_background() {
-    let allowance = prompt_allowance(8_192, reply_reserve(8_192));
+    let allowance = prompt_allowance(8_192, split_reserve(8_192));
     let long: String = (0..2_000)
         .map(|i| format!("- note {i} about something the user found important\n"))
         .collect();

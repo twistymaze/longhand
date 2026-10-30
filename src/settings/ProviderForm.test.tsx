@@ -16,7 +16,7 @@ afterAll(() => {
   delete (navigator as { userAgent?: string }).userAgent;
 });
 
-const empty: ProviderEntry = { address: null, model: "", context_limit_tokens: null };
+const empty: ProviderEntry = { address: null, model: "", context_limit_tokens: null, thinking: null, requests_at_once: null };
 
 const baseSettings: Settings = {
   settings_schema_version: 7,
@@ -123,6 +123,10 @@ function backend({
     set_provider_model: ({ provider, model }) => setEntry(provider as Provider, { model: model as string }),
     set_provider_context_limit: ({ provider, limit }) =>
       setEntry(provider as Provider, { context_limit_tokens: limit as number | null }),
+    set_provider_thinking: ({ provider, level }) =>
+      setEntry(provider as Provider, { thinking: level as ProviderEntry["thinking"] }),
+    set_provider_requests_at_once: ({ provider, count }) =>
+      setEntry(provider as Provider, { requests_at_once: count as number | null }),
     provider_credential_status: ({ provider }) =>
       keys[provider as Provider] ?? { kind: "absent", host: hostOf(provider as Provider) },
     set_provider_credential: ({ provider }) => {
@@ -165,6 +169,7 @@ const field = (label: string) => screen.getByLabelText(label) as HTMLInputElemen
 const has = (label: string) => screen.queryByLabelText(label) !== null;
 const choose = (user: ReturnType<typeof userEvent.setup>, provider: Provider | "") =>
   user.selectOptions(screen.getByLabelText("Provider"), provider);
+const openAdvanced = (user: ReturnType<typeof userEvent.setup>) => user.click(screen.getByText("Advanced"));
 
 describe("the AI Provider pane rows", () => {
   test("a cloud provider shows API key and Model rows and no Address row", async () => {
@@ -709,11 +714,35 @@ describe("the checks", () => {
   });
 });
 
+describe("the Advanced group", () => {
+  test("Covers AE8. With LM Studio, Advanced is closed; opened, it shows Context limit, Thinking and Requests at the same time", async () => {
+    const b = backend({ active: "lm_studio", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await waitFor(() => expect(status().textContent).toContain("Connected"));
+    expect(has("Context limit")).toBe(false);
+    expect(has("Thinking")).toBe(false);
+    expect(has("Requests at the same time")).toBe(false);
+    await openAdvanced(user);
+    expect(has("Context limit")).toBe(true);
+    expect(has("Thinking")).toBe(true);
+    expect(has("Requests at the same time")).toBe(true);
+    expect(screen.getByText("Advanced").closest("details")?.open).toBe(true);
+  });
+
+  test("with provider None, the Advanced group is not shown", () => {
+    const b = backend({ active: null });
+    render(<Harness initial={b.initial} />);
+    expect(screen.queryByText("Advanced")).toBeNull();
+  });
+});
+
 describe("the context limit", () => {
   test("a limit saves to the active provider", async () => {
     const b = backend({ active: "ollama", check: () => listed() });
     const user = userEvent.setup();
     render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
     await user.type(field("Context limit"), "32000{Enter}");
     await waitFor(() =>
       expect(b.argsOf("set_provider_context_limit")).toEqual([{ provider: "ollama", limit: 32000 }]),
@@ -724,6 +753,7 @@ describe("the context limit", () => {
     const b = backend({ active: "ollama", check: () => listed() });
     const user = userEvent.setup();
     render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
     await user.type(field("Context limit"), "12.5{Enter}");
     expect(await screen.findByText("Enter a whole number of tokens, or leave empty for automatic.")).toBeTruthy();
     expect(b.mock.calls.some((c) => c.cmd === "set_provider_context_limit")).toBe(false);
@@ -732,14 +762,119 @@ describe("the context limit", () => {
   test("each provider shows its own limit", async () => {
     const b = backend({
       active: "ollama",
-      entries: { ollama: { context_limit_tokens: 32000 }, anthropic: { context_limit_tokens: null } },
+      entries: { ollama: { context_limit_tokens: 32000 }, anthropic: { context_limit_tokens: null, thinking: null, requests_at_once: null } },
       check: () => listed(),
     });
     const user = userEvent.setup();
     render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
     expect(field("Context limit").value).toBe("32000");
     await choose(user, "anthropic");
     await waitFor(() => expect(has("Address")).toBe(false));
     expect(field("Context limit").value).toBe("");
+  });
+});
+
+describe("Thinking", () => {
+  const selected = () => {
+    const select = screen.getByLabelText("Thinking") as HTMLSelectElement;
+    return select.options[select.selectedIndex].textContent;
+  };
+
+  test("choosing Medium saves Medium for the active provider", async () => {
+    const b = backend({ active: "lm_studio", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    await user.selectOptions(screen.getByLabelText("Thinking"), "medium");
+    await waitFor(() => expect(b.argsOf("set_provider_thinking")).toEqual([{ provider: "lm_studio", level: "medium" }]));
+    expect(selected()).toBe("Medium");
+  });
+
+  test("choosing Automatic after Medium saves no level and shows the default of LM Studio", async () => {
+    const b = backend({ active: "lm_studio", entries: { lm_studio: { thinking: "medium" } }, check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    expect(selected()).toBe("Medium");
+    await user.selectOptions(screen.getByLabelText("Thinking"), "");
+    await waitFor(() => expect(b.argsOf("set_provider_thinking")).toEqual([{ provider: "lm_studio", level: null }]));
+    expect(selected()).toBe("Automatic");
+    expect(screen.getByText(/Automatic uses Low for LM Studio\./)).toBeTruthy();
+  });
+
+  test("choosing Off saves Off", async () => {
+    const b = backend({ active: "openrouter", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    expect(selected()).toBe("Automatic");
+    expect(screen.getByText(/Automatic uses Model default for OpenRouter\./)).toBeTruthy();
+    await user.selectOptions(screen.getByLabelText("Thinking"), "off");
+    await waitFor(() => expect(b.argsOf("set_provider_thinking")).toEqual([{ provider: "openrouter", level: "off" }]));
+  });
+});
+
+describe("Requests at the same time", () => {
+  test("the field shows the default of the provider as its placeholder", async () => {
+    const b = backend({ active: "openrouter", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    expect(field("Requests at the same time").placeholder).toBe("4");
+    await choose(user, "lm_studio");
+    await waitFor(() => expect(has("Address")).toBe(true));
+    expect(field("Requests at the same time").placeholder).toBe("1");
+  });
+
+  test("typing 3 and leaving the field saves 3", async () => {
+    const b = backend({ active: "lm_studio", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    await user.type(field("Requests at the same time"), "3");
+    await user.tab();
+    await waitFor(() =>
+      expect(b.argsOf("set_provider_requests_at_once")).toEqual([{ provider: "lm_studio", count: 3 }]),
+    );
+  });
+
+  test("an empty field saves no value, which resets it to the default", async () => {
+    const b = backend({ active: "openrouter", entries: { openrouter: { requests_at_once: 6 } }, check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    expect(field("Requests at the same time").value).toBe("6");
+    await user.clear(field("Requests at the same time"));
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(b.argsOf("set_provider_requests_at_once")).toEqual([{ provider: "openrouter", count: null }]),
+    );
+  });
+
+  test("0 and 9 show the inline error and save nothing", async () => {
+    const b = backend({ active: "lm_studio", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    await user.type(field("Requests at the same time"), "0{Enter}");
+    expect(await screen.findByText("Enter a whole number from 1 to 8, or leave empty for the default.")).toBeTruthy();
+    await user.clear(field("Requests at the same time"));
+    await user.type(field("Requests at the same time"), "9{Enter}");
+    expect(screen.getByText("Enter a whole number from 1 to 8, or leave empty for the default.")).toBeTruthy();
+    expect(b.mock.calls.some((c) => c.cmd === "set_provider_requests_at_once")).toBe(false);
+  });
+
+  test("a value typed before the group closes is saved", async () => {
+    const b = backend({ active: "lm_studio", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    await user.type(field("Requests at the same time"), "2");
+    await openAdvanced(user);
+    await waitFor(() => expect(has("Requests at the same time")).toBe(false));
+    await waitFor(() =>
+      expect(b.argsOf("set_provider_requests_at_once")).toEqual([{ provider: "lm_studio", count: 2 }]),
+    );
   });
 });

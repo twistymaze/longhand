@@ -206,6 +206,145 @@ async fn a_request_that_reaches_the_endpoint_is_not_sent_again() {
     assert_eq!(mock.seen.lock().unwrap().len(), 1);
 }
 
+/// A responder that answers the first `limited` requests with 429 and the
+/// header lines `headers`, and the next requests with a summary.
+fn rate_limited(limited: usize, headers: &'static str) -> Reply {
+    limited_with(limited, headers, r#"{"error":{"message":"rate limited"}}"#)
+}
+
+/// [`rate_limited`] with the 429 body `body`.
+fn limited_with(limited: usize, headers: &'static str, body: &'static str) -> Reply {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Reply::Await(Arc::new(move |_| {
+        let k = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if k < limited {
+                common::Answer {
+                    status: 429,
+                    headers: headers.into(),
+                    body: body.into(),
+                }
+            } else {
+                common::Answer {
+                    status: 200,
+                    headers: String::new(),
+                    body: completion("After the limit."),
+                }
+            }
+        })
+    }))
+}
+
+/// Covers KTD9: a 429 reply is sent again after its `Retry-After` value,
+/// not after the retry wait. The wait of one hour shows that the client
+/// used the header.
+#[tokio::test]
+async fn a_rate_limited_request_is_sent_again_after_its_retry_after_value() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(1, "Retry-After: 0\r\n"),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::from_secs(3600); 3]);
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "After the limit.");
+    assert_eq!(mock.seen.lock().unwrap().len(), 2);
+}
+
+/// Covers KTD9: a 429 reply with no `Retry-After` header is sent again
+/// after the retry waits, and fails when the waits are used up.
+#[tokio::test]
+async fn a_rate_limited_request_with_no_header_uses_the_retry_waits() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(2, ""),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 2]);
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "After the limit.");
+    assert_eq!(mock.seen.lock().unwrap().len(), 3);
+
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(3, ""),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 2]);
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 429, .. }),
+        "{err:?}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 3);
+}
+
+/// A 429 reply that names a quota fails at once: a new try gets the same
+/// reply until the user changes the account.
+#[tokio::test]
+async fn a_rate_limited_request_that_names_a_quota_is_not_sent_again() {
+    for body in [
+        r#"{"error":{"type":"insufficient_quota","message":"You exceeded your current quota"}}"#,
+        r#"{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded for metric"}}"#,
+    ] {
+        let mock = serve(HashMap::from([(
+            "/v1/chat/completions",
+            limited_with(1, "", body),
+        )]))
+        .await;
+        let client = Client::new(endpoint(&mock.base, None))
+            .unwrap()
+            .with_retry_waits(vec![Duration::ZERO; 3]);
+        let err = client
+            .complete(&label(), &hello(), 100, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SummarizeError::Http { status: 429, .. }),
+            "{err:?}"
+        );
+        assert_eq!(mock.seen.lock().unwrap().len(), 1, "{body}");
+    }
+}
+
+/// A 429 reply that asks for a wait longer than `MAX_RETRY_AFTER` fails at
+/// once, so that a summary does not stop for hours.
+#[tokio::test]
+async fn a_rate_limited_request_with_a_long_retry_after_is_not_sent_again() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        rate_limited(1, "Retry-After: 121\r\n"),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 3]);
+    let err = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 429, .. }),
+        "{err:?}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn an_endpoint_that_never_answers_hits_the_deadline() {
     let mock = serve(HashMap::from([("/v1/chat/completions", Reply::Hang)])).await;
@@ -384,6 +523,52 @@ async fn a_model_refusing_max_tokens_is_asked_again_with_max_completion_tokens()
         .text;
     assert_eq!(text, "ok");
     assert_eq!(mock.seen.lock().unwrap().len(), 2);
+}
+
+/// KTD3: a 400 that names a smaller output cap sends the request once more
+/// with that cap, and the next request to the model starts at it.
+#[tokio::test]
+async fn a_refused_output_cap_is_sent_again_with_the_named_cap_and_remembered() {
+    let reply = Reply::With(Arc::new(|body: &str| {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        if v["max_tokens"].as_u64().unwrap_or(0) > 8_192 {
+            (
+                400,
+                r#"{"error":{"message":"max_tokens: 16384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022"}}"#.into(),
+            )
+        } else {
+            (200, completion("ok"))
+        }
+    }));
+    let mock = serve(HashMap::from([("/v1/chat/completions", reply)])).await;
+    let client = Client::new(endpoint(&mock.base, None)).unwrap();
+    assert_eq!(client.output_max(), None);
+    let text = client
+        .complete(&label(), &hello(), 16_384, None)
+        .await
+        .unwrap()
+        .text;
+    assert_eq!(text, "ok");
+    assert_eq!(client.output_max(), Some(8_192));
+    // A new client to the same model starts at the remembered cap.
+    let again = Client::new(endpoint(&mock.base, None)).unwrap();
+    assert_eq!(again.output_max(), Some(8_192));
+    again
+        .complete(&label(), &hello(), 16_384, None)
+        .await
+        .unwrap();
+    let caps: Vec<u64> = mock
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            serde_json::from_str::<serde_json::Value>(&s.body).unwrap()["max_tokens"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(caps, [16_384, 8_192, 8_192]);
 }
 
 #[test]

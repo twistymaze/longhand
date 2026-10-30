@@ -224,7 +224,8 @@ async fn chat(client: &Client, address: &str) -> Chat {
             SummarizeError::Http { .. }
             | SummarizeError::ContextExceeded
             | SummarizeError::ReplyCutOff
-            | SummarizeError::Malformed(_),
+            | SummarizeError::Malformed(_)
+            | SummarizeError::ReasoningRefused { .. },
         ) => Chat::Answered,
     }
 }
@@ -249,7 +250,8 @@ fn outcome(error: SummarizeError, provider: Provider, key_sent: bool, url: &str)
         SummarizeError::TooLarge(_)
         | SummarizeError::BadUrl(_)
         | SummarizeError::ContextExceeded
-        | SummarizeError::ReplyCutOff => ModelList::ServerError { status: None },
+        | SummarizeError::ReplyCutOff
+        | SummarizeError::ReasoningRefused { .. } => ModelList::ServerError { status: None },
     }
 }
 

@@ -474,6 +474,8 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         model: "summarizer".into(),
         credential: Some("sk-secret-test".into()),
         context_limit: None,
+        thinking: summarize::Thinking::default(),
+        requests_at_once: 1,
         retry_waits: Vec::new(),
     }
 }
@@ -1719,12 +1721,22 @@ async fn a_session_that_waits_for_its_model_lets_the_next_ready_session_go_first
 
 // ------------------------------------------------------------- summarize (U10)
 
+/// The text of one message content. Rig can send the content as a string
+/// or as an array of text parts.
+fn content_text(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part["text"].as_str())
+            .collect(),
+        _ => String::new(),
+    }
+}
+
 fn user_content(body: &str) -> String {
     let v: serde_json::Value = serde_json::from_str(body).unwrap();
-    v["messages"][1]["content"]
-        .as_str()
-        .unwrap_or_default()
-        .to_string()
+    content_text(&v["messages"][1]["content"])
 }
 
 /// The role and the content of each message of a completion request.
@@ -1737,7 +1749,7 @@ fn request_messages(body: &str) -> Vec<(String, String)> {
         .map(|m| {
             (
                 m["role"].as_str().unwrap_or_default().to_string(),
-                m["content"].as_str().unwrap_or_default().to_string(),
+                content_text(&m["content"]),
             )
         })
         .collect()
@@ -2024,6 +2036,345 @@ async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_starts_there(
     assert_eq!(state(&r.store, "s"), SessionState::Saved);
 }
 
+/// The part number and the part count that a summary part request names,
+/// or `None` for another request.
+fn part_named(body: &str) -> Option<(usize, usize)> {
+    let text = user_content(body);
+    let rest = text.split("Write notes on part ").nth(1)?;
+    let (k, rest) = rest.split_once(" of ")?;
+    let total: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some((k.parse().ok()?, total.parse().ok()?))
+}
+
+/// What a held endpoint saw. The counts change as requests come and go.
+#[derive(Debug, Default, Clone)]
+struct Open {
+    /// The requests that are open now.
+    now: usize,
+    /// The most part requests that were open at the same time.
+    most_parts: usize,
+    /// The most merge requests of the first merge layer that were open at
+    /// the same time.
+    most_groups: usize,
+    /// The part requests that got a reply.
+    parts_done: usize,
+    /// True when the request of the last part came.
+    last_part: bool,
+    /// The parts in the merge requests of the first merge layer that came.
+    group_parts: usize,
+}
+
+/// An endpoint that holds each summary part request, and each merge
+/// request of the first merge layer, until `limit` requests are open or the
+/// request of the last part (or every group request) came. A run that sends
+/// fewer than `limit` requests at the same time gets a server error after
+/// a minute, so the test fails. Part 1 also waits until the other parts
+/// that it was sent with got their replies, so the parts finish out of
+/// order. A part request gets "Notes on part K.", a merge request
+/// "Merged notes.", and a title request a server error.
+fn held(limit: usize) -> (http::Reply, Arc<tokio::sync::watch::Sender<Open>>) {
+    let open = Arc::new(tokio::sync::watch::channel(Open::default()).0);
+    let state = Arc::clone(&open);
+    let reply = http::Reply::Await(Arc::new(move |body: String| {
+        let open = Arc::clone(&state);
+        Box::pin(async move {
+            let answer = |status, text: &str| http::Answer {
+                status,
+                headers: String::new(),
+                body: if status == 200 {
+                    http::completion(text)
+                } else {
+                    format!(r#"{{"error":"{text}"}}"#)
+                },
+            };
+            if is_title_call(&body) {
+                return answer(500, "no titles here");
+            }
+            let part = part_named(&body);
+            let group = part.is_none() && user_content(&body).contains("Notes on part ");
+            open.send_modify(|o| {
+                o.now += 1;
+                if let Some((k, n)) = part {
+                    o.most_parts = o.most_parts.max(o.now);
+                    o.last_part |= k == n;
+                }
+                if group {
+                    o.most_groups = o.most_groups.max(o.now);
+                    o.group_parts += parts_in(&body).len();
+                }
+            });
+            // Every part replied before the merges, so `parts_done` is the
+            // part count. Each group has two parts or more, except the last
+            // group, which can have one part and then gets no request. So
+            // the group requests hold all the parts, or all the parts but
+            // the last. While one group request has not come, at least two
+            // parts are missing. The count reaches the part count less one
+            // only when every group request came, in any order.
+            let all_groups = |o: &Open| o.group_parts + 1 >= o.parts_done;
+            let wait = async {
+                let mut seen = open.subscribe();
+                if let Some((k, n)) = part {
+                    let _ = seen.wait_for(|o| o.now >= limit || o.last_part).await;
+                    if k == 1 {
+                        let others = limit.min(n) - 1;
+                        let _ = seen.wait_for(|o| o.parts_done >= others).await;
+                    }
+                } else if group {
+                    let _ = seen.wait_for(|o| o.now >= limit || all_groups(o)).await;
+                }
+            };
+            let held_in_time = tokio::time::timeout(std::time::Duration::from_secs(60), wait)
+                .await
+                .is_ok();
+            open.send_modify(|o| {
+                o.now -= 1;
+                if part.is_some() {
+                    o.parts_done += 1;
+                }
+            });
+            if !held_in_time {
+                return answer(500, "fewer requests than the limit came");
+            }
+            match part {
+                Some((k, _)) => answer(200, &format!("Notes on part {k}.")),
+                None => answer(200, "Merged notes."),
+            }
+        })
+    }));
+    (reply, open)
+}
+
+/// The part numbers in a merge request, in the order of the request.
+fn parts_in(body: &str) -> Vec<usize> {
+    user_content(body)
+        .split("Notes on part ")
+        .skip(1)
+        .filter_map(|rest| rest.split('.').next()?.parse().ok())
+        .collect()
+}
+
+/// The part numbers of the first merge layer: the parts of each merge
+/// request in the order of the request, and the requests in the order of
+/// their first part. The requests can come in any order.
+fn merged_parts(bodies: &[String]) -> Vec<usize> {
+    let mut groups: Vec<Vec<usize>> = bodies
+        .iter()
+        .filter(|b| !is_title_call(b) && part_named(b).is_none())
+        .map(|b| parts_in(b))
+        .filter(|parts| !parts.is_empty())
+        .collect();
+    groups.sort_by_key(|parts| parts[0]);
+    groups.concat()
+}
+
+/// Run the long session against [`held`] with `limit` requests at the same
+/// time. Returns the rig, the mock, the counts, and the part count.
+async fn run_held(limit: u32) -> (Rig, http::Mock, Open, usize) {
+    let r = rig().await;
+    let (reply, open) = held(limit as usize);
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        requests_at_once: limit,
+        ..endpoint(&mock.base)
+    }));
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let parts = chat_calls(&mock)
+        .iter()
+        .filter(|c| c.contains("<transcript part="))
+        .count();
+    let counts = open.borrow().clone();
+    (r, mock, counts, parts)
+}
+
+/// The summary progress events of the rig, in order.
+fn summary_steps(r: &Rig) -> Vec<(SummaryStep, usize, usize)> {
+    r.events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|e| match e {
+            RunnerEvent::Progress {
+                stage: Stage::Summarize,
+                summary_step: Some(step),
+                done,
+                total,
+                ..
+            } => Some((*step, *done, *total)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Covers AE7, R13, R14. With 4 requests at the same time, 4 part
+/// requests are open together and never more. The parts finish out of
+/// order, and the merge still has them in order. The part progress never
+/// goes back and ends at every part.
+#[tokio::test(flavor = "multi_thread")]
+async fn four_parts_are_sent_at_the_same_time_and_merged_in_order() {
+    let (r, mock, open, parts) = run_held(4).await;
+    assert!(parts >= 5, "{parts} parts");
+    assert_eq!(open.most_parts, 4, "{open:?}");
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert!(summary.body.contains("Merged notes."), "{}", summary.body);
+    // The first merge layer has each part once, in order.
+    assert_eq!(
+        merged_parts(&completions(&mock)),
+        (1..=parts).collect::<Vec<_>>()
+    );
+    let steps: Vec<(usize, usize)> = summary_steps(&r)
+        .into_iter()
+        .filter(|s| s.0 == SummaryStep::Parts)
+        .map(|s| (s.1, s.2))
+        .collect();
+    assert_eq!(steps.first(), Some(&(0, parts)), "{steps:?}");
+    assert_eq!(steps.last(), Some(&(parts, parts)), "{steps:?}");
+    assert!(
+        steps.windows(2).all(|w| w[0].0 <= w[1].0),
+        "the part count never goes back: {steps:?}"
+    );
+}
+
+/// Covers R13: the merge requests of one merge layer also go at the same
+/// time.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_merge_groups_of_a_layer_are_sent_at_the_same_time() {
+    let (_r, mock, open, _) = run_held(4).await;
+    let groups = completions(&mock)
+        .iter()
+        .filter(|b| !is_title_call(b) && !parts_in(b).is_empty())
+        .count();
+    assert!(groups >= 2, "{groups} groups");
+    assert_eq!(open.most_groups, groups.min(4), "{open:?}");
+}
+
+/// Covers R13: no more requests than the limit are open at the same time.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_at_the_same_time_never_opens_a_third_request() {
+    let (_r, _mock, open, parts) = run_held(2).await;
+    assert!(parts > 2, "{parts} parts");
+    assert_eq!(open.most_parts, 2, "{open:?}");
+}
+
+/// Covers AE7: with the LM Studio default of 1, the parts go one at a
+/// time, as before.
+#[tokio::test(flavor = "multi_thread")]
+async fn one_at_the_same_time_sends_the_parts_one_by_one() {
+    let (_r, _mock, open, parts) = run_held(1).await;
+    assert!(parts > 2, "{parts} parts");
+    assert_eq!(open.most_parts, 1, "{open:?}");
+    assert_eq!(open.most_groups, 1, "{open:?}");
+}
+
+/// Covers KTD9: a failed part stops the run and drops the parts still
+/// open. The parts that finished keep their results, and the next run
+/// sends only the parts that have none.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_part_drops_the_open_parts_and_the_next_run_sends_only_the_missing_parts() {
+    let r = rig().await;
+    let done = Arc::new(tokio::sync::watch::channel(0usize).0);
+    let first_run = Arc::new(AtomicBool::new(true));
+    let (seen_done, first) = (Arc::clone(&done), Arc::clone(&first_run));
+    let reply = http::Reply::Await(Arc::new(move |body: String| {
+        let (done, first) = (Arc::clone(&seen_done), first.load(Ordering::SeqCst));
+        Box::pin(async move {
+            let ok = |text: String| http::Answer {
+                status: 200,
+                headers: String::new(),
+                body: http::completion(&text),
+            };
+            if is_title_call(&body) {
+                return http::Answer {
+                    status: 500,
+                    headers: String::new(),
+                    body: r#"{"error":"no titles here"}"#.into(),
+                };
+            }
+            match part_named(&body) {
+                // In the first run, parts 1 and 3 reply, and parts 4, 5 and
+                // 6 get no reply. Parts 5 and 6 go only when the run saved
+                // the results of parts 1 and 3. Part 2 then fails.
+                Some((k @ (1 | 3), _)) if first => ok(format!("Notes on part {k}.")),
+                Some((2, _)) if first => {
+                    // A run that sends one part at a time never gets parts 5
+                    // and 6 before part 2 replies: it fails after a minute.
+                    let mut seen = done.subscribe();
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        seen.wait_for(|n| *n >= 2),
+                    )
+                    .await;
+                    http::Answer {
+                        status: 500,
+                        headers: String::new(),
+                        body: r#"{"error":"overloaded"}"#.into(),
+                    }
+                }
+                Some((k, _)) if first => {
+                    if k == 5 || k == 6 {
+                        done.send_modify(|n| *n += 1);
+                    }
+                    std::future::pending().await
+                }
+                Some((k, _)) => ok(format!("Notes on part {k}.")),
+                None => ok("Merged notes.".into()),
+            }
+        })
+    }));
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        reply,
+    )]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        context_limit: Some(2_048),
+        requests_at_once: 4,
+        ..endpoint(&mock.base)
+    }));
+    long_session(&r);
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let path = saved_folder(&r, "s").join("summary.md");
+    let stub = summary_at(&path);
+    assert!(stub.body.contains("part 2 of"), "{}", stub.body);
+    let first_calls = completions(&mock).len();
+    let sent: Vec<usize> = completions(&mock)
+        .iter()
+        .filter_map(|b| part_named(b).map(|p| p.0))
+        .collect();
+    // Parts 1 to 4 went first, and parts 5 and 6 when 1 and 3 finished.
+    let mut sorted = sent.clone();
+    sorted.sort_unstable();
+    assert_eq!(sorted, vec![1, 2, 3, 4, 5, 6], "{sent:?}");
+
+    first_run.store(false, Ordering::SeqCst);
+    r.runner.regenerate_summary("s").await.unwrap();
+    let again: Vec<usize> = completions(&mock)[first_calls..]
+        .iter()
+        .filter_map(|b| part_named(b))
+        .map(|p| p.0)
+        .collect();
+    let total = part_named(&completions(&mock)[0]).unwrap().1;
+    let mut sorted = again.clone();
+    sorted.sort_unstable();
+    let missing: Vec<usize> = (1..=total).filter(|k| *k != 1 && *k != 3).collect();
+    assert_eq!(sorted, missing, "{again:?}");
+    assert_eq!(
+        merged_parts(&completions(&mock)[first_calls..]),
+        (1..=total).collect::<Vec<_>>()
+    );
+    assert!(matches!(
+        summary_at(&path).meta,
+        session_core::folder::SummaryMeta::Complete { .. }
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_locked_keychain_blocks_and_unlocking_resumes_without_redoing_work() {
     let r = rig().await;
@@ -2305,10 +2656,7 @@ async fn replies_that_do_not_fit_remove_the_plan_so_a_larger_context_gets_a_new_
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
-    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
-        e,
-        RunnerEvent::SummaryUnavailable { message, .. } if message.contains("do not fit")
-    )));
+    assert!(failed_with(&r, CUT_OFF_TEXT));
     // The user raises the model's context length. The next run asks the
     // endpoint again, so it must not keep the plan of the small context.
     let plan: Option<serde_json::Value> =
@@ -2319,24 +2667,32 @@ async fn replies_that_do_not_fit_remove_the_plan_so_a_larger_context_gets_a_new_
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reply_cut_off_gets_more_room() {
     let r = rig().await;
-    // A reasoning model: it needs 1,500 tokens of reply before it answers.
+    // A reasoning model: it needs 2,600 tokens of reply before it answers.
+    // The first part request gets the room that its prompt leaves in the
+    // context, about 2,500 tokens. Smaller parts leave more room.
+    // Each part reply names its part, and each merge reply keeps the part
+    // names that it was given.
     let reply = http::Reply::With(Arc::new(|body: &str| {
         let v: serde_json::Value = serde_json::from_str(body).unwrap();
-        if v["max_tokens"].as_u64().unwrap_or(0) < 1_500 {
-            (
-                200,
-                r#"{"choices":[{"message":{"content":""},"finish_reason":"length"}]}"#.into(),
-            )
-        } else {
-            (200, http::completion("Notes."))
+        if v["max_tokens"].as_u64().unwrap_or(0) < 2_600 {
+            return (200, http::chat_reply("", "length"));
         }
+        let text = match part_of(&v) {
+            Some(part) => format!("Part {part}."),
+            None => user_content(body)
+                .lines()
+                .filter(|l| l.starts_with("Part "))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        (200, http::completion(&text))
     }));
     let mock = summaries_from(&r, reply, Some(4_096)).await;
     long_session(&r);
     let (_, outcome) = r.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished, "{outcome:?}");
     // A failed summary also finishes the note, with a stub. So check that
-    // the summary is complete and holds the reply.
+    // the summary is complete.
     let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
     assert!(
         matches!(
@@ -2346,26 +2702,29 @@ async fn a_reply_cut_off_gets_more_room() {
         "{:?}",
         summary.meta
     );
-    assert!(summary.body.contains("Notes."), "{}", summary.body);
-    let max_tokens = |b: &String| {
-        serde_json::from_str::<serde_json::Value>(b).unwrap()["max_tokens"]
-            .as_u64()
-            .unwrap_or(0)
-    };
-    let bodies = completions(&mock);
-    // The first summary request has too little room, so the model cuts
-    // off its reply.
-    let first = bodies
+    let bodies = summary_bodies(&mock, "/v1/chat/completions");
+    let caps: Vec<u64> = bodies
         .iter()
-        .find(|b| !is_title_call(b))
-        .expect("a summary request");
-    assert!(max_tokens(first) < 1_500, "{}", max_tokens(first));
-    // A later request gives the reply enough room.
-    assert!(
-        bodies.iter().any(|b| max_tokens(b) >= 1_500),
-        "{:?}",
-        bodies.iter().map(max_tokens).collect::<Vec<_>>()
-    );
+        .map(|b| b["max_tokens"].as_u64().unwrap())
+        .collect();
+    // The first part request gets its ceiling and is cut off. The request
+    // is not sent again with the same allowance: the layer is split again
+    // into smaller parts, which leave room for a larger allowance.
+    assert!(caps[0] < 2_600, "{caps:?}");
+    assert_eq!(part_of(&bodies[0]), Some(1));
+    assert_eq!(part_of(&bodies[1]), Some(1));
+    assert_ne!(bodies[0]["messages"], bodies[1]["messages"]);
+    assert!(caps[1] >= 2_600, "{caps:?}");
+    // The finished summary holds every part of the new split.
+    let parts = bodies.iter().filter_map(part_of).max().unwrap();
+    assert!(parts > 1, "{parts}");
+    for part in 1..=parts {
+        assert!(
+            summary.body.contains(&format!("Part {part}.")),
+            "part {part}: {}",
+            summary.body
+        );
+    }
 }
 
 // ------------------------------------------------------ summary prompts (U2)
@@ -2378,12 +2737,7 @@ fn chat_messages(mock: &http::Mock) -> Vec<(String, String)> {
         .filter(|b| !is_title_call(b))
         .map(|b| {
             let v: serde_json::Value = serde_json::from_str(b).unwrap();
-            let content = |i: usize| {
-                v["messages"][i]["content"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string()
-            };
+            let content = |i: usize| content_text(&v["messages"][i]["content"]);
             (content(0), content(1))
         })
         .collect()
@@ -3344,7 +3698,7 @@ async fn a_resumed_run_with_no_saved_prompt_makes_its_calls_again() {
     );
     // A run from before prompts were saved: a plan and a cached result,
     // and no prompt snapshot.
-    let reserve = summarize::tokens::reply_reserve(32_000);
+    let reserve = summarize::tokens::split_reserve(32_000);
     let plan = serde_json::json!({
         "budget": { "limit": 32_000, "source": "user" },
         "layers": [{ "limit": 32_000, "reserve": reserve }],
@@ -5468,11 +5822,12 @@ fn cost_of(messages: &[summarize::client::Message]) -> usize {
     summarize::tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
 }
 
-/// The reply cap of a title turn of `messages` in a context of `limit`
-/// tokens (KTD12).
+/// The reply cap of a title turn of `messages` to the test endpoint in a
+/// context of `limit` tokens that the user set (KTD11, KTD12): the room
+/// left, at most 90% of the context and 16,384.
 fn cap_for(messages: &[summarize::client::Message], limit: u32) -> u32 {
     let used = summarize::tokens::with_margin(cost_of(messages)) as u32;
-    summarize::tokens::reply_reserve(limit).min(limit.saturating_sub(used))
+    (limit * 9 / 10).min(16_384).min(limit.saturating_sub(used))
 }
 
 /// The final call's messages of a stored title request, as the client sent
@@ -5522,8 +5877,8 @@ async fn a_whole_call_run_stores_its_title_turn_and_sends_no_title_call() {
     assert_eq!(all.len(), 1, "one whole call and no title call");
     let request = pending(&r).expect("a title request");
     assert_title_turn_of(&request, &all[0], "A short summary.", TITLE_MARKER);
-    // A short summary leaves the whole reply reserve for the title.
-    assert_eq!(request.cap, summarize::tokens::reply_reserve(8_192));
+    // A short summary leaves 90% of the context for the title.
+    assert_eq!(request.cap, 7_372);
     assert_eq!(request.cap, cap_for(&request.messages, 8_192));
     // No title is proposed until the title job runs (U6).
     assert_eq!(title_of(&r), None);
@@ -5699,7 +6054,7 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split() {
     // KTD4.
-    use summarize::tokens::{reply_reserve, with_margin};
+    use summarize::tokens::{split_reserve, with_margin};
     let big = rig().await;
     let mock = summaries_from(
         &big,
@@ -5718,9 +6073,9 @@ async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split
     // The smallest context that holds the whole call without the title
     // reserve. It does not hold the whole call with it.
     let limit = (2_048..)
-        .find(|&l| with_margin(cost) + reply_reserve(l) as usize <= l as usize)
+        .find(|&l| with_margin(cost) + split_reserve(l) as usize <= l as usize)
         .unwrap();
-    assert!(with_margin(cost + reserve) + reply_reserve(limit) as usize > limit as usize);
+    assert!(with_margin(cost + reserve) + split_reserve(limit) as usize > limit as usize);
 
     let r = rig().await;
     let mock = summaries_from(
@@ -5746,7 +6101,6 @@ async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split
 async fn the_title_reply_cap_is_what_the_context_has_left() {
     // KTD12.
     use summarize::prompts::{TITLE_REPLY_MIN, title_turn, topic_summary};
-    use summarize::tokens::reply_reserve;
     const LIMIT: u32 = 4_096;
     let run = |summary: String| async move {
         let r = rig().await;
@@ -5760,13 +6114,15 @@ async fn the_title_reply_cap_is_what_the_context_has_left() {
         (pending(&r), folder, r)
     };
 
-    // A short summary gets the whole reply reserve.
+    // A short summary gets the context that the title turn leaves.
     let (short, _, _r) = run("A short summary.".into()).await;
     let short = short.expect("a title request");
-    assert_eq!(short.cap, reply_reserve(LIMIT));
+    assert_eq!(short.cap, cap_for(&short.messages, LIMIT));
+    assert!(short.cap <= LIMIT * 9 / 10, "{}", short.cap);
     let final_call = &short.messages[..short.messages.len() - 2];
 
-    // The summary lengths that leave the title less than the reserve, and
+    // The summary lengths that leave the title less than the short summary
+    // leaves, and
     // less than the minimum.
     let title_text = topic_summary().title_text;
     let cap_with = |words: usize| {
@@ -5775,14 +6131,12 @@ async fn the_title_reply_cap_is_what_the_context_has_left() {
             LIMIT,
         )
     };
-    let near = (0..)
-        .find(|&w| cap_with(w) < reply_reserve(LIMIT) - 100)
-        .unwrap();
+    let near = (0..).find(|&w| cap_with(w) < short.cap - 100).unwrap();
     let over = (near..).find(|&w| cap_with(w) < TITLE_REPLY_MIN).unwrap();
 
     let (request, _, _r) = run("word ".repeat(near)).await;
     let request = request.expect("a title request");
-    assert!(request.cap < reply_reserve(LIMIT), "{}", request.cap);
+    assert!(request.cap < short.cap, "{}", request.cap);
     assert!(request.cap >= TITLE_REPLY_MIN, "{}", request.cap);
     assert_eq!(request.cap, cap_for(&request.messages, LIMIT));
     let used = summarize::tokens::with_margin(cost_of(&request.messages));
@@ -11425,24 +11779,30 @@ fn ollama_summary() -> http::Reply {
     http::Reply::Json(200, reply_from(AiProvider::Ollama, "A summary."))
 }
 
-/// Covers AE6, R6: a note that fits one call and needs about 20,000
-/// tokens with its reply reserve.
+/// Covers AE6, R6, KTD2: a note that fits one call starts at an allowance
+/// of 32,768, and its context size covers its prompt and that allowance,
+/// rounded up to 2,048.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ollama_note_in_one_call_sends_the_context_size_that_the_call_needs() {
     let r = rig().await;
     r.script.sentences.store(75, Ordering::SeqCst);
     let segments: Vec<(u32, Vec<f32>)> = (0..2).map(|_| (16_000, conversation())).collect();
     queue_session(&r.store, &r.root, "s", 100, Some("m"), &segments);
-    let bodies = ollama_run(&r, ollama_summary(), 32_000).await;
+    let bodies = ollama_run(&r, ollama_summary(), 131_072).await;
     assert_eq!(bodies.len(), 1, "the note fits one call");
+    assert_eq!(num_predict(&bodies[0]), 32_768);
     let need = ollama_need(&bodies[0]);
-    assert!((18_433..=20_480).contains(&need), "{need}");
-    assert_eq!(num_ctx(&bodies[0]), Some(20_480));
+    assert!((43_000..=46_000).contains(&need), "{need}");
+    assert_eq!(
+        num_ctx(&bodies[0]),
+        Some(need.div_ceil(2_048) as u64 * 2_048)
+    );
 }
 
-/// Covers AE6, R6: a short note gets a small context size.
+/// Covers R1, R6: in a small context, a short note gets 90% of the
+/// context, and its context size is the context limit.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_short_ollama_note_sends_the_smallest_context_size() {
+async fn a_short_ollama_note_in_a_small_context_gets_90_percent_of_it() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -11454,12 +11814,8 @@ async fn a_short_ollama_note_sends_the_smallest_context_size() {
     );
     let bodies = ollama_run(&r, ollama_summary(), 12_000).await;
     assert_eq!(bodies.len(), 1);
-    assert!(
-        ollama_need(&bodies[0]) <= 4_096,
-        "{}",
-        ollama_need(&bodies[0])
-    );
-    assert_eq!(num_ctx(&bodies[0]), Some(4_096));
+    assert_eq!(num_predict(&bodies[0]), 10_800);
+    assert_eq!(num_ctx(&bodies[0]), Some(12_000));
 }
 
 /// Covers R6, KTD7: every chunk and merge request of a run in parts gives
@@ -11481,40 +11837,6 @@ async fn an_ollama_run_in_parts_sends_the_room_limit_on_every_request() {
     }
 }
 
-/// Covers R6, KTD7: a cut-off reply gets a larger reserve and a larger
-/// context size, never above the context limit.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_cut_off_ollama_reply_is_sent_again_with_a_larger_context_size() {
-    let r = rig().await;
-    queue_session(
-        &r.store,
-        &r.root,
-        "s",
-        100,
-        Some("m"),
-        &[(16_000, speech())],
-    );
-    let n = Arc::new(AtomicUsize::new(0));
-    let reply = http::Reply::With(Arc::new(move |_| {
-        let done = if n.fetch_add(1, Ordering::SeqCst) == 0 {
-            "length"
-        } else {
-            "stop"
-        };
-        (200, http::ollama_reply("A summary.", done))
-    }));
-    let bodies = ollama_run(&r, reply, 32_000).await;
-    assert_eq!(bodies.len(), 2);
-    assert!(num_predict(&bodies[1]) > num_predict(&bodies[0]));
-    let sizes: Vec<u64> = bodies.iter().map(|b| num_ctx(b).unwrap()).collect();
-    assert!(sizes[1] > sizes[0], "{sizes:?}");
-    for body in &bodies {
-        let size = num_ctx(body).unwrap();
-        assert!(size >= ollama_need(body) as u64, "{size}");
-        assert!(size <= 32_000, "{size}");
-    }
-}
-
 /// Covers R6, KTD7: the context limit is the largest size, also under the
 /// smallest size.
 #[tokio::test(flavor = "multi_thread")]
@@ -11533,6 +11855,394 @@ async fn an_ollama_model_with_a_small_context_limit_gets_that_limit() {
     for body in &bodies {
         assert_eq!(num_ctx(body), Some(2_048));
     }
+}
+
+// ------------------------------------------------- reply allowance (U4)
+
+/// A short note "s" that fits one request.
+fn short_note(r: &Rig) {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+}
+
+/// The summary requests of a run of "s" on `provider` with the model
+/// `model` and the context setting `context_limit`.
+async fn allowance_run(
+    r: &Rig,
+    provider: AiProvider,
+    model: &str,
+    context_limit: Option<u32>,
+) -> Vec<serde_json::Value> {
+    let mock = serve_provider(
+        provider,
+        http::Reply::Json(200, reply_from(provider, "A summary.")),
+    )
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        provider,
+        model: model.into(),
+        context_limit,
+        ..endpoint(&mock.base)
+    }));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(summary_is_complete(&saved_folder(r, "s")));
+    summary_bodies(&mock, route_path(provider))
+}
+
+/// The prompt estimate of the request `body`, with the margin.
+fn used_by(body: &serde_json::Value) -> usize {
+    let contents: Vec<String> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| content_text(&m["content"]))
+        .collect();
+    summarize::tokens::with_margin(summarize::tokens::estimate_messages(
+        contents.iter().map(String::as_str),
+    ))
+}
+
+/// Covers AE1, R1: LM Studio gets 90% of the context at the first request.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_lm_studio_note_in_one_request_gets_90_percent_of_the_context() {
+    let r = rig().await;
+    short_note(&r);
+    let bodies = allowance_run(&r, AiProvider::LmStudio, "qwen", Some(131_072)).await;
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["max_tokens"], 117_964, "{}", bodies[0]);
+}
+
+/// Covers AE2, R2: an Anthropic model that Longhand does not know gets
+/// the safe value. A known model with an output maximum of 64,000 also
+/// starts at it (KTD2).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_anthropic_request_starts_at_16_384() {
+    for model in ["claude-unknown-9", "claude-haiku-4-5"] {
+        let r = rig().await;
+        short_note(&r);
+        let bodies = allowance_run(&r, AiProvider::Anthropic, model, None).await;
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["max_tokens"], 16_384, "{model}: {}", bodies[0]);
+    }
+}
+
+/// A run of "s" on a Custom server that answers the probe on `path` with
+/// `answer`.
+async fn custom_run(r: &Rig, path: &'static str, answer: &str) -> http::Mock {
+    let mock = http::serve(std::collections::HashMap::from([
+        (path, http::Reply::Json(200, answer.into())),
+        (
+            "/v1/chat/completions",
+            http::Reply::Json(200, http::completion("A summary.")),
+        ),
+    ]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(summary_is_complete(&saved_folder(r, "s")));
+    mock
+}
+
+/// KTD2, KTD3: Custom gets the whole room after a vLLM probe, the safe
+/// value after a LiteLLM probe with no output maximum, and the LiteLLM
+/// output maximum when LiteLLM gives one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_custom_allowance_follows_its_probe() {
+    let cases = [
+        (
+            "/v1/models",
+            r#"{"data":[{"id":"summarizer","max_model_len":131072}]}"#,
+            117_964,
+        ),
+        (
+            "/v1/model/info",
+            r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_tokens":131072}}]}"#,
+            16_384,
+        ),
+        (
+            "/v1/model/info",
+            r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_output_tokens":8000}}]}"#,
+            8_000,
+        ),
+    ];
+    for (path, answer, max_tokens) in cases {
+        let r = rig().await;
+        short_note(&r);
+        let mock = custom_run(&r, path, answer).await;
+        let bodies = summary_bodies(&mock, "/v1/chat/completions");
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["max_tokens"], max_tokens, "{answer}");
+    }
+}
+
+/// Covers AE3, R3: the split reserve, not the allowance, sizes the parts.
+/// LM Studio and Custom make the same 4 parts at the same limit as before
+/// the change, and each part leaves the split reserve, while the LM Studio
+/// parts get a larger allowance.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_allowance_does_not_change_the_parts() {
+    let parts = |bodies: &[serde_json::Value]| -> Vec<serde_json::Value> {
+        bodies
+            .iter()
+            .filter(|b| part_of(b).is_some())
+            .map(|b| b["messages"].clone())
+            .collect()
+    };
+    let lm = rig().await;
+    long_session(&lm);
+    let lm_bodies = allowance_run(&lm, AiProvider::LmStudio, "summarizer", Some(8_192)).await;
+    let custom = rig().await;
+    long_session(&custom);
+    let custom_bodies = allowance_run(&custom, AiProvider::Custom, "summarizer", Some(8_192)).await;
+    assert_eq!(parts(&lm_bodies).len(), 4);
+    assert_eq!(parts(&lm_bodies), parts(&custom_bodies));
+    let reserve = summarize::tokens::split_reserve(8_192) as usize;
+    for body in lm_bodies.iter().filter(|b| part_of(b).is_some()) {
+        let used = used_by(body);
+        assert!(used + reserve <= 8_192, "{used}");
+        assert_eq!(body["max_tokens"], (8_192 * 9 / 10).min(8_192 - used));
+    }
+}
+
+/// KTD3: a saved plan from an older version has no output maximum. It
+/// still loads, and a Regenerate Summary uses it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_plan_without_an_output_maximum_is_used_on_regenerate() {
+    let r = rig().await;
+    short_note(&r);
+    let answer = r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_output_tokens":8000}}]}"#;
+    let mock = custom_run(&r, "/v1/model/info", answer).await;
+    let path = saved_folder(&r, "s").join("summary.md");
+    let mut plan: serde_json::Value =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN)
+            .unwrap()
+            .unwrap();
+    assert_eq!(plan["budget"]["output_max"], 8_000, "{plan}");
+    plan["budget"].as_object_mut().unwrap().remove("output_max");
+    // A stub with the plan and no reply: the stage stopped before its
+    // request ended.
+    {
+        let s = r.store.lock().unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, checkpoint::DONE)
+            .unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, pipeline::summarize::WHOLE)
+            .unwrap();
+    }
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Summarize,
+        pipeline::summarize::PLAN,
+        &plan,
+    )
+    .unwrap();
+    let probes = || {
+        mock.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.path == "/v1/model/info")
+            .count()
+    };
+    let before = probes();
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    assert_eq!(probes(), before, "the saved plan is used");
+    let bodies = summary_bodies(&mock, "/v1/chat/completions");
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["max_tokens"], 8_000, "{}", bodies[0]);
+    assert_eq!(bodies[1]["max_tokens"], 16_384, "{}", bodies[1]);
+}
+
+/// KTD11: the title request gets its cap from the same rule. On LM Studio
+/// it is the context left after the title prompt, up to 90%.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_title_cap_follows_the_allowance_rule() {
+    let r = rig().await;
+    short_note(&r);
+    allowance_run(&r, AiProvider::LmStudio, "qwen", Some(131_072)).await;
+    let request = pending(&r).expect("a title request");
+    let used = summarize::tokens::with_margin(cost_of(&request.messages)) as u32;
+    assert_eq!(request.cap, (131_072 - used).min(117_964));
+    assert_eq!(request.cap, 117_964);
+}
+
+// ---------------------------------------------- cut-off and deadline (U5)
+
+/// The reply cap of the request `body` to `provider`.
+fn cap_of(provider: AiProvider, body: &serde_json::Value) -> u64 {
+    match provider {
+        AiProvider::Ollama => num_predict(body),
+        _ => body["max_tokens"].as_u64().unwrap(),
+    }
+}
+
+/// A reply of `provider` that is cut off at its length limit.
+fn cut_off_from(provider: AiProvider) -> String {
+    match provider {
+        AiProvider::Anthropic => http::anthropic_reply("Partial", "max_tokens"),
+        AiProvider::Ollama => http::ollama_reply("Partial", "length"),
+        _ => http::chat_reply("Partial", "length"),
+    }
+}
+
+/// A model of `provider` that needs a reply cap of `needs` tokens: a
+/// request with a smaller cap is cut off.
+fn needs_cap(provider: AiProvider, needs: u64) -> http::Reply {
+    http::Reply::With(Arc::new(move |body: &str| {
+        let body: serde_json::Value = serde_json::from_str(body).unwrap();
+        if is_title_body(&body) || cap_of(provider, &body) >= needs {
+            (200, reply_from(provider, "A summary."))
+        } else {
+            (200, cut_off_from(provider))
+        }
+    }))
+}
+
+/// The text of the R4 failure: it names the context and the Thinking
+/// setting.
+const CUT_OFF_TEXT: &str = "the model's reply did not fit in its context";
+
+fn failed_with(r: &Rig, text: &str) -> bool {
+    r.events.lock().unwrap().iter().any(|e| {
+        matches!(
+            e,
+            RunnerEvent::SummaryUnavailable { message, .. }
+                if message.contains(text)
+                    && message.contains(summarize::THINKING_SETTING)
+        )
+    })
+}
+
+/// Covers KTD8: an Ollama note in one request that is cut off at 32,768
+/// is sent again with 65,536 and a context size for that allowance, and
+/// then finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ollama_request_cut_off_at_32_768_is_sent_again_with_65_536() {
+    let r = rig().await;
+    r.script.sentences.store(75, Ordering::SeqCst);
+    let segments: Vec<(u32, Vec<f32>)> = (0..2).map(|_| (16_000, conversation())).collect();
+    queue_session(&r.store, &r.root, "s", 100, Some("m"), &segments);
+    let bodies = ollama_run(&r, needs_cap(AiProvider::Ollama, 65_536), 131_072).await;
+    let caps: Vec<u64> = bodies.iter().map(num_predict).collect();
+    assert_eq!(caps, [32_768, 65_536]);
+    assert_eq!(bodies[0]["messages"], bodies[1]["messages"]);
+    let size = |body: &serde_json::Value| Some(ollama_need(body).div_ceil(2_048) as u64 * 2_048);
+    assert_eq!(num_ctx(&bodies[0]), size(&bodies[0]));
+    assert_eq!(num_ctx(&bodies[1]), size(&bodies[1]));
+    assert!(num_ctx(&bodies[1]) > num_ctx(&bodies[0]));
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert_eq!(summary.body.trim(), "A summary.");
+}
+
+/// Covers KTD2, KTD8: a known Anthropic model with an output maximum of
+/// 64,000 is sent again with 21,333, the largest Anthropic allowance.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_anthropic_request_cut_off_at_16_384_is_sent_again_with_21_333() {
+    let r = rig().await;
+    short_note(&r);
+    let mock = serve_provider(
+        AiProvider::Anthropic,
+        needs_cap(AiProvider::Anthropic, 21_333),
+    )
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        provider: AiProvider::Anthropic,
+        model: "claude-haiku-4-5".into(),
+        ..endpoint(&mock.base)
+    }));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let caps: Vec<u64> = summary_bodies(&mock, "/v1/messages")
+        .iter()
+        .map(|b| cap_of(AiProvider::Anthropic, b))
+        .collect();
+    assert_eq!(caps, [16_384, 21_333]);
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert_eq!(summary.body.trim(), "A summary.");
+}
+
+/// Covers KTD2, KTD8: an OpenAI-compatible server with a known output
+/// maximum of 64,000 is sent again with the doubled allowance, 32,768.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_openai_compatible_request_cut_off_at_16_384_is_sent_again_with_32_768() {
+    let r = rig().await;
+    short_note(&r);
+    let mock = http::serve(std::collections::HashMap::from([
+        (
+            "/v1/model/info",
+            http::Reply::Json(
+                200,
+                r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_output_tokens":64000}}]}"#.into(),
+            ),
+        ),
+        (
+            "/v1/chat/completions",
+            needs_cap(AiProvider::Custom, 32_768),
+        ),
+    ]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let caps: Vec<u64> = summary_bodies(&mock, "/v1/chat/completions")
+        .iter()
+        .map(|b| cap_of(AiProvider::Custom, b))
+        .collect();
+    assert_eq!(caps, [16_384, 32_768]);
+    let summary = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert_eq!(summary.body.trim(), "A summary.");
+}
+
+/// Covers AE10, R4: an LM Studio note in one request starts at its
+/// ceiling. A cut-off fails the summary at once with the R4 text, and the
+/// request is not sent again.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_lm_studio_note_cut_off_at_its_ceiling_fails_after_one_request() {
+    let r = rig().await;
+    short_note(&r);
+    let mock = serve_provider(
+        AiProvider::LmStudio,
+        http::Reply::Json(200, cut_off_from(AiProvider::LmStudio)),
+    )
+    .await;
+    use_provider(&r, AiProvider::LmStudio, &mock, Some(131_072));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let caps: Vec<u64> = summary_bodies(&mock, "/v1/chat/completions")
+        .iter()
+        .map(|b| cap_of(AiProvider::LmStudio, b))
+        .collect();
+    assert_eq!(caps, [117_964]);
+    assert!(failed_with(&r, CUT_OFF_TEXT));
+    assert!(!summary_is_complete(&saved_folder(&r, "s")));
+}
+
+/// Covers R4: a hosted note in one request that is cut off at its ceiling
+/// fails after the growth, and is not split into parts.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hosted_note_cut_off_at_its_ceiling_is_not_split() {
+    let r = rig().await;
+    short_note(&r);
+    let mock = serve_provider(
+        AiProvider::Anthropic,
+        http::Reply::Json(200, cut_off_from(AiProvider::Anthropic)),
+    )
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        provider: AiProvider::Anthropic,
+        model: "claude-haiku-4-5".into(),
+        ..endpoint(&mock.base)
+    }));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    let caps: Vec<u64> = summary_bodies(&mock, "/v1/messages")
+        .iter()
+        .map(|b| cap_of(AiProvider::Anthropic, b))
+        .collect();
+    assert_eq!(caps, [16_384, 21_333]);
+    assert!(failed_with(&r, CUT_OFF_TEXT));
 }
 
 /// Covers R25: the title job keeps the provider that was in effect when it
@@ -11583,6 +12293,80 @@ async fn the_title_job_sends_to_the_provider_in_effect_when_it_started() {
     let size = num_ctx(&sent[0]).expect("a context size");
     assert!(size >= ollama_need(&sent[0]) as u64, "{size}");
     assert_eq!(size % 2_048, 0, "{size}");
+}
+
+// ------------------------------------------------------------ Thinking (U3)
+
+use summarize::provider::ThinkingLevel;
+
+/// Send the summaries of the script to `mock` with the Thinking level
+/// `thinking`, chosen by the user or not.
+fn use_thinking(r: &Rig, mock: &http::Mock, thinking: ThinkingLevel, chosen: bool) {
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        thinking: summarize::Thinking {
+            level: thinking,
+            chosen,
+        },
+        ..endpoint(&mock.base)
+    }));
+}
+
+/// Covers R8 and KTD11: the summary request and the title request carry
+/// the same reasoning field.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_summary_and_the_title_request_carry_the_thinking_level() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    use_thinking(&r, &mock, ThinkingLevel::Low, false);
+    saved_session(&r, None).await;
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+
+    let sent = bodies_on(&mock, "/v1/chat/completions");
+    assert_eq!(sent.iter().filter(|b| is_title_body(b)).count(), 1);
+    assert!(sent.iter().any(|b| !is_title_body(b)));
+    for body in &sent {
+        assert_eq!(body["reasoning_effort"], "low", "{body}");
+    }
+}
+
+/// Covers AE5 and R7.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_chosen_thinking_level_fails_the_summary_with_a_message_that_names_thinking() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let mock = http::serve(std::collections::HashMap::from([(
+        "/v1/chat/completions",
+        http::Reply::Json(
+            400,
+            r#"{"error":{"message":"reasoning_effort 'none' is not supported"}}"#.into(),
+        ),
+    )]))
+    .await;
+    use_thinking(&r, &mock, ThinkingLevel::Off, true);
+    // The summary failing costs the summary, not the note (KD13).
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(r.events.lock().unwrap().iter().any(|e| matches!(
+        e,
+        RunnerEvent::SummaryUnavailable { message, .. } if message.contains("Thinking")
+    )));
+    let stub = summary_at(&saved_folder(&r, "s").join("summary.md"));
+    assert_eq!(stub.meta, session_core::folder::SummaryMeta::stub());
+    assert!(stub.body.contains("Thinking"), "{}", stub.body);
+    let sent = bodies_on(&mock, "/v1/chat/completions");
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["reasoning_effort"], "none", "{}", sent[0]);
 }
 
 // ---------------------------------------------------------------- imported notes

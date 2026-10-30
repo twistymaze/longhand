@@ -1,6 +1,7 @@
 // The AI Provider pane (R16–R19, R21). One group holds the provider, its
 // address, its API key, its model and the connection status. The Advanced
-// group holds the context limit. Each provider keeps its own values (R10).
+// group is closed at the start and holds the context limit, Thinking and
+// Requests at the same time (R15). Each provider keeps its own values (R10).
 
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -10,6 +11,7 @@ import {
   type Provider,
   type Result,
   type Settings,
+  type ThinkingLevel,
 } from "../bindings";
 import { ModelPicker } from "./ModelPicker";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, type Tone, fieldClass } from "./ui";
@@ -20,17 +22,38 @@ const keyStore = () => (isMac() ? "Keychain" : "the credential store");
 type Kind = "cloud" | "local" | "custom";
 
 /// The providers in the order of the Provider menu (R7). `address` is the
-/// usual address of a local provider. These values must agree with
-/// `Provider::default_address` in crates/summarize/src/provider.rs.
-export const providers: { id: Provider; name: string; kind: Kind; address?: string }[] = [
-  { id: "openai", name: "OpenAI", kind: "cloud" },
-  { id: "anthropic", name: "Anthropic", kind: "cloud" },
-  { id: "gemini", name: "Gemini", kind: "cloud" },
-  { id: "openrouter", name: "OpenRouter", kind: "cloud" },
-  { id: "ollama", name: "Ollama", kind: "local", address: "http://localhost:11434" },
-  { id: "lm_studio", name: "LM Studio", kind: "local", address: "http://localhost:1234/v1" },
-  { id: "custom", name: "Custom (OpenAI-compatible)", kind: "custom" },
+/// usual address of a local provider. `thinking` and `requests` are the
+/// defaults of Thinking and Requests at the same time (R6, R12). These
+/// values must agree with `Provider::default_address`,
+/// `Provider::default_thinking` and `Provider::default_requests_at_once` in
+/// crates/summarize/src/provider.rs.
+export const providers: {
+  id: Provider;
+  name: string;
+  kind: Kind;
+  address?: string;
+  thinking: ThinkingLevel;
+  requests: number;
+}[] = [
+  { id: "openai", name: "OpenAI", kind: "cloud", thinking: "model_default", requests: 4 },
+  { id: "anthropic", name: "Anthropic", kind: "cloud", thinking: "model_default", requests: 4 },
+  { id: "gemini", name: "Gemini", kind: "cloud", thinking: "model_default", requests: 4 },
+  { id: "openrouter", name: "OpenRouter", kind: "cloud", thinking: "model_default", requests: 4 },
+  { id: "ollama", name: "Ollama", kind: "local", address: "http://localhost:11434", thinking: "low", requests: 1 },
+  { id: "lm_studio", name: "LM Studio", kind: "local", address: "http://localhost:1234/v1", thinking: "low", requests: 1 },
+  { id: "custom", name: "Custom (OpenAI-compatible)", kind: "custom", thinking: "model_default", requests: 1 },
 ];
+
+/// The Thinking levels in the order of the Thinking menu (R5).
+const thinkingLevels: { id: ThinkingLevel; name: string }[] = [
+  { id: "model_default", name: "Model default" },
+  { id: "off", name: "Off" },
+  { id: "low", name: "Low" },
+  { id: "medium", name: "Medium" },
+  { id: "high", name: "High" },
+];
+
+const thinkingName = (id: ThinkingLevel) => thinkingLevels.find((l) => l.id === id)!.name;
 
 const info = (id: Provider) => providers.find((p) => p.id === id)!;
 
@@ -444,9 +467,20 @@ function ProviderRows({
   );
 }
 
-/// The context limit of one provider (R15, R19). The pane mounts it again
-/// for each provider, as for `ProviderRows`.
-function ContextLimit({
+/// The whole number in `text` from `min` to `max`. `null` for an empty text,
+/// and `undefined` for a text that is not such a number.
+function wholeNumber(text: string, min: number, max = Infinity): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n >= min && n <= max ? n : undefined;
+}
+
+/// The advanced rows of one provider: the context limit, Thinking and
+/// Requests at the same time (R5, R12, R15, R19). The pane mounts them again
+/// for each provider, as for `ProviderRows`. When the group closes, the rows
+/// unmount and each field saves the text that the user typed.
+function AdvancedRows({
   provider,
   settings,
   onSettings,
@@ -455,25 +489,44 @@ function ContextLimit({
   settings: Settings;
   onSettings: (s: Settings) => void;
 }) {
-  const [error, setError] = useState<string | null>(null);
+  const { name, thinking: defaultThinking, requests: defaultRequests } = info(provider);
+  const entry = settings.providers[provider];
+  const [limitError, setLimitError] = useState<string | null>(null);
+  const [thinkingError, setThinkingError] = useState<string | null>(null);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
+
   const setLimit = async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    const limit = trimmed === "" ? null : Number(trimmed);
-    if (limit !== null && (!Number.isInteger(limit) || limit <= 0)) {
-      setError("Enter a whole number of tokens, or leave empty for automatic.");
+    const limit = wholeNumber(text, 1);
+    if (limit === undefined) {
+      setLimitError("Enter a whole number of tokens, or leave empty for automatic.");
       return false;
     }
-    return save(commands.setProviderContextLimit(provider, limit), setError, onSettings);
+    return save(commands.setProviderContextLimit(provider, limit), setLimitError, onSettings);
   };
+  // An empty value is Automatic: no level is saved, and the default of the
+  // provider applies (KTD7).
+  const setThinking = (value: string) => {
+    const level = value === "" ? null : (value as ThinkingLevel);
+    void save(commands.setProviderThinking(provider, level), setThinkingError, onSettings);
+  };
+  const setRequests = async (text: string): Promise<boolean> => {
+    const count = wholeNumber(text, 1, 8);
+    if (count === undefined) {
+      setRequestsError("Enter a whole number from 1 to 8, or leave empty for the default.");
+      return false;
+    }
+    return save(commands.setProviderRequestsAtOnce(provider, count), setRequestsError, onSettings);
+  };
+
   return (
-    <Group
-      header="Advanced"
-      footer="Longhand asks the provider how much text the model accepts. If the provider does not say, Longhand uses 128,000 tokens. Enter the model's limit if the provider reports it wrongly, or if the model accepts less."
-    >
-      <Row label="Context limit">
+    <Group>
+      <Row
+        label="Context limit"
+        detail="Longhand asks the provider how much text the model accepts. If the provider does not say, Longhand uses 128,000 tokens. Enter the model's limit if the provider reports it wrongly, or if the model accepts less."
+      >
         <CommitField
           label="Context limit"
-          value={settings.providers[provider].context_limit_tokens?.toString() ?? ""}
+          value={entry.context_limit_tokens?.toString() ?? ""}
           placeholder="Automatic"
           inputMode="numeric"
           width="w-28"
@@ -481,8 +534,72 @@ function ContextLimit({
         />
         <span className="text-label-secondary">tokens</span>
       </Row>
-      {error && <ErrorText>{error}</ErrorText>}
+      {limitError && <ErrorText>{limitError}</ErrorText>}
+      <Row
+        label="Thinking"
+        detail={`How much the model reasons before it writes. Automatic uses ${thinkingName(defaultThinking)} for ${name}. Some models have only on and off: for them, Low, Medium and High all turn thinking on.`}
+      >
+        <select
+          aria-label="Thinking"
+          className={`${fieldClass} w-48`}
+          value={entry.thinking ?? ""}
+          onChange={(e) => setThinking(e.target.value)}
+        >
+          <option value="">Automatic</option>
+          {thinkingLevels.map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.name}
+            </option>
+          ))}
+        </select>
+      </Row>
+      {thinkingError && <ErrorText>{thinkingError}</ErrorText>}
+      <Row
+        label="Requests at the same time"
+        detail="Long notes go to the model in parts. The server must be able to run this many requests at once."
+      >
+        <CommitField
+          label="Requests at the same time"
+          value={entry.requests_at_once?.toString() ?? ""}
+          placeholder={defaultRequests.toString()}
+          inputMode="numeric"
+          width="w-28"
+          onCommit={setRequests}
+        />
+      </Row>
+      {requestsError && <ErrorText>{requestsError}</ErrorText>}
     </Group>
+  );
+}
+
+/// The Advanced group, closed at the start (R15). It stays open or closed
+/// at a provider change.
+function Advanced({
+  provider,
+  settings,
+  onSettings,
+}: {
+  provider: Provider;
+  settings: Settings;
+  onSettings: (s: Settings) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <details open={open}>
+      <summary
+        className="mb-2 cursor-pointer px-1 text-[0.85rem] font-semibold text-label-secondary"
+        onClick={(e) => {
+          e.preventDefault();
+          // WKWebView does not move the focus on a click, so the field that
+          // closes gets no blur. Its unmount saves the typed text.
+          e.currentTarget.focus();
+          setOpen((o) => !o);
+        }}
+      >
+        Advanced
+      </summary>
+      {open && <AdvancedRows key={provider} provider={provider} settings={settings} onSettings={onSettings} />}
+    </details>
   );
 }
 
@@ -536,7 +653,7 @@ export function ProviderForm({
         {chooseError && <ErrorText>{chooseError}</ErrorText>}
         {active !== null && <ProviderRows key={active} provider={active} settings={settings} onSettings={onSettings} />}
       </Group>
-      {active !== null && <ContextLimit key={active} provider={active} settings={settings} onSettings={onSettings} />}
+      {active !== null && <Advanced provider={active} settings={settings} onSettings={onSettings} />}
     </Pane>
   );
 }

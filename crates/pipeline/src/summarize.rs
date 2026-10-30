@@ -17,18 +17,23 @@
 //! call and keeps it to the end, also after a resume (KTD4). The snapshot's
 //! text goes into the final call, and `summary.md` records its name.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::time::Duration;
 
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
-use summarize::client::{Label, Message, RequestKind};
+use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
+use summarize::tokens::ReplyKind;
 use summarize::{
-    Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, context, prompts, tokens,
+    Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, THINKING_SETTING, context,
+    prompts, tokens,
 };
 
 use crate::join::TRANSCRIPT_FILE;
@@ -52,6 +57,19 @@ pub const WHOLE: &str = "whole";
 /// prompt text and the Background both count (KTD11).
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
 shorten the prompt or the Background in Settings, or choose a model with a larger context";
+/// The error when a reply is cut off at the largest allowance that the
+/// context and the provider permit (R4, KTD8).
+fn reply_does_not_fit() -> String {
+    format!(
+        "the model's reply did not fit in its context; \
+         give the model a larger context, or choose a lower Thinking level in {THINKING_SETTING}"
+    )
+}
+/// The error when a summary request reaches its reply deadline (R16,
+/// KTD10). The request is not sent again.
+fn no_reply_in_time() -> String {
+    format!("the model did not reply in time; choose a lower Thinking level in {THINKING_SETTING}")
+}
 /// The proposed title, a string, once the title turn has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
@@ -90,6 +108,11 @@ pub struct SummaryEndpoint {
     pub credential: Option<String>,
     /// The user's context setting, which overrides the probe.
     pub context_limit: Option<u32>,
+    /// The Thinking level of the summary requests and the title request,
+    /// and whether the user chose it (R5, R6, R8, KTD7, KTD11).
+    pub thinking: Thinking,
+    /// How many requests go to the provider at the same time (R12).
+    pub requests_at_once: u32,
     /// The waits before each new try of a request that could not reach the
     /// endpoint ([`summarize::client::RETRY_WAITS`] in the app).
     pub retry_waits: Vec<Duration>,
@@ -134,7 +157,7 @@ impl Source {
 }
 
 /// The Ollama context size for a request that needs `need` tokens, the
-/// prompt estimate and the reply reserve (KTD7). The size is a multiple of
+/// prompt estimate and the reply allowance (KTD7). The size is a multiple of
 /// [`CONTEXT_STEP`], at least [`SMALLEST_CONTEXT`], and never more than
 /// `limit`, the context limit.
 fn context_size(need: usize, limit: u32) -> u32 {
@@ -145,7 +168,9 @@ fn context_size(need: usize, limit: u32) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct Room {
     limit: u32,
-    /// Tokens kept for the reply, and sent as its cap.
+    /// The split reserve: the tokens that the split decision and the part
+    /// sizes keep for the reply (KTD1). Each request sends its own reply
+    /// allowance ([`Calls::allowance`]).
     reserve: u32,
 }
 
@@ -153,7 +178,7 @@ impl Room {
     fn new(limit: u32) -> Self {
         Self {
             limit,
-            reserve: tokens::reply_reserve(limit),
+            reserve: tokens::split_reserve(limit),
         }
     }
 }
@@ -287,7 +312,7 @@ pub fn send_title_request(
     // endpoint that cannot be reached does not stop the other jobs of the
     // summary queue.
     let client = match Client::new(client_endpoint(endpoint)) {
-        Ok(client) => client,
+        Ok(client) => client.with_thinking(endpoint.thinking),
         Err(e) => return Ok(Err(e.to_string())),
     };
     if client.crosses_network_unencrypted() {
@@ -604,7 +629,8 @@ pub fn produce(
     }
     let client = Client::new(client_endpoint(&endpoint))
         .map_err(|e| StageError::Failed(e.to_string()))?
-        .with_retry_waits(endpoint.retry_waits.clone());
+        .with_retry_waits(endpoint.retry_waits.clone())
+        .with_thinking(endpoint.thinking);
     if client.crosses_network_unencrypted() {
         log::warn!(
             "summarizing {note_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
@@ -688,9 +714,12 @@ pub fn produce(
         background: &prompt.background,
         details: &details,
         ollama: endpoint.provider == Provider::Ollama,
+        reply_kind: ReplyKind::of(endpoint.provider, plan.budget.source),
+        output_max: plan.budget.output_max,
         queued,
         progress: &mut *progress,
         grouped: 0,
+        at_once: endpoint.requests_at_once.max(1) as usize,
     };
     let done = if !said {
         // Nothing was said (AE16): there is nothing to send.
@@ -721,19 +750,18 @@ pub fn produce(
                         room.limit
                     )));
                 }
-                Err(CutOff { layer, room }) if shrinks < MAX_SHRINKS => {
-                    // The prompt fit and the reply did not: give the reply
-                    // more of the same context and send less with it.
+                Err(CutOff {
+                    layer,
+                    room,
+                    resplit: true,
+                }) if shrinks < MAX_SHRINKS
+                    && (room.reserve * 2).min(room.limit / 2) > room.reserve =>
+                {
+                    // The prompt fit and the reply did not, at the largest
+                    // allowance: send less with each request, so that the
+                    // reply gets more of the same context (KTD8).
                     shrinks += 1;
                     let reserve = (room.reserve * 2).min(room.limit / 2);
-                    if reserve <= room.reserve {
-                        // The next run asks the endpoint for its limit
-                        // again: the user can raise the context length.
-                        forget_calls(store, note_id)?;
-                        return Err(StageError::Failed(
-                            "the model's replies do not fit in its context; raise its context length or choose another model".into(),
-                        ));
-                    }
                     log::warn!(
                         "{} cut off a layer-{layer} reply at {} tokens; retrying with {reserve}",
                         client.host(),
@@ -750,10 +778,12 @@ pub fn produce(
                     checkpoint::put(store, note_id, Stage::Summarize, PLAN, &plan)?;
                 }
                 Err(CutOff { .. }) => {
+                    // A note in one request, or a split that gives no
+                    // larger allowance, fails at once (R4). The next run
+                    // asks the endpoint for its limit again: the user can
+                    // raise the context length.
                     forget_calls(store, note_id)?;
-                    return Err(StageError::Failed(
-                        "the endpoint kept cutting off replies".into(),
-                    ));
+                    return Err(StageError::Failed(reply_does_not_fit()));
                 }
                 Err(Stop(e)) => return Err(e),
             }
@@ -829,10 +859,13 @@ enum Outcome {
         layer: usize,
         room: Room,
     },
-    /// The reply at `layer` ran out of its reserve.
+    /// The reply at `layer` ran out of its largest allowance. `resplit` is
+    /// true when the request is a summary part or a merge, and a smaller
+    /// prompt gives a larger allowance (KTD8).
     CutOff {
         layer: usize,
         room: Room,
+        resplit: bool,
     },
     Stop(StageError),
 }
@@ -866,6 +899,10 @@ struct Calls<'a> {
     /// The requests go to Ollama, so each request gives its context size
     /// (KTD7).
     ollama: bool,
+    /// How the provider kind limits the reply allowance (KTD2).
+    reply_kind: ReplyKind,
+    /// The output maximum that the probe gave, if any (KTD3).
+    output_max: Option<u32>,
     /// The time that the job waited for its turn in the summary queue.
     queued: Duration,
     /// Takes the step, the calls of the step done, and the calls of the
@@ -874,6 +911,34 @@ struct Calls<'a> {
     /// The calls that combined summaries in groups in this attempt, in all
     /// layers before the last.
     grouped: usize,
+    /// How many requests of one layer go at the same time (R13, KTD9).
+    at_once: usize,
+}
+
+/// One request of a layer: the key of its saved result, its index in the
+/// layer and its messages.
+struct Job<'m> {
+    key: String,
+    index: usize,
+    messages: Cow<'m, [Message]>,
+}
+
+/// A [`Job`] with its prompt estimate with the margin, `used`, and its
+/// reply allowance.
+struct Prepared<'m> {
+    job: Job<'m>,
+    used: usize,
+    allowance: tokens::Allowance,
+}
+
+/// What the requests of one layer have in common.
+struct Shared<'a> {
+    client: &'a Client,
+    control: &'a dyn Control,
+    room: Room,
+    /// The Ollama context size of each request (KTD7).
+    num_ctx: Option<u32>,
+    layer: usize,
 }
 
 /// The final call: its messages, its reply, which is the summary, and the
@@ -900,10 +965,20 @@ impl<'a> Calls<'a> {
         self.ollama.then(|| context_size(need, room.limit))
     }
 
-    fn report(&mut self, step: Option<(SummaryStep, usize, usize)>) {
-        if let Some((step, done, total)) = step {
-            (self.progress)(step, done, total);
-        }
+    /// The output maximum: the smaller of the probe's and the client's
+    /// ([`Client::output_max`]).
+    fn output_max(&self) -> Option<u32> {
+        [self.output_max, self.client.output_max()]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// The reply allowance of a request with `messages` under `room` (R1,
+    /// KTD2).
+    fn allowance(&self, messages: &[Message], room: Room) -> tokens::Allowance {
+        let used = tokens::with_margin(cost(messages));
+        tokens::reply_allowance(room.limit, used, self.output_max(), self.reply_kind)
     }
 
     fn summarize(&mut self, lines: &[Line], plan: &Plan) -> Result<Final, Outcome> {
@@ -930,12 +1005,12 @@ impl<'a> Calls<'a> {
         if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
             <= room.limit as usize
         {
-            // One call: its prompt estimate and its reply reserve.
+            // One call: its prompt estimate and its reply allowance.
             let num_ctx = self.num_ctx(
-                tokens::with_margin(cost(&whole)) + room.reserve as usize,
+                tokens::with_margin(cost(&whole)) + self.allowance(&whole, room).first as usize,
                 room,
             );
-            let reply = self.call_as(WHOLE.into(), 0, 0, &whole, room, 1, None, num_ctx)?;
+            let reply = self.call_one(WHOLE.into(), 0, &whole, room, num_ctx)?;
             return Ok(Final {
                 messages: whole,
                 reply,
@@ -946,24 +1021,29 @@ impl<'a> Calls<'a> {
         // Too long for one call: parts, then merges until one remains. Every
         // request of the run gives the room limit as its Ollama context
         // size, so Ollama does not load the model again (KTD7). The cut-off
-        // path changes the reply reserve, not the limit.
+        // path changes the split reserve, not the limit.
         let num_ctx = self.num_ctx(room.limit as usize, room);
         let allowance = chunk_allowance(room, &notes, text, title_text, user);
         let chunks: Vec<Chunk> = chunk::chunk(lines, allowance);
         let total = chunks.len();
-        let mut summaries = Vec::with_capacity(total);
         (self.progress)(SummaryStep::Parts, 0, total);
-        for (i, c) in chunks.iter().enumerate() {
-            summaries.push(self.call(
-                0,
-                i,
-                &prompts::part(c, i, total, &notes, user),
-                room,
-                total,
-                Some((SummaryStep::Parts, i + 1, total)),
-                num_ctx,
-            )?);
-        }
+        let jobs = chunks
+            .iter()
+            .enumerate()
+            .map(|(i, c)| Job {
+                key: call_key(0, i),
+                index: i,
+                messages: Cow::Owned(prompts::part(c, i, total, &notes, user)),
+            })
+            .collect();
+        let mut summaries = self.call_many(
+            0,
+            jobs,
+            room,
+            total,
+            Some((SummaryStep::Parts, 0, total)),
+            num_ctx,
+        )?;
         self.grouped = 0;
         let mut layer = 1;
         if summaries.len() == 1 {
@@ -974,7 +1054,7 @@ impl<'a> Calls<'a> {
             let notes = fit_notes(room, self.notes, text, title_text, user);
             let messages = prompts::merge(&only, true, &notes, text, user);
             (self.progress)(SummaryStep::Final, 0, 1);
-            let reply = self.call(1, 0, &messages, room, 1, None, num_ctx)?;
+            let reply = self.call_one(call_key(1, 0), 1, &messages, room, num_ctx)?;
             return Ok(Final {
                 messages,
                 reply,
@@ -992,38 +1072,57 @@ impl<'a> Calls<'a> {
                 let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
                 let messages = prompts::merge(&parts, true, &notes, text, user);
                 (self.progress)(SummaryStep::Final, 0, 1);
-                let reply = self.call(layer, 0, &messages, room, 1, None, num_ctx)?;
+                let reply = self.call_one(call_key(layer, 0), layer, &messages, room, num_ctx)?;
                 return Ok(Final {
                     messages,
                     reply,
                     room,
                 });
             }
-            let mut next = Vec::with_capacity(groups.len());
             // One count for the group calls of all the layers before the
             // last. The calls of later layers are an estimate with replies
             // of the full reserve.
             let steps = self.grouped
                 + merge_calls(&costs, allowance, room.reserve as usize + 8).saturating_sub(1);
             (self.progress)(SummaryStep::Groups, self.grouped, steps);
-            for (i, g) in groups.iter().enumerate() {
-                if g.len() == 1 {
-                    next.push(summaries[g.start].clone());
-                    continue;
-                }
-                let parts: Vec<&str> = summaries[g.clone()].iter().map(String::as_str).collect();
-                self.grouped += 1;
-                next.push(self.call(
+            // A group of one summary needs no call: the summary goes on to
+            // the next layer.
+            let jobs: Vec<Job> = groups
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.len() > 1)
+                .map(|(i, g)| {
+                    let parts: Vec<&str> =
+                        summaries[g.clone()].iter().map(String::as_str).collect();
+                    Job {
+                        key: call_key(layer, i),
+                        index: i,
+                        messages: Cow::Owned(prompts::merge(&parts, false, &notes, text, user)),
+                    }
+                })
+                .collect();
+            let calls = jobs.len();
+            let mut merged = self
+                .call_many(
                     layer,
-                    i,
-                    &prompts::merge(&parts, false, &notes, text, user),
+                    jobs,
                     room,
                     groups.len(),
-                    Some((SummaryStep::Groups, self.grouped, steps.max(self.grouped))),
+                    Some((SummaryStep::Groups, self.grouped, steps)),
                     num_ctx,
-                )?);
-            }
-            summaries = next;
+                )?
+                .into_iter();
+            self.grouped += calls;
+            summaries = groups
+                .iter()
+                .map(|g| {
+                    if g.len() == 1 {
+                        summaries[g.start].clone()
+                    } else {
+                        merged.next().expect("a merged summary for each group")
+                    }
+                })
+                .collect();
             layer += 1;
         }
         Err(Stop(StageError::Failed(
@@ -1056,10 +1155,9 @@ impl<'a> Calls<'a> {
         }
         let messages =
             prompts::title_turn(&done.messages, &done.reply, self.title_text, self.user());
-        let used = tokens::with_margin(cost(&messages));
-        let cap = (done.room.limit as usize)
-            .saturating_sub(used)
-            .min(done.room.reserve as usize) as u32;
+        // The title request gets the first allowance of the same rule as
+        // a summary request (KTD11).
+        let cap = self.allowance(&messages, done.room).first;
         if cap < prompts::TITLE_REPLY_MIN {
             log::warn!(
                 "the title turn for {} leaves {cap} tokens of the context for the reply, under {}; \
@@ -1082,85 +1180,189 @@ impl<'a> Calls<'a> {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn call(
-        &mut self,
-        layer: usize,
-        index: usize,
-        messages: &[Message],
-        room: Room,
-        total: usize,
-        step: Option<(SummaryStep, usize, usize)>,
-        num_ctx: Option<u32>,
-    ) -> Result<String, Outcome> {
-        self.call_as(
-            call_key(layer, index),
-            layer,
-            index,
-            messages,
-            room,
-            total,
-            step,
-            num_ctx,
-        )
-    }
-
-    /// One call, with its result saved under `key`. When the call is done,
-    /// also when its result was saved before, the run reports `step`: the
-    /// step, its calls done, and its calls. `num_ctx` is the Ollama context
-    /// size of the request (KTD7).
-    #[allow(clippy::too_many_arguments)]
-    fn call_as(
+    /// One call, with its result saved under `key`, in `layer`. `num_ctx`
+    /// is the Ollama context size of the request (KTD7).
+    fn call_one(
         &mut self,
         key: String,
         layer: usize,
-        index: usize,
         messages: &[Message],
+        room: Room,
+        num_ctx: Option<u32>,
+    ) -> Result<String, Outcome> {
+        let job = Job {
+            key,
+            index: 0,
+            messages: Cow::Borrowed(messages),
+        };
+        let mut replies = self.call_many(layer, vec![job], room, 1, None, num_ctx)?;
+        Ok(replies.remove(0))
+    }
+
+    /// The calls `jobs` of `layer`, of `total` calls in the layer, with
+    /// their results in the order of `jobs`. Each result is saved under the
+    /// key of its job, and a result saved before is used again with no
+    /// request. Up to [`Self::at_once`] requests are open at the same time
+    /// (R13, KTD9). Each call that is done reports `step`: the step, the
+    /// calls done before plus the calls of `jobs` done, and the calls of
+    /// the step (R14). The calls can finish in any order. The first failure
+    /// stops the requests that are still open. `num_ctx` is the Ollama
+    /// context size of each request (KTD7).
+    fn call_many(
+        &mut self,
+        layer: usize,
+        jobs: Vec<Job<'_>>,
         room: Room,
         total: usize,
         step: Option<(SummaryStep, usize, usize)>,
         num_ctx: Option<u32>,
-    ) -> Result<String, Outcome> {
-        if let Some(done) =
-            checkpoint::get::<String>(self.store, self.note_id, Stage::Summarize, &key)?
-        {
-            self.report(step);
-            return Ok(done);
-        }
-        self.control.proceed()?;
-        let kind = if key == WHOLE {
-            RequestKind::Single
-        } else if layer == 0 {
-            RequestKind::Chunk
-        } else {
-            RequestKind::Merge
-        };
-        let label = Label::note(self.note_id, kind).queued(self.queued);
-        let reply = self.runtime.block_on(
-            self.client
-                .complete(&label, messages, room.reserve, num_ctx),
-            self.control,
-        )?;
-        match reply {
-            Ok(completion) => {
-                checkpoint::put(
-                    self.store,
-                    self.note_id,
-                    Stage::Summarize,
-                    &key,
-                    &completion.text,
-                )?;
-                self.report(step);
-                Ok(completion.text)
+    ) -> Result<Vec<String>, Outcome> {
+        let output_max = self.output_max();
+        let allowance =
+            |used| tokens::reply_allowance(room.limit, used, output_max, self.reply_kind);
+        // Only a smaller prompt gives a reply allowance larger than this.
+        let largest = allowance(0).ceiling;
+        let jobs: Vec<Prepared> = jobs
+            .into_iter()
+            .map(|job| {
+                let used = tokens::with_margin(cost(&job.messages));
+                Prepared {
+                    job,
+                    used,
+                    allowance: allowance(used),
+                }
+            })
+            .collect();
+        let kind = |key: &str| {
+            if key == WHOLE {
+                RequestKind::Single
+            } else if layer == 0 {
+                RequestKind::Chunk
+            } else {
+                RequestKind::Merge
             }
-            Err(e) if e.is_context_pressure() => Err(Pressure { layer, room }),
-            Err(SummarizeError::ReplyCutOff) => Err(CutOff { layer, room }),
-            Err(e) => Err(Stop(StageError::Failed(describe(layer, index, total, &e)))),
+        };
+        let (store, note_id, client, control) =
+            (self.store, self.note_id, self.client, self.control);
+        let (queued, at_once, runtime) = (self.queued, self.at_once, self.runtime);
+        let shared = &Shared {
+            client,
+            control,
+            room,
+            num_ctx,
+            layer,
+        };
+        let progress = &mut *self.progress;
+        let mut report = |done: usize| {
+            if let Some((step, before, of)) = step {
+                progress(step, before + done, of.max(before + done));
+            }
+        };
+        let mut replies: Vec<Option<String>> = vec![None; jobs.len()];
+        let work = async {
+            let mut done = 0;
+            let mut open = FuturesUnordered::new();
+            let mut next = jobs.iter().enumerate();
+            loop {
+                while open.len() < at_once {
+                    let Some((slot, prepared)) = next.next() else {
+                        break;
+                    };
+                    let key = &prepared.job.key;
+                    if let Some(saved) =
+                        checkpoint::get::<String>(store, note_id, Stage::Summarize, key)?
+                    {
+                        replies[slot] = Some(saved);
+                        done += 1;
+                        report(done);
+                        continue;
+                    }
+                    control.proceed()?;
+                    let label = Label::note(note_id, kind(key)).queued(queued);
+                    open.push(async move { (slot, request(shared, &label, prepared).await) });
+                }
+                let Some((slot, reply)) = open.next().await else {
+                    return Ok(());
+                };
+                let Prepared { job, allowance, .. } = &jobs[slot];
+                match reply? {
+                    Ok(text) => {
+                        checkpoint::put(store, note_id, Stage::Summarize, &job.key, &text)?;
+                        replies[slot] = Some(text);
+                        done += 1;
+                        report(done);
+                    }
+                    Err(e) if e.is_context_pressure() => return Err(Pressure { layer, room }),
+                    // At the ceiling: only a smaller prompt gives a larger
+                    // allowance, and a note in one request is not split.
+                    Err(SummarizeError::ReplyCutOff) => {
+                        return Err(CutOff {
+                            layer,
+                            room,
+                            resplit: job.key != WHOLE && largest > allowance.ceiling,
+                        });
+                    }
+                    Err(e) => {
+                        return Err(Stop(StageError::Failed(describe(
+                            layer, job.index, total, &e,
+                        ))));
+                    }
+                }
+            }
+        };
+        // A cancel drops the requests that are still open, as the first
+        // failure does (KTD9).
+        runtime.block_on(work, control)??;
+        Ok(replies
+            .into_iter()
+            .map(|reply| reply.expect("a reply for each call"))
+            .collect())
+    }
+}
+
+/// Send the messages of `prepared` until a reply comes that is not cut off
+/// below the ceiling of its allowance. Below the ceiling, the same request
+/// goes again with the doubled allowance (KTD8). An Ollama context size
+/// grows to hold it, and never gets smaller. The outer error stops the
+/// stage.
+async fn request(
+    shared: &Shared<'_>,
+    label: &Label,
+    prepared: &Prepared<'_>,
+) -> Result<Result<String, SummarizeError>, StageError> {
+    let Shared {
+        client,
+        control,
+        room,
+        layer,
+        ..
+    } = *shared;
+    let (job, used, allowance) = (&prepared.job, prepared.used, prepared.allowance);
+    let (mut cap, mut num_ctx) = (allowance.first, shared.num_ctx);
+    loop {
+        match client.complete(label, &job.messages, cap, num_ctx).await {
+            Ok(completion) => return Ok(Ok(completion.text)),
+            Err(SummarizeError::ReplyCutOff) if cap < allowance.ceiling => {
+                let next = cap.saturating_mul(2).min(allowance.ceiling);
+                log::warn!(
+                    "{} cut off a layer-{layer} reply at {cap} tokens; sending it again with {next}",
+                    client.host()
+                );
+                num_ctx =
+                    num_ctx.map(|size| size.max(context_size(used + next as usize, room.limit)));
+                cap = next;
+                control.proceed()?;
+            }
+            Err(e) => return Ok(Err(e)),
         }
     }
 }
 
 fn describe(layer: usize, index: usize, total: usize, e: &SummarizeError) -> String {
+    let e = match e {
+        SummarizeError::Deadline(_) => no_reply_in_time(),
+        e => e.to_string(),
+    };
     if layer == 0 && total > 1 {
         format!("summarizing part {} of {total}: {e}", index + 1)
     } else if layer == 0 {
@@ -1270,7 +1472,23 @@ impl Runtime {
 mod tests {
     use summarize::chunk::{Line, Turn};
 
-    use super::{Details, clean_title, input_fingerprint, lines_of, merge_calls, read_transcript};
+    use super::{
+        Details, clean_title, describe, input_fingerprint, lines_of, merge_calls, read_transcript,
+    };
+
+    /// Covers KTD10, R16: a deadline failure names the Thinking setting.
+    /// That a deadline sends no second request is shown in the client
+    /// tests (`an_endpoint_that_never_answers_hits_the_deadline`).
+    #[test]
+    fn a_deadline_failure_names_the_thinking_setting() {
+        for what in ["response", "data", "complete reply"] {
+            for (layer, total) in [(0, 1), (0, 3), (1, 1)] {
+                let text = describe(layer, 0, total, &summarize::SummarizeError::Deadline(what));
+                assert!(text.contains("Thinking"), "{text}");
+                assert!(text.contains(summarize::THINKING_SETTING), "{text}");
+            }
+        }
+    }
 
     #[test]
     fn merge_calls_counts_every_layer_and_the_last_merge() {
@@ -1293,7 +1511,11 @@ mod tests {
             model: "m".into(),
         };
         let plan = |limit, source| super::Plan {
-            budget: Budget { limit, source },
+            budget: Budget {
+                limit,
+                source,
+                output_max: None,
+            },
             layers: vec![super::Room::new(limit)],
             source: Some(at.clone()),
         };
@@ -1333,6 +1555,7 @@ mod tests {
             budget: Budget {
                 limit: 32_000,
                 source: BudgetSource::User,
+                output_max: None,
             },
             layers: vec![super::Room::new(32_000)],
             source,

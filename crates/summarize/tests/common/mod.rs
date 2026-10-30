@@ -29,7 +29,26 @@ pub enum Reply {
     /// given value, then the start of the body, then keep the connection
     /// open and send no more.
     Stall(u16, usize, String),
+    /// Answer with the future of a function of the request body. The
+    /// future can wait for other requests, for a test that holds requests
+    /// open together.
+    Await(AsyncResponder),
 }
+
+/// The reply that an [`AsyncResponder`] gives: the status, more header
+/// lines (each one ends with `\r\n`), and the JSON body.
+pub struct Answer {
+    pub status: u16,
+    pub headers: String,
+    pub body: String,
+}
+
+/// Builds a reply from the request body, after a wait that it chooses.
+pub type AsyncResponder = Arc<
+    dyn Fn(String) -> std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A gate that holds the replies of [`Reply::Gated`] until the test opens
 /// it. It does not block a thread. Once open, it stays open.
@@ -164,6 +183,10 @@ pub fn serve_on(listener: TcpListener, routes: HashMap<&'static str, Reply>) -> 
                     Reply::With(f) => {
                         let (status, body) = f(&request.body);
                         (status, String::new(), body)
+                    }
+                    Reply::Await(f) => {
+                        let answer = f(request.body.clone()).await;
+                        (answer.status, answer.headers, answer.body)
                     }
                 };
                 let response = format!(

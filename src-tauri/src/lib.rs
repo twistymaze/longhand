@@ -56,6 +56,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_provider_address,
             commands::settings::set_provider_model,
             commands::settings::set_provider_context_limit,
+            commands::settings::set_provider_thinking,
+            commands::settings::set_provider_requests_at_once,
             commands::settings::set_default_speaker_count,
             commands::settings::select_asr_model,
             commands::settings::set_live_transcript,

@@ -3,7 +3,7 @@
 use summarize::chunk::{Chunk, Line, Turn, chunk, render_line};
 use summarize::client::Message;
 use summarize::prompts;
-use summarize::tokens::{estimate, prompt_allowance, reply_reserve};
+use summarize::tokens::{estimate, prompt_allowance, split_reserve};
 
 fn turns(n: usize) -> Vec<Line> {
     (0..n)
@@ -29,7 +29,7 @@ fn cost(chunk: &Chunk) -> usize {
 #[test]
 fn a_four_hour_transcript_packs_under_a_small_budget_without_splitting_a_turn() {
     let all = turns(40_000);
-    let allowance = prompt_allowance(4_096, reply_reserve(4_096)) - 400;
+    let allowance = prompt_allowance(4_096, split_reserve(4_096)) - 400;
     let chunks = chunk(&all, allowance);
     assert!(chunks.len() > 100);
     assert!(chunks.iter().all(|c| cost(c) <= allowance));
@@ -171,7 +171,7 @@ fn chunking_never_puts_a_pause_line_at_the_end_of_a_part() {
 #[test]
 fn each_part_request_with_pause_lines_fits_the_allowance() {
     let all = with_pauses(2_000);
-    let allowance = prompt_allowance(4_096, reply_reserve(4_096));
+    let allowance = prompt_allowance(4_096, split_reserve(4_096));
     let chunks = chunk(&all, allowance - prompts::overhead(NOTES, &topic(), ""));
     assert!(chunks.len() > 2);
     for (i, c) in chunks.iter().enumerate() {
@@ -190,7 +190,7 @@ const NOTES: &str = "# Plan\n\n- the decision\n- and why\n";
 #[test]
 fn each_chunk_request_contains_the_notes_document_once() {
     let all = turns(2_000);
-    let allowance = prompt_allowance(4_096, reply_reserve(4_096));
+    let allowance = prompt_allowance(4_096, split_reserve(4_096));
     let notes = prompts::fit_notes(NOTES, allowance, &topic(), "");
     assert_eq!(notes, NOTES);
     let chunks = chunk(&all, allowance - prompts::overhead(&notes, &topic(), ""));
@@ -207,7 +207,7 @@ fn each_chunk_request_contains_the_notes_document_once() {
 #[test]
 fn a_notes_document_longer_than_the_allowance_is_cut_with_a_marker_and_the_requests_fit() {
     let all = turns(2_000);
-    let allowance = prompt_allowance(4_096, reply_reserve(4_096));
+    let allowance = prompt_allowance(4_096, split_reserve(4_096));
     let long: String = (0..2_000)
         .map(|i| format!("- note {i} about something the user found important\n"))
         .collect();

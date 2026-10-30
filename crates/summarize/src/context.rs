@@ -12,7 +12,9 @@
 //! `/api/show`. OpenAI and Anthropic report no limit, so no request is
 //! sent for them.
 
+use rig_core::catalog::Catalog;
 use rig_core::model::ModelInfo;
+use rig_core::providers::registry::ProviderId;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -42,6 +44,10 @@ pub enum BudgetSource {
 pub struct Budget {
     pub limit: u32,
     pub source: BudgetSource,
+    /// The model's output maximum, when the probe gives it (KTD3). A plan
+    /// from an older version has none.
+    #[serde(default)]
+    pub output_max: Option<u32>,
 }
 
 /// The setting, else the probe, else the default.
@@ -50,11 +56,13 @@ pub fn resolve(user: Option<u32>, probed: Option<Budget>) -> Budget {
         (Some(limit), _) => Budget {
             limit,
             source: BudgetSource::User,
+            output_max: None,
         },
         (None, Some(probed)) => probed,
         (None, None) => Budget {
             limit: DEFAULT_LIMIT,
             source: BudgetSource::Default,
+            output_max: None,
         },
     }
 }
@@ -75,12 +83,43 @@ fn rows(body: &Value) -> impl Iterator<Item = &Value> {
 /// LiteLLM `/model/info`: `model_info.max_input_tokens`, never
 /// `max_tokens`, which is the model's output cap.
 pub fn parse_litellm(body: &Value, model: &str) -> Option<u32> {
+    litellm_limits(body, model).map(|(limit, _)| limit)
+}
+
+/// The context limit of [`parse_litellm`] and the output maximum in the
+/// same row: `model_info.max_output_tokens`. LiteLLM can fill the legacy
+/// `max_tokens` with the input limit, so that field is not read (KTD3).
+fn litellm_limits(body: &Value, model: &str) -> Option<(u32, Option<u32>)> {
     rows(body)
         .filter(|row| {
             row.get("model_name").and_then(Value::as_str) == Some(model)
                 || row.pointer("/model_info/key").and_then(Value::as_str) == Some(model)
         })
-        .find_map(|row| positive(row.pointer("/model_info/max_input_tokens")))
+        .find_map(|row| {
+            let limit = positive(row.pointer("/model_info/max_input_tokens"))?;
+            Some((
+                limit,
+                positive(row.pointer("/model_info/max_output_tokens")),
+            ))
+        })
+}
+
+/// The output maximum of `model` on the hosted `provider` in Rig's
+/// built-in catalog (KTD3). `None` for a model that the catalog does not
+/// know, and for the local providers and Custom, which serve any model.
+pub fn catalog_output_max(provider: Provider, model: &str) -> Option<u32> {
+    let vendor = match provider {
+        Provider::OpenAi => "openai",
+        Provider::Anthropic => "anthropic",
+        Provider::Gemini => "gcp.gemini",
+        Provider::OpenRouter => "openrouter",
+        Provider::Ollama | Provider::LmStudio | Provider::Custom => return None,
+    };
+    let model = model.strip_prefix("models/").unwrap_or(model);
+    Catalog::builtin()
+        .find(ProviderId::catalog(vendor)?, model)
+        .and_then(|spec| spec.max_output_tokens)
+        .filter(|&n| n > 0)
 }
 
 /// LM Studio `/api/v0/models`: the context the model is loaded with.
@@ -163,6 +202,7 @@ async fn probe_gemini(client: &Client, label: &Label) -> Result<Option<Budget>, 
         .map(|limit| Budget {
             limit,
             source: BudgetSource::Gemini,
+            output_max: None,
         }))
 }
 
@@ -181,6 +221,7 @@ async fn probe_ollama(client: &Client, label: &Label) -> Result<Option<Budget>, 
         .map(|limit| Budget {
             limit,
             source: BudgetSource::Ollama,
+            output_max: None,
         }))
 }
 
@@ -190,7 +231,13 @@ async fn probe_compatible(
     label: &Label,
 ) -> Result<Option<Budget>, SummarizeError> {
     let model = client.endpoint().model.clone();
-    let found = |limit: Option<u32>, source| limit.map(|limit| Budget { limit, source });
+    let found = |limit: Option<u32>, source| {
+        limit.map(|limit| Budget {
+            limit,
+            source,
+            output_max: None,
+        })
+    };
 
     let first = answer(
         client
@@ -199,9 +246,13 @@ async fn probe_compatible(
         true,
     )?;
     if let Some(body) = first
-        && let Some(b) = found(parse_litellm(&body, &model), BudgetSource::Litellm)
+        && let Some((limit, output_max)) = litellm_limits(&body, &model)
     {
-        return Ok(Some(b));
+        return Ok(Some(Budget {
+            limit,
+            source: BudgetSource::Litellm,
+            output_max,
+        }));
     }
     let lm_studio = client
         .probe_json(label, &client.root_url("api/v0/models"))

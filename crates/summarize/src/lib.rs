@@ -21,7 +21,9 @@ pub mod tokens;
 pub mod transport;
 
 pub use chunk::{Chunk, Line, Turn};
-pub use client::{Client, Completion, Endpoint, Limits, SummarizeError};
+pub use client::{
+    Client, Completion, Endpoint, Limits, SummarizeError, THINKING_SETTING, Thinking,
+};
 pub use context::{Budget, BudgetSource};
 pub use models::{Checked, ModelList, check, list_models};
 pub use prompts::Prompt;
