@@ -24,3 +24,11 @@ People paste links into notes and expect to follow them. The user raised it whil
   - how to stop the webview itself from going to the page.
 - The opener's URL scope uses glob patterns, and `*` also matches `/`. How to write a scope: `docs/solutions/tooling-decisions/opener-url-scope-glob-matching.md`.
 - anarlog's editor already handles links (paths in `reference-source/anarlog/`): an autolink plugin (`packages/editor/src/plugins/autolink.ts`), a link mark with `rel="noopener noreferrer nofollow"` (`packages/editor/src/note/schema.ts`), and `packages/editor/src/plugins/link-boundary-guard.ts`. Read them before designing this.
+
+## Outcome
+Shipped in PR #86 (https://github.com/twistymaze/longhand/pull/86), from a user report: a click on a link in a read-only note replaced the app window, with no way back. The answers to the open questions:
+
+- Schemes: http, https and mailto. Other addresses are refused.
+- A click opens the link directly, with no address preview.
+- In an editable note, Command-click (Control-click on Windows) opens a link, and a plain click edits the text. In a read-only note and in a summary, a click opens it.
+- Each window has an `on_navigation` guard (`src-tauri/src/window.rs`) that keeps it on the app page and sends a web or mail address to the default browser.

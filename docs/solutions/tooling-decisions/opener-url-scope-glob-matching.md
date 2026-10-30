@@ -83,7 +83,7 @@ A scratch Rust program against glob 0.3.4 (offline, outside the repo) gave these
 
 ## When to Apply
 
-- The clickable-links-in-notes work (`docs/ideas/someday/clickable-links-in-notes.md`). The main window has no opener permission. That work must add one to `src-tauri/capabilities/default.json`, choose a scope, and add a test. Addresses in notes come from user text and transcripts, so the case for "https only" is stronger there.
+- The clickable-links-in-notes work (`docs/ideas/done/clickable-links-in-notes.md`). The main window has no opener permission. That work must add one to `src-tauri/capabilities/default.json`, choose a scope, and add a test. Addresses in notes come from user text and transcripts, so the case for "https only" is stronger there.
 - Any new window that opens addresses. Give it its own capability entry; a permission in one window does not apply to another.
 - Any change to an opener scope, or any use of a `glob`-based scope in another Tauri plugin.
 - An agent tool may refuse a scope change such as `https://*` as a security reduction. In archived PR 13, Claude Code's auto mode refused the first `https://*` edit. It accepted the edit after the user asked for it in their own words.
@@ -124,6 +124,6 @@ The first assertion stops a silent widening of the scope. The second stops an `h
 
 ## Related
 
-- `docs/ideas/someday/clickable-links-in-notes.md`: the open follow-up. It needs a scope for the main window.
+- `docs/ideas/done/clickable-links-in-notes.md`: the open follow-up. It needs a scope for the main window.
 - `docs/solutions/ui-bugs/tauri-csp-img-src-blocks-inlined-app-icon.md`: another Tauri security setting whose real behaviour differs from how it reads.
 - `docs/solutions/workflow-issues/full-licence-list-blind-spots.md`: a different gap with the same plugin, from the same PR.
