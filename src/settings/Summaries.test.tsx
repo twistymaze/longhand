@@ -6,7 +6,7 @@ import type { ProviderEntry, Settings } from "../bindings";
 import { mockTauri } from "../test/tauri";
 import { SummariesPane } from "./Summaries";
 
-const empty: ProviderEntry = { address: null, model: "", context_limit_tokens: null };
+const empty: ProviderEntry = { address: null, model: "", context_limit_tokens: null, thinking: null, requests_at_once: null };
 
 const baseSettings: Settings = {
   settings_schema_version: 7,

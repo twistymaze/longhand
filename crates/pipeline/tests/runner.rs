@@ -474,6 +474,9 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         model: "summarizer".into(),
         credential: Some("sk-secret-test".into()),
         context_limit: None,
+        thinking: summarize::provider::ThinkingLevel::ModelDefault,
+        thinking_chosen: false,
+        requests_at_once: 1,
         retry_waits: Vec::new(),
     }
 }

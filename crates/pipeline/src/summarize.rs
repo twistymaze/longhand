@@ -27,6 +27,7 @@ use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
 use summarize::client::{Label, Message, RequestKind};
 use summarize::prompts::{Details, UserText};
+use summarize::provider::ThinkingLevel;
 use summarize::{
     Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, context, prompts, tokens,
 };
@@ -90,6 +91,13 @@ pub struct SummaryEndpoint {
     pub credential: Option<String>,
     /// The user's context setting, which overrides the probe.
     pub context_limit: Option<u32>,
+    /// The Thinking level that the requests use (R5, R6).
+    pub thinking: ThinkingLevel,
+    /// Whether the user chose `thinking`. `false` means that it is the
+    /// default of the provider kind (KTD7).
+    pub thinking_chosen: bool,
+    /// How many requests go to the provider at the same time (R12).
+    pub requests_at_once: u32,
     /// The waits before each new try of a request that could not reach the
     /// endpoint ([`summarize::client::RETRY_WAITS`] in the app).
     pub retry_waits: Vec<Duration>,

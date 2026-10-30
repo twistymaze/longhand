@@ -429,12 +429,17 @@ fn endpoint_from_settings(
         })?
         // A blank key is no key (see `key_state`): send no Bearer header.
         .filter(|key| !key.trim().is_empty());
+    let (thinking, thinking_chosen) = entry.effective_thinking(provider);
+    let requests_at_once = entry.effective_requests_at_once(provider);
     Ok(SummaryEndpoint {
         provider,
         base_url: address,
         model: entry.model,
         credential,
         context_limit: entry.context_limit_tokens,
+        thinking,
+        thinking_chosen,
+        requests_at_once,
         retry_waits: summarize::client::RETRY_WAITS.to_vec(),
     })
 }
@@ -2437,6 +2442,7 @@ pub(crate) fn refuse_with_problem(
 mod tests {
     use super::*;
     use summarize::Provider;
+    use summarize::provider::ThinkingLevel;
 
     /// Settings with `provider` active, the model `gpt-4o` and, when given,
     /// the address `address`.
@@ -2664,6 +2670,32 @@ mod tests {
         assert_eq!(endpoint.provider, Provider::Ollama);
         assert_eq!(endpoint.base_url, "http://localhost:11434");
         assert_eq!(endpoint.credential, None);
+    }
+
+    #[test]
+    fn the_endpoint_has_the_effective_thinking_and_requests_at_once() {
+        // Covers R6, R12, KTD7.
+        let automatic =
+            endpoint_from_settings(active(Provider::LmStudio, None), |_| Ok(None)).unwrap();
+        assert_eq!(automatic.thinking, ThinkingLevel::Low);
+        assert!(!automatic.thinking_chosen);
+        assert_eq!(automatic.requests_at_once, 1);
+
+        let mut s = active(Provider::LmStudio, None);
+        s.set_provider_thinking(Provider::LmStudio, ThinkingLevel::Low);
+        s.set_provider_requests_at_once(Provider::LmStudio, 3)
+            .unwrap();
+        let chosen = endpoint_from_settings(s, |_| Ok(None)).unwrap();
+        assert_eq!(chosen.thinking, ThinkingLevel::Low);
+        assert!(chosen.thinking_chosen);
+        assert_eq!(chosen.requests_at_once, 3);
+
+        let cloud =
+            endpoint_from_settings(active(Provider::OpenRouter, None), |_| Ok(Some("k".into())))
+                .unwrap();
+        assert_eq!(cloud.thinking, ThinkingLevel::ModelDefault);
+        assert!(!cloud.thinking_chosen);
+        assert_eq!(cloud.requests_at_once, 4);
     }
 
     #[test]

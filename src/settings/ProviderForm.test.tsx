@@ -16,7 +16,7 @@ afterAll(() => {
   delete (navigator as { userAgent?: string }).userAgent;
 });
 
-const empty: ProviderEntry = { address: null, model: "", context_limit_tokens: null };
+const empty: ProviderEntry = { address: null, model: "", context_limit_tokens: null, thinking: null, requests_at_once: null };
 
 const baseSettings: Settings = {
   settings_schema_version: 7,
@@ -732,7 +732,7 @@ describe("the context limit", () => {
   test("each provider shows its own limit", async () => {
     const b = backend({
       active: "ollama",
-      entries: { ollama: { context_limit_tokens: 32000 }, anthropic: { context_limit_tokens: null } },
+      entries: { ollama: { context_limit_tokens: 32000 }, anthropic: { context_limit_tokens: null, thinking: null, requests_at_once: null } },
       check: () => listed(),
     });
     const user = userEvent.setup();

@@ -95,7 +95,7 @@ describe("App", () => {
   });
 
   describe("the Settings window on a given pane (KTD10)", () => {
-    const empty = { address: null, model: "", context_limit_tokens: null };
+    const empty = { address: null, model: "", context_limit_tokens: null, thinking: null, requests_at_once: null };
     const mockSettings = () =>
       mockTauri({
         get_settings: () =>

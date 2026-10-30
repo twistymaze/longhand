@@ -27,6 +27,7 @@ use crate::managers::settings::{
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager, StorageFolders};
 use crate::managers::{destination, watched_folder};
 use summarize::Provider;
+use summarize::provider::ThinkingLevel;
 
 #[derive(Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -136,6 +137,31 @@ pub fn set_provider_context_limit(
     limit: Option<u32>,
 ) -> Result<Settings, String> {
     settings::update_settings(&app, |s| s.set_provider_context_limit(provider, limit))
+}
+
+/// Save the Thinking level that the user picked for `provider` (R5).
+#[tauri::command]
+#[specta::specta]
+pub fn set_provider_thinking(
+    app: AppHandle,
+    provider: Provider,
+    level: ThinkingLevel,
+) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| {
+        s.set_provider_thinking(provider, level);
+        Ok(())
+    })
+}
+
+/// Save how many requests go to `provider` at the same time (R12).
+#[tauri::command]
+#[specta::specta]
+pub fn set_provider_requests_at_once(
+    app: AppHandle,
+    provider: Provider,
+    count: u32,
+) -> Result<Settings, String> {
+    settings::update_settings(&app, |s| s.set_provider_requests_at_once(provider, count))
 }
 
 /// Change the chosen recognition configuration with `change`, then compare
