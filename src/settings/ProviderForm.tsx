@@ -537,7 +537,7 @@ function AdvancedRows({
       {limitError && <ErrorText>{limitError}</ErrorText>}
       <Row
         label="Thinking"
-        detail={`How much the model reasons before it writes. Automatic uses ${thinkingName(defaultThinking)} for ${name}.`}
+        detail={`How much the model reasons before it writes. Automatic uses ${thinkingName(defaultThinking)} for ${name}. Some models have only on and off: for them, Low, Medium and High all turn thinking on.`}
       >
         <select
           aria-label="Thinking"
@@ -545,7 +545,7 @@ function AdvancedRows({
           value={entry.thinking ?? ""}
           onChange={(e) => setThinking(e.target.value)}
         >
-          <option value="">Automatic ({thinkingName(defaultThinking)})</option>
+          <option value="">Automatic</option>
           {thinkingLevels.map((l) => (
             <option key={l.id} value={l.id}>
               {l.name}

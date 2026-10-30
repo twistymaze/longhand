@@ -799,7 +799,8 @@ describe("Thinking", () => {
     expect(selected()).toBe("Medium");
     await user.selectOptions(screen.getByLabelText("Thinking"), "");
     await waitFor(() => expect(b.argsOf("set_provider_thinking")).toEqual([{ provider: "lm_studio", level: null }]));
-    expect(selected()).toBe("Automatic (Low)");
+    expect(selected()).toBe("Automatic");
+    expect(screen.getByText(/Automatic uses Low for LM Studio\./)).toBeTruthy();
   });
 
   test("choosing Off saves Off", async () => {
@@ -807,7 +808,8 @@ describe("Thinking", () => {
     const user = userEvent.setup();
     render(<Harness initial={b.initial} />);
     await openAdvanced(user);
-    expect(selected()).toBe("Automatic (Model default)");
+    expect(selected()).toBe("Automatic");
+    expect(screen.getByText(/Automatic uses Model default for OpenRouter\./)).toBeTruthy();
     await user.selectOptions(screen.getByLabelText("Thinking"), "off");
     await waitFor(() => expect(b.argsOf("set_provider_thinking")).toEqual([{ provider: "openrouter", level: "off" }]));
   });
