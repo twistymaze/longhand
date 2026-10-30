@@ -32,41 +32,41 @@ runs:
     # must come before rust-cache: post steps run in reverse order, so
     # rust-cache saves the cache before this action dismounts the drive.
     # The self-hosted runner has a permanent Dev Drive that holds its work folder.
-    # The drive mounts at a fixed folder, not at the next free drive letter:
-    # the larger runner of main gets D: and windows-latest gets E:, because
-    # its D: is the temp disk. The rust-cache key includes CARGO_HOME and
-    # RUSTUP_HOME, and the sccache keys of Rust crates include the source
-    # paths. With different paths, pull requests (windows-latest) never
-    # restored the caches that main (the larger runner) saved.
     - name: Set up a Dev Drive
       if: runner.environment == 'github-hosted'
       uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4
       with:
         drive-size: 40GB
-        mount-path: C:/devdrive
         workspace-copy: true
         trusted-dev-drive: true
-        env-mapping: |
-          CARGO_HOME,{{ DEV_DRIVE }}/.cargo
-          RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
 
-    # actions/cache stores a path outside the workspace relative to the
-    # workspace (../../../devdrive/...), and it extracts relative to the
-    # workspace. The workspace is on C: on the larger runner of main but on
-    # D: on windows-latest, so there a restore wrote main's caches to
-    # D:\devdrive, and the build did not find them. A junction from the
-    # workspace drive's \devdrive to C:\devdrive sends the restore to the
-    # Dev Drive. This step must come before rust-cache.
-    - name: Link the Dev Drive folder on the workspace drive
+    # The Dev Drive is Z: on every runner type. The action takes the next
+    # free letter: D: on the larger runner of main, E: on windows-latest
+    # (its D: is the temp disk). The caches need one path on both runner
+    # types: cargo, CMake and sccache record full paths, and actions/cache
+    # restores a path on the workspace drive relative to the workspace
+    # (C:\a on the larger runner, D:\a on windows-latest). Z: is never the
+    # workspace drive, so the caches store and restore full Z:\ paths. The
+    # action's cleanup finds the drive by its VHDX file, not by its letter.
+    # This step must come before rust-cache.
+    - name: Give the Dev Drive the letter Z
       if: runner.environment == 'github-hosted'
       shell: pwsh
       run: |
         $ErrorActionPreference = 'Stop'
-        $drive = Split-Path -Qualifier $env:GITHUB_WORKSPACE
-        if ($drive -ne 'C:') {
-          New-Item -ItemType Junction -Path "$drive\devdrive" -Target 'C:\devdrive' | Out-Null
-          Write-Output "$drive\devdrive -> C:\devdrive"
+        $drive = Split-Path -Qualifier $env:DEV_DRIVE
+        if ($drive -ne 'Z:') {
+          if (Test-Path 'Z:\') { throw 'Z: is already in use on this runner' }
+          Set-Partition -DriveLetter $drive.TrimEnd(':') -NewDriveLetter Z
         }
+        $workspace = 'Z:' + $env:DEV_DRIVE_WORKSPACE.Substring($drive.Length)
+        @(
+          'DEV_DRIVE=Z:'
+          "DEV_DRIVE_WORKSPACE=$workspace"
+          'CARGO_HOME=Z:\.cargo'
+          'RUSTUP_HOME=Z:\.rustup'
+        ) | Add-Content -Path $env:GITHUB_ENV
+        Write-Output "Dev Drive: Z:, workspace: $workspace"
 
     # The Windows x64 build links ggml's Vulkan backend (KTD6), which needs
     # the SDK's headers and glslc at build time. Version as Handy pins it.
@@ -76,12 +76,12 @@ runs:
     # The action installs into VULKAN_SDK when it is set, else into the
     # checkout. The checkout is C:\a on the larger runner of main but D:\a
     # on windows-latest. The CMake builds record the SDK path, so the SDK
-    # goes on the Dev Drive, which has the same path on each runner type.
+    # goes on the Dev Drive, which is Z: on each runner type.
     - name: Install Vulkan SDK
       if: runner.environment == 'github-hosted'
       uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
       env:
-        VULKAN_SDK: C:/devdrive/VULKAN_SDK
+        VULKAN_SDK: Z:/VULKAN_SDK
       with:
         version: 1.4.309.0
         cache: false
