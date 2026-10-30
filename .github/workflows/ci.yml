@@ -209,6 +209,11 @@ jobs:
           CARGO_LOG: cargo::core::compiler::fingerprint=info
         run: |
           $ErrorActionPreference = 'Stop'
+          # TEMPORARY diagnostics. Remove before merge.
+          Get-ChildItem env: | Where-Object { $_.Name -match 'RUST|CARGO|LINK|^CL$|^_CL_|^LIB$|^INCLUDE$|PROCESSOR' } | Sort-Object Name | Format-Table -AutoSize -Wrap | Out-String -Width 4000
+          rustc -vV
+          cargo -vV
+          Get-ChildItem target/debug/.fingerprint -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(serde|proc-macro2|quote|unicode-ident)-' } | ForEach-Object { $_.Name }
           $expected = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
           if (-not (Test-Path $expected)) { throw "MSVC linker is absent: $expected" }
           $expected = (Get-Item -LiteralPath $expected).FullName
