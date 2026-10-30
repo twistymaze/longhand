@@ -34,7 +34,7 @@ use rig_core::providers::anthropic::wire::{AnthropicConfig, Messages};
 use rig_core::providers::gemini::completion::GenerateContent;
 use rig_core::providers::gemini::{Gemini, GeminiConfig};
 use rig_core::providers::ollama::{Chat as OllamaChat, Ollama, OllamaConfig};
-use rig_core::providers::openai::wire::{Auth, Chat, Dialect, OPENAI, OPENROUTER};
+use rig_core::providers::openai::wire::{Auth, Chat, LLAMACPP, OPENAI, OPENROUTER};
 use rig_core::providers::openai::{OpenAI, OpenAIConfig};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -360,11 +360,6 @@ pub const RETRY_WAITS: [Duration; 10] = [
     Duration::from_secs(60),
 ];
 
-/// The Chat Completions dialect of Custom and LM Studio (KTD2): OpenAI's
-/// request format, the legacy `max_tokens` field for every model id, and
-/// no key header when no key is saved. Longhand never serializes it.
-static GATEWAY: Dialect = Dialect::gateway("longhand-gateway", "", "");
-
 /// The Rig model that sends the summary requests of one endpoint, one kind
 /// for each [`Route`].
 enum Engine {
@@ -393,10 +388,13 @@ impl RigClient {
         let address = address.trim_end_matches('/');
         match provider {
             Provider::OpenAi | Provider::OpenRouter | Provider::LmStudio | Provider::Custom => {
+                // Rig's llama.cpp dialect for LM Studio and Custom (KTD4):
+                // `max_tokens` for every model id, and no key header when no
+                // key is saved.
                 let dialect = match provider {
                     Provider::OpenAi => &OPENAI,
                     Provider::OpenRouter => &OPENROUTER,
-                    _ => &GATEWAY,
+                    _ => &LLAMACPP,
                 };
                 let config = OpenAIConfig::with_key(dialect, key)
                     .with_base_url(address)
@@ -1011,11 +1009,11 @@ fn excerpt(text: &str) -> String {
 /// error is not used, because its text can contain the reply.
 const UNREADABLE: &str = "the reply could not be read";
 
-/// The Rig request for `messages` on `route` (KTD3). On the
-/// OpenAI-compatible route, the additional parameters hold today's
-/// `messages` (string content), `"stream": false` and the reply cap
-/// under `cap_field`, so the body is the same as before Rig. Ollama gets
-/// `num_ctx` when there is one, and always `truncate: false` (KTD7).
+/// The Rig request for `messages` on `route` (KTD4). Rig builds the body
+/// and puts the reply cap in the field of the route. A `cap_field` other
+/// than `max_tokens` replaces that field on the OpenAI-compatible route.
+/// Ollama gets `num_ctx` when there is one, and always `truncate: false`
+/// (KTD7).
 fn rig_request(
     route: Route,
     messages: &[Message],
@@ -1034,14 +1032,14 @@ fn rig_request(
     let prompt = history.pop().unwrap_or_else(|| RigMessage::user(""));
     let request = CompletionRequest::new(prompt).messages(history);
     match route {
-        Route::OpenAiChat => {
-            let mut params = Map::new();
-            params.insert("messages".into(), json!(messages));
-            params.insert("stream".into(), Value::Bool(false));
-            params.insert(cap_field.into(), json!(max_tokens));
-            request.additional_params(Value::Object(params))
+        // Rig writes the cap only as `max_tokens` here, so another field
+        // name goes in the additional parameters instead.
+        Route::OpenAiChat if cap_field != "max_tokens" => {
+            request.additional_params(json!({ cap_field: max_tokens }))
         }
-        Route::Anthropic | Route::Gemini => request.max_tokens(u64::from(max_tokens)),
+        Route::OpenAiChat | Route::Anthropic | Route::Gemini => {
+            request.max_tokens(u64::from(max_tokens))
+        }
         Route::Ollama => {
             let mut params = Map::new();
             params.insert("truncate".into(), Value::Bool(false));

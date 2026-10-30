@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::{Reply, anthropic_reply, chat_reply, closed_base, gemini_reply, ollama_reply, serve};
-use serde_json::json;
+use serde_json::{Value, json};
 use summarize::chunk::{Line, Turn};
 use summarize::client::{Label, Message, RequestKind};
 use summarize::{Client, Endpoint, Limits, Provider, SummarizeError, prompts};
@@ -91,21 +91,41 @@ fn one_turn() -> Vec<Line> {
     ]
 }
 
-/// The body that the client sent before Rig, for `messages`, `model` and
-/// the reply cap `cap`.
-fn body_before_rig(model: &str, messages: &[Message], cap: u32) -> String {
-    let mut body = json!({
-        "model": model,
-        "messages": messages,
-        "stream": false,
-    });
-    body["max_tokens"] = json!(cap);
-    serde_json::to_string(&body).unwrap()
+/// The text of one message in a Chat Completions body. Rig can send the
+/// content as a string or as an array of text parts.
+fn text_of(content: &Value) -> String {
+    match content {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .map(|part| {
+                assert_eq!(part["type"], "text", "{part}");
+                part["text"].as_str().unwrap().to_string()
+            })
+            .collect(),
+        other => panic!("no message text in {other}"),
+    }
+}
+
+/// Assert that the Chat Completions `body` that Rig built holds `model`,
+/// each of `messages` with its role and text, and the reply cap `cap` as
+/// `max_tokens` (R9, R11). Longhand writes no `stream` field.
+fn assert_chat_body(body: &Value, model: &str, messages: &[Message], cap: u32) {
+    assert_eq!(body["model"], model, "{body}");
+    let sent = body["messages"].as_array().unwrap();
+    assert_eq!(sent.len(), messages.len(), "{body}");
+    for (sent, message) in sent.iter().zip(messages) {
+        assert_eq!(sent["role"], message.role, "{body}");
+        assert_eq!(text_of(&sent["content"]), message.content, "{body}");
+    }
+    assert_eq!(body["max_tokens"], cap, "{body}");
+    assert!(body.get("max_completion_tokens").is_none(), "{body}");
+    assert!(body.get("stream").is_none(), "{body}");
 }
 
 /// Covers AE7.
 #[tokio::test]
-async fn custom_sends_the_chat_completions_body_of_today_with_the_bearer_key() {
+async fn custom_sends_a_chat_completions_body_built_by_rig_with_the_bearer_key() {
     let mock = serve(HashMap::from([(
         "/v1/chat/completions",
         Reply::Json(200, chat_reply("fine", "stop")),
@@ -126,8 +146,7 @@ async fn custom_sends_the_chat_completions_body_of_today_with_the_bearer_key() {
         assert_eq!(sent.method, "POST");
         assert_eq!(sent.path, "/v1/chat/completions");
         assert_eq!(sent.authorization.as_deref(), Some("Bearer sk-test"));
-        assert_eq!(sent.body, body_before_rig("m", messages, 900));
-        assert!(sent.json()["messages"][0]["content"].is_string());
+        assert_chat_body(&sent.json(), "m", messages, 900);
     }
 }
 
@@ -237,7 +256,7 @@ async fn the_openai_preset_sends_chat_completions_not_responses() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].path, "/v1/chat/completions");
     assert_eq!(seen[0].authorization.as_deref(), Some("Bearer sk-test"));
-    assert_eq!(seen[0].body, body_before_rig("m", &sys_and_user(), 100));
+    assert_chat_body(&seen[0].json(), "m", &sys_and_user(), 100);
 }
 
 #[tokio::test]
@@ -450,7 +469,30 @@ async fn a_refused_max_tokens_is_sent_once_more_with_max_completion_tokens() {
     let second = seen[1].json();
     assert_eq!(second["max_completion_tokens"], 50, "{second}");
     assert!(second.get("max_tokens").is_none(), "{second}");
-    assert_eq!(second["stream"], false);
+    assert!(second.get("stream").is_none(), "{second}");
+}
+
+#[tokio::test]
+async fn a_request_refused_again_for_max_completion_tokens_is_not_sent_a_third_time() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::Json(
+            400,
+            r#"{"error":{"message":"Unsupported parameter: 'max_tokens'. Use 'max_completion_tokens' instead."}}"#.into(),
+        ),
+    )]))
+    .await;
+    let err = client(Provider::Custom, &mock.base, None)
+        .complete(&label(), &sys_and_user(), 50, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 400, .. }),
+        "{err:?}"
+    );
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[1].json()["max_completion_tokens"], 50);
 }
 
 #[tokio::test]
@@ -543,6 +585,7 @@ async fn lm_studio_and_custom_with_no_saved_key_send_no_authorization_header() {
     assert_eq!(seen.len(), 4);
     for sent in seen.iter() {
         assert_eq!(sent.authorization, None, "{}", sent.body);
+        assert_chat_body(&sent.json(), "m", &sys_and_user(), 100);
     }
 }
 
