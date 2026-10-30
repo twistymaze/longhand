@@ -50,6 +50,24 @@ runs:
           CARGO_HOME,{{ DEV_DRIVE }}/.cargo
           RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
 
+    # actions/cache stores a path outside the workspace relative to the
+    # workspace (../../../devdrive/...), and it extracts relative to the
+    # workspace. The workspace is on C: on the larger runner of main but on
+    # D: on windows-latest, so there a restore wrote main's caches to
+    # D:\devdrive, and the build did not find them. A junction from the
+    # workspace drive's \devdrive to C:\devdrive sends the restore to the
+    # Dev Drive. This step must come before rust-cache.
+    - name: Link the Dev Drive folder on the workspace drive
+      if: runner.environment == 'github-hosted'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $drive = Split-Path -Qualifier $env:GITHUB_WORKSPACE
+        if ($drive -ne 'C:') {
+          New-Item -ItemType Junction -Path "$drive\devdrive" -Target 'C:\devdrive' | Out-Null
+          Write-Output "$drive\devdrive -> C:\devdrive"
+        }
+
     # The Windows x64 build links ggml's Vulkan backend (KTD6), which needs
     # the SDK's headers and glslc at build time. Version as Handy pins it.
     # The action's own cache holds only the installer, which downloads in
