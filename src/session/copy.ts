@@ -29,11 +29,12 @@ markdown.renderer.rules.fence = (tokens, idx, ...rest) => {
   return renderFence(tokens, idx, ...rest);
 };
 
-// The run kinds other than "text" ("strong", "em", "code") are also the HTML tag names.
+// The run kinds other than "text" and "link" ("strong", "em", "code") are also the HTML tag names.
 const runsHtml = (content: Inline[]) =>
   content
     .map((run) => {
       const text = markdown.utils.escapeHtml(run.text);
+      if (run.kind === "link") return `<a href="${markdown.utils.escapeHtml(run.href)}">${text}</a>`;
       return run.kind === "text" ? text : `<${run.kind}>${text}</${run.kind}>`;
     })
     .join("");

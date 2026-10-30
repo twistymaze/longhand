@@ -329,3 +329,62 @@ describe("NoteEditor copy and cut", () => {
     expect(changes).toEqual([]);
   });
 });
+
+// A link opens in the default browser, never in the app's window: the
+// window has no way back from another page.
+describe("NoteEditor links", () => {
+  const userAgent = navigator.userAgent;
+  const setPlatform = (value: string) => Object.defineProperty(navigator, "userAgent", { value, configurable: true });
+  afterEach(() => {
+    setPlatform(userAgent);
+    clearMocks();
+  });
+
+  function linkIn(editable: boolean) {
+    const tauri = mockTauri({ "plugin:opener|open_url": () => null });
+    render(<NoteEditor markdown="[site](https://example.com)" onChange={() => {}} editable={editable} />);
+    const link = screen.getByRole("textbox").querySelector("a")!;
+    const opened = () =>
+      tauri.calls.filter((c) => c.cmd === "plugin:opener|open_url").map((c) => c.args.url);
+    return { link, opened };
+  }
+
+  test("a click on a link in a read-only note opens it in the browser", () => {
+    const { link, opened } = linkIn(false);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    act(() => {
+      link.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(true);
+    expect(opened()).toEqual(["https://example.com"]);
+  });
+
+  test("in an editable note, a plain click does not open a link", () => {
+    const { link, opened } = linkIn(true);
+    act(() => {
+      fireEvent.click(link);
+    });
+    expect(opened()).toEqual([]);
+  });
+
+  test("in an editable note on macOS, a Command-click opens a link and does not select", () => {
+    setPlatform("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)");
+    const { link, opened } = linkIn(true);
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, metaKey: true });
+    act(() => {
+      link.dispatchEvent(down);
+      fireEvent.click(link, { metaKey: true });
+    });
+    expect(down.defaultPrevented).toBe(true);
+    expect(opened()).toEqual(["https://example.com"]);
+  });
+
+  test("in an editable note on Windows, a Control-click opens a link", () => {
+    setPlatform("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+    const { link, opened } = linkIn(true);
+    act(() => {
+      fireEvent.click(link, { ctrlKey: true });
+    });
+    expect(opened()).toEqual(["https://example.com"]);
+  });
+});

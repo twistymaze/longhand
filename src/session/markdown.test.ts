@@ -175,3 +175,35 @@ describe("summary markdown", () => {
     ]);
   });
 });
+
+describe("summary links", () => {
+  test("a markdown link becomes a link", () => {
+    expect(parseInline("See [the plan](https://example.com/plan) now")).toEqual([
+      { kind: "text", text: "See " },
+      { kind: "link", text: "the plan", href: "https://example.com/plan" },
+      { kind: "text", text: " now" },
+    ]);
+  });
+
+  test("a bare web address becomes a link without the punctuation after it", () => {
+    expect(parseInline("Link used: https://example.com, shown")).toEqual([
+      { kind: "text", text: "Link used: " },
+      { kind: "link", text: "https://example.com", href: "https://example.com" },
+      { kind: "text", text: ", shown" },
+    ]);
+  });
+
+  test("a file name or an address in code is not a link", () => {
+    expect(parseInline("Read README.md")).toEqual([{ kind: "text", text: "Read README.md" }]);
+    expect(parseInline("`https://example.com`")).toEqual([{ kind: "code", text: "https://example.com" }]);
+  });
+
+  test("a markdown link to another kind of address keeps only its text", () => {
+    expect(parseInline("[hosts](file:///etc/hosts) and [x](javascript:alert(1))")).toEqual([
+      { kind: "text", text: "hosts" },
+      { kind: "text", text: " and " },
+      { kind: "text", text: "x" },
+      { kind: "text", text: ")" },
+    ]);
+  });
+});

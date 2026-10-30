@@ -39,6 +39,12 @@ describe("tabHtml", () => {
     );
   });
 
+  test("the summary keeps its links", () => {
+    expect(tabHtml("summary", "See [the plan](https://example.com/?a=1&b=2).")).toBe(
+      '<p>See <a href="https://example.com/?a=1&amp;b=2">the plan</a>.</p>\n',
+    );
+  });
+
   test("the summary keeps the nesting that the Summary tab shows", () => {
     // CommonMark would close the ordered list here; the tab nests the bullet.
     expect(tabHtml("summary", "1. **Budget:**\n  - detail")).toBe(

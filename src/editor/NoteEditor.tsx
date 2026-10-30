@@ -38,6 +38,7 @@ import { clearMarksOnEnterPlugin } from "./plugins/clear-marks-on-enter";
 import { clipboardPlugin } from "./plugins/clipboard";
 import { docChangeListenerPlugin } from "./plugins/doc-change-listener";
 import { linkBoundaryGuardPlugin } from "./plugins/link-boundary-guard";
+import { linkOpenPlugin } from "./plugins/link-open";
 import { placeholderPlugin } from "./plugins/placeholder";
 import { FormatToolbar } from "./widgets/format-toolbar";
 import { SlashCommandMenu } from "./widgets/slash-command";
@@ -184,6 +185,7 @@ export const NoteEditor = forwardRef<NoteEditorHandle, NoteEditorProps>(function
         clearMarksOnEnterPlugin(),
         autolinkPlugin(),
         linkBoundaryGuardPlugin(),
+        linkOpenPlugin(() => editableRef.current),
         clipboardPlugin(),
         flushOnBlur,
       ],

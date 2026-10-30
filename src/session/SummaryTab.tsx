@@ -4,6 +4,7 @@
 
 import type { ReactNode } from "react";
 import type { SummaryView } from "../bindings";
+import { openLink } from "../lib/links";
 import { type Inline, type ListBlock, parseMarkdown } from "./markdown";
 
 function Runs({ content }: { content: Inline[] }) {
@@ -20,6 +21,21 @@ function Runs({ content }: { content: Inline[] }) {
               <code key={i} className="rounded bg-fill px-1 text-[0.92em]">
                 {run.text}
               </code>
+            );
+          case "link":
+            // The default browser opens the link: the window stays on the app.
+            return (
+              <a
+                key={i}
+                href={run.href}
+                className="text-accent underline underline-offset-2 hover:opacity-80"
+                onClick={(event) => {
+                  event.preventDefault();
+                  openLink(run.href);
+                }}
+              >
+                {run.text}
+              </a>
             );
           default:
             return <span key={i}>{run.text}</span>;
