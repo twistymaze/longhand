@@ -45,8 +45,18 @@ Both runner types used the same image (`windows-2025-vs2026` 20261021.278.1), so
 
 PR #82 mounts the Dev Drive at a fixed folder with the `mount-path` input of `samypr100/setup-dev-drive` (`mount-path: C:/devdrive`). `DEV_DRIVE` is then `C:\devdrive` on every runner type, and the workspace, `CARGO_HOME` and `RUSTUP_HOME` follow it. The NeMo cache moved from `runner.temp` to `${{ env.DEV_DRIVE }}/longhand-nemo`. The rust-cache key changed by itself (new `CARGO_HOME`), so no prefix bump was needed. A folder mount has no drive letter, so the "Disk use" step prints the Dev Drive's free space with `fsutil volume diskfree`.
 
-The first `main` run after the merge saved the caches under the new key (`…-x64-b4b67ae8-…`) and the new NeMo path. The proof that PRs now restore them is the next PR's Windows job: "Restored from" for rust-cache, a NeMo cache hit, and a high Rust sccache hit rate.
+The first `main` run after the merge saved the caches under the new key (`…-x64-b4b67ae8-…`) and the new NeMo path.
+
+## Second cause: the restore wrote main's caches to the workspace drive
+
+After PR #82, the PR #83 Windows job printed "Restored from cache key … full match: true" and "Cache restored from key: nemo-Windows-…". But it still took 33 minutes; `main` took 12 minutes for the same code. Cargo compiled 558 units against 48 on `main`, and CMake configured and built NeMo again. With `CARGO_LOG=cargo::core::compiler::fingerprint=info`, cargo printed `failed to read …\.fingerprint\serde-d7b465a333563a5c\lib-serde … cannot find the file` for each dependency, although `main`'s cache holds that folder.
+
+`actions/cache` stores a path outside the workspace as a path relative to the workspace (`../../../devdrive/…`), and it extracts with `tar -C <workspace>`. The logs show `-C C:/a/longhand/longhand` on the larger runner and `-C D:/a/longhand/longhand` on `windows-latest`. So on a PR, the Rust cache and the NeMo cache went to `D:\devdrive`, and the build on `C:\devdrive` found nothing. A fixed mount path is not sufficient: the path relative to the workspace must also point to it.
+
+PR #84 adds a step before rust-cache: when the workspace is not on `C:`, it makes `<drive>:\devdrive` a junction to `C:\devdrive`. The same PR also puts the remaining CMake inputs on the Dev Drive (the toolchain file, `VULKAN_SDK`, SPIRV-Headers), because CMake records their paths. The move made the cached CMake folders name a Vulkan SDK that was gone, and the CMake generate step failed ("Imported target Vulkan::Vulkan includes non-existent path"). So `build-nemo.sh` and the sccache setup now remove a cached CMake build folder that names a missing `Vulkan_*` path or toolchain file. The Windows rust-cache prefixes changed (`v5-rust`, `v4-release-windows`), so that `main` saves caches with the new paths. The PR #84 Windows job restored `main`'s fingerprints, compiled 54 units, and had a Rust sccache hit rate of 100 %.
 
 ## Prevention
 
 When a cache must be shared between jobs on different runner types, give every cached path, and every environment value that a cache key includes, a fixed value. Do not depend on drive letters, `runner.temp` or `github.workspace` on Windows. To find a mismatch, compare the cache keys that `main` saved (`gh api repos/<repo>/actions/caches`) with the restore key in the PR's log, and compare the `env:` values that the two logs print.
+
+A key hit does not prove that the build used the cache. Also compare the number of `Compiling` lines and the sccache hit rate with a warm `main` run, and compare the `tar … -C <dir>` folders of the restores. For a cached path outside the workspace, the path relative to the workspace must point to the same folder on each runner type.

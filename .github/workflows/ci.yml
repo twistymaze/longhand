@@ -117,7 +117,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v4-rust
+          # v5: the caches of v4 name the Vulkan SDK in the checkout, so
+          # each run configured the CMake crates again.
+          prefix-key: v5-rust
 
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: runner.os == 'macOS'
@@ -135,7 +137,7 @@ jobs:
       # runner use this cache (LONGHAND_GHA_CACHE). The persistent runner
       # skips it: its target/ stays from the last job, and a cache save would
       # prune it. On Windows, the Windows build setup has the same step with
-      # the same prefix key.
+      # its own prefix key.
       - name: Select the GitHub Actions cache
         if: runner.os == 'macOS'
         env:
@@ -204,16 +206,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
-        # TEMPORARY: logs why cargo rebuilds each unit. Remove before merge.
-        env:
-          CARGO_LOG: cargo::core::compiler::fingerprint=info
         run: |
           $ErrorActionPreference = 'Stop'
-          # TEMPORARY diagnostics. Remove before merge.
-          Get-ChildItem env: | Where-Object { $_.Name -match 'RUST|CARGO|LINK|^CL$|^_CL_|^LIB$|^INCLUDE$|PROCESSOR' } | Sort-Object Name | Format-Table -AutoSize -Wrap | Out-String -Width 4000
-          rustc -vV
-          cargo -vV
-          Get-ChildItem target/debug/.fingerprint -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(serde|proc-macro2|quote|unicode-ident)-' } | ForEach-Object { $_.Name }
           $expected = Join-Path $env:VCToolsInstallDir 'bin\Hostx64\x64\link.exe'
           if (-not (Test-Path $expected)) { throw "MSVC linker is absent: $expected" }
           $expected = (Get-Item -LiteralPath $expected).FullName
@@ -863,7 +857,7 @@ jobs:
       - name: Windows build setup
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v3-release-windows
+          prefix-key: v4-release-windows
           cache-on-failure: false
 
       # After the Windows build setup, so that its post step runs before the
