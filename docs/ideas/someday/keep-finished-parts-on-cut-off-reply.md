@@ -25,3 +25,4 @@ In the manual test, a reasoning model (Gemma on LM Studio) used 1,434 of the 2,0
 - The plan is saved as a checkpoint, so that a run can continue after the app restarts. The plan must record which parts used the earlier reserve and where the new split starts, so that a resumed run makes the same parts.
 - With a larger context window (the user's fix in the test), the transcript usually goes in one request, and this path does not occur.
 - Possibly also: the progress counts only increase within one run.
+- PR #85 (2026-10-30) makes this path less frequent. The first reply allowance is now the context room left, not 8,192 tokens. A cut-off reply is first sent again with a doubled allowance, with no new split. The summary progress never goes back. A new split, which discards finished parts, occurs only when a larger allowance does not fit.
