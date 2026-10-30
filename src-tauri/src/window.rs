@@ -16,9 +16,62 @@ pub const LICENCES_WINDOW: &str = "licences";
 pub const CHANGELOG_WINDOW: &str = "changelog";
 pub const UPDATE_WINDOW: &str = "update";
 
+/// What a window does when its page asks to go to an address.
+#[derive(Debug, PartialEq, Eq)]
+enum Navigation {
+    Allow,
+    OpenInBrowser,
+    Refuse,
+}
+
+/// A window stays on the app's page: it has no way back from a different
+/// page. A web or mail link opens in the default browser, and the window
+/// refuses other addresses. `dev_url` is the development server, which
+/// serves the page in a development build.
+fn navigation(url: &tauri::Url, dev_url: Option<&tauri::Url>) -> Navigation {
+    let app_page = match url.scheme() {
+        "tauri" | "about" => true,
+        // Windows serves the app's page from this host.
+        "http" | "https" if url.host_str() == Some("tauri.localhost") => true,
+        _ => dev_url.is_some_and(|dev| dev.origin() == url.origin()),
+    };
+    if app_page {
+        Navigation::Allow
+    } else if matches!(url.scheme(), "http" | "https" | "mailto") {
+        Navigation::OpenInBrowser
+    } else {
+        Navigation::Refuse
+    }
+}
+
+/// The navigation handler for each window that shows the app's page.
+fn navigation_guard(app: &AppHandle) -> impl Fn(&tauri::Url) -> bool + Send + 'static {
+    use tauri_plugin_opener::OpenerExt;
+    let app = app.clone();
+    let dev_url = if tauri::is_dev() {
+        app.config().build.dev_url.clone()
+    } else {
+        None
+    };
+    move |url| match navigation(url, dev_url.as_ref()) {
+        Navigation::Allow => true,
+        Navigation::OpenInBrowser => {
+            if let Err(e) = app.opener().open_url(url.as_str(), None::<&str>) {
+                log::error!("failed to open a link in the browser: {e}");
+            }
+            false
+        }
+        Navigation::Refuse => {
+            log::warn!("refused a navigation to a {} address", url.scheme());
+            false
+        }
+    }
+}
+
 pub fn create_main_window(app: &AppHandle) -> tauri::Result<()> {
     crate::interface_zoom::build(app, |percent| {
         let builder = WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App("/".into()))
+            .on_navigation(navigation_guard(app))
             .zoom_hotkeys_enabled(false)
             .initialization_script(crate::interface_zoom::initialization(percent))
             .title("Longhand")
@@ -272,6 +325,7 @@ fn open_settings_window(app: &AppHandle, pane: Option<SettingsPane>) {
                 let work_area = monitor.map(|m| m.work_area().size.to_logical(m.scale_factor()));
                 let (width, height) = settings_initial_size(percent, work_area);
                 WebviewWindowBuilder::new(app, SETTINGS_WINDOW, WebviewUrl::App(url.into()))
+                    .on_navigation(navigation_guard(app))
                     .visible(false)
                     .zoom_hotkeys_enabled(false)
                     .initialization_script(crate::interface_zoom::initialization(percent))
@@ -351,6 +405,7 @@ fn open_page_window(
         || {
             crate::interface_zoom::build(app, |percent| {
                 WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+                    .on_navigation(navigation_guard(app))
                     .visible(false)
                     .zoom_hotkeys_enabled(false)
                     .initialization_script(crate::interface_zoom::initialization(percent))
@@ -388,6 +443,7 @@ pub fn show_update_window(app: &AppHandle, visible: bool, with_key: bool, focus_
                 UPDATE_WINDOW,
                 WebviewUrl::App("index.html?window=update".into()),
             )
+            .on_navigation(navigation_guard(app))
             .visible(false)
             .zoom_hotkeys_enabled(false)
             .title("Software Update")
@@ -916,5 +972,56 @@ mod tests {
     fn a_build_error_returns_the_error() {
         let result = open_or_build(None::<u32>, |_| {}, || Err("no window"));
         assert_eq!(result, Err("no window"));
+    }
+
+    /// A link in a note must not replace the app's page: the window has no
+    /// way back to it. The default browser opens the link instead.
+    #[test]
+    fn a_window_stays_on_the_app_page_and_sends_links_to_the_browser() {
+        let url = |s: &str| tauri::Url::parse(s).unwrap();
+        let dev = url("http://localhost:1420/");
+        for page in [
+            "tauri://localhost/",
+            "tauri://localhost/index.html?window=settings",
+            "http://tauri.localhost/",
+            "https://tauri.localhost/index.html",
+            "about:blank",
+        ] {
+            assert_eq!(navigation(&url(page), None), Navigation::Allow, "{page}");
+        }
+        assert_eq!(
+            navigation(
+                &url("http://localhost:1420/index.html?window=changelog"),
+                Some(&dev)
+            ),
+            Navigation::Allow
+        );
+        for link in [
+            "https://example.com/",
+            "http://example.com/a",
+            "mailto:ana@example.com",
+        ] {
+            assert_eq!(
+                navigation(&url(link), Some(&dev)),
+                Navigation::OpenInBrowser,
+                "{link}"
+            );
+        }
+        // Without a development server, a local address is an ordinary link.
+        assert_eq!(
+            navigation(&url("http://localhost:1420/"), None),
+            Navigation::OpenInBrowser
+        );
+        for other in [
+            "file:///etc/hosts",
+            "javascript:alert(1)",
+            "data:text/html,x",
+        ] {
+            assert_eq!(
+                navigation(&url(other), Some(&dev)),
+                Navigation::Refuse,
+                "{other}"
+            );
+        }
     }
 }
