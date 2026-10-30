@@ -474,8 +474,7 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         model: "summarizer".into(),
         credential: Some("sk-secret-test".into()),
         context_limit: None,
-        thinking: summarize::provider::ThinkingLevel::ModelDefault,
-        thinking_chosen: false,
+        thinking: summarize::Thinking::default(),
         requests_at_once: 1,
         retry_waits: Vec::new(),
     }
@@ -12303,8 +12302,10 @@ use summarize::provider::ThinkingLevel;
 /// `thinking`, chosen by the user or not.
 fn use_thinking(r: &Rig, mock: &http::Mock, thinking: ThinkingLevel, chosen: bool) {
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
-        thinking,
-        thinking_chosen: chosen,
+        thinking: summarize::Thinking {
+            level: thinking,
+            chosen,
+        },
         ..endpoint(&mock.base)
     }));
 }

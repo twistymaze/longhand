@@ -18,9 +18,9 @@
 //! [`SummarizeError`] made from a Rig result holds only text that Longhand
 //! writes, never the text of a Rig or reqwest error.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use reqwest::Url;
@@ -714,7 +714,12 @@ impl Client {
             role: "user",
             content: "Reply with OK.".into(),
         }];
-        self.complete_with(label, &messages, "max_tokens", 1, None, None)
+        let request = Request {
+            label,
+            messages: &messages,
+            num_ctx: None,
+        };
+        self.complete_with(&request, CapField::MaxTokens, 1, None)
             .await
     }
 
@@ -736,34 +741,31 @@ impl Client {
         num_ctx: Option<u32>,
     ) -> Result<Completion, SummarizeError> {
         let Thinking { level, chosen } = self.thinking;
-        let model = RefusedModel::of(self);
-        let max_tokens = model
-            .refused_cap()
+        let key = ModelKey::of(self);
+        let learned = key.learned();
+        let max_tokens = learned
+            .output_cap
             .map_or(max_tokens, |cap| max_tokens.min(cap));
-        let level = if !chosen && model.was_refused() {
+        let level = if !chosen && learned.reasoning_refused {
             ThinkingLevel::ModelDefault
         } else {
             level
         };
-        match self
-            .complete_at(label, messages, max_tokens, num_ctx, level)
-            .await
-        {
+        let request = Request {
+            label,
+            messages,
+            num_ctx,
+        };
+        match self.complete_at(&request, &key, max_tokens, level).await {
             Err(SummarizeError::ReasoningRefused { .. }) if !chosen => {
                 log::info!(
                     "{} refused the automatic Thinking level for model {}; sending the request again with no reasoning option",
                     self.host(),
                     self.endpoint.model
                 );
-                model.remember();
-                self.complete_at(
-                    label,
-                    messages,
-                    max_tokens,
-                    num_ctx,
-                    ThinkingLevel::ModelDefault,
-                )
-                .await
+                key.remember_refused();
+                self.complete_at(&request, &key, max_tokens, ThinkingLevel::ModelDefault)
+                    .await
             }
             other => other,
         }
@@ -773,8 +775,9 @@ impl Client {
     /// endpoint named in a refusal since Longhand started, else the
     /// maximum in Rig's catalog (KTD3). `None` when neither is known.
     pub fn output_max(&self) -> Option<u32> {
-        RefusedModel::of(self)
-            .refused_cap()
+        ModelKey::of(self)
+            .learned()
+            .output_cap
             .or_else(|| catalog_output_max(self.endpoint.provider, &self.endpoint.model))
     }
 
@@ -783,15 +786,12 @@ impl Client {
     /// with that cap. The model keeps the cap until Longhand quits (KTD3).
     async fn complete_at(
         &self,
-        label: &Label,
-        messages: &[Message],
+        request: &Request<'_>,
+        key: &ModelKey,
         max_tokens: u32,
-        num_ctx: Option<u32>,
         level: ThinkingLevel,
     ) -> Result<Completion, SummarizeError> {
-        let result = self
-            .complete_level(label, messages, max_tokens, num_ctx, level)
-            .await;
+        let result = self.complete_level(request, max_tokens, level).await;
         let cap = match &result {
             Err(SummarizeError::Http {
                 status: 400,
@@ -807,9 +807,8 @@ impl Client {
             self.host(),
             self.endpoint.model
         );
-        RefusedModel::of(self).remember_cap(cap);
-        self.complete_level(label, messages, cap, num_ctx, level)
-            .await
+        key.remember_cap(cap);
+        self.complete_level(request, cap, level).await
     }
 
     /// [`Self::complete`] with the Thinking level `level`. When Rig refuses
@@ -817,18 +816,16 @@ impl Client {
     /// the thinking budget of the level (KTD5).
     async fn complete_level(
         &self,
-        label: &Label,
-        messages: &[Message],
+        request: &Request<'_>,
         max_tokens: u32,
-        num_ctx: Option<u32>,
         level: ThinkingLevel,
     ) -> Result<Completion, SummarizeError> {
         let result = self
-            .complete_capped(label, messages, max_tokens, num_ctx, effort(level))
+            .complete_capped(request, max_tokens, effort(level))
             .await;
         match (result, budget(level, max_tokens)) {
             (Err(SummarizeError::ReasoningRefused { sent: false }), Some(budget)) => {
-                self.complete_capped(label, messages, max_tokens, num_ctx, Some(budget))
+                self.complete_capped(request, max_tokens, Some(budget))
                     .await
             }
             (result, _) => result,
@@ -840,22 +837,19 @@ impl Client {
     /// with `max_completion_tokens` (R11).
     async fn complete_capped(
         &self,
-        label: &Label,
-        messages: &[Message],
+        request: &Request<'_>,
         max_tokens: u32,
-        num_ctx: Option<u32>,
         reasoning: Option<Reasoning>,
     ) -> Result<Completion, SummarizeError> {
-        let with = |cap_field: &'static str| {
-            self.complete_with(label, messages, cap_field, max_tokens, num_ctx, reasoning)
-        };
-        match with("max_tokens").await {
+        let with =
+            |cap_field: CapField| self.complete_with(request, cap_field, max_tokens, reasoning);
+        match with(CapField::MaxTokens).await {
             // Some hosted reasoning models refuse `max_tokens` by name.
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
             }) if self.route == Route::OpenAiChat && excerpt.contains("max_completion_tokens") => {
-                with("max_completion_tokens").await
+                with(CapField::MaxCompletionTokens).await
             }
             other => other,
         }
@@ -863,20 +857,17 @@ impl Client {
 
     async fn complete_with(
         &self,
-        label: &Label,
-        messages: &[Message],
-        cap_field: &str,
+        request: &Request<'_>,
+        cap_field: CapField,
         max_tokens: u32,
-        num_ctx: Option<u32>,
         reasoning: Option<Reasoning>,
     ) -> Result<Completion, SummarizeError> {
-        let request = rig_request(
-            self.route, messages, cap_field, max_tokens, num_ctx, reasoning,
-        );
+        let rig = rig_request(self.route, request, cap_field, max_tokens, reasoning);
+        let label = request.label;
         let (host, model) = (self.host(), &self.endpoint.model);
         log::info!("{}", start_line(label, &host, model));
         let mut guard = EndGuard::new(label, &host, model);
-        let result = match self.call_with_retries(request).await {
+        let result = match self.call_with_retries(rig).await {
             // Only a request with a reasoning option can have a refused
             // reasoning option.
             Err(SummarizeError::Http {
@@ -1221,21 +1212,35 @@ fn budget(level: ThinkingLevel, max_tokens: u32) -> Option<Reasoning> {
     })
 }
 
-/// The provider, the address and the model of each automatic Thinking
-/// level that was refused since Longhand started (R17, KTD6). The set is
-/// lost at quit.
-static REFUSED: LazyLock<Mutex<HashSet<RefusedModel>>> = LazyLock::new(Default::default);
+/// What the endpoint refused for each model since Longhand started. The
+/// map is lost at quit.
+static LEARNED: LazyLock<Mutex<HashMap<ModelKey, Learned>>> = LazyLock::new(Default::default);
 
-/// One entry of [`REFUSED`].
+/// The lock on [`LEARNED`]. A poisoned lock still gives the map.
+fn learned_map() -> MutexGuard<'static, HashMap<ModelKey, Learned>> {
+    LEARNED.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The provider, the address and the model of the requests of a client:
+/// the key of [`LEARNED`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct RefusedModel {
+struct ModelKey {
     provider: Provider,
     address: String,
     model: String,
 }
 
-impl RefusedModel {
-    /// The entry for the requests of `client`.
+/// What the endpoint refused for one model.
+#[derive(Debug, Clone, Copy, Default)]
+struct Learned {
+    /// The endpoint refused an automatic Thinking level (R17, KTD6).
+    reasoning_refused: bool,
+    /// The output cap that the endpoint named in a refusal (KTD3).
+    output_cap: Option<u32>,
+}
+
+impl ModelKey {
+    /// The key for the requests of `client`.
     fn of(client: &Client) -> Self {
         Self {
             provider: client.endpoint.provider,
@@ -1244,39 +1249,24 @@ impl RefusedModel {
         }
     }
 
-    fn was_refused(&self) -> bool {
-        REFUSED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .contains(self)
+    fn learned(&self) -> Learned {
+        learned_map().get(self).copied().unwrap_or_default()
     }
 
-    fn remember(self) {
-        REFUSED
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(self);
+    fn remember_refused(&self) {
+        learned_map()
+            .entry(self.clone())
+            .or_default()
+            .reasoning_refused = true;
     }
 
-    /// The output cap that the endpoint named for this model, if any.
-    fn refused_cap(&self) -> Option<u32> {
-        REFUSED_CAPS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(self)
-            .copied()
-    }
-
-    fn remember_cap(self, cap: u32) {
-        let mut caps = REFUSED_CAPS.lock().unwrap_or_else(PoisonError::into_inner);
-        let kept = caps.entry(self).or_insert(cap);
-        *kept = (*kept).min(cap);
+    /// Keep `cap`, or the cap already kept when it is smaller.
+    fn remember_cap(&self, cap: u32) {
+        let mut map = learned_map();
+        let kept = &mut map.entry(self.clone()).or_default().output_cap;
+        *kept = Some(kept.map_or(cap, |kept| kept.min(cap)));
     }
 }
-
-/// The output cap that the endpoint named for each model in a refusal
-/// since Longhand started (KTD3). The map is lost at quit.
-static REFUSED_CAPS: LazyLock<Mutex<HashMap<RefusedModel, u32>>> = LazyLock::new(Default::default);
 
 /// The smallest number that [`named_cap`] reads as a model's output cap.
 /// A smaller number is a rule about the field, for example "at least 1".
@@ -1312,20 +1302,46 @@ fn excerpt(text: &str) -> String {
 /// error is not used, because its text can contain the reply.
 const UNREADABLE: &str = "the reply could not be read";
 
-/// The Rig request for `messages` on `route` (KTD4). Rig builds the body
-/// and puts the reply cap in the field of the route. A `cap_field` other
-/// than `max_tokens` replaces that field on the OpenAI-compatible route.
-/// Ollama gets `num_ctx` when there is one, and always `truncate: false`
-/// (KTD7). Rig puts `reasoning` in the field of the provider (KTD5).
+/// The parts of a summary request that every try of it keeps.
+struct Request<'a> {
+    label: &'a Label,
+    messages: &'a [Message],
+    /// The context size for an Ollama request (KTD7).
+    num_ctx: Option<u32>,
+}
+
+/// The JSON field of the reply cap on the OpenAI-compatible route (R11).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapField {
+    MaxTokens,
+    MaxCompletionTokens,
+}
+
+impl CapField {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MaxTokens => "max_tokens",
+            Self::MaxCompletionTokens => "max_completion_tokens",
+        }
+    }
+}
+
+/// The Rig request for the messages of `request` on `route` (KTD4). Rig
+/// builds the body and puts the reply cap in the field of the route. A
+/// `cap_field` other than `max_tokens` replaces that field on the
+/// OpenAI-compatible route. Ollama gets `num_ctx` when there is one, and
+/// always `truncate: false` (KTD7). Rig puts `reasoning` in the field of
+/// the provider (KTD5).
 fn rig_request(
     route: Route,
-    messages: &[Message],
-    cap_field: &str,
+    request: &Request<'_>,
+    cap_field: CapField,
     max_tokens: u32,
-    num_ctx: Option<u32>,
     reasoning: Option<Reasoning>,
 ) -> CompletionRequest {
-    let mut history: Vec<RigMessage> = messages
+    let num_ctx = request.num_ctx;
+    let mut history: Vec<RigMessage> = request
+        .messages
         .iter()
         .map(|m| match m.role {
             "system" => RigMessage::system(m.content.clone()),
@@ -1341,8 +1357,8 @@ fn rig_request(
     match route {
         // Rig writes the cap only as `max_tokens` here, so another field
         // name goes in the additional parameters instead.
-        Route::OpenAiChat if cap_field != "max_tokens" => {
-            request.additional_params(json!({ cap_field: max_tokens }))
+        Route::OpenAiChat if cap_field != CapField::MaxTokens => {
+            request.additional_params(json!({ cap_field.as_str(): max_tokens }))
         }
         Route::OpenAiChat | Route::Anthropic | Route::Gemini => {
             request.max_tokens(u64::from(max_tokens))
@@ -1405,9 +1421,6 @@ fn finish_name(reason: FinishReason) -> String {
     }
 }
 
-/// How a Rig request on `route` failed, as a Longhand error (KTD4). Only a
-/// transport error that proves the endpoint did not receive the request
-/// can be sent again.
 /// `Some` when `error` is a 429 reply (KTD9). The inner value is the wait
 /// that its `Retry-After` header gives in seconds, or `None` when the reply
 /// has no such header. A `Retry-After` date is not read: the retry wait
@@ -1430,6 +1443,9 @@ fn rate_limit(error: &ProviderError) -> Option<Option<Duration>> {
     )
 }
 
+/// How a Rig request on `route` failed, as a Longhand error (KTD4). Only a
+/// transport error that proves the endpoint did not receive the request
+/// can be sent again.
 fn failure(route: Route, error: &ProviderError) -> Failure {
     let answered = |e| Failure::Answered(e);
     match error {

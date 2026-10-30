@@ -17,6 +17,7 @@
 //! call and keeps it to the end, also after a resume (KTD4). The snapshot's
 //! text goes into the final call, and `summary.md` records its name.
 
+use std::borrow::Cow;
 use std::path::Path;
 use std::time::Duration;
 
@@ -29,7 +30,6 @@ use session_core::{Segment, SessionRecord, Stage, TitleSource};
 use summarize::chunk::{self, Chunk, Line, Turn};
 use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
-use summarize::provider::ThinkingLevel;
 use summarize::tokens::ReplyKind;
 use summarize::{
     Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, context, prompts, tokens,
@@ -102,11 +102,9 @@ pub struct SummaryEndpoint {
     pub credential: Option<String>,
     /// The user's context setting, which overrides the probe.
     pub context_limit: Option<u32>,
-    /// The Thinking level that the requests use (R5, R6).
-    pub thinking: ThinkingLevel,
-    /// Whether the user chose `thinking`. `false` means that it is the
-    /// default of the provider kind (KTD7).
-    pub thinking_chosen: bool,
+    /// The Thinking level of the summary requests and the title request,
+    /// and whether the user chose it (R5, R6, R8, KTD7, KTD11).
+    pub thinking: Thinking,
     /// How many requests go to the provider at the same time (R12).
     pub requests_at_once: u32,
     /// The waits before each new try of a request that could not reach the
@@ -308,7 +306,7 @@ pub fn send_title_request(
     // endpoint that cannot be reached does not stop the other jobs of the
     // summary queue.
     let client = match Client::new(client_endpoint(endpoint)) {
-        Ok(client) => client.with_thinking(thinking(endpoint)),
+        Ok(client) => client.with_thinking(endpoint.thinking),
         Err(e) => return Ok(Err(e.to_string())),
     };
     if client.crosses_network_unencrypted() {
@@ -344,15 +342,6 @@ fn client_endpoint(endpoint: &SummaryEndpoint) -> Endpoint {
         base_url: endpoint.base_url.clone(),
         model: endpoint.model.clone(),
         credential: endpoint.credential.clone(),
-    }
-}
-
-/// The Thinking level of the summary requests and the title request of
-/// `endpoint` (R8, KTD11).
-fn thinking(endpoint: &SummaryEndpoint) -> Thinking {
-    Thinking {
-        level: endpoint.thinking,
-        chosen: endpoint.thinking_chosen,
     }
 }
 
@@ -635,7 +624,7 @@ pub fn produce(
     let client = Client::new(client_endpoint(&endpoint))
         .map_err(|e| StageError::Failed(e.to_string()))?
         .with_retry_waits(endpoint.retry_waits.clone())
-        .with_thinking(thinking(&endpoint));
+        .with_thinking(endpoint.thinking);
     if client.crosses_network_unencrypted() {
         log::warn!(
             "summarizing {note_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
@@ -922,10 +911,28 @@ struct Calls<'a> {
 
 /// One request of a layer: the key of its saved result, its index in the
 /// layer and its messages.
-struct Job {
+struct Job<'m> {
     key: String,
     index: usize,
-    messages: Vec<Message>,
+    messages: Cow<'m, [Message]>,
+}
+
+/// A [`Job`] with its prompt estimate with the margin, `used`, and its
+/// reply allowance.
+struct Prepared<'m> {
+    job: Job<'m>,
+    used: usize,
+    allowance: tokens::Allowance,
+}
+
+/// What the requests of one layer have in common.
+struct Shared<'a> {
+    client: &'a Client,
+    control: &'a dyn Control,
+    room: Room,
+    /// The Ollama context size of each request (KTD7).
+    num_ctx: Option<u32>,
+    layer: usize,
 }
 
 /// The final call: its messages, its reply, which is the summary, and the
@@ -952,21 +959,20 @@ impl<'a> Calls<'a> {
         self.ollama.then(|| context_size(need, room.limit))
     }
 
-    /// The reply allowance of a request with `messages` under `room` (R1,
-    /// KTD2). The output maximum is the smaller of the probe's and the
-    /// client's ([`Client::output_max`]).
-    fn allowance(&self, messages: &[Message], room: Room) -> tokens::Allowance {
-        self.allowance_after(tokens::with_margin(cost(messages)), room)
+    /// The output maximum: the smaller of the probe's and the client's
+    /// ([`Client::output_max`]).
+    fn output_max(&self) -> Option<u32> {
+        [self.output_max, self.client.output_max()]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
-    /// The reply allowance of a request whose prompt estimate with the
-    /// margin is `used` tokens under `room`.
-    fn allowance_after(&self, used: usize, room: Room) -> tokens::Allowance {
-        let output_max = match (self.output_max, self.client.output_max()) {
-            (Some(probed), Some(known)) => Some(probed.min(known)),
-            (probed, known) => probed.or(known),
-        };
-        tokens::reply_allowance(room.limit, used, output_max, self.reply_kind)
+    /// The reply allowance of a request with `messages` under `room` (R1,
+    /// KTD2).
+    fn allowance(&self, messages: &[Message], room: Room) -> tokens::Allowance {
+        let used = tokens::with_margin(cost(messages));
+        tokens::reply_allowance(room.limit, used, self.output_max(), self.reply_kind)
     }
 
     fn summarize(&mut self, lines: &[Line], plan: &Plan) -> Result<Final, Outcome> {
@@ -1021,7 +1027,7 @@ impl<'a> Calls<'a> {
             .map(|(i, c)| Job {
                 key: call_key(0, i),
                 index: i,
-                messages: prompts::part(c, i, total, &notes, user),
+                messages: Cow::Owned(prompts::part(c, i, total, &notes, user)),
             })
             .collect();
         let mut summaries = self.call_many(
@@ -1085,7 +1091,7 @@ impl<'a> Calls<'a> {
                     Job {
                         key: call_key(layer, i),
                         index: i,
-                        messages: prompts::merge(&parts, false, &notes, text, user),
+                        messages: Cow::Owned(prompts::merge(&parts, false, &notes, text, user)),
                     }
                 })
                 .collect();
@@ -1181,7 +1187,7 @@ impl<'a> Calls<'a> {
         let job = Job {
             key,
             index: 0,
-            messages: messages.to_vec(),
+            messages: Cow::Borrowed(messages),
         };
         let mut replies = self.call_many(layer, vec![job], room, 1, None, num_ctx)?;
         Ok(replies.remove(0))
@@ -1199,19 +1205,26 @@ impl<'a> Calls<'a> {
     fn call_many(
         &mut self,
         layer: usize,
-        jobs: Vec<Job>,
+        jobs: Vec<Job<'_>>,
         room: Room,
         total: usize,
         step: Option<(SummaryStep, usize, usize)>,
         num_ctx: Option<u32>,
     ) -> Result<Vec<String>, Outcome> {
+        let output_max = self.output_max();
+        let allowance =
+            |used| tokens::reply_allowance(room.limit, used, output_max, self.reply_kind);
         // Only a smaller prompt gives a reply allowance larger than this.
-        let largest = self.allowance_after(0, room).ceiling;
-        let prepared: Vec<(usize, tokens::Allowance)> = jobs
-            .iter()
+        let largest = allowance(0).ceiling;
+        let jobs: Vec<Prepared> = jobs
+            .into_iter()
             .map(|job| {
                 let used = tokens::with_margin(cost(&job.messages));
-                (used, self.allowance_after(used, room))
+                Prepared {
+                    job,
+                    used,
+                    allowance: allowance(used),
+                }
             })
             .collect();
         let kind = |key: &str| {
@@ -1226,6 +1239,13 @@ impl<'a> Calls<'a> {
         let (store, note_id, client, control) =
             (self.store, self.note_id, self.client, self.control);
         let (queued, at_once, runtime) = (self.queued, self.at_once, self.runtime);
+        let shared = &Shared {
+            client,
+            control,
+            room,
+            num_ctx,
+            layer,
+        };
         let progress = &mut *self.progress;
         let mut report = |done: usize| {
             if let Some((step, before, of)) = step {
@@ -1236,14 +1256,15 @@ impl<'a> Calls<'a> {
         let work = async {
             let mut done = 0;
             let mut open = FuturesUnordered::new();
-            let mut next = jobs.iter().zip(&prepared).enumerate();
+            let mut next = jobs.iter().enumerate();
             loop {
                 while open.len() < at_once {
-                    let Some((slot, (job, &(used, allowance)))) = next.next() else {
+                    let Some((slot, prepared)) = next.next() else {
                         break;
                     };
+                    let key = &prepared.job.key;
                     if let Some(saved) =
-                        checkpoint::get::<String>(store, note_id, Stage::Summarize, &job.key)?
+                        checkpoint::get::<String>(store, note_id, Stage::Summarize, key)?
                     {
                         replies[slot] = Some(saved);
                         done += 1;
@@ -1251,27 +1272,13 @@ impl<'a> Calls<'a> {
                         continue;
                     }
                     control.proceed()?;
-                    let label = Label::note(note_id, kind(&job.key)).queued(queued);
-                    open.push(async move {
-                        let reply = request(
-                            client,
-                            control,
-                            &label,
-                            &job.messages,
-                            room,
-                            used,
-                            allowance,
-                            num_ctx,
-                            layer,
-                        )
-                        .await;
-                        (slot, allowance, reply)
-                    });
+                    let label = Label::note(note_id, kind(key)).queued(queued);
+                    open.push(async move { (slot, request(shared, &label, prepared).await) });
                 }
-                let Some((slot, allowance, reply)) = open.next().await else {
+                let Some((slot, reply)) = open.next().await else {
                     return Ok(());
                 };
-                let job = &jobs[slot];
+                let Prepared { job, allowance, .. } = &jobs[slot];
                 match reply? {
                     Ok(text) => {
                         checkpoint::put(store, note_id, Stage::Summarize, &job.key, &text)?;
@@ -1307,26 +1314,27 @@ impl<'a> Calls<'a> {
     }
 }
 
-/// Send `messages` until a reply comes that is not cut off below the
-/// ceiling of `allowance`. Below the ceiling, the same request goes again
-/// with the doubled allowance (KTD8). An Ollama context size grows to hold
-/// it, and never gets smaller. `used` is the prompt estimate with the
-/// margin. The outer error stops the stage.
-#[allow(clippy::too_many_arguments)]
+/// Send the messages of `prepared` until a reply comes that is not cut off
+/// below the ceiling of its allowance. Below the ceiling, the same request
+/// goes again with the doubled allowance (KTD8). An Ollama context size
+/// grows to hold it, and never gets smaller. The outer error stops the
+/// stage.
 async fn request(
-    client: &Client,
-    control: &dyn Control,
+    shared: &Shared<'_>,
     label: &Label,
-    messages: &[Message],
-    room: Room,
-    used: usize,
-    allowance: tokens::Allowance,
-    num_ctx: Option<u32>,
-    layer: usize,
+    prepared: &Prepared<'_>,
 ) -> Result<Result<String, SummarizeError>, StageError> {
-    let (mut cap, mut num_ctx) = (allowance.first, num_ctx);
+    let Shared {
+        client,
+        control,
+        room,
+        layer,
+        ..
+    } = *shared;
+    let (job, used, allowance) = (&prepared.job, prepared.used, prepared.allowance);
+    let (mut cap, mut num_ctx) = (allowance.first, shared.num_ctx);
     loop {
-        match client.complete(label, messages, cap, num_ctx).await {
+        match client.complete(label, &job.messages, cap, num_ctx).await {
             Ok(completion) => return Ok(Ok(completion.text)),
             Err(SummarizeError::ReplyCutOff) if cap < allowance.ceiling => {
                 let next = cap.saturating_mul(2).min(allowance.ceiling);

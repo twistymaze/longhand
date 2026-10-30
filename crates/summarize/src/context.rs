@@ -83,24 +83,25 @@ fn rows(body: &Value) -> impl Iterator<Item = &Value> {
 /// LiteLLM `/model/info`: `model_info.max_input_tokens`, never
 /// `max_tokens`, which is the model's output cap.
 pub fn parse_litellm(body: &Value, model: &str) -> Option<u32> {
-    litellm_rows(body, model).find_map(|row| positive(row.pointer("/model_info/max_input_tokens")))
+    litellm_limits(body, model).map(|(limit, _)| limit)
 }
 
-/// The rows of a LiteLLM `/model/info` answer for `model`.
-fn litellm_rows<'a>(body: &'a Value, model: &'a str) -> impl Iterator<Item = &'a Value> {
-    rows(body).filter(move |row| {
-        row.get("model_name").and_then(Value::as_str) == Some(model)
-            || row.pointer("/model_info/key").and_then(Value::as_str) == Some(model)
-    })
-}
-
-/// The output maximum in the LiteLLM row that gives the limit:
-/// `model_info.max_output_tokens`. LiteLLM can fill the legacy
+/// The context limit of [`parse_litellm`] and the output maximum in the
+/// same row: `model_info.max_output_tokens`. LiteLLM can fill the legacy
 /// `max_tokens` with the input limit, so that field is not read (KTD3).
-pub fn parse_litellm_output_max(body: &Value, model: &str) -> Option<u32> {
-    litellm_rows(body, model)
-        .find(|row| positive(row.pointer("/model_info/max_input_tokens")).is_some())
-        .and_then(|row| positive(row.pointer("/model_info/max_output_tokens")))
+fn litellm_limits(body: &Value, model: &str) -> Option<(u32, Option<u32>)> {
+    rows(body)
+        .filter(|row| {
+            row.get("model_name").and_then(Value::as_str) == Some(model)
+                || row.pointer("/model_info/key").and_then(Value::as_str) == Some(model)
+        })
+        .find_map(|row| {
+            let limit = positive(row.pointer("/model_info/max_input_tokens"))?;
+            Some((
+                limit,
+                positive(row.pointer("/model_info/max_output_tokens")),
+            ))
+        })
 }
 
 /// The output maximum of `model` on the hosted `provider` in Rig's
@@ -245,11 +246,12 @@ async fn probe_compatible(
         true,
     )?;
     if let Some(body) = first
-        && let Some(b) = found(parse_litellm(&body, &model), BudgetSource::Litellm)
+        && let Some((limit, output_max)) = litellm_limits(&body, &model)
     {
         return Ok(Some(Budget {
-            output_max: parse_litellm_output_max(&body, &model),
-            ..b
+            limit,
+            source: BudgetSource::Litellm,
+            output_max,
         }));
     }
     let lm_studio = client

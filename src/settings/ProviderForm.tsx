@@ -467,6 +467,15 @@ function ProviderRows({
   );
 }
 
+/// The whole number in `text` from `min` to `max`. `null` for an empty text,
+/// and `undefined` for a text that is not such a number.
+function wholeNumber(text: string, min: number, max = Infinity): number | null | undefined {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  return Number.isInteger(n) && n >= min && n <= max ? n : undefined;
+}
+
 /// The advanced rows of one provider: the context limit, Thinking and
 /// Requests at the same time (R5, R12, R15, R19). The pane mounts them again
 /// for each provider, as for `ProviderRows`. When the group closes, the rows
@@ -487,9 +496,8 @@ function AdvancedRows({
   const [requestsError, setRequestsError] = useState<string | null>(null);
 
   const setLimit = async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    const limit = trimmed === "" ? null : Number(trimmed);
-    if (limit !== null && (!Number.isInteger(limit) || limit <= 0)) {
+    const limit = wholeNumber(text, 1);
+    if (limit === undefined) {
       setLimitError("Enter a whole number of tokens, or leave empty for automatic.");
       return false;
     }
@@ -502,9 +510,8 @@ function AdvancedRows({
     void save(commands.setProviderThinking(provider, level), setThinkingError, onSettings);
   };
   const setRequests = async (text: string): Promise<boolean> => {
-    const trimmed = text.trim();
-    const count = trimmed === "" ? null : Number(trimmed);
-    if (count !== null && (!Number.isInteger(count) || count < 1 || count > 8)) {
+    const count = wholeNumber(text, 1, 8);
+    if (count === undefined) {
       setRequestsError("Enter a whole number from 1 to 8, or leave empty for the default.");
       return false;
     }

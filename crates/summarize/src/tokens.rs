@@ -109,22 +109,26 @@ pub fn reply_allowance(
 ) -> Allowance {
     let left = u32::try_from((limit as usize).saturating_sub(used)).unwrap_or(u32::MAX);
     let ninety = (u64::from(limit) * 9 / 10) as u32;
-    let mut ceiling = left.min(ninety);
-    if let Some(max) = output_max {
-        ceiling = ceiling.min(max);
-    }
+    let known = output_max.map_or(left.min(ninety), |max| left.min(ninety).min(max));
+    let ceiling = match kind {
+        ReplyKind::Full | ReplyKind::Ollama => known,
+        ReplyKind::Hosted | ReplyKind::Anthropic => {
+            let hosted = if output_max.is_none() {
+                known.min(HOSTED_REPLY)
+            } else {
+                known
+            };
+            if kind == ReplyKind::Anthropic {
+                hosted.min(ANTHROPIC_REPLY)
+            } else {
+                hosted
+            }
+        }
+    };
     let first = match kind {
         ReplyKind::Full => ceiling,
         ReplyKind::Ollama => ceiling.min(OLLAMA_FIRST_REPLY),
-        ReplyKind::Hosted | ReplyKind::Anthropic => {
-            if output_max.is_none() {
-                ceiling = ceiling.min(HOSTED_REPLY);
-            }
-            if kind == ReplyKind::Anthropic {
-                ceiling = ceiling.min(ANTHROPIC_REPLY);
-            }
-            ceiling.min(HOSTED_REPLY)
-        }
+        ReplyKind::Hosted | ReplyKind::Anthropic => ceiling.min(HOSTED_REPLY),
     };
     Allowance { first, ceiling }
 }

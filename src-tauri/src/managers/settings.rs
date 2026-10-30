@@ -20,9 +20,9 @@ use serde_json::{Map, Value};
 use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
-use summarize::Provider;
 use summarize::prompts::TOPIC_SUMMARY_ID;
 use summarize::provider::ThinkingLevel;
+use summarize::{Provider, Thinking};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
@@ -320,10 +320,16 @@ impl ProviderEntry {
     /// The Thinking level that requests to `provider` use, and whether the
     /// user chose it. A level that is not chosen is the default of the
     /// provider kind (R6, KTD7).
-    pub fn effective_thinking(&self, provider: Provider) -> (ThinkingLevel, bool) {
+    pub fn effective_thinking(&self, provider: Provider) -> Thinking {
         match self.thinking {
-            Some(level) => (level, true),
-            None => (provider.default_thinking(), false),
+            Some(level) => Thinking {
+                level,
+                chosen: true,
+            },
+            None => Thinking {
+                level: provider.default_thinking(),
+                chosen: false,
+            },
         }
     }
 
@@ -4146,13 +4152,19 @@ mod tests {
         assert_eq!(lm_studio.requests_at_once, None);
         assert_eq!(
             lm_studio.effective_thinking(Provider::LmStudio),
-            (ThinkingLevel::Low, false)
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: false
+            }
         );
         assert_eq!(lm_studio.effective_requests_at_once(Provider::LmStudio), 1);
         let openrouter = &settings.providers.openrouter;
         assert_eq!(
             openrouter.effective_thinking(Provider::OpenRouter),
-            (ThinkingLevel::ModelDefault, false)
+            Thinking {
+                level: ThinkingLevel::ModelDefault,
+                chosen: false
+            }
         );
         assert_eq!(
             openrouter.effective_requests_at_once(Provider::OpenRouter),
@@ -4174,7 +4186,10 @@ mod tests {
                 .providers
                 .lm_studio
                 .effective_thinking(Provider::LmStudio),
-            (ThinkingLevel::Low, true)
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: true
+            }
         );
         let written = serde_json::to_value(settings.local()).unwrap();
         assert_eq!(written["providers"]["lm_studio"]["thinking"], json!("low"));
@@ -4191,7 +4206,10 @@ mod tests {
                 .providers
                 .lm_studio
                 .effective_thinking(Provider::LmStudio),
-            (ThinkingLevel::Low, false)
+            Thinking {
+                level: ThinkingLevel::Low,
+                chosen: false
+            }
         );
     }
 

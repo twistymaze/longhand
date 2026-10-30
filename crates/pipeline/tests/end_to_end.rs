@@ -71,8 +71,10 @@ impl EngineProvider for RealModel {
                 model,
                 credential: var("LONGHAND_SUMMARY_KEY"),
                 context_limit: var("LONGHAND_SUMMARY_CONTEXT").map(|v| v.parse().unwrap()),
-                thinking: summarize::Provider::Custom.default_thinking(),
-                thinking_chosen: false,
+                thinking: summarize::Thinking {
+                    level: summarize::Provider::Custom.default_thinking(),
+                    chosen: false,
+                },
                 requests_at_once: summarize::Provider::Custom.default_requests_at_once(),
                 retry_waits: Vec::new(),
             }),
