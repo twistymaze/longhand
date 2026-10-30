@@ -54,6 +54,14 @@ pub const WHOLE: &str = "whole";
 /// prompt text and the Background both count (KTD11).
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
 shorten the prompt or the Background in Settings, or choose a model with a larger context";
+/// The error when a reply is cut off at the largest allowance that the
+/// context and the provider permit (R4, KTD8).
+const REPLY_DOES_NOT_FIT: &str = "the model's reply did not fit in its context; \
+give the model a larger context, or choose a lower Thinking level in Settings > AI Provider > Advanced";
+/// The error when a summary request reaches its reply deadline (R16,
+/// KTD10). The request is not sent again.
+const NO_REPLY_IN_TIME: &str = "the model did not reply in time; \
+choose a lower Thinking level in Settings > AI Provider > Advanced";
 /// The proposed title, a string, once the title turn has run. An empty
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
@@ -744,19 +752,18 @@ pub fn produce(
                         room.limit
                     )));
                 }
-                Err(CutOff { layer, room }) if shrinks < MAX_SHRINKS => {
-                    // The prompt fit and the reply did not: give the reply
-                    // more of the same context and send less with it.
+                Err(CutOff {
+                    layer,
+                    room,
+                    resplit: true,
+                }) if shrinks < MAX_SHRINKS
+                    && (room.reserve * 2).min(room.limit / 2) > room.reserve =>
+                {
+                    // The prompt fit and the reply did not, at the largest
+                    // allowance: send less with each request, so that the
+                    // reply gets more of the same context (KTD8).
                     shrinks += 1;
                     let reserve = (room.reserve * 2).min(room.limit / 2);
-                    if reserve <= room.reserve {
-                        // The next run asks the endpoint for its limit
-                        // again: the user can raise the context length.
-                        forget_calls(store, note_id)?;
-                        return Err(StageError::Failed(
-                            "the model's replies do not fit in its context; raise its context length or choose another model".into(),
-                        ));
-                    }
                     log::warn!(
                         "{} cut off a layer-{layer} reply at {} tokens; retrying with {reserve}",
                         client.host(),
@@ -773,10 +780,12 @@ pub fn produce(
                     checkpoint::put(store, note_id, Stage::Summarize, PLAN, &plan)?;
                 }
                 Err(CutOff { .. }) => {
+                    // A note in one request, or a split that gives no
+                    // larger allowance, fails at once (R4). The next run
+                    // asks the endpoint for its limit again: the user can
+                    // raise the context length.
                     forget_calls(store, note_id)?;
-                    return Err(StageError::Failed(
-                        "the endpoint kept cutting off replies".into(),
-                    ));
+                    return Err(StageError::Failed(REPLY_DOES_NOT_FIT.into()));
                 }
                 Err(Stop(e)) => return Err(e),
             }
@@ -852,10 +861,13 @@ enum Outcome {
         layer: usize,
         room: Room,
     },
-    /// The reply at `layer` ran out of its allowance.
+    /// The reply at `layer` ran out of its largest allowance. `resplit` is
+    /// true when the request is a summary part or a merge, and a smaller
+    /// prompt gives a larger allowance (KTD8).
     CutOff {
         layer: usize,
         room: Room,
+        resplit: bool,
     },
     Stop(StageError),
 }
@@ -931,16 +943,17 @@ impl<'a> Calls<'a> {
     /// KTD2). The output maximum is the smaller of the probe's and the
     /// client's ([`Client::output_max`]).
     fn allowance(&self, messages: &[Message], room: Room) -> tokens::Allowance {
+        self.allowance_after(tokens::with_margin(cost(messages)), room)
+    }
+
+    /// The reply allowance of a request whose prompt estimate with the
+    /// margin is `used` tokens under `room`.
+    fn allowance_after(&self, used: usize, room: Room) -> tokens::Allowance {
         let output_max = match (self.output_max, self.client.output_max()) {
             (Some(probed), Some(known)) => Some(probed.min(known)),
             (probed, known) => probed.or(known),
         };
-        tokens::reply_allowance(
-            room.limit,
-            tokens::with_margin(cost(messages)),
-            output_max,
-            self.reply_kind,
-        )
+        tokens::reply_allowance(room.limit, used, output_max, self.reply_kind)
     }
 
     fn report(&mut self, step: Option<(SummaryStep, usize, usize)>) {
@@ -1178,31 +1191,61 @@ impl<'a> Calls<'a> {
             RequestKind::Merge
         };
         let label = Label::note(self.note_id, kind).queued(self.queued);
-        let allowance = self.allowance(messages, room).first;
-        let reply = self.runtime.block_on(
-            self.client.complete(&label, messages, allowance, num_ctx),
-            self.control,
-        )?;
-        match reply {
-            Ok(completion) => {
-                checkpoint::put(
-                    self.store,
-                    self.note_id,
-                    Stage::Summarize,
-                    &key,
-                    &completion.text,
-                )?;
-                self.report(step);
-                Ok(completion.text)
-            }
-            Err(e) if e.is_context_pressure() => Err(Pressure { layer, room }),
-            Err(SummarizeError::ReplyCutOff) => Err(CutOff { layer, room }),
-            Err(e) => Err(Stop(StageError::Failed(describe(layer, index, total, &e)))),
+        let used = tokens::with_margin(cost(messages));
+        let allowance = self.allowance_after(used, room);
+        let (mut cap, mut num_ctx) = (allowance.first, num_ctx);
+        loop {
+            let reply = self.runtime.block_on(
+                self.client.complete(&label, messages, cap, num_ctx),
+                self.control,
+            )?;
+            return match reply {
+                Ok(completion) => {
+                    checkpoint::put(
+                        self.store,
+                        self.note_id,
+                        Stage::Summarize,
+                        &key,
+                        &completion.text,
+                    )?;
+                    self.report(step);
+                    Ok(completion.text)
+                }
+                Err(e) if e.is_context_pressure() => Err(Pressure { layer, room }),
+                Err(SummarizeError::ReplyCutOff) if cap < allowance.ceiling => {
+                    // Below the ceiling: send the same request again with
+                    // the doubled allowance (KTD8). An Ollama context size
+                    // grows to hold it, and never gets smaller.
+                    let next = cap.saturating_mul(2).min(allowance.ceiling);
+                    log::warn!(
+                        "{} cut off a layer-{layer} reply at {cap} tokens; sending it again with {next}",
+                        self.client.host()
+                    );
+                    num_ctx = num_ctx
+                        .map(|size| size.max(context_size(used + next as usize, room.limit)));
+                    cap = next;
+                    self.control.proceed()?;
+                    continue;
+                }
+                // At the ceiling: only a smaller prompt gives a larger
+                // allowance, and a note in one request is not split.
+                Err(SummarizeError::ReplyCutOff) => Err(CutOff {
+                    layer,
+                    room,
+                    resplit: key != WHOLE
+                        && self.allowance_after(0, room).ceiling > allowance.ceiling,
+                }),
+                Err(e) => Err(Stop(StageError::Failed(describe(layer, index, total, &e)))),
+            };
         }
     }
 }
 
 fn describe(layer: usize, index: usize, total: usize, e: &SummarizeError) -> String {
+    let e = match e {
+        SummarizeError::Deadline(_) => NO_REPLY_IN_TIME.to_string(),
+        e => e.to_string(),
+    };
     if layer == 0 && total > 1 {
         format!("summarizing part {} of {total}: {e}", index + 1)
     } else if layer == 0 {
@@ -1312,7 +1355,23 @@ impl Runtime {
 mod tests {
     use summarize::chunk::{Line, Turn};
 
-    use super::{Details, clean_title, input_fingerprint, lines_of, merge_calls, read_transcript};
+    use super::{
+        Details, clean_title, describe, input_fingerprint, lines_of, merge_calls, read_transcript,
+    };
+
+    /// Covers KTD10, R16: a deadline failure names the Thinking setting.
+    /// That a deadline sends no second request is shown in the client
+    /// tests (`an_endpoint_that_never_answers_hits_the_deadline`).
+    #[test]
+    fn a_deadline_failure_names_the_thinking_setting() {
+        for what in ["response", "data", "complete reply"] {
+            for (layer, total) in [(0, 1), (0, 3), (1, 1)] {
+                let text = describe(layer, 0, total, &summarize::SummarizeError::Deadline(what));
+                assert!(text.contains("Thinking"), "{text}");
+                assert!(text.contains("Settings > AI Provider > Advanced"), "{text}");
+            }
+        }
+    }
 
     #[test]
     fn merge_calls_counts_every_layer_and_the_last_merge() {
