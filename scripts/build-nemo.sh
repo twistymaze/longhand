@@ -15,14 +15,25 @@ mkdir -p "$cache"
 # there, or a source folder that is not the current one. An update of Xcode,
 # Visual Studio or a CI runner image can remove the compiler. A cache from
 # another checkout path (for example another CI drive letter) names another
-# source folder, and CMake refuses that build folder.
+# source folder, and CMake refuses that build folder. A build folder is also
+# configured again when it names a Vulkan SDK file or a toolchain file that is
+# not there: CMake keeps the paths that it found, and an SDK in another folder
+# stops the generate step.
 cmake_path() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
+missing_input() {
+  local path
+  while IFS= read -r path; do
+    [[ "$path" == */* && ! -e "$path" ]] && return 0
+  done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
+  return 1
+}
 for pair in "$tokenizer_build|$tokenizer_source" "$sdk_build|$source_dir" "$helper_build|$root/native/nemo-helper"; do
   build="${pair%%|*}"
   [[ -f "$build/CMakeCache.txt" ]] || continue
   compiler="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$build/CMakeCache.txt" | tr -d '\r')"
   home="$(sed -n 's/^CMAKE_HOME_DIRECTORY:[A-Z]*=//p' "$build/CMakeCache.txt" | tr -d '\r')"
-  if [[ "$compiler" == */* && ! -e "$compiler" ]] || [[ -n "$home" && "$home" != "$(cmake_path "${pair#*|}")" ]]; then
+  if [[ "$compiler" == */* && ! -e "$compiler" ]] || [[ -n "$home" && "$home" != "$(cmake_path "${pair#*|}")" ]] ||
+    missing_input "$build/CMakeCache.txt"; then
     rm -rf "$build"
   fi
 done

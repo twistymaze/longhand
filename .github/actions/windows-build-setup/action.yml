@@ -32,32 +32,56 @@ runs:
     # must come before rust-cache: post steps run in reverse order, so
     # rust-cache saves the cache before this action dismounts the drive.
     # The self-hosted runner has a permanent Dev Drive that holds its work folder.
-    # The drive mounts at a fixed folder, not at the next free drive letter:
-    # the larger runner of main gets D: and windows-latest gets E:, because
-    # its D: is the temp disk. The rust-cache key includes CARGO_HOME and
-    # RUSTUP_HOME, and the sccache keys of Rust crates include the source
-    # paths. With different paths, pull requests (windows-latest) never
-    # restored the caches that main (the larger runner) saved.
     - name: Set up a Dev Drive
       if: runner.environment == 'github-hosted'
       uses: samypr100/setup-dev-drive@562171fe8df7401fdf582d766cd3b6ab80d5b1a0 # v4
       with:
         drive-size: 40GB
-        mount-path: C:/devdrive
         workspace-copy: true
         trusted-dev-drive: true
-        env-mapping: |
-          CARGO_HOME,{{ DEV_DRIVE }}/.cargo
-          RUSTUP_HOME,{{ DEV_DRIVE }}/.rustup
+
+    # The Dev Drive is Z: on every runner type. The action takes the next
+    # free letter: D: on the larger runner of main, E: on windows-latest
+    # (its D: is the temp disk). The caches need one path on both runner
+    # types: cargo, CMake and sccache record full paths, and actions/cache
+    # restores a path on the workspace drive relative to the workspace
+    # (C:\a on the larger runner, D:\a on windows-latest). Z: is never the
+    # workspace drive, so the caches store and restore full Z:\ paths. The
+    # action's cleanup finds the drive by its VHDX file, not by its letter.
+    # This step must come before rust-cache.
+    - name: Give the Dev Drive the letter Z
+      if: runner.environment == 'github-hosted'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $drive = Split-Path -Qualifier $env:DEV_DRIVE
+        if ($drive -ne 'Z:') {
+          if (Test-Path 'Z:\') { throw 'Z: is already in use on this runner' }
+          Set-Partition -DriveLetter $drive.TrimEnd(':') -NewDriveLetter Z
+        }
+        $workspace = 'Z:' + $env:DEV_DRIVE_WORKSPACE.Substring($drive.Length)
+        @(
+          'DEV_DRIVE=Z:'
+          "DEV_DRIVE_WORKSPACE=$workspace"
+          'CARGO_HOME=Z:\.cargo'
+          'RUSTUP_HOME=Z:\.rustup'
+        ) | Add-Content -Path $env:GITHUB_ENV
+        Write-Output "Dev Drive: Z:, workspace: $workspace"
 
     # The Windows x64 build links ggml's Vulkan backend (KTD6), which needs
     # the SDK's headers and glslc at build time. Version as Handy pins it.
     # The action's own cache holds only the installer, which downloads in
     # seconds, and it runs on the deprecated Node 20 `actions/cache@v4`.
     # The self-hosted runner's image has the same SDK version and sets VULKAN_SDK.
+    # The action installs into VULKAN_SDK when it is set, else into the
+    # checkout. The checkout is C:\a on the larger runner of main but D:\a
+    # on windows-latest. The CMake builds record the SDK path, so the SDK
+    # goes on the Dev Drive, which is Z: on each runner type.
     - name: Install Vulkan SDK
       if: runner.environment == 'github-hosted'
       uses: humbletim/install-vulkan-sdk@30ba978f977e81b72d091fc8888feb1fb26f9aff # v1.2
+      env:
+        VULKAN_SDK: Z:/VULKAN_SDK
       with:
         version: 1.4.309.0
         cache: false
@@ -101,11 +125,15 @@ runs:
     # Vulkan SDK version above (tag vulkan-sdk-1.4.309.0) and puts it on
     # CMAKE_PREFIX_PATH. CMake with Ninja needs the MSVC environment, so the
     # step comes after it. This takes a few seconds; vcpkg took about 40 s.
+    # The CMake builds record CMAKE_PREFIX_PATH, so on GitHub's runners the
+    # package goes on the Dev Drive, not in RUNNER_TEMP (C:\a\_temp or
+    # D:\a\_temp, as the runner type sets).
     - name: Install SPIRV-Headers
       shell: bash
       run: |
-        src="$RUNNER_TEMP/spirv-headers-src"
-        prefix="$(cygpath -m "$RUNNER_TEMP/spirv-headers")"
+        base="${DEV_DRIVE:-$RUNNER_TEMP}"
+        src="$base/spirv-headers-src"
+        prefix="$(cygpath -m "$base/spirv-headers")"
         rm -rf "$src"
         git init -q "$src"
         git -C "$src" fetch -q --depth 1 https://github.com/KhronosGroup/SPIRV-Headers 09913f088a1197aba4aefd300a876b2ebbaa3391

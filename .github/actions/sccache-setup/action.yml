@@ -55,9 +55,16 @@ runs:
           echo "CMAKE_CXX_COMPILER_LAUNCHER=sccache"
           # msvc-toolchain.cmake gives the CMake builds /MD and /Z7, which
           # Rust and sccache need. The file tells why.
+          # The CMake builds record the path of the file. GITHUB_ACTION_PATH
+          # is in the checkout (C:\a or D:\a, as the runner type sets), so
+          # on a Dev Drive the path is the file in the copy of the workspace.
           if [ "$RUNNER_OS" = Windows ]; then
             echo "CMAKE_GENERATOR=Ninja"
-            echo "CMAKE_TOOLCHAIN_FILE=$(cygpath -m "$GITHUB_ACTION_PATH/msvc-toolchain.cmake")"
+            toolchain="$GITHUB_ACTION_PATH/msvc-toolchain.cmake"
+            if [ -n "${DEV_DRIVE_WORKSPACE:-}" ]; then
+              toolchain="$DEV_DRIVE_WORKSPACE/.github/actions/sccache-setup/msvc-toolchain.cmake"
+            fi
+            echo "CMAKE_TOOLCHAIN_FILE=$(cygpath -m "$toolchain")"
           fi
         } >> "$GITHUB_ENV"
 
@@ -99,15 +106,24 @@ runs:
         # compiler that is not here. An older linker cannot always link the
         # libraries of a newer compiler. A cache from a job with another Dev
         # Drive letter names a source folder that is not here, and CMake
-        # refuses that build folder. In both cases the step removes the
-        # output and the fingerprint of that build script, and cargo builds
-        # it again.
+        # refuses that build folder. A cache that names a Vulkan SDK file or
+        # a toolchain file that is not here (main's cache from before the
+        # SDK moved to the Dev Drive) stops the CMake generate step. In each
+        # case the step removes the output and the fingerprint of that build
+        # script, and cargo builds it again.
+        missing_input() {
+          local path
+          while IFS= read -r path; do
+            [[ "$path" == */* && ! -e "$path" ]] && return 0
+          done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
+          return 1
+        }
         /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
           [ -f "$cache" ] || continue
           compiler="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "$cache" | tr -d '\r')"
           source="$(sed -n 's/^CMAKE_HOME_DIRECTORY:[A-Z]*=//p' "$cache" | tr -d '\r')"
           if { [[ "$compiler" == */* ]] && [ ! -e "$compiler" ]; } ||
-            { [ -n "$source" ] && [ ! -e "$source" ]; }; then
+            { [ -n "$source" ] && [ ! -e "$source" ]; } || missing_input "$cache"; then
             dir="${cache%%/out/build/*}"
             echo "Removing $dir"
             rm -rf "$dir" "${dir%/build/*}/.fingerprint/${dir##*/}"

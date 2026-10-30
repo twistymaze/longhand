@@ -117,7 +117,9 @@ jobs:
         if: runner.os == 'Windows'
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v4-rust
+          # v5: the caches of v4 name the Vulkan SDK in the checkout, so
+          # each run configured the CMake crates again.
+          prefix-key: v5-rust
 
       - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
         if: runner.os == 'macOS'
@@ -135,7 +137,7 @@ jobs:
       # runner use this cache (LONGHAND_GHA_CACHE). The persistent runner
       # skips it: its target/ stays from the last job, and a cache save would
       # prune it. On Windows, the Windows build setup has the same step with
-      # the same prefix key.
+      # its own prefix key.
       - name: Select the GitHub Actions cache
         if: runner.os == 'macOS'
         env:
@@ -228,8 +230,8 @@ jobs:
       # follows the scripts that pin the revisions and patch the source. Only
       # main saves it (step "Save the NeMo cache"), so pull requests do not
       # fill the cache storage. A warm cache saves about 1.5 to 3 minutes.
-      # The folder is on the Dev Drive, which has the same path on each
-      # runner type. The cache version includes the path, and runner.temp is
+      # The folder is on the Dev Drive, which is Z: on each runner type.
+      # The cache version includes the path, and runner.temp is
       # C:\a\_temp on the larger runner but D:\a\_temp on windows-latest.
       - name: Restore the NeMo cache (Windows)
         id: nemo-cache
@@ -443,15 +445,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installed helper inference failed" }
 
       # Shows how much of the Dev Drive and the runner's disks the job used,
-      # to check the drive size. The Dev Drive mounts at a folder, so it has
-      # no drive letter in the list, and fsutil gives its free space.
+      # to check the drive size. On GitHub's runners the Dev Drive is Z:.
       - name: Disk use (Windows)
         if: always() && runner.os == 'Windows'
         shell: pwsh
-        run: |
-          Get-PSDrive -PSProvider FileSystem
-          # Information only: an fsutil error must not fail the job.
-          if ($env:DEV_DRIVE) { fsutil volume diskfree "$env:DEV_DRIVE\"; $global:LASTEXITCODE = 0 }
+        run: Get-PSDrive -PSProvider FileSystem
 
       - name: Save the NeMo cache (Windows)
         if: >-
@@ -855,7 +853,7 @@ jobs:
       - name: Windows build setup
         uses: ./.github/actions/windows-build-setup
         with:
-          prefix-key: v3-release-windows
+          prefix-key: v4-release-windows
           cache-on-failure: false
 
       # After the Windows build setup, so that its post step runs before the
