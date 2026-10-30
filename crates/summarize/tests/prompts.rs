@@ -8,7 +8,7 @@ use summarize::prompts::{
     self, PLAY_BY_PLAY_ID, PROMPT_TEXT_LIMIT, Prompt, TITLE_REPLY_MIN, TITLE_TEXT_LIMIT,
     TOPIC_SUMMARY_ID,
 };
-use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
+use summarize::tokens::{estimate, estimate_messages, prompt_allowance, split_reserve};
 
 /// A custom prompt text that must reach only the final call.
 const CUSTOM: &str = "Write a haiku about the session. CUSTOM-MARKER";
@@ -290,7 +290,7 @@ fn the_title_reserve_grows_with_the_title_text_and_covers_the_title_request() {
 fn a_summary_text_and_a_title_text_at_their_limits_leave_a_chunk_allowance_at_8192_tokens() {
     let text = "word ".repeat(PROMPT_TEXT_LIMIT / 5);
     let title_text = "word ".repeat(TITLE_TEXT_LIMIT / 5);
-    let allowance = prompt_allowance(8_192, reply_reserve(8_192));
+    let allowance = prompt_allowance(8_192, split_reserve(8_192));
     let room = allowance
         .saturating_sub(prompts::overhead(DOCUMENT, &text, ""))
         .saturating_sub(prompts::title_reserve(&title_text, ""));
@@ -302,7 +302,7 @@ fn a_summary_text_and_a_title_text_at_their_limits_leave_a_chunk_allowance_at_81
 #[test]
 fn the_overhead_does_not_include_the_title_reserve() {
     let limit = 2_048;
-    let allowance = prompt_allowance(limit, reply_reserve(limit));
+    let allowance = prompt_allowance(limit, split_reserve(limit));
     for p in prompts::built_ins() {
         let overhead = prompts::overhead("", &p.text, "");
         assert!(overhead * 2 <= allowance, "{}: {overhead}", p.id);
@@ -468,7 +468,7 @@ fn the_overhead_grows_with_the_prompt_text() {
 fn a_prompt_text_at_the_limit_leaves_a_chunk_allowance_at_8192_tokens() {
     let text = "word ".repeat(PROMPT_TEXT_LIMIT / 5);
     assert_eq!(text.chars().count(), PROMPT_TEXT_LIMIT);
-    let allowance = prompt_allowance(8_192, reply_reserve(8_192));
+    let allowance = prompt_allowance(8_192, split_reserve(8_192));
     let notes = prompts::fit_notes(DOCUMENT, allowance, &text, "");
     assert_eq!(notes, DOCUMENT);
     let room = allowance.saturating_sub(prompts::overhead(&notes, &text, ""));
@@ -481,7 +481,7 @@ fn a_prompt_text_at_the_limit_leaves_a_chunk_allowance_at_8192_tokens() {
 
 #[test]
 fn the_notes_are_cut_to_leave_room_for_the_prompt_text() {
-    let allowance = prompt_allowance(8_192, reply_reserve(8_192));
+    let allowance = prompt_allowance(8_192, split_reserve(8_192));
     let long: String = (0..2_000)
         .map(|i| format!("- note {i} about something the user found important\n"))
         .collect();
@@ -513,7 +513,7 @@ fn turns(n: usize) -> Vec<Line> {
 #[test]
 fn each_built_in_leaves_room_in_the_last_merge_at_2048_tokens() {
     let limit = 2_048;
-    let allowance = prompt_allowance(limit, reply_reserve(limit));
+    let allowance = prompt_allowance(limit, split_reserve(limit));
     for p in prompts::built_ins() {
         let overhead = prompts::overhead("", &p.text, "");
         assert!(

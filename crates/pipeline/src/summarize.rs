@@ -28,6 +28,7 @@ use summarize::chunk::{self, Chunk, Line, Turn};
 use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
 use summarize::provider::ThinkingLevel;
+use summarize::tokens::ReplyKind;
 use summarize::{
     Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, context, prompts, tokens,
 };
@@ -142,7 +143,7 @@ impl Source {
 }
 
 /// The Ollama context size for a request that needs `need` tokens, the
-/// prompt estimate and the reply reserve (KTD7). The size is a multiple of
+/// prompt estimate and the reply allowance (KTD7). The size is a multiple of
 /// [`CONTEXT_STEP`], at least [`SMALLEST_CONTEXT`], and never more than
 /// `limit`, the context limit.
 fn context_size(need: usize, limit: u32) -> u32 {
@@ -153,7 +154,9 @@ fn context_size(need: usize, limit: u32) -> u32 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 struct Room {
     limit: u32,
-    /// Tokens kept for the reply, and sent as its cap.
+    /// The split reserve: the tokens that the split decision and the part
+    /// sizes keep for the reply (KTD1). Each request sends its own reply
+    /// allowance ([`Calls::allowance`]).
     reserve: u32,
 }
 
@@ -161,7 +164,7 @@ impl Room {
     fn new(limit: u32) -> Self {
         Self {
             limit,
-            reserve: tokens::reply_reserve(limit),
+            reserve: tokens::split_reserve(limit),
         }
     }
 }
@@ -706,6 +709,8 @@ pub fn produce(
         background: &prompt.background,
         details: &details,
         ollama: endpoint.provider == Provider::Ollama,
+        reply_kind: ReplyKind::of(endpoint.provider, plan.budget.source),
+        output_max: plan.budget.output_max,
         queued,
         progress: &mut *progress,
         grouped: 0,
@@ -847,7 +852,7 @@ enum Outcome {
         layer: usize,
         room: Room,
     },
-    /// The reply at `layer` ran out of its reserve.
+    /// The reply at `layer` ran out of its allowance.
     CutOff {
         layer: usize,
         room: Room,
@@ -884,6 +889,10 @@ struct Calls<'a> {
     /// The requests go to Ollama, so each request gives its context size
     /// (KTD7).
     ollama: bool,
+    /// How the provider kind limits the reply allowance (KTD2).
+    reply_kind: ReplyKind,
+    /// The output maximum that the probe gave, if any (KTD3).
+    output_max: Option<u32>,
     /// The time that the job waited for its turn in the summary queue.
     queued: Duration,
     /// Takes the step, the calls of the step done, and the calls of the
@@ -918,6 +927,22 @@ impl<'a> Calls<'a> {
         self.ollama.then(|| context_size(need, room.limit))
     }
 
+    /// The reply allowance of a request with `messages` under `room` (R1,
+    /// KTD2). The output maximum is the smaller of the probe's and the
+    /// client's ([`Client::output_max`]).
+    fn allowance(&self, messages: &[Message], room: Room) -> tokens::Allowance {
+        let output_max = match (self.output_max, self.client.output_max()) {
+            (Some(probed), Some(known)) => Some(probed.min(known)),
+            (probed, known) => probed.or(known),
+        };
+        tokens::reply_allowance(
+            room.limit,
+            tokens::with_margin(cost(messages)),
+            output_max,
+            self.reply_kind,
+        )
+    }
+
     fn report(&mut self, step: Option<(SummaryStep, usize, usize)>) {
         if let Some((step, done, total)) = step {
             (self.progress)(step, done, total);
@@ -948,9 +973,9 @@ impl<'a> Calls<'a> {
         if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
             <= room.limit as usize
         {
-            // One call: its prompt estimate and its reply reserve.
+            // One call: its prompt estimate and its reply allowance.
             let num_ctx = self.num_ctx(
-                tokens::with_margin(cost(&whole)) + room.reserve as usize,
+                tokens::with_margin(cost(&whole)) + self.allowance(&whole, room).first as usize,
                 room,
             );
             let reply = self.call_as(WHOLE.into(), 0, 0, &whole, room, 1, None, num_ctx)?;
@@ -964,7 +989,7 @@ impl<'a> Calls<'a> {
         // Too long for one call: parts, then merges until one remains. Every
         // request of the run gives the room limit as its Ollama context
         // size, so Ollama does not load the model again (KTD7). The cut-off
-        // path changes the reply reserve, not the limit.
+        // path changes the split reserve, not the limit.
         let num_ctx = self.num_ctx(room.limit as usize, room);
         let allowance = chunk_allowance(room, &notes, text, title_text, user);
         let chunks: Vec<Chunk> = chunk::chunk(lines, allowance);
@@ -1074,10 +1099,9 @@ impl<'a> Calls<'a> {
         }
         let messages =
             prompts::title_turn(&done.messages, &done.reply, self.title_text, self.user());
-        let used = tokens::with_margin(cost(&messages));
-        let cap = (done.room.limit as usize)
-            .saturating_sub(used)
-            .min(done.room.reserve as usize) as u32;
+        // The title request gets the first allowance of the same rule as
+        // a summary request (KTD11).
+        let cap = self.allowance(&messages, done.room).first;
         if cap < prompts::TITLE_REPLY_MIN {
             log::warn!(
                 "the title turn for {} leaves {cap} tokens of the context for the reply, under {}; \
@@ -1154,9 +1178,9 @@ impl<'a> Calls<'a> {
             RequestKind::Merge
         };
         let label = Label::note(self.note_id, kind).queued(self.queued);
+        let allowance = self.allowance(messages, room).first;
         let reply = self.runtime.block_on(
-            self.client
-                .complete(&label, messages, room.reserve, num_ctx),
+            self.client.complete(&label, messages, allowance, num_ctx),
             self.control,
         )?;
         match reply {
@@ -1311,7 +1335,11 @@ mod tests {
             model: "m".into(),
         };
         let plan = |limit, source| super::Plan {
-            budget: Budget { limit, source },
+            budget: Budget {
+                limit,
+                source,
+                output_max: None,
+            },
             layers: vec![super::Room::new(limit)],
             source: Some(at.clone()),
         };
@@ -1351,6 +1379,7 @@ mod tests {
             budget: Budget {
                 limit: 32_000,
                 source: BudgetSource::User,
+                output_max: None,
             },
             layers: vec![super::Room::new(32_000)],
             source,

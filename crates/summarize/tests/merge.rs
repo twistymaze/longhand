@@ -33,13 +33,13 @@ fn a_lone_summary_at_the_end_of_a_layer_passes_up_unchanged() {
 #[test]
 fn with_a_prompt_text_at_the_limit_every_merge_call_stays_under_budget() {
     use summarize::prompts::{self, PROMPT_TEXT_LIMIT, TITLE_REPLY_MIN, TITLE_TEXT_LIMIT};
-    use summarize::tokens::{estimate, estimate_messages, prompt_allowance, reply_reserve};
+    use summarize::tokens::{estimate, estimate_messages, prompt_allowance, split_reserve};
 
     let text = "word ".repeat(PROMPT_TEXT_LIMIT / 5);
     let title_text = "word ".repeat(TITLE_TEXT_LIMIT / 5);
     let notes = "- the budget\n- the launch date\n";
     let limit = 8_192;
-    let budget = prompt_allowance(limit, reply_reserve(limit));
+    let budget = prompt_allowance(limit, split_reserve(limit));
     let allowance =
         budget - prompts::overhead(notes, &text, "") - prompts::title_reserve(&title_text, "");
     // Nine part notes of about 900 tokens each.

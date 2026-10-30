@@ -386,6 +386,52 @@ async fn a_model_refusing_max_tokens_is_asked_again_with_max_completion_tokens()
     assert_eq!(mock.seen.lock().unwrap().len(), 2);
 }
 
+/// KTD3: a 400 that names a smaller output cap sends the request once more
+/// with that cap, and the next request to the model starts at it.
+#[tokio::test]
+async fn a_refused_output_cap_is_sent_again_with_the_named_cap_and_remembered() {
+    let reply = Reply::With(Arc::new(|body: &str| {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap();
+        if v["max_tokens"].as_u64().unwrap_or(0) > 8_192 {
+            (
+                400,
+                r#"{"error":{"message":"max_tokens: 16384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022"}}"#.into(),
+            )
+        } else {
+            (200, completion("ok"))
+        }
+    }));
+    let mock = serve(HashMap::from([("/v1/chat/completions", reply)])).await;
+    let client = Client::new(endpoint(&mock.base, None)).unwrap();
+    assert_eq!(client.output_max(), None);
+    let text = client
+        .complete(&label(), &hello(), 16_384, None)
+        .await
+        .unwrap()
+        .text;
+    assert_eq!(text, "ok");
+    assert_eq!(client.output_max(), Some(8_192));
+    // A new client to the same model starts at the remembered cap.
+    let again = Client::new(endpoint(&mock.base, None)).unwrap();
+    assert_eq!(again.output_max(), Some(8_192));
+    again
+        .complete(&label(), &hello(), 16_384, None)
+        .await
+        .unwrap();
+    let caps: Vec<u64> = mock
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|s| {
+            serde_json::from_str::<serde_json::Value>(&s.body).unwrap()["max_tokens"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(caps, [16_384, 8_192, 8_192]);
+}
+
 #[test]
 fn plain_http_to_another_machine_is_flagged_and_loopback_is_not() {
     let flagged = |url: &str| {

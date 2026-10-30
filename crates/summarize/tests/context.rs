@@ -42,7 +42,8 @@ async fn lm_studio_reports_the_loaded_context() {
         budget,
         Some(Budget {
             limit: 8_192,
-            source: BudgetSource::LmStudio
+            source: BudgetSource::LmStudio,
+            output_max: None,
         })
     );
 }
@@ -68,7 +69,8 @@ async fn litellm_reports_the_input_limit_not_the_output_cap() {
         budget,
         Some(Budget {
             limit: 200_000,
-            source: BudgetSource::Litellm
+            source: BudgetSource::Litellm,
+            output_max: None,
         })
     );
 }
@@ -99,7 +101,8 @@ async fn a_row_without_context_metadata_falls_through_to_the_next_probe() {
         budget,
         Some(Budget {
             limit: 32_768,
-            source: BudgetSource::Vllm
+            source: BudgetSource::Vllm,
+            output_max: None,
         })
     );
 }
@@ -120,7 +123,8 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
             .unwrap(),
         Some(Budget {
             limit: 16_384,
-            source: BudgetSource::LlamaCpp
+            source: BudgetSource::LlamaCpp,
+            output_max: None,
         })
     );
     let router = serve(HashMap::from([(
@@ -137,7 +141,8 @@ async fn llama_cpp_and_openrouter_answer_in_their_own_shapes() {
             .unwrap(),
         Some(Budget {
             limit: 1_000_000,
-            source: BudgetSource::Openrouter
+            source: BudgetSource::Openrouter,
+            output_max: None,
         })
     );
 }
@@ -153,7 +158,8 @@ async fn a_server_answering_no_probe_resolves_to_the_default() {
         context::resolve(None, probed),
         Budget {
             limit: DEFAULT_LIMIT,
-            source: BudgetSource::Default
+            source: BudgetSource::Default,
+            output_max: None,
         }
     );
 }
@@ -237,7 +243,8 @@ async fn a_first_probe_refused_as_unauthorized_goes_on_to_the_next_probe() {
             probed,
             Some(Budget {
                 limit: 32_768,
-                source: BudgetSource::Vllm
+                source: BudgetSource::Vllm,
+                output_max: None,
             }),
             "HTTP {status}"
         );
@@ -262,7 +269,8 @@ async fn a_server_error_from_a_later_probe_or_a_route_not_implemented_is_a_miss(
         probed,
         Some(Budget {
             limit: 32_768,
-            source: BudgetSource::Vllm
+            source: BudgetSource::Vllm,
+            output_max: None,
         })
     );
     // 501 says that the server does not have the route.
@@ -313,13 +321,15 @@ fn the_user_setting_wins_over_the_probe() {
     let lm = Budget {
         limit: 8_192,
         source: BudgetSource::LmStudio,
+        output_max: None,
     };
     let probed = Some(lm);
     assert_eq!(
         context::resolve(Some(32_000), probed),
         Budget {
             limit: 32_000,
-            source: BudgetSource::User
+            source: BudgetSource::User,
+            output_max: None,
         }
     );
     assert_eq!(context::resolve(None, probed), lm);
@@ -357,7 +367,8 @@ async fn an_ollama_model_reports_its_context_length_from_api_show() {
         context::probe(&client, &probe_label()).await.unwrap(),
         Some(Budget {
             limit: 32_768,
-            source: BudgetSource::Ollama
+            source: BudgetSource::Ollama,
+            output_max: None,
         })
     );
     let seen = mock.seen.lock().unwrap();
@@ -392,7 +403,8 @@ async fn a_gemini_model_reports_the_input_token_limit_of_its_model_list_entry() 
         context::probe(&client, &probe_label()).await.unwrap(),
         Some(Budget {
             limit: 1_048_576,
-            source: BudgetSource::Gemini
+            source: BudgetSource::Gemini,
+            output_max: None,
         })
     );
 }
@@ -424,15 +436,191 @@ async fn anthropic_and_openai_give_no_probed_limit_so_the_entered_value_or_the_d
             context::resolve(None, probed),
             Budget {
                 limit: DEFAULT_LIMIT,
-                source: BudgetSource::Default
+                source: BudgetSource::Default,
+                output_max: None,
             }
         );
         assert_eq!(
             context::resolve(Some(50_000), probed),
             Budget {
                 limit: 50_000,
-                source: BudgetSource::User
+                source: BudgetSource::User,
+                output_max: None,
             }
         );
     }
+}
+
+#[tokio::test]
+async fn litellm_reports_the_output_maximum_from_max_output_tokens() {
+    let mock = serve(HashMap::from([(
+        "/v1/model/info",
+        Reply::Json(
+            200,
+            r#"{"data":[{"model_name":"m","model_info":{"max_input_tokens":131072,"max_tokens":8000,"max_output_tokens":8000}}]}"#
+                .into(),
+        ),
+    )]))
+    .await;
+    let budget = context::probe(&client(&mock.base, "m"), &probe_label())
+        .await
+        .unwrap();
+    assert_eq!(
+        budget,
+        Some(Budget {
+            limit: 131_072,
+            source: BudgetSource::Litellm,
+            output_max: Some(8_000),
+        })
+    );
+}
+
+/// KTD3: LiteLLM can fill the legacy `max_tokens` with the input limit, so
+/// only `max_output_tokens` gives the output maximum.
+#[tokio::test]
+async fn litellm_max_tokens_alone_gives_no_output_maximum() {
+    let mock = serve(HashMap::from([(
+        "/v1/model/info",
+        Reply::Json(
+            200,
+            r#"{"data":[{"model_name":"m","model_info":{"max_input_tokens":131072,"max_tokens":131072}}]}"#
+                .into(),
+        ),
+    )]))
+    .await;
+    let budget = context::probe(&client(&mock.base, "m"), &probe_label())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(budget.output_max, None);
+}
+
+/// An older saved plan has a budget with no output maximum.
+#[test]
+fn a_budget_without_an_output_maximum_still_reads() {
+    let budget: Budget = serde_json::from_str(r#"{"limit":32000,"source":"litellm"}"#).unwrap();
+    assert_eq!(budget.output_max, None);
+    assert_eq!(budget.limit, 32_000);
+}
+
+/// KTD3: Rig's catalog gives the output maximum of known hosted models.
+#[test]
+fn the_catalog_gives_the_output_maximum_of_a_known_hosted_model() {
+    assert_eq!(
+        context::catalog_output_max(Provider::Anthropic, "claude-haiku-4-5"),
+        Some(64_000)
+    );
+    assert_eq!(
+        context::catalog_output_max(Provider::Anthropic, "claude-unknown-9"),
+        None
+    );
+    assert_eq!(
+        context::catalog_output_max(Provider::Gemini, "models/gemini-2.5-flash"),
+        Some(65_536)
+    );
+    // Local servers are not in the catalog.
+    assert_eq!(
+        context::catalog_output_max(Provider::LmStudio, "claude-haiku-4-5"),
+        None
+    );
+}
+
+// ------------------------------------------------------- reply allowance (U4)
+
+use summarize::tokens::{Allowance, ReplyKind, reply_allowance, split_reserve, with_margin};
+
+/// Covers AE1: LM Studio gets 90% of the context at the first request.
+#[test]
+fn lm_studio_gets_the_whole_room_at_the_first_request() {
+    let kind = ReplyKind::of(Provider::LmStudio, BudgetSource::LmStudio);
+    let allowance = reply_allowance(131_072, with_margin(6_571), None, kind);
+    assert_eq!(
+        allowance,
+        Allowance {
+            first: 117_964,
+            ceiling: 117_964
+        }
+    );
+    // The split reserve does not change (R3).
+    assert_eq!(split_reserve(131_072), 8_192);
+}
+
+/// Covers AE2, R2: a hosted model with no known output maximum.
+#[test]
+fn an_unknown_hosted_model_gets_the_safe_value() {
+    for provider in [Provider::Anthropic, Provider::OpenAi, Provider::Gemini] {
+        let kind = ReplyKind::of(provider, BudgetSource::Default);
+        assert_eq!(
+            reply_allowance(200_000, 5_000, None, kind),
+            Allowance {
+                first: 16_384,
+                ceiling: 16_384
+            },
+            "{provider:?}"
+        );
+    }
+}
+
+/// KTD2: a known output maximum of 64,000 starts at 16,384. Anthropic
+/// never goes above 21,333; OpenAI can go up to the output maximum.
+#[test]
+fn a_known_output_maximum_starts_at_the_safe_value() {
+    let anthropic = ReplyKind::of(Provider::Anthropic, BudgetSource::Default);
+    assert_eq!(
+        reply_allowance(200_000, 5_000, Some(64_000), anthropic),
+        Allowance {
+            first: 16_384,
+            ceiling: 21_333
+        }
+    );
+    let openai = ReplyKind::of(Provider::OpenAi, BudgetSource::Default);
+    assert_eq!(
+        reply_allowance(200_000, 5_000, Some(64_000), openai),
+        Allowance {
+            first: 16_384,
+            ceiling: 64_000
+        }
+    );
+}
+
+#[test]
+fn ollama_starts_at_32_768() {
+    let kind = ReplyKind::of(Provider::Ollama, BudgetSource::User);
+    assert_eq!(
+        reply_allowance(131_072, 2_000, None, kind),
+        Allowance {
+            first: 32_768,
+            ceiling: 117_964
+        }
+    );
+}
+
+/// KTD2: Custom gets the whole room only when a llama.cpp or vLLM probe
+/// gave its limit.
+#[test]
+fn custom_gets_the_whole_room_only_after_a_llama_cpp_or_vllm_probe() {
+    for source in [BudgetSource::Vllm, BudgetSource::LlamaCpp] {
+        let kind = ReplyKind::of(Provider::Custom, source);
+        assert_eq!(reply_allowance(131_072, 2_000, None, kind).first, 117_964);
+    }
+    let litellm = ReplyKind::of(Provider::Custom, BudgetSource::Litellm);
+    assert_eq!(reply_allowance(131_072, 2_000, None, litellm).first, 16_384);
+    // A LiteLLM output maximum of 8,000 caps the allowance.
+    assert_eq!(
+        reply_allowance(131_072, 2_000, Some(8_000), litellm),
+        Allowance {
+            first: 8_000,
+            ceiling: 8_000
+        }
+    );
+}
+
+/// R1: the allowance is never more than the context that the prompt
+/// leaves.
+#[test]
+fn the_allowance_is_never_more_than_the_room_left() {
+    let full = ReplyKind::of(Provider::LmStudio, BudgetSource::LmStudio);
+    assert_eq!(reply_allowance(8_192, 6_000, None, full).first, 2_192);
+    let hosted = ReplyKind::of(Provider::OpenAi, BudgetSource::Default);
+    assert_eq!(reply_allowance(8_192, 6_000, None, hosted).first, 2_192);
 }

@@ -2332,10 +2332,12 @@ async fn replies_that_do_not_fit_remove_the_plan_so_a_larger_context_gets_a_new_
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reply_cut_off_gets_more_room() {
     let r = rig().await;
-    // A reasoning model: it needs 1,500 tokens of reply before it answers.
+    // A reasoning model: it needs 2,600 tokens of reply before it answers.
+    // The first part request gets the room that its prompt leaves in the
+    // context, about 2,500 tokens. Smaller parts leave more room.
     let reply = http::Reply::With(Arc::new(|body: &str| {
         let v: serde_json::Value = serde_json::from_str(body).unwrap();
-        if v["max_tokens"].as_u64().unwrap_or(0) < 1_500 {
+        if v["max_tokens"].as_u64().unwrap_or(0) < 2_600 {
             (
                 200,
                 r#"{"choices":[{"message":{"content":""},"finish_reason":"length"}]}"#.into(),
@@ -2372,10 +2374,10 @@ async fn a_reply_cut_off_gets_more_room() {
         .iter()
         .find(|b| !is_title_call(b))
         .expect("a summary request");
-    assert!(max_tokens(first) < 1_500, "{}", max_tokens(first));
+    assert!(max_tokens(first) < 2_600, "{}", max_tokens(first));
     // A later request gives the reply enough room.
     assert!(
-        bodies.iter().any(|b| max_tokens(b) >= 1_500),
+        bodies.iter().any(|b| max_tokens(b) >= 2_600),
         "{:?}",
         bodies.iter().map(max_tokens).collect::<Vec<_>>()
     );
@@ -3352,7 +3354,7 @@ async fn a_resumed_run_with_no_saved_prompt_makes_its_calls_again() {
     );
     // A run from before prompts were saved: a plan and a cached result,
     // and no prompt snapshot.
-    let reserve = summarize::tokens::reply_reserve(32_000);
+    let reserve = summarize::tokens::split_reserve(32_000);
     let plan = serde_json::json!({
         "budget": { "limit": 32_000, "source": "user" },
         "layers": [{ "limit": 32_000, "reserve": reserve }],
@@ -5476,11 +5478,12 @@ fn cost_of(messages: &[summarize::client::Message]) -> usize {
     summarize::tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
 }
 
-/// The reply cap of a title turn of `messages` in a context of `limit`
-/// tokens (KTD12).
+/// The reply cap of a title turn of `messages` to the test endpoint in a
+/// context of `limit` tokens that the user set (KTD11, KTD12): the room
+/// left, at most 90% of the context and 16,384.
 fn cap_for(messages: &[summarize::client::Message], limit: u32) -> u32 {
     let used = summarize::tokens::with_margin(cost_of(messages)) as u32;
-    summarize::tokens::reply_reserve(limit).min(limit.saturating_sub(used))
+    (limit * 9 / 10).min(16_384).min(limit.saturating_sub(used))
 }
 
 /// The final call's messages of a stored title request, as the client sent
@@ -5530,8 +5533,8 @@ async fn a_whole_call_run_stores_its_title_turn_and_sends_no_title_call() {
     assert_eq!(all.len(), 1, "one whole call and no title call");
     let request = pending(&r).expect("a title request");
     assert_title_turn_of(&request, &all[0], "A short summary.", TITLE_MARKER);
-    // A short summary leaves the whole reply reserve for the title.
-    assert_eq!(request.cap, summarize::tokens::reply_reserve(8_192));
+    // A short summary leaves 90% of the context for the title.
+    assert_eq!(request.cap, 7_372);
     assert_eq!(request.cap, cap_for(&request.messages, 8_192));
     // No title is proposed until the title job runs (U6).
     assert_eq!(title_of(&r), None);
@@ -5707,7 +5710,7 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split() {
     // KTD4.
-    use summarize::tokens::{reply_reserve, with_margin};
+    use summarize::tokens::{split_reserve, with_margin};
     let big = rig().await;
     let mock = summaries_from(
         &big,
@@ -5726,9 +5729,9 @@ async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split
     // The smallest context that holds the whole call without the title
     // reserve. It does not hold the whole call with it.
     let limit = (2_048..)
-        .find(|&l| with_margin(cost) + reply_reserve(l) as usize <= l as usize)
+        .find(|&l| with_margin(cost) + split_reserve(l) as usize <= l as usize)
         .unwrap();
-    assert!(with_margin(cost + reserve) + reply_reserve(limit) as usize > limit as usize);
+    assert!(with_margin(cost + reserve) + split_reserve(limit) as usize > limit as usize);
 
     let r = rig().await;
     let mock = summaries_from(
@@ -5754,7 +5757,6 @@ async fn a_transcript_that_fits_one_call_only_without_the_title_reserve_is_split
 async fn the_title_reply_cap_is_what_the_context_has_left() {
     // KTD12.
     use summarize::prompts::{TITLE_REPLY_MIN, title_turn, topic_summary};
-    use summarize::tokens::reply_reserve;
     const LIMIT: u32 = 4_096;
     let run = |summary: String| async move {
         let r = rig().await;
@@ -5768,13 +5770,15 @@ async fn the_title_reply_cap_is_what_the_context_has_left() {
         (pending(&r), folder, r)
     };
 
-    // A short summary gets the whole reply reserve.
+    // A short summary gets the context that the title turn leaves.
     let (short, _, _r) = run("A short summary.".into()).await;
     let short = short.expect("a title request");
-    assert_eq!(short.cap, reply_reserve(LIMIT));
+    assert_eq!(short.cap, cap_for(&short.messages, LIMIT));
+    assert!(short.cap <= LIMIT * 9 / 10, "{}", short.cap);
     let final_call = &short.messages[..short.messages.len() - 2];
 
-    // The summary lengths that leave the title less than the reserve, and
+    // The summary lengths that leave the title less than the short summary
+    // leaves, and
     // less than the minimum.
     let title_text = topic_summary().title_text;
     let cap_with = |words: usize| {
@@ -5783,14 +5787,12 @@ async fn the_title_reply_cap_is_what_the_context_has_left() {
             LIMIT,
         )
     };
-    let near = (0..)
-        .find(|&w| cap_with(w) < reply_reserve(LIMIT) - 100)
-        .unwrap();
+    let near = (0..).find(|&w| cap_with(w) < short.cap - 100).unwrap();
     let over = (near..).find(|&w| cap_with(w) < TITLE_REPLY_MIN).unwrap();
 
     let (request, _, _r) = run("word ".repeat(near)).await;
     let request = request.expect("a title request");
-    assert!(request.cap < reply_reserve(LIMIT), "{}", request.cap);
+    assert!(request.cap < short.cap, "{}", request.cap);
     assert!(request.cap >= TITLE_REPLY_MIN, "{}", request.cap);
     assert_eq!(request.cap, cap_for(&request.messages, LIMIT));
     let used = summarize::tokens::with_margin(cost_of(&request.messages));
@@ -11433,24 +11435,30 @@ fn ollama_summary() -> http::Reply {
     http::Reply::Json(200, reply_from(AiProvider::Ollama, "A summary."))
 }
 
-/// Covers AE6, R6: a note that fits one call and needs about 20,000
-/// tokens with its reply reserve.
+/// Covers AE6, R6, KTD2: a note that fits one call starts at an allowance
+/// of 32,768, and its context size covers its prompt and that allowance,
+/// rounded up to 2,048.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ollama_note_in_one_call_sends_the_context_size_that_the_call_needs() {
     let r = rig().await;
     r.script.sentences.store(75, Ordering::SeqCst);
     let segments: Vec<(u32, Vec<f32>)> = (0..2).map(|_| (16_000, conversation())).collect();
     queue_session(&r.store, &r.root, "s", 100, Some("m"), &segments);
-    let bodies = ollama_run(&r, ollama_summary(), 32_000).await;
+    let bodies = ollama_run(&r, ollama_summary(), 131_072).await;
     assert_eq!(bodies.len(), 1, "the note fits one call");
+    assert_eq!(num_predict(&bodies[0]), 32_768);
     let need = ollama_need(&bodies[0]);
-    assert!((18_433..=20_480).contains(&need), "{need}");
-    assert_eq!(num_ctx(&bodies[0]), Some(20_480));
+    assert!((43_000..=46_000).contains(&need), "{need}");
+    assert_eq!(
+        num_ctx(&bodies[0]),
+        Some(need.div_ceil(2_048) as u64 * 2_048)
+    );
 }
 
-/// Covers AE6, R6: a short note gets a small context size.
+/// Covers R1, R6: in a small context, a short note gets 90% of the
+/// context, and its context size is the context limit.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_short_ollama_note_sends_the_smallest_context_size() {
+async fn a_short_ollama_note_in_a_small_context_gets_90_percent_of_it() {
     let r = rig().await;
     queue_session(
         &r.store,
@@ -11462,12 +11470,8 @@ async fn a_short_ollama_note_sends_the_smallest_context_size() {
     );
     let bodies = ollama_run(&r, ollama_summary(), 12_000).await;
     assert_eq!(bodies.len(), 1);
-    assert!(
-        ollama_need(&bodies[0]) <= 4_096,
-        "{}",
-        ollama_need(&bodies[0])
-    );
-    assert_eq!(num_ctx(&bodies[0]), Some(4_096));
+    assert_eq!(num_predict(&bodies[0]), 10_800);
+    assert_eq!(num_ctx(&bodies[0]), Some(12_000));
 }
 
 /// Covers R6, KTD7: every chunk and merge request of a run in parts gives
@@ -11489,40 +11493,6 @@ async fn an_ollama_run_in_parts_sends_the_room_limit_on_every_request() {
     }
 }
 
-/// Covers R6, KTD7: a cut-off reply gets a larger reserve and a larger
-/// context size, never above the context limit.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_cut_off_ollama_reply_is_sent_again_with_a_larger_context_size() {
-    let r = rig().await;
-    queue_session(
-        &r.store,
-        &r.root,
-        "s",
-        100,
-        Some("m"),
-        &[(16_000, speech())],
-    );
-    let n = Arc::new(AtomicUsize::new(0));
-    let reply = http::Reply::With(Arc::new(move |_| {
-        let done = if n.fetch_add(1, Ordering::SeqCst) == 0 {
-            "length"
-        } else {
-            "stop"
-        };
-        (200, http::ollama_reply("A summary.", done))
-    }));
-    let bodies = ollama_run(&r, reply, 32_000).await;
-    assert_eq!(bodies.len(), 2);
-    assert!(num_predict(&bodies[1]) > num_predict(&bodies[0]));
-    let sizes: Vec<u64> = bodies.iter().map(|b| num_ctx(b).unwrap()).collect();
-    assert!(sizes[1] > sizes[0], "{sizes:?}");
-    for body in &bodies {
-        let size = num_ctx(body).unwrap();
-        assert!(size >= ollama_need(body) as u64, "{size}");
-        assert!(size <= 32_000, "{size}");
-    }
-}
-
 /// Covers R6, KTD7: the context limit is the largest size, also under the
 /// smallest size.
 #[tokio::test(flavor = "multi_thread")]
@@ -11541,6 +11511,221 @@ async fn an_ollama_model_with_a_small_context_limit_gets_that_limit() {
     for body in &bodies {
         assert_eq!(num_ctx(body), Some(2_048));
     }
+}
+
+// ------------------------------------------------- reply allowance (U4)
+
+/// A short note "s" that fits one request.
+fn short_note(r: &Rig) {
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+}
+
+/// The summary requests of a run of "s" on `provider` with the model
+/// `model` and the context setting `context_limit`.
+async fn allowance_run(
+    r: &Rig,
+    provider: AiProvider,
+    model: &str,
+    context_limit: Option<u32>,
+) -> Vec<serde_json::Value> {
+    let mock = serve_provider(
+        provider,
+        http::Reply::Json(200, reply_from(provider, "A summary.")),
+    )
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
+        provider,
+        model: model.into(),
+        context_limit,
+        ..endpoint(&mock.base)
+    }));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(summary_is_complete(&saved_folder(r, "s")));
+    summary_bodies(&mock, route_path(provider))
+}
+
+/// The prompt estimate of the request `body`, with the margin.
+fn used_by(body: &serde_json::Value) -> usize {
+    let contents: Vec<String> = body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| content_text(&m["content"]))
+        .collect();
+    summarize::tokens::with_margin(summarize::tokens::estimate_messages(
+        contents.iter().map(String::as_str),
+    ))
+}
+
+/// Covers AE1, R1: LM Studio gets 90% of the context at the first request.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_lm_studio_note_in_one_request_gets_90_percent_of_the_context() {
+    let r = rig().await;
+    short_note(&r);
+    let bodies = allowance_run(&r, AiProvider::LmStudio, "qwen", Some(131_072)).await;
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(bodies[0]["max_tokens"], 117_964, "{}", bodies[0]);
+}
+
+/// Covers AE2, R2: an Anthropic model that Longhand does not know gets
+/// the safe value. A known model with an output maximum of 64,000 also
+/// starts at it (KTD2).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_anthropic_request_starts_at_16_384() {
+    for model in ["claude-unknown-9", "claude-haiku-4-5"] {
+        let r = rig().await;
+        short_note(&r);
+        let bodies = allowance_run(&r, AiProvider::Anthropic, model, None).await;
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["max_tokens"], 16_384, "{model}: {}", bodies[0]);
+    }
+}
+
+/// A run of "s" on a Custom server that answers the probe on `path` with
+/// `answer`.
+async fn custom_run(r: &Rig, path: &'static str, answer: &str) -> http::Mock {
+    let mock = http::serve(std::collections::HashMap::from([
+        (path, http::Reply::Json(200, answer.into())),
+        (
+            "/v1/chat/completions",
+            http::Reply::Json(200, http::completion("A summary.")),
+        ),
+    ]))
+    .await;
+    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
+    assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
+    assert!(summary_is_complete(&saved_folder(r, "s")));
+    mock
+}
+
+/// KTD2, KTD3: Custom gets the whole room after a vLLM probe, the safe
+/// value after a LiteLLM probe with no output maximum, and the LiteLLM
+/// output maximum when LiteLLM gives one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_custom_allowance_follows_its_probe() {
+    let cases = [
+        (
+            "/v1/models",
+            r#"{"data":[{"id":"summarizer","max_model_len":131072}]}"#,
+            117_964,
+        ),
+        (
+            "/v1/model/info",
+            r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_tokens":131072}}]}"#,
+            16_384,
+        ),
+        (
+            "/v1/model/info",
+            r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_output_tokens":8000}}]}"#,
+            8_000,
+        ),
+    ];
+    for (path, answer, max_tokens) in cases {
+        let r = rig().await;
+        short_note(&r);
+        let mock = custom_run(&r, path, answer).await;
+        let bodies = summary_bodies(&mock, "/v1/chat/completions");
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["max_tokens"], max_tokens, "{answer}");
+    }
+}
+
+/// Covers AE3, R3: the split reserve, not the allowance, sizes the parts.
+/// LM Studio and Custom make the same 4 parts at the same limit as before
+/// the change, and each part leaves the split reserve, while the LM Studio
+/// parts get a larger allowance.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_allowance_does_not_change_the_parts() {
+    let parts = |bodies: &[serde_json::Value]| -> Vec<serde_json::Value> {
+        bodies
+            .iter()
+            .filter(|b| part_of(b).is_some())
+            .map(|b| b["messages"].clone())
+            .collect()
+    };
+    let lm = rig().await;
+    long_session(&lm);
+    let lm_bodies = allowance_run(&lm, AiProvider::LmStudio, "summarizer", Some(8_192)).await;
+    let custom = rig().await;
+    long_session(&custom);
+    let custom_bodies = allowance_run(&custom, AiProvider::Custom, "summarizer", Some(8_192)).await;
+    assert_eq!(parts(&lm_bodies).len(), 4);
+    assert_eq!(parts(&lm_bodies), parts(&custom_bodies));
+    let reserve = summarize::tokens::split_reserve(8_192) as usize;
+    for body in lm_bodies.iter().filter(|b| part_of(b).is_some()) {
+        let used = used_by(body);
+        assert!(used + reserve <= 8_192, "{used}");
+        assert_eq!(body["max_tokens"], (8_192 * 9 / 10).min(8_192 - used));
+    }
+}
+
+/// KTD3: a saved plan from an older version has no output maximum. It
+/// still loads, and a Regenerate Summary uses it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_saved_plan_without_an_output_maximum_is_used_on_regenerate() {
+    let r = rig().await;
+    short_note(&r);
+    let answer = r#"{"data":[{"model_name":"summarizer","model_info":{"max_input_tokens":131072,"max_output_tokens":8000}}]}"#;
+    let mock = custom_run(&r, "/v1/model/info", answer).await;
+    let path = saved_folder(&r, "s").join("summary.md");
+    let mut plan: serde_json::Value =
+        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN)
+            .unwrap()
+            .unwrap();
+    assert_eq!(plan["budget"]["output_max"], 8_000, "{plan}");
+    plan["budget"].as_object_mut().unwrap().remove("output_max");
+    // A stub with the plan and no reply: the stage stopped before its
+    // request ended.
+    {
+        let s = r.store.lock().unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, checkpoint::DONE)
+            .unwrap();
+        s.delete_checkpoint("s", Stage::Summarize, pipeline::summarize::WHOLE)
+            .unwrap();
+    }
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Summarize,
+        pipeline::summarize::PLAN,
+        &plan,
+    )
+    .unwrap();
+    let probes = || {
+        mock.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.path == "/v1/model/info")
+            .count()
+    };
+    let before = probes();
+    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    assert_eq!(probes(), before, "the saved plan is used");
+    let bodies = summary_bodies(&mock, "/v1/chat/completions");
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["max_tokens"], 8_000, "{}", bodies[0]);
+    assert_eq!(bodies[1]["max_tokens"], 16_384, "{}", bodies[1]);
+}
+
+/// KTD11: the title request gets its cap from the same rule. On LM Studio
+/// it is the context left after the title prompt, up to 90%.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_title_cap_follows_the_allowance_rule() {
+    let r = rig().await;
+    short_note(&r);
+    allowance_run(&r, AiProvider::LmStudio, "qwen", Some(131_072)).await;
+    let request = pending(&r).expect("a title request");
+    let used = summarize::tokens::with_margin(cost_of(&request.messages)) as u32;
+    assert_eq!(request.cap, (131_072 - used).min(117_964));
+    assert_eq!(request.cap, 117_964);
 }
 
 /// Covers R25: the title job keeps the provider that was in effect when it

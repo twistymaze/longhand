@@ -18,7 +18,7 @@
 //! [`SummarizeError`] made from a Rig result holds only text that Longhand
 //! writes, never the text of a Rig or reqwest error.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -42,6 +42,7 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tokio::time::timeout;
 
+use crate::context::catalog_output_max;
 use crate::provider::{Provider, Route, ThinkingLevel};
 use crate::transport::{Recording, Transport, TransportError};
 
@@ -736,6 +737,9 @@ impl Client {
     ) -> Result<Completion, SummarizeError> {
         let Thinking { level, chosen } = self.thinking;
         let model = RefusedModel::of(self);
+        let max_tokens = model
+            .refused_cap()
+            .map_or(max_tokens, |cap| max_tokens.min(cap));
         let level = if !chosen && model.was_refused() {
             ThinkingLevel::ModelDefault
         } else {
@@ -765,10 +769,53 @@ impl Client {
         }
     }
 
+    /// The output maximum of the model of this client: the cap that the
+    /// endpoint named in a refusal since Longhand started, else the
+    /// maximum in Rig's catalog (KTD3). `None` when neither is known.
+    pub fn output_max(&self) -> Option<u32> {
+        RefusedModel::of(self)
+            .refused_cap()
+            .or_else(|| catalog_output_max(self.endpoint.provider, &self.endpoint.model))
+    }
+
+    /// [`Self::complete_level`], and when the endpoint refuses the request
+    /// with a 400 that names a smaller output cap, the request once more
+    /// with that cap. The model keeps the cap until Longhand quits (KTD3).
+    async fn complete_at(
+        &self,
+        label: &Label,
+        messages: &[Message],
+        max_tokens: u32,
+        num_ctx: Option<u32>,
+        level: ThinkingLevel,
+    ) -> Result<Completion, SummarizeError> {
+        let result = self
+            .complete_level(label, messages, max_tokens, num_ctx, level)
+            .await;
+        let cap = match &result {
+            Err(SummarizeError::Http {
+                status: 400,
+                excerpt,
+            }) => named_cap(excerpt, max_tokens),
+            _ => None,
+        };
+        let Some(cap) = cap else {
+            return result;
+        };
+        log::info!(
+            "{} refused {max_tokens} reply tokens for model {}; sending the request again with {cap}",
+            self.host(),
+            self.endpoint.model
+        );
+        RefusedModel::of(self).remember_cap(cap);
+        self.complete_level(label, messages, cap, num_ctx, level)
+            .await
+    }
+
     /// [`Self::complete`] with the Thinking level `level`. When Rig refuses
     /// an effort level before it sends the request, the request goes with
     /// the thinking budget of the level (KTD5).
-    async fn complete_at(
+    async fn complete_level(
         &self,
         label: &Label,
         messages: &[Message],
@@ -1196,6 +1243,49 @@ impl RefusedModel {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(self);
     }
+
+    /// The output cap that the endpoint named for this model, if any.
+    fn refused_cap(&self) -> Option<u32> {
+        REFUSED_CAPS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(self)
+            .copied()
+    }
+
+    fn remember_cap(self, cap: u32) {
+        let mut caps = REFUSED_CAPS.lock().unwrap_or_else(PoisonError::into_inner);
+        let kept = caps.entry(self).or_insert(cap);
+        *kept = (*kept).min(cap);
+    }
+}
+
+/// The output cap that the endpoint named for each model in a refusal
+/// since Longhand started (KTD3). The map is lost at quit.
+static REFUSED_CAPS: LazyLock<Mutex<HashMap<RefusedModel, u32>>> = LazyLock::new(Default::default);
+
+/// The smallest number that [`named_cap`] reads as a model's output cap.
+/// A smaller number is a rule about the field, for example "at least 1".
+const SMALLEST_NAMED_CAP: u32 = 1_024;
+
+/// The output cap that a 400 reply names, when the reply is about the
+/// reply cap and names a number below `sent`, the cap of the request. Of
+/// the numbers below `sent`, the largest is the cap: the other numbers are
+/// parts of a model id. Examples: "max_tokens: 16384 > 8192" (Anthropic)
+/// and "supports at most 4096 completion tokens" (OpenAI).
+fn named_cap(excerpt: &str, sent: u32) -> Option<u32> {
+    let lower = excerpt.to_lowercase();
+    if !["max_tokens", "max_completion_tokens", "output tokens"]
+        .iter()
+        .any(|s| lower.contains(s))
+    {
+        return None;
+    }
+    lower
+        .split(|c: char| !c.is_ascii_digit())
+        .filter_map(|n| n.parse::<u32>().ok())
+        .filter(|&n| (SMALLEST_NAMED_CAP..sent).contains(&n))
+        .max()
 }
 
 /// The start of a provider's error body, as the user sees it.
@@ -1364,6 +1454,29 @@ fn transport_failure(error: &TransportError) -> Failure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KTD3: the cap in the refusals of Anthropic and OpenAI. A 400 that
+    /// is not about the reply cap names no cap.
+    #[test]
+    fn a_refusal_names_the_output_cap() {
+        assert_eq!(
+            named_cap(
+                "max_tokens: 16384 > 8192, which is the maximum allowed number of output tokens for claude-3-5-sonnet-20241022",
+                16_384
+            ),
+            Some(8_192)
+        );
+        assert_eq!(
+            named_cap(
+                "max_tokens is too large: 16384. This model supports at most 4096 completion tokens, whereas you provided 16384.",
+                16_384
+            ),
+            Some(4_096)
+        );
+        assert_eq!(named_cap("messages: 2 roles in a row", 16_384), None);
+        // A small number is a rule about the field, not a model's cap.
+        assert_eq!(named_cap("max_tokens: must be at least 1", 16_384), None);
+    }
 
     #[test]
     fn only_plain_http_to_another_computer_crosses_the_network_unencrypted() {
