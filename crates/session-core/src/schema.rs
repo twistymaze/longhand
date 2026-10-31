@@ -31,6 +31,7 @@ pub const MIGRATION_SQL: &[&str] = &[
     include_str!("../migrations/0021_note_app_set.sql"),
     include_str!("../migrations/0022_note_id_columns.sql"),
     include_str!("../migrations/0023_import_source.sql"),
+    include_str!("../migrations/0024_transcript_removed.sql"),
 ];
 
 /// The version of migration 0002, which has a hook.

@@ -495,9 +495,39 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "FULL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        // A delete overwrites the deleted content (KTD5 of the transcript
+        // removal plan).
+        conn.pragma_update(None, "secure_delete", "ON")?;
         crate::schema::migrations().to_latest(&mut conn)?;
         crate::schema::record_applied_migrations(&conn, &crate::schema::migration_hashes())?;
-        Ok(Self { conn })
+        let store = Self { conn };
+        // A VACUUM can fail, for example when the disk is full. The store
+        // is still correct, so the open continues, and the next open tries
+        // the VACUUM again.
+        if let Err(e) = store.vacuum_if_owed() {
+            log::warn!("the store could not run its VACUUM: {e}");
+        }
+        Ok(store)
+    }
+
+    /// Run the VACUUM that a migration asked for, then empty the WAL
+    /// (KTD5 of the transcript removal plan). The VACUUM removes the free
+    /// pages that an earlier build left with deleted text in them. A stop
+    /// before the flag is clear runs the VACUUM again at the next open.
+    fn vacuum_if_owed(&self) -> Result<()> {
+        let owed: bool =
+            self.conn
+                .query_row("SELECT vacuum_owed FROM computer WHERE id = 1", [], |r| {
+                    r.get(0)
+                })?;
+        if !owed {
+            return Ok(());
+        }
+        self.conn.execute_batch("VACUUM")?;
+        self.conn
+            .execute("UPDATE computer SET vacuum_owed = 0 WHERE id = 1", [])?;
+        self.checkpoint_wal()?;
+        Ok(())
     }
 
     pub fn journal_mode(&self) -> Result<String> {
@@ -1078,6 +1108,104 @@ impl Store {
             return Err(StoreError::NoSuchSession(id.to_string()));
         }
         Ok(())
+    }
+
+    // ------------------------------------------------------------ transcript removal
+
+    /// Whether the note's home folder has the transcript marker, as this
+    /// computer last saw it (KTD9 of the transcript removal plan).
+    pub fn transcript_removed(&self, id: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT transcript_removed FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.to_string()))
+    }
+
+    /// Set the transcript removed flag of the note. Returns whether the
+    /// flag changed.
+    pub fn set_transcript_removed(&self, id: &str, removed: bool) -> Result<bool> {
+        self.require(id)?;
+        let changed = self.conn.execute(
+            "UPDATE sessions SET transcript_removed = ?2 WHERE id = ?1 AND transcript_removed != ?2",
+            params![id, removed],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Remove the note's recognition data in one transaction (KTD12 of the
+    /// transcript removal plan): see [`clear_recognition_data_in`]. The
+    /// index data stays: the recognition snapshot, the found speaker count
+    /// and the fingerprints. Run [`Store::checkpoint_wal`] after it.
+    pub fn clear_recognition_data(&mut self, id: &str) -> Result<()> {
+        self.require(id)?;
+        let tx = self.conn.transaction()?;
+        clear_recognition_data_in(&tx, id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove the transcript index data of a note whose transcript was
+    /// removed (KTD4 of the transcript removal plan): the transcript
+    /// fingerprint, the recognition snapshot and the copies of the snapshot
+    /// for a Transcribe Again run. The found speaker count stays. Run
+    /// [`Store::checkpoint_wal`] after it.
+    pub fn clear_transcript_index(&self, id: &str) -> Result<()> {
+        self.require(id)?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE sessions SET transcript_fingerprint = NULL, recognition_snapshot = NULL
+             WHERE id = ?1",
+            [id],
+        )?;
+        tx.execute(
+            "DELETE FROM result_state WHERE note_id = ?1
+             AND key IN ('pending-snapshot', 'replacement-base')",
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Remove the note's summary cache (KTD12 of the transcript removal
+    /// plan): its Summarize checkpoints, also the copy from before a
+    /// Transcribe Again run. Run [`Store::checkpoint_wal`] after it.
+    pub fn clear_summary_cache(&self, id: &str) -> Result<()> {
+        self.require(id)?;
+        self.conn.execute(
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage IN (?2, ?3)",
+            params![
+                id,
+                stage_key(Stage::Summarize),
+                previous_key(Stage::Summarize)
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Copy the WAL into the database file and make the WAL empty (KTD5 of
+    /// the transcript removal plan). Call it after a commit that deleted
+    /// note content, outside a transaction. Then no file of the store holds
+    /// the deleted text. Returns false when another connection blocked the
+    /// checkpoint: the WAL can then still hold the text until the next
+    /// checkpoint.
+    pub fn checkpoint_wal(&self) -> Result<bool> {
+        let busy: i64 = self
+            .conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+        Ok(busy == 0)
+    }
+
+    /// Whether the store overwrites deleted content (KTD5 of the transcript
+    /// removal plan).
+    pub fn secure_delete(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .pragma_query_value(None, "secure_delete", |r| r.get::<_, i64>(0))?
+            == 1)
     }
 
     // ------------------------------------------------------------ last-written fingerprints
@@ -2470,6 +2598,30 @@ fn drop_run_generation(tx: &Transaction, id: &str) -> Result<()> {
         &stage_key(Stage::Transcribe),
         &previous_key(Stage::Transcribe),
     )
+}
+
+/// Delete the note's recognition data on `conn` (KTD12 of the transcript
+/// removal plan): its Assemble, Transcribe and Diarize checkpoints, which
+/// hold the window rows and the live parts, the copy of each stage's
+/// checkpoints from before a Transcribe Again run, and its recognition
+/// output and epochs. A caller can give a transaction, for example the
+/// transaction that applies Saved.
+pub(crate) fn clear_recognition_data_in(conn: &Connection, id: &str) -> Result<()> {
+    for stage in RECOGNITION_STAGES {
+        conn.execute(
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
+            params![id, stage_key(stage)],
+        )?;
+    }
+    for stage in AGAIN_STAGES {
+        conn.execute(
+            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2",
+            params![id, previous_key(stage)],
+        )?;
+    }
+    conn.execute("DELETE FROM recognition_output WHERE note_id = ?1", [id])?;
+    conn.execute("DELETE FROM recognition_epochs WHERE note_id = ?1", [id])?;
+    Ok(())
 }
 
 /// Delete the checkpoints set aside before a Transcribe Again run, and the

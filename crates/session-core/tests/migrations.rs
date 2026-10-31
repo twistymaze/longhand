@@ -964,3 +964,78 @@ fn a_database_with_an_importing_row_is_above_the_last_release_version() {
     drop(store);
     assert!(user_version(&path) > LAST_RELEASE_VERSION);
 }
+
+// ------------------------------------------------ migration 0024: transcript removal
+
+fn version_twenty_three(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 23)
+        .unwrap();
+    conn
+}
+
+#[test]
+fn migration_twenty_four_gives_existing_notes_no_removed_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_three(&path);
+        add_session(&conn, "s1");
+        add_session(&conn, "s2");
+    }
+    let store = Store::open(&path).unwrap();
+    assert!(store.session("s1").unwrap().is_some());
+    assert!(!store.transcript_removed("s1").unwrap());
+    assert!(!store.transcript_removed("s2").unwrap());
+}
+
+/// Text that only the deleted rows of the test below held.
+const DELETED_TEXT: &str = "words of a transcript that a delete freed";
+
+/// Whether the file at `path` holds `text`. A missing file holds nothing.
+fn file_holds(path: &std::path::Path, text: &str) -> bool {
+    std::fs::read(path)
+        .map(|bytes| bytes.windows(text.len()).any(|w| w == text.as_bytes()))
+        .unwrap_or(false)
+}
+
+fn free_pages(path: &std::path::Path) -> i64 {
+    Connection::open(path)
+        .unwrap()
+        .pragma_query_value(None, "freelist_count", |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn the_first_open_after_migration_twenty_four_leaves_no_free_pages() {
+    // KTD5: an earlier build deleted rows with no secure_delete, so the
+    // free pages still hold their text.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_three(&path);
+        add_session(&conn, "s1");
+        let payload = DELETED_TEXT.repeat(40);
+        for key in 0..200 {
+            conn.execute(
+                "INSERT INTO checkpoints (note_id, stage, key, payload)
+                 VALUES ('s1', 'transcribe', ?1, ?2)",
+                params![format!("w{key}"), payload],
+            )
+            .unwrap();
+        }
+        conn.execute("DELETE FROM checkpoints", []).unwrap();
+    }
+    assert!(free_pages(&path) > 0);
+    assert!(file_holds(&path, DELETED_TEXT));
+
+    let store = Store::open(&path).unwrap();
+    assert!(store.session("s1").unwrap().is_some());
+    assert_eq!(free_pages(&path), 0);
+    assert!(!file_holds(&path, DELETED_TEXT));
+    assert!(!file_holds(
+        &dir.path().join("longhand.db-wal"),
+        DELETED_TEXT
+    ));
+}

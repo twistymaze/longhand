@@ -1,8 +1,9 @@
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{
     AudioState, FolderError, FrontmatterPatch, PendingType, REMOVAL_MARKER_TEXT, ResultFlag,
-    SessionDoc, SessionMd, Summary, SummaryMeta, Transcript, TranscriptLine, audio_removed,
-    audio_state, fingerprint, format_position, removal_marker, render_notes,
+    SessionDoc, SessionMd, Summary, SummaryMeta, TRANSCRIPT_REMOVED_MARKER,
+    TRANSCRIPT_REMOVED_TEXT, Transcript, TranscriptLine, audio_removed, audio_state, fingerprint,
+    format_position, removal_marker, render_notes, transcript_removed,
 };
 use session_core::{Segment, SpeakerCount, Timeline};
 
@@ -440,6 +441,37 @@ fn a_marker_with_any_content_counts() {
     let dir = audio_folder(&[], &[]);
     std::fs::write(dir.path().join(removal_marker(ONE)), b"").unwrap();
     assert!(audio_removed(dir.path(), ONE));
+}
+
+// ---------------------------------------------------------------- transcript marker
+
+#[test]
+fn the_transcript_marker_has_no_leading_dot_and_no_document_extension() {
+    assert_eq!(TRANSCRIPT_REMOVED_MARKER, "transcript.removed");
+    assert!(!TRANSCRIPT_REMOVED_MARKER.starts_with('.'));
+    // A conflict copy keeps the extension of its document (`.md` or
+    // `.json`), so no copy rule matches the marker.
+    let extension = TRANSCRIPT_REMOVED_MARKER.rsplit_once('.').unwrap().1;
+    assert!(!["md", "json", "tmp"].contains(&extension));
+}
+
+#[test]
+fn a_transcript_marker_with_any_content_counts_with_or_without_the_transcript() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(!transcript_removed(dir.path()));
+    std::fs::write(dir.path().join("transcript.md"), b"text").unwrap();
+    assert!(!transcript_removed(dir.path()));
+    std::fs::write(
+        dir.path().join(TRANSCRIPT_REMOVED_MARKER),
+        TRANSCRIPT_REMOVED_TEXT,
+    )
+    .unwrap();
+    assert!(transcript_removed(dir.path()));
+    std::fs::remove_file(dir.path().join("transcript.md")).unwrap();
+    assert!(transcript_removed(dir.path()));
+    std::fs::write(dir.path().join(TRANSCRIPT_REMOVED_MARKER), b"").unwrap();
+    assert!(transcript_removed(dir.path()));
+    assert!(!transcript_removed(&dir.path().join("gone")));
 }
 
 #[test]
