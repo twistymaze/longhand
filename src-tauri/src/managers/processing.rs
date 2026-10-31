@@ -2368,12 +2368,35 @@ impl ProcessingManager {
 
     /// Summarize a saved session again, replacing its `summary.md` (AE17).
     pub async fn regenerate_summary(&self, note_id: &str) -> Result<String, String> {
+        refuse_removed_transcript(&self.store, note_id)?;
         refuse_while_syncing(&self.library_status, note_id)?;
         self.runner
             .regenerate_summary(note_id)
             .await
             .map(|path| path.to_string_lossy().into_owned())
             .map_err(|e| e.to_string())
+    }
+}
+
+/// The reason of Regenerate Summary for a note whose transcript was
+/// removed (R14, AE7 of the transcript removal plan).
+pub(crate) const REGENERATE_TRANSCRIPT_REMOVED: &str =
+    "The transcript of this note was removed, so its summary can't be made again.";
+
+/// Refuse Regenerate Summary on the note `id` before its claim when its
+/// transcript was removed (KTD10 of the transcript removal plan).
+pub(crate) fn refuse_removed_transcript(
+    store: &pipeline::SharedStore,
+    id: &str,
+) -> Result<(), String> {
+    let removed = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        pipeline::reprocess::transcript_removed(&store, id).map_err(|e| e.to_string())?
+    };
+    if removed {
+        Err(REGENERATE_TRANSCRIPT_REMOVED.to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -2787,6 +2810,41 @@ mod tests {
             )
             .unwrap();
         (dir, home, store, reconciler)
+    }
+
+    // Covers R14, AE7 of the transcript removal plan (U6): Regenerate
+    // Summary refuses a note whose transcript was removed, by the store
+    // flag or by the marker before a scan sets the flag.
+    #[test]
+    fn regenerate_summary_is_refused_for_a_note_whose_transcript_was_removed() {
+        let at = chrono::Local::now().fixed_offset();
+        let home = tempfile::tempdir().unwrap();
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("a", at, Some(home.path().to_str().unwrap()))
+            .unwrap();
+        store.create_notes_only("b", at, None).unwrap();
+        let store: pipeline::SharedStore = Arc::new(std::sync::Mutex::new(store));
+        assert_eq!(refuse_removed_transcript(&store, "a"), Ok(()));
+        assert_eq!(refuse_removed_transcript(&store, "b"), Ok(()));
+
+        std::fs::write(
+            home.path()
+                .join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+        )
+        .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .set_transcript_removed("b", true)
+            .unwrap();
+        for id in ["a", "b"] {
+            assert_eq!(
+                refuse_removed_transcript(&store, id),
+                Err(REGENERATE_TRANSCRIPT_REMOVED.to_string())
+            );
+        }
     }
 
     // Covers R7, R8, KTD11: the actions wait while the result waits for the

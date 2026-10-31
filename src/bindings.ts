@@ -2817,6 +2817,12 @@ endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean;
  */
 audio: AudioView; 
 /**
+ * The transcript of the note (KTD11 of the transcript removal plan).
+ * A removed transcript has no Transcript tab. Regenerate Summary,
+ * Transcribe Again and Resume read it for their reason.
+ */
+transcript: TranscriptView; 
+/**
  * The recognition model that the note recorded when it started
  * (KTD2). `None` for a note that started before the update.
  */
@@ -2870,6 +2876,7 @@ not_saved_yet: string | null }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).
+ * Empty, with no `lines`, when the note has no `transcript.md`.
  */
 transcript_markdown: string; summary: SummaryView | null }
 export type SessionEntry = { id: string; 
@@ -3383,6 +3390,20 @@ export type TranscriptRemovalSetting = { kind: "off" } |
  * recorded.
  */
 { kind: "after_days"; days: number }
+/**
+ * The transcript of a note, from the store flag (KTD11 of the transcript
+ * removal plan). The note page shows no mark for it. It gives the reason
+ * of an unavailable action only (R15).
+ */
+export type TranscriptView = 
+/**
+ * The note keeps its transcript.
+ */
+"present" | 
+/**
+ * The transcript was removed. It does not come back.
+ */
+"removed"
 /**
  * What a type change did (R5). The note has the new type in every case
  * but `Unchanged`.

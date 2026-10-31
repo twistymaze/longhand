@@ -93,6 +93,9 @@ pub enum Cause {
     MissingAudio,
     /// At least one segment has a removal marker (R14, KTD9).
     RemovedAudio,
+    /// The transcript of the note was removed (R14 of the transcript
+    /// removal plan).
+    RemovedTranscript,
     AlreadyQueued,
     NotSaved,
     /// An older version of Longhand saved the note: its records are in
@@ -163,6 +166,10 @@ impl From<Cause> for Refusal {
             ),
             Cause::RemovedAudio => (
                 "The audio of this note was removed, so it can't be transcribed again.".into(),
+                false,
+            ),
+            Cause::RemovedTranscript => (
+                "The transcript of this note was removed, so it can't be transcribed again.".into(),
                 false,
             ),
             Cause::AlreadyQueued => (
@@ -329,6 +336,11 @@ fn resolve_run(
     {
         return Err(Cause::OldLayout.into());
     }
+    // A removed transcript does not come back. Its reason comes before the
+    // reason of the audio, which the removal also removed (R14).
+    if transcript_removed(store, note_id)? {
+        return Err(Cause::RemovedTranscript.into());
+    }
     // Removed audio does not come back, so its reason differs from the
     // reason for audio that the sync can still deliver (R14).
     match save::audio_state(store, note_id)? {
@@ -369,6 +381,18 @@ fn resolve_run(
         Readiness::Missing { artifact } => Err(Cause::NotDownloaded { artifact }.into()),
         Readiness::Downloading { artifact } => Err(Cause::Downloading { artifact }.into()),
     }
+}
+
+/// Whether the transcript of `note_id` was removed (KTD10 of the transcript
+/// removal plan): the store flag is set, or the home folder has the
+/// marker. The marker can arrive before a scan sets the flag. This reads
+/// metadata only.
+pub fn transcript_removed(store: &Store, note_id: &str) -> Result<bool, StageError> {
+    if store.transcript_removed(note_id)? {
+        return Ok(true);
+    }
+    let home = store.session(note_id)?.and_then(|r| r.home_path);
+    Ok(home.is_some_and(|home| session_core::folder::transcript_removed(Path::new(&home))))
 }
 
 pub(crate) fn speaker_count(spec: &ExecutionSpec) -> Option<session_core::SpeakerCount> {
@@ -475,6 +499,95 @@ mod tests {
                 in_settings: true
             }
         );
+    }
+
+    /// A store with the saved note "s" with one segment. `home` is its
+    /// home folder.
+    fn saved_note(home: Option<&Path>) -> Store {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-30T09:00:00+00:00").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s", at, None).unwrap();
+        store
+            .put_segment(
+                "s",
+                &session_core::Segment {
+                    index: 0,
+                    offset_ms: 0,
+                    duration_ms: 60_000,
+                    wall_start: at,
+                    wall_end: at + chrono::TimeDelta::minutes(1),
+                    audio_file: "audio/segment-01.opus".into(),
+                    channels: 1,
+                    ends_in_pause: false,
+                },
+            )
+            .unwrap();
+        store
+            .apply(
+                "s",
+                &Event::UserStop {
+                    at,
+                    retained_audio: true,
+                },
+            )
+            .unwrap();
+        store.apply("s", &Event::Dequeued).unwrap();
+        store.apply("s", &Event::Saved).unwrap();
+        if let Some(home) = home {
+            store.set_home_path("s", home.to_str().unwrap()).unwrap();
+        }
+        store
+    }
+
+    fn check_s(store: &Store) -> Refusal {
+        check(
+            store,
+            "s",
+            Guards::default(),
+            &RecognitionConfig::default(),
+            &|_| Readiness::Ready,
+        )
+        .unwrap_err()
+    }
+
+    const TRANSCRIPT_REMOVED: &str =
+        "The transcript of this note was removed, so it can't be transcribed again.";
+
+    // Covers R14, AE7 (U6): the transcript reason wins over the reason of
+    // the audio, which is also gone.
+    #[test]
+    fn a_removed_transcript_refuses_transcribe_again_before_the_audio() {
+        let store = saved_note(None);
+        // With no home folder, the audio counts as missing.
+        assert_eq!(
+            check_s(&store).message,
+            "The note's folder does not have all of its audio, so it can't be transcribed again."
+        );
+        store.set_transcript_removed("s", true).unwrap();
+        assert_eq!(
+            check_s(&store),
+            Refusal {
+                message: TRANSCRIPT_REMOVED.into(),
+                in_settings: false
+            }
+        );
+    }
+
+    // Covers KTD10 (U6): the marker refuses the run also before a scan
+    // sets the store flag.
+    #[test]
+    fn the_marker_refuses_transcribe_again_before_the_flag_is_set() {
+        let home = tempfile::tempdir().unwrap();
+        let store = saved_note(Some(home.path()));
+        assert!(!transcript_removed(&store, "s").unwrap());
+        std::fs::write(
+            home.path()
+                .join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+        )
+        .unwrap();
+        assert!(transcript_removed(&store, "s").unwrap());
+        assert_eq!(check_s(&store).message, TRANSCRIPT_REMOVED);
     }
 
     #[test]
