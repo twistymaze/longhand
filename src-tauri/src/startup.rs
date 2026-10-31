@@ -177,7 +177,8 @@ pub fn question_text(question: &Question, backups: &Path) -> (String, String) {
                 "It may be from a newer version of Longhand and may have work that is \
                  not finished.\n\n\
                  Rebuild makes a new notes list from your saved notes. Any unfinished \
-                 work will not be in it. A copy is kept in {backups}.\n\n\
+                 work will not be in it. A copy is kept in {backups} if \
+                 Longhand can read it; otherwise the copy is deleted.\n\n\
                  Details: {error}"
             ),
         ),
@@ -688,7 +689,8 @@ mod tests {
             "It may be from a newer version of Longhand and may have work that is \
              not finished.\n\n\
              Rebuild makes a new notes list from your saved notes. Any unfinished \
-             work will not be in it. A copy is kept in /data/database-backups.\n\n\
+             work will not be in it. A copy is kept in /data/database-backups if \
+             Longhand can read it; otherwise the copy is deleted.\n\n\
              Details: disk I/O error"
         );
     }
