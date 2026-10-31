@@ -188,6 +188,25 @@ describe("buildKeymap", () => {
     expect(state.doc.toJSON()).toEqual(doc.toJSON());
   });
 
+  it("makes an unchecked task when Enter splits a checked task", () => {
+    const doc = schema.node("doc", null, [
+      schema.node("taskList", null, [
+        schema.node(
+          "taskItem",
+          { checked: true },
+          [schema.node("paragraph", null, [schema.text("done")])],
+        ),
+      ]),
+    ]);
+    const { handled, state } = runKeyDownAtEnd(doc, "Enter");
+
+    expect(handled).toBe(true);
+    const list = state.doc.child(0);
+    expect(list.childCount).toBe(2);
+    expect(list.child(0).attrs.checked).toBe(true);
+    expect(list.child(1).attrs.checked).toBe(false);
+  });
+
   it("merges task item text backward without changing the list structure", () => {
     const doc = schema.node("doc", null, [
       schema.node("taskList", null, [
