@@ -6539,22 +6539,15 @@ async fn a_legacy_note_is_transcribed_again_in_full_with_no_consent_and_promotes
     assert!(!snapshot.enabled_live_transcription);
     assert!(!snapshot.enabled_live_speaker_analysis);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert_eq!(
-        r.script.calls.load(Ordering::SeqCst),
-        calls,
-        "timed text reuse does not run ASR again"
+    // R24: the run transcribes again, also when only the speaker source
+    // changed.
+    assert!(
+        r.script.calls.load(Ordering::SeqCst) > calls,
+        "a full transcription"
     );
-    assert_eq!(
-        r.script.loads.lock().unwrap().len(),
-        loads,
-        "timed text reuse does not load ASR"
-    );
+    assert!(r.script.loads.lock().unwrap().len() > loads, "ASR loads");
     assert!(read(&home, TRANSCRIPT_FILE).contains("Speaker 1:"));
-    assert_ne!(
-        read(&home, "summary.md"),
-        summary,
-        "reuse refreshes the summary"
-    );
+    assert_ne!(read(&home, "summary.md"), summary, "a new summary");
     let before = session_md(&home).summary_fingerprint;
     r.runner.regenerate_summary("s").await.unwrap();
     let doc = session_md(&home);
@@ -6564,7 +6557,7 @@ async fn a_legacy_note_is_transcribed_again_in_full_with_no_consent_and_promotes
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_new_model_that_cannot_use_the_saved_text_runs_a_full_transcription() {
+async fn transcribe_again_with_a_new_model_runs_a_full_transcription() {
     // Covers AE1.
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
@@ -6603,41 +6596,35 @@ async fn note_with_timed_text(r: &Rig) -> std::path::PathBuf {
     home
 }
 
-/// The `recognition.jsonl` of "s" is changed by `change`. The run then
-/// reads the file in the folder.
-async fn transcribe_again_with_artifact(change: impl FnOnce(&std::path::Path)) {
+/// Transcribe Again on "s", which has saved timed text, with `config` in
+/// Settings. The run must transcribe every window of the audio again.
+async fn transcribe_again_runs_asr_on_every_window(config: RecognitionConfig) {
     let r = rig().await;
     let _mock = numbered_summaries(&r).await;
     let home = note_with_timed_text(&r).await;
-    change(&home.join(session_core::recognition::ARTIFACT_FILE));
+    // The windows of the full run that saved the timed text.
+    let windows = plan(&r.store, "s").windows.len();
     let calls = r.script.calls.load(Ordering::SeqCst);
-    // A speaker-only change. The run uses saved timed text that it can use.
-    let config = RecognitionConfig {
-        speaker_source: SpeakerSource::Pyannote,
-        ..settings()
-    };
     again_with(&r, &config).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert!(
-        r.script.calls.load(Ordering::SeqCst) > calls,
-        "a full transcription"
-    );
+    let called = r.script.models_called.lock().unwrap()[calls..].to_vec();
+    assert_eq!(called.len(), windows, "{called:?}");
+    assert!(called.iter().all(|m| *m == config.asr_model), "{called:?}");
     assert!(session_md(&home).recognition_artifact.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn transcribe_again_with_a_missing_recognition_artifact_runs_in_full() {
-    // KTD8, R11: the file that `session.md` refers to is gone.
-    transcribe_again_with_artifact(|path| std::fs::remove_file(path).unwrap()).await;
+async fn transcribe_again_with_unchanged_settings_runs_asr_on_every_window() {
+    // Covers AE11, R24.
+    transcribe_again_runs_asr_on_every_window(settings()).await;
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn transcribe_again_with_a_changed_recognition_artifact_runs_in_full() {
-    // KTD8: the file does not have the checksum that `session.md` records.
-    transcribe_again_with_artifact(|path| {
-        let mut bytes = std::fs::read(path).unwrap();
-        bytes.extend_from_slice(b"\n");
-        std::fs::write(path, bytes).unwrap();
+async fn transcribe_again_with_only_a_speaker_change_runs_asr_on_every_window() {
+    // R24: saved timed text is not used again for a speaker-only change.
+    transcribe_again_runs_asr_on_every_window(RecognitionConfig {
+        speaker_source: SpeakerSource::Pyannote,
+        ..settings()
     })
     .await;
 }

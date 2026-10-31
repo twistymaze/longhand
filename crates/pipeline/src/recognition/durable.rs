@@ -566,44 +566,6 @@ pub fn write_result(
     .map_err(|e| failed(e.to_string()))
 }
 
-/// The caller can present explicit retranscription for a legacy or edited note.
-/// Import does not publish files or change a prior finished generation.
-pub fn reusable_artifact(
-    dir: &Path,
-    reference: Option<&ArtifactReference>,
-    next: &Fingerprints,
-    mut visitor: impl FnMut(OutputBlock) -> Result<(), StageError>,
-) -> Result<Reuse, StageError> {
-    let Some(reference) = reference else {
-        return Ok(Reuse::TranscribeAgain);
-    };
-    let transcript = std::fs::read(dir.join(crate::join::TRANSCRIPT_FILE))?;
-    let mut timed = true;
-    let header = read_artifact(&dir.join(ARTIFACT_FILE), reference, |b| {
-        timed &= b.timed_asr();
-        Ok(())
-    })
-    .map_err(|e| failed(e.to_string()))?;
-    let reuse = header.reuse(next, &transcript);
-    if reuse == Reuse::TranscribeAgain || (reuse == Reuse::TimedAsr && !timed) {
-        return Ok(Reuse::TranscribeAgain);
-    }
-    // read_artifact verifies all bytes before calling the consumer.
-    read_artifact(&dir.join(ARTIFACT_FILE), reference, |mut b| {
-        if reuse == Reuse::TimedAsr {
-            b.coverage.provisional = b.coverage.committed.take();
-            b.speakers.clear();
-            for row in &mut b.rows {
-                row.speaker = None;
-                row.speaker_finality = Finality::Provisional;
-            }
-        }
-        visitor(b).map_err(|e| ArtifactError::Invalid(e.to_string()))
-    })
-    .map_err(|e| failed(e.to_string()))?;
-    Ok(reuse)
-}
-
 /// Keep durable records bounded and publish indexes only after all batches commit.
 pub(super) fn commit_blocks(
     store: &SharedStore,

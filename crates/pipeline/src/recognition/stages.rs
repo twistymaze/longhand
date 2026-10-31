@@ -8,7 +8,6 @@ use asr::{
     SpeakerTurn, TimingPrecision,
 };
 use models::recognition::{ExecutionSpec, SpeakerCount};
-use session_core::note_folder::NoteFiles;
 use session_core::recognition::GENERATION_KEY;
 use session_core::{Segment, Stage};
 use std::{collections::BTreeMap, path::Path, sync::Mutex};
@@ -361,34 +360,6 @@ fn transcribe_route(
         speakers,
         coverage_limitations: limitations,
     };
-    let pending = lock(store).result_state(id, "pending-snapshot")?.is_some();
-    if pending {
-        let home = lock(store)
-            .session(id)?
-            .and_then(|r| r.home_path)
-            .map(std::path::PathBuf::from);
-        if let Some(home) = home {
-            let doc = NoteFiles::read(&home)?.doc;
-            let mut rows = Vec::new();
-            if let Some(header) = crate::reprocess::read_reusable(&home, &doc, spec, |block| {
-                for mut row in block.rows {
-                    row.id.scope.generation = generation.clone();
-                    row.speaker = None;
-                    row.speaker_finality = Finality::Final;
-                    rows.push(row);
-                }
-            })? {
-                result.rows = rows;
-                result.coverage = header.coverage;
-                if route != Route::Off {
-                    join_separate(&mut result.rows, &result.speakers);
-                }
-                validate_result(&result, &expected)?;
-                super::durable::persist_result(store, id, &result)?;
-                return checkpoint::mark_complete(store, id, Stage::Transcribe, segments.len());
-            }
-        }
-    }
     if matches!(
         route,
         Route::Off | Route::SeparateNemo | Route::SeparatePyannote
