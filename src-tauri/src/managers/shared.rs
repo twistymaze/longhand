@@ -3521,7 +3521,7 @@ mod tests {
         let agents = std::fs::read_to_string(root.join(AGENTS_FILE)).unwrap();
         assert!(agents.starts_with("User text.\n\n"));
         assert!(!agents.contains("Old rules."));
-        assert!(agents.contains("version=1 -->"));
+        assert!(agents.contains(&format!("version={} -->", agent_block::BLOCK_VERSION)));
         // The update adds no block to a file that had none.
         assert!(!root.join(CLAUDE_FILE).exists());
         assert_eq!(manager.agent_block_status(), AgentBlockStatus::NotAdded);

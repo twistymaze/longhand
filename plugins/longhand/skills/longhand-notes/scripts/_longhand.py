@@ -49,6 +49,9 @@ NOTES_FILE = "notes.md"
 TRANSCRIPT_FILE = "transcript.md"
 SUMMARY_FILE = "summary.md"
 RECOGNITION_FILE = "recognition.jsonl"
+# The marker that Longhand writes when it removes the transcript of a note.
+# The note then has no `transcript.md` and no `recognition.jsonl`.
+TRANSCRIPT_REMOVED_MARKER = "transcript.removed"
 AUDIO_FOLDER = "audio"
 IN_USE_PREFIX = ".longhand-in-use-"
 
@@ -110,6 +113,7 @@ SETTINGS_KEYS = frozenset(
         "show_recording_widget",
         "speaker_processing_mode",
         "speaker_source",
+        "transcript_removal",
     ]
 )
 
@@ -120,6 +124,7 @@ SETTINGS_KEYS = frozenset(
 PROTECTED_NOTE_PATTERNS = (
     NOTE_RECORD_FILE,
     RECOGNITION_FILE,
+    TRANSCRIPT_REMOVED_MARKER,
     AUDIO_FOLDER + "/*",
     IN_USE_PREFIX + "*",
 )
@@ -158,6 +163,8 @@ BACKGROUND_MAX_FILE_BYTES = BACKGROUND_TEXT_LIMIT * 4
 
 AUDIO_REMOVAL_MIN_DAYS = 1
 AUDIO_REMOVAL_MAX_DAYS = 3650
+TRANSCRIPT_REMOVAL_MIN_DAYS = AUDIO_REMOVAL_MIN_DAYS
+TRANSCRIPT_REMOVAL_MAX_DAYS = AUDIO_REMOVAL_MAX_DAYS
 SPEAKER_SOURCES = ("off", "pyannote", "sortformer", "nemotron")
 PROCESSING_MODES = ("during_recording", "after_stop")
 

@@ -497,6 +497,65 @@ fn check_passes_a_tag_and_a_settings_edit_on_a_folder_that_the_writers_made() {
     assert!(!result.out.contains("imports"), "{}", result.out);
 }
 
+/// Longhand removes the transcript of a note while an agent edits it
+/// (U9 of the transcript removal plan). Longhand writes the marker,
+/// deletes `transcript.md` and `recognition.jsonl`, and clears the
+/// transcript records. `check.py` does not report the removal as an edit
+/// of the agent.
+#[test]
+fn check_passes_a_tag_edit_across_a_transcript_removal() {
+    let Some(python) = python_or_skip() else {
+        return;
+    };
+    let storage = storage_folder();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = storage.path();
+    let dir = root.join(EDITED);
+    write_atomic(&dir, "transcript.md", b"# Transcript\n").unwrap();
+    write_atomic(&dir, "recognition.jsonl", b"{}\n").unwrap();
+    let snapshot = snapshot(&python, root, tmp.path());
+
+    add_tag(&dir);
+    write_atomic(
+        &dir,
+        folder::TRANSCRIPT_REMOVED_MARKER,
+        folder::TRANSCRIPT_REMOVED_TEXT.as_bytes(),
+    )
+    .unwrap();
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    fs::remove_file(dir.join("recognition.jsonl")).unwrap();
+    let record = NoteRecord {
+        transcript_fingerprint: None,
+        recognition_snapshot: None,
+        recognition_artifact: None,
+        recognition_audio: None,
+        ..full_record(&dir, None)
+    };
+    write_record(&dir, &record).unwrap();
+
+    let result = run(
+        &python,
+        "check.py",
+        &["compare", &snapshot],
+        root,
+        tmp.path(),
+    );
+    assert_eq!(result.code, 0, "{}", result.out);
+
+    // An agent that makes a new transcript in the note is reported.
+    let snapshot = self::snapshot(&python, root, tmp.path());
+    write_atomic(&dir, "transcript.md", b"# Transcript\n").unwrap();
+    let result = run(
+        &python,
+        "check.py",
+        &["compare", &snapshot],
+        root,
+        tmp.path(),
+    );
+    assert_eq!(result.code, 1, "{}", result.out);
+    assert!(result.out.contains("transcript.md"), "{}", result.out);
+}
+
 #[test]
 fn check_does_not_pass_an_edit_of_a_note_with_a_record_that_it_does_not_know() {
     let Some(python) = python_or_skip() else {

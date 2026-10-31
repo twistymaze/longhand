@@ -277,6 +277,26 @@ def is_marker(name):
     return name.startswith(lh.IN_USE_PREFIX)
 
 
+# The files that Longhand deletes when it removes the transcript of a note.
+TRANSCRIPT_FILES = (lh.TRANSCRIPT_FILE, lh.RECOGNITION_FILE)
+
+
+def longhand_removal(after_files, removed, added):
+    """The changed files of a note that are Longhand's removal of the
+    transcript, not an edit of the agent. When the note has the transcript
+    marker, Longhand deletes `transcript.md` and `recognition.jsonl`. When
+    Longhand writes the marker or deletes one of these files, it also
+    clears the transcript records in `longhand.json`."""
+    if lh.TRANSCRIPT_REMOVED_MARKER not in after_files:
+        return set()
+    out = {name for name in removed if name in TRANSCRIPT_FILES}
+    if lh.TRANSCRIPT_REMOVED_MARKER in added:
+        out.add(lh.TRANSCRIPT_REMOVED_MARKER)
+    if out:
+        out.add(lh.NOTE_RECORD_FILE)
+    return out
+
+
 def compare_note(report, before, after):
     added, removed, changed = diff_files(before["files"], after["files"])
     moved = before["path"] != after["path"]
@@ -303,7 +323,10 @@ def compare_note(report, before, after):
         report.not_checked.append("%s: %s" % (path, before["record"]))
         return
 
+    removal = longhand_removal(after["files"], removed, added)
     for name in touched:
+        if name in removal:
+            continue
         if lh.matches(name, lh.PROTECTED_NOTE_PATTERNS):
             report.problems.append(
                 "%s: %s changed. Agents must never edit it. If Longhand or a sync changed it, "
@@ -311,6 +334,11 @@ def compare_note(report, before, after):
             )
         elif name in removed and name in lh.EDITABLE_NOTE_PATTERNS:
             report.problems.append("%s: %s was deleted." % (path, name))
+        elif name in added and name == lh.TRANSCRIPT_FILE and lh.TRANSCRIPT_REMOVED_MARKER in after["files"]:
+            report.problems.append(
+                "%s: %s is a new file. Longhand removed the transcript of this note. "
+                "Do not make a new one." % (path, name)
+            )
         elif name in added and not lh.matches(name, lh.EDITABLE_NOTE_PATTERNS):
             report.problems.append(
                 "%s: %s is a new file. Do not add files to a note folder. "
@@ -449,6 +477,14 @@ def check_setting(report, key, value, settings, after_state):
             report.problems.append(
                 '%s must be "off" or whole days from %d to %d.'
                 % (where, lh.AUDIO_REMOVAL_MIN_DAYS, lh.AUDIO_REMOVAL_MAX_DAYS)
+            )
+    elif key == "transcript_removal":
+        if value != "off" and not (
+            is_int(value) and lh.TRANSCRIPT_REMOVAL_MIN_DAYS <= value <= lh.TRANSCRIPT_REMOVAL_MAX_DAYS
+        ):
+            report.problems.append(
+                '%s must be "off" or whole days from %d to %d.'
+                % (where, lh.TRANSCRIPT_REMOVAL_MIN_DAYS, lh.TRANSCRIPT_REMOVAL_MAX_DAYS)
             )
     elif key == "speaker_source":
         if value not in lh.SPEAKER_SOURCES:

@@ -22,12 +22,15 @@ The shared settings are the settings that every computer with the same storage f
 | `new_note_records` | `true` or `false` | New Note and the recording shortcut start a note that records. With `false`, they start a note with no audio. |
 | `check_updates_automatically` | `true` or `false` | Longhand checks for updates automatically. |
 | `audio_removal` | `"off"`, or whole days from 1 to 3650 | Longhand removes the audio of a saved note that many days after the note last recorded. |
+| `transcript_removal` | `"off"`, or whole days from 1 to 3650 | Longhand removes the transcript of a saved note that many days after the note last recorded. The summary, the notes, the title and the tags stay. Off when the key is not in the file. |
 | `live_transcript` | `true` or `false` | The transcript shows during the recording, when the model supports it. With a model that cannot, Longhand transcribes after Stop and keeps the value. |
 | `speaker_source` | `"off"`, `"pyannote"`, `"sortformer"` or `"nemotron"` | The speaker recognition model. |
 | `speaker_processing_mode` | `"during_recording"` or `"after_stop"` | When speaker recognition runs. With a speaker source that cannot run during the recording, Longhand uses `"after_stop"` and keeps the value. |
 | `default_speaker_count` | `null`, `{"kind": "exact", "count": N}` or `{"kind": "range", "min": N, "max": M}` | The number of speakers for a new note. `null` finds the number. N is 1 or more, and N is not more than M. |
 | `recognition_language` | A language code, or `null` | The language of the transcript. `null` finds the language. With a model that does not support the language, Longhand finds the language and keeps the value. |
 | `asr_model` | A model id | The transcription model. Change it in Longhand Settings: this skill cannot check the list of models. |
+
+`transcript_removal` and `audio_removal` work together. Longhand uses the longer of the two delays for the transcript, and removes no transcript when `audio_removal` is `"off"`. Longhand Settings keeps the transcript delay at least as long as the audio delay. When you change one of the two, keep this order: set `transcript_removal` to `"off"` when you set `audio_removal` to `"off"`, and do not make `transcript_removal` shorter than `audio_removal`. Removal deletes the transcript permanently. Before you turn it on or make it shorter, tell the user that Longhand then deletes the transcripts of old notes on each computer.
 
 A change to a recognition setting (`asr_model`, `live_transcript`, `speaker_source`, `speaker_processing_mode`, `default_speaker_count`, `recognition_language`) can make each computer download models.
 
