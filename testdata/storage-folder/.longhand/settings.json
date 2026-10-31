@@ -16,5 +16,6 @@
   "schema_version": 1,
   "show_recording_widget": true,
   "speaker_processing_mode": "after_stop",
-  "speaker_source": "pyannote"
+  "speaker_source": "pyannote",
+  "transcript_removal": "off"
 }

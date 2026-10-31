@@ -1186,6 +1186,8 @@ fn a_missing_transcript_expires_after_the_wait() {
     assert_eq!(b.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
     b.sync_at(&root, start + HAND_EDIT_WAIT);
     assert!(b.waiting("n1").is_empty());
+    // With no marker, the delete is a hand edit, not a removal (KTD2).
+    assert!(!b.store.lock().unwrap().transcript_removed("n1").unwrap());
 }
 
 // Covers R7: the scan and the adoption do not refuse a note for a
@@ -2703,4 +2705,247 @@ fn two_tags_with_one_key_from_an_outside_edit_are_one_tag_in_the_row() {
     .unwrap();
     b.sync_at(&root, Instant::now());
     assert_eq!(b.record("n1").unwrap().tags, ["Person::Nathan", "Budget"]);
+}
+
+// ---------------------------------------------------------------- removed transcript
+
+/// One part of another computer's transcript removal, as the sync can
+/// deliver it (KTD3 of the transcript removal plan).
+#[derive(Debug, Clone, Copy)]
+enum Removal {
+    /// `transcript.removed`.
+    Marker,
+    /// The delete of `transcript.md` and `recognition.jsonl`.
+    Delete,
+    /// The new `longhand.json`, with the transcript fields cleared.
+    Record,
+}
+
+/// Deliver `part` of a transcript removal into the note folder `folder`.
+fn deliver(folder: &Path, part: Removal) {
+    match part {
+        Removal::Marker => fs::write(
+            folder.join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+        )
+        .unwrap(),
+        Removal::Delete => {
+            fs::remove_file(folder.join("transcript.md")).unwrap();
+            let artifact = folder.join(session_core::recognition::ARTIFACT_FILE);
+            if artifact.exists() {
+                fs::remove_file(artifact).unwrap();
+            }
+        }
+        Removal::Record => edit_doc(folder, |doc| {
+            doc.transcript_fingerprint = None;
+            doc.recognition_snapshot = None;
+            doc.recognition_artifact = None;
+            doc.recognition_audio = None;
+        }),
+    }
+}
+
+const RECOGNITION_STAGES: [Stage; 3] = [Stage::Assemble, Stage::Transcribe, Stage::Diarize];
+
+impl Computer {
+    /// Give the note `id` recognition rows, as processing on this computer
+    /// leaves them.
+    fn put_recognition_rows(&self, id: &str) {
+        let s = self.store.lock().unwrap();
+        for stage in RECOGNITION_STAGES {
+            s.put_checkpoint(id, stage, "window-0", "{}").unwrap();
+        }
+    }
+
+    fn transcript_removed(&self, id: &str) -> bool {
+        self.store.lock().unwrap().transcript_removed(id).unwrap()
+    }
+
+    /// The note `id` has the removed flag and none of the transcript data
+    /// that this computer kept for it (KTD4, KTD9).
+    fn assert_transcript_cleared(&self, id: &str) {
+        assert!(self.transcript_removed(id));
+        let s = self.store.lock().unwrap();
+        for stage in RECOGNITION_STAGES {
+            assert!(s.checkpoints(id, stage).unwrap().is_empty(), "{stage:?}");
+        }
+        assert_eq!(s.transcript_fingerprint(id).unwrap(), None);
+        assert_eq!(s.recognition_snapshot(id).unwrap(), None);
+    }
+}
+
+// Covers AE8 (R11, R13, R16).
+#[test]
+fn a_transcript_removal_from_b_shows_on_a_as_a_complete_note_and_a_writes_nothing() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    a.save_note("n2", &root, user_title("Budget"), "");
+    a.put_recognition_rows("n1");
+    a.put_recognition_rows("n2");
+    let start = Instant::now();
+    a.sync_at(&root, start);
+
+    for part in [Removal::Marker, Removal::Delete, Removal::Record] {
+        deliver(&folder, part);
+    }
+    let before = files(&folder);
+    let changes = a.sync_at(&root, start);
+    assert!(changes.changed.contains(&"n1".to_string()), "{changes:?}");
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    a.assert_transcript_cleared("n1");
+    assert_eq!(files(&folder), before);
+
+    // The other note keeps its rows.
+    assert!(!a.transcript_removed("n2"));
+    for stage in RECOGNITION_STAGES {
+        let rows = a.store.lock().unwrap().checkpoints("n2", stage).unwrap();
+        assert!(!rows.is_empty(), "{stage:?}");
+    }
+
+    // Nothing waits after the wait for the sync, and nothing changes again.
+    assert_eq!(a.reconciler.next_due(), None);
+    assert_eq!(a.sync_at(&root, start + HAND_EDIT_WAIT), Changes::default());
+    assert_eq!(files(&folder), before);
+}
+
+// Covers R11, R16: a computer that adopts a note with a marker has the
+// flag at once, also when `transcript.md` is still there.
+#[test]
+fn a_note_with_a_transcript_marker_is_adopted_as_removed() {
+    let (_dir, root) = shared_root();
+    let a = computer();
+    let mut b = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    deliver(&folder, Removal::Marker);
+
+    let before = files(&folder);
+    assert!(
+        b.sync_at(&root, Instant::now())
+            .changed
+            .contains(&"n1".to_string())
+    );
+    assert_eq!(b.reconciler.status().note("n1"), NoteStatus::default());
+    b.assert_transcript_cleared("n1");
+    assert_eq!(files(&folder), before);
+}
+
+// Covers R13, KTD9: the marker arrives before the delete.
+#[test]
+fn a_transcript_marker_before_the_delete_does_not_wait_and_a_writes_nothing() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    // The records hold a snapshot, so a refresh with matching documents
+    // can take it into the row.
+    edit_doc(&folder, |doc| {
+        doc.recognition_snapshot = Some(serde_json::json!({ "model": "m" }));
+    });
+    a.put_recognition_rows("n1");
+    let start = Instant::now();
+    a.sync_at(&root, start);
+
+    deliver(&folder, Removal::Marker);
+    let before = files(&folder);
+    let changes = a.sync_at(&root, start);
+    assert!(changes.changed.contains(&"n1".to_string()), "{changes:?}");
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    a.assert_transcript_cleared("n1");
+    assert_eq!(files(&folder), before);
+    // A writer's refresh of the same folder does not take the snapshot
+    // back.
+    let refreshed = {
+        let mut s = a.store.lock().unwrap();
+        refresh::refresh(&mut s, "n1", &folder, Duration::from_secs(2)).unwrap()
+    };
+    assert_eq!(refreshed, Refresh::default());
+    a.assert_transcript_cleared("n1");
+
+    deliver(&folder, Removal::Delete);
+    a.sync_at(&root, start + Duration::from_secs(5));
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    deliver(&folder, Removal::Record);
+    let before = files(&folder);
+    a.sync_at(&root, start + Duration::from_secs(10));
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    a.assert_transcript_cleared("n1");
+    assert_eq!(a.reconciler.next_due(), None);
+    assert_eq!(files(&folder), before);
+}
+
+// Covers R13, KTD2: the delete arrives before the marker. The note waits
+// as for a missing transcript until the marker arrives.
+#[test]
+fn a_transcript_delete_before_the_marker_waits_until_the_marker_arrives() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    a.put_recognition_rows("n1");
+    let start = Instant::now();
+    a.sync_at(&root, start);
+
+    deliver(&folder, Removal::Delete);
+    deliver(&folder, Removal::Record);
+    a.sync_at(&root, start);
+    assert_eq!(a.waiting("n1"), [Waiting::Transcript]);
+    assert!(!a.transcript_removed("n1"));
+
+    deliver(&folder, Removal::Marker);
+    let before = files(&folder);
+    let changes = a.sync_at(&root, start + Duration::from_secs(5));
+    assert!(changes.changed.contains(&"n1".to_string()), "{changes:?}");
+    assert_eq!(a.reconciler.status().note("n1"), NoteStatus::default());
+    a.assert_transcript_cleared("n1");
+    assert_eq!(a.reconciler.next_due(), None);
+    assert_eq!(files(&folder), before);
+}
+
+// Covers R13, R16: whatever the order in which the sync delivers the
+// parts of the removal, A ends with a complete note and writes nothing.
+#[test]
+fn each_order_of_a_transcript_removal_ends_complete_and_a_writes_nothing() {
+    use Removal::{Delete, Marker, Record};
+    let orders = [
+        [Marker, Delete, Record],
+        [Marker, Record, Delete],
+        [Delete, Marker, Record],
+        [Delete, Record, Marker],
+        [Record, Marker, Delete],
+        [Record, Delete, Marker],
+    ];
+    for order in orders {
+        let (_dir, root) = shared_root();
+        let mut a = computer();
+        let folder = a.save_note("n1", &root, user_title("Planning"), "");
+        a.put_recognition_rows("n1");
+        let start = Instant::now();
+        a.sync_at(&root, start);
+        for (step, part) in order.into_iter().enumerate() {
+            deliver(&folder, part);
+            let before = files(&folder);
+            a.sync_at(&root, start + Duration::from_secs(step as u64));
+            assert_eq!(files(&folder), before, "{order:?} after {part:?}");
+        }
+        assert_eq!(
+            a.reconciler.status().note("n1"),
+            NoteStatus::default(),
+            "{order:?}"
+        );
+        a.assert_transcript_cleared("n1");
+        assert_eq!(a.reconciler.next_due(), None, "{order:?}");
+    }
+}
+
+// Covers R13: a targeted scan of the folder reports the note when the
+// marker arrives, so an open note page reads it again.
+#[test]
+fn a_targeted_scan_reports_the_note_when_the_transcript_marker_arrives() {
+    let (_dir, root) = shared_root();
+    let mut a = computer();
+    let folder = a.save_note("n1", &root, user_title("Planning"), "");
+    a.sync_at(&root, Instant::now());
+
+    deliver(&folder, Removal::Marker);
+    assert_eq!(a.sync_folders(&root, &[&folder]), changed(&["n1"]));
+    assert!(a.transcript_removed("n1"));
 }

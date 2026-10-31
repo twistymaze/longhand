@@ -148,8 +148,15 @@ struct MismatchKey {
 impl MismatchKey {
     /// `None` when both result documents of `note` match, or when the note
     /// has no result yet (R6, KTD1): it waits for no result document.
+    /// A removed transcript matches, whatever `transcript.md` holds (KTD9
+    /// of the transcript removal plan).
     fn of(note: &NoteFolder) -> Option<Self> {
-        if note.transcript == DocumentState::Matches && note.summary == DocumentState::Matches
+        let (transcript, transcript_fingerprint) = if note.transcript_removed {
+            (DocumentState::Matches, None)
+        } else {
+            (note.transcript, note.transcript_fingerprint.clone())
+        };
+        if transcript == DocumentState::Matches && note.summary == DocumentState::Matches
             || note.doc.result_flag().is_some()
         {
             return None;
@@ -157,8 +164,8 @@ impl MismatchKey {
         Some(Self {
             recorded_transcript: note.doc.transcript_fingerprint.clone(),
             recorded_summary: note.doc.summary_fingerprint.clone(),
-            transcript: note.transcript,
-            transcript_fingerprint: note.transcript_fingerprint.clone(),
+            transcript,
+            transcript_fingerprint,
             summary: note.summary,
             summary_fingerprint: note.summary_fingerprint.clone(),
         })
@@ -862,19 +869,30 @@ fn refresh_scope(record: &SessionRecord, claimed: bool) -> Option<Scope> {
 }
 
 /// Adopt a note that has no row (KTD1). A note whose `notes.md` has not
-/// arrived starts with empty notes, and a later refresh reads them.
+/// arrived starts with empty notes, and a later refresh reads them. A
+/// note with the transcript marker gets the removed flag, and no
+/// transcript fingerprint or recognition snapshot (KTD9 of the transcript
+/// removal plan). A crash before the flag write leaves the flag off, and
+/// the next refresh sets it from the marker.
 fn adopt(store: &mut Store, note: &NoteFolder) -> Result<bool, StoreError> {
-    let adoption = Adoption {
+    let removed = note.transcript_removed;
+    let mut adoption = Adoption {
         removed_audio: note.removed_audio.clone(),
         note_type: note.note_type.clone(),
         ..Adoption::from_doc(
             &note.doc,
             note.notes.clone().unwrap_or_default(),
             note.path.to_string_lossy().into_owned(),
-            note.transcript_fingerprint.clone(),
+            note.transcript_fingerprint.clone().filter(|_| !removed),
         )
     };
+    if removed {
+        adoption.recognition_snapshot = None;
+    }
     let adopted = store.adopt(&adoption)?;
+    if adopted && removed {
+        store.set_transcript_removed(&adoption.id, true)?;
+    }
     if adopted {
         log::info!(
             "library: adopted {} from {}",

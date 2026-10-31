@@ -12,6 +12,11 @@
 //! was written by another computer. The refresh then removes this
 //! computer's stored recognition results for the note (KTD12, R18).
 //!
+//! A folder with the transcript marker sets the removed flag of the row,
+//! and the refresh removes this computer's recognition data and transcript
+//! index data for the note (KTD9 of the transcript removal plan). The
+//! row then records no transcript fingerprint.
+//!
 //! The row takes the result snapshot of the records only when both
 //! documents have the fingerprints that the records hold (KTD10 of the
 //! result copies plan). While the sync delivers the documents, the row
@@ -57,6 +62,9 @@ pub struct FolderContents {
     /// The audio files of the segments whose removal marker is in the
     /// folder, sorted (KTD9 of the audio removal plan).
     pub removed_audio: Vec<String>,
+    /// The folder has the transcript marker (KTD9 of the transcript
+    /// removal plan).
+    pub transcript_removed: bool,
 }
 
 impl FolderContents {
@@ -91,6 +99,7 @@ impl FolderContents {
         };
         Ok(Self {
             removed_audio: removed_audio(folder, &doc),
+            transcript_removed: session_core::folder::transcript_removed(folder),
             notes: read_notes(folder, timeout),
             transcript_fingerprint: document_fingerprint("transcript.md"),
             summary_fingerprint: document_fingerprint("summary.md"),
@@ -112,6 +121,7 @@ impl FolderContents {
             transcript_fingerprint: note.transcript_fingerprint.clone(),
             summary_fingerprint: note.summary_fingerprint.clone(),
             removed_audio: note.removed_audio.clone(),
+            transcript_removed: note.transcript_removed,
         }
     }
 
@@ -224,8 +234,9 @@ pub fn apply_scoped(
         });
     }
     // While the note waits for the sync, the speaker data of a new
-    // `session.md` must not join an old transcript (KTD10).
-    if scope == Scope::All && contents.result_matches() {
+    // `session.md` must not join an old transcript (KTD10). A note with a
+    // removed transcript keeps no snapshot.
+    if scope == Scope::All && !contents.transcript_removed && contents.result_matches() {
         store.promote_result_snapshot(id, contents.doc.recognition_snapshot.as_ref())?;
     }
     let updates = scoped(updates(store, id, contents)?, scope);
@@ -291,6 +302,9 @@ struct Updates {
     /// The removed flags of the segments, when the folder's removal
     /// markers differ from them.
     removed_audio: Option<Vec<String>>,
+    /// The removed flag of the transcript, when the folder's marker
+    /// differs from it.
+    transcript_removed: Option<bool>,
     notes: Option<String>,
     tags: Option<Vec<String>>,
     pending_type: Option<Option<PendingType>>,
@@ -311,6 +325,7 @@ impl Updates {
             || !self.segments.is_empty()
             || self.stereo_from.is_some()
             || self.removed_audio.is_some()
+            || self.transcript_removed.is_some()
             || self.notes.is_some()
             || self.tags.is_some()
             || self.pending_type.is_some()
@@ -376,7 +391,17 @@ fn updates(store: &Store, id: &str, contents: &FolderContents) -> Result<Updates
         updates.pending_type = Some(doc.pending_type.clone());
     }
 
-    if let Some(actual) = &contents.transcript_fingerprint {
+    // The flag follows the folder's marker. A removed transcript has no
+    // fingerprint in the row, also while `transcript.md` waits for its
+    // delete.
+    if contents.transcript_removed != store.transcript_removed(id)? {
+        updates.transcript_removed = Some(contents.transcript_removed);
+    }
+    if let Some(actual) = contents
+        .transcript_fingerprint
+        .as_ref()
+        .filter(|_| !contents.transcript_removed)
+    {
         updates.transcript = match store.transcript_fingerprint(id)? {
             None => Some(TranscriptChange::Record(actual.clone())),
             Some(stored) if stored != *actual => Some(TranscriptChange::Replace(actual.clone())),
@@ -484,6 +509,19 @@ fn write(store: &mut Store, id: &str, updates: Updates) -> Result<Refresh, Store
     }
     if let Some(pending) = &updates.pending_type {
         store.set_pending_type(id, pending.as_ref())?;
+    }
+    if let Some(removed) = updates.transcript_removed {
+        // Clear first, so that the flag is set only on a row with no
+        // transcript data.
+        if removed {
+            log::info!("library: the transcript of {id} was removed");
+            store.clear_recognition_data(id)?;
+            store.clear_transcript_index(id)?;
+        }
+        store.set_transcript_removed(id, removed)?;
+        if removed && !store.checkpoint_wal()? {
+            log::warn!("library: the store WAL can still hold the removed transcript of {id}");
+        }
     }
     let mut cleared_recognition_results = false;
     match &updates.transcript {

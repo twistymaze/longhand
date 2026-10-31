@@ -83,4 +83,12 @@ mod tests {
         assert_eq!(document_copy("longhand (1).md"), None);
         assert_eq!(document_copy("longhand.json"), None);
     }
+
+    #[test]
+    fn the_transcript_marker_is_not_a_document_copy() {
+        assert_eq!(
+            document_copy(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            None
+        );
+    }
 }

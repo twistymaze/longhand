@@ -269,8 +269,13 @@ pub struct NoteFolder {
     pub written_title: Option<Title>,
     pub waiting: Vec<Waiting>,
     /// The state of `transcript.md`. A state other than
-    /// [`DocumentState::Matches`] puts [`Waiting::Transcript`] in `waiting`.
+    /// [`DocumentState::Matches`] puts [`Waiting::Transcript`] in `waiting`,
+    /// unless `transcript_removed` is true.
     pub transcript: DocumentState,
+    /// The folder has the transcript marker (KTD9 of the transcript
+    /// removal plan): the transcript was removed, also when `transcript.md`
+    /// is still there. The note does not wait for its transcript.
+    pub transcript_removed: bool,
     /// The state of `summary.md`, as for `transcript`.
     pub summary: DocumentState,
     /// The audio files, as `session.md` names them, of the segments whose
@@ -742,6 +747,7 @@ struct Found {
     written_title: Option<Title>,
     waiting: Vec<Waiting>,
     transcript: DocumentState,
+    transcript_removed: bool,
     summary: DocumentState,
     removed_audio: Vec<String>,
     transcript_fingerprint: Option<String>,
@@ -852,7 +858,11 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         doc.transcript_fingerprint.as_deref(),
         options,
     );
-    if transcript != DocumentState::Matches && flag.is_none() {
+    // Only the metadata of the marker: the marker is never opened. A note
+    // with the marker does not wait for its transcript (KTD9 of the
+    // transcript removal plan).
+    let transcript_removed = folder::transcript_removed(dir);
+    if transcript != DocumentState::Matches && flag.is_none() && !transcript_removed {
         waiting.push(Waiting::Transcript);
     }
     let (summary, summary_fingerprint) = document_state(
@@ -910,6 +920,7 @@ fn read_folder(dir: &Path, options: &ScanOptions) -> FolderRead {
         written_title,
         waiting,
         transcript,
+        transcript_removed,
         summary,
         removed_audio,
         transcript_fingerprint,
@@ -1040,6 +1051,7 @@ fn choose_real_folders(found: Vec<Found>, known: &Known) -> Vec<NoteFolder> {
                 written_title: real.written_title,
                 waiting: real.waiting,
                 transcript: real.transcript,
+                transcript_removed: real.transcript_removed,
                 summary: real.summary,
                 removed_audio: real.removed_audio,
                 transcript_fingerprint: real.transcript_fingerprint,
