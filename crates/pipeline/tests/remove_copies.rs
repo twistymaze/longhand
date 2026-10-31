@@ -200,6 +200,44 @@ fn a_note_with_no_transcript_or_no_summary_keeps_its_copies() {
     }
 }
 
+#[test]
+fn a_note_whose_transcript_was_removed_loses_its_copies() {
+    // KTD4 of the transcript removal plan: the marker counts as a result.
+    let note = note_with_copies();
+    fs::remove_file(note.home.join("transcript.md")).unwrap();
+    fs::write(
+        note.home
+            .join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+        session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+    )
+    .unwrap();
+
+    run(&note);
+
+    assert!(!present(&results(&note.home)));
+    assert!(!present(&note.home.join(TRANSITION_FILE)));
+    assert_eq!(
+        fs::read_to_string(note.home.join("summary.md")).unwrap(),
+        SUMMARY
+    );
+
+    // A marker with no `summary.md` keeps the copies: they can hold the
+    // only summary.
+    let note = note_with_copies();
+    fs::remove_file(note.home.join("transcript.md")).unwrap();
+    fs::remove_file(note.home.join("summary.md")).unwrap();
+    fs::write(
+        note.home
+            .join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+        session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+    )
+    .unwrap();
+
+    run(&note);
+
+    assert!(present(&results(&note.home)));
+}
+
 #[cfg(unix)]
 #[test]
 fn a_results_folder_that_is_a_link_is_not_followed_and_not_deleted() {

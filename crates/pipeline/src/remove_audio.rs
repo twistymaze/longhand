@@ -22,7 +22,7 @@ use chrono::{DateTime, FixedOffset, TimeDelta};
 use session_core::folder::{self, REMOVAL_MARKER_TEXT};
 use session_core::jobs::{Claim, Claims};
 use session_core::recognition::ARTIFACT_FILE;
-use session_core::{SessionRecord, SessionState, Store, StoreError};
+use session_core::{Segment, SessionRecord, SessionState, Store, StoreError};
 use session_save::home_write;
 
 use crate::{SharedStore, StageError, lock};
@@ -239,7 +239,7 @@ where
 
 /// The segments that the step works on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Scope {
+pub(crate) enum Scope {
     /// Each segment: write the marker if it is missing, then delete the
     /// audio file.
     Every,
@@ -277,24 +277,29 @@ pub(crate) fn home_dir(home: &Path) -> Result<PathBuf, RemoveAudioError> {
     }
 }
 
-fn run_step<F, S, R>(
+/// A saved note that passed the checks of [`guarded_note`].
+pub(crate) struct Guarded {
+    /// The canonical home folder.
+    pub home: PathBuf,
+    pub segments: Vec<Segment>,
+    /// The row changed when it followed its folder.
+    pub refreshed: bool,
+}
+
+/// Check the saved note `note_id` with `guard`, and bring its row up to
+/// date from the home folder. The caller holds the delete claim. The
+/// folder check of `guard` runs with no store lock. The store check runs
+/// under the store lock with the row that this function brought up to
+/// date.
+pub(crate) fn guarded_note<F, S>(
     store: &SharedStore,
-    claims: &Claims,
     note_id: &str,
     guard: Guard<F, S>,
-    sync: NoteSync,
-    mut remove: R,
-    scope: Scope,
-) -> Result<Removal, RemoveAudioError>
+) -> Result<Guarded, RemoveAudioError>
 where
     F: FnOnce(&SessionRecord) -> Result<(), &'static str>,
     S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
-    R: FnMut(&Path) -> io::Result<()>,
 {
-    // The claim comes before the home folder is read, as in
-    // `session_core::jobs::delete_session`.
-    let _claim = delete_claim(claims, note_id)?;
-
     // The folder check reads files, so it runs with no store lock.
     let checked = saved_row(&lock(store), note_id)?;
     let folder_check = (guard.folder)(&checked);
@@ -318,23 +323,86 @@ where
     };
     // The step never makes a home folder. The canonical path is the base of
     // the check that a name resolves inside the home folder.
-    let home = home_dir(&home)?;
+    Ok(Guarded {
+        home: home_dir(&home)?,
+        segments,
+        refreshed: refreshed.changed,
+    })
+}
 
-    let results: Vec<SegmentRemoval> = segments
+/// Remove the audio of the segments of `scope` in the canonical home
+/// folder `home` with `remove`.
+pub(crate) fn remove_segments<R>(
+    home: &Path,
+    segments: &[Segment],
+    scope: Scope,
+    remove: &mut R,
+) -> Vec<SegmentRemoval>
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    segments
         .iter()
         .filter(|segment| match scope {
             Scope::Every => true,
             // A name that is not safe is not read, not even for a marker.
             Scope::Marked => {
                 safe_audio_name(&segment.audio_file)
-                    && folder::audio_removed(&home, &segment.audio_file)
+                    && folder::audio_removed(home, &segment.audio_file)
             }
         })
         .map(|segment| SegmentRemoval {
             audio_file: segment.audio_file.clone(),
-            outcome: remove_segment(&home, &segment.audio_file, &mut remove),
+            outcome: remove_segment(home, &segment.audio_file, remove),
         })
-        .collect();
+        .collect()
+}
+
+/// Set the removed flag of each segment in `results` that has its marker
+/// in the canonical home folder `home`. Returns whether a flag changed.
+pub(crate) fn record_flags(
+    store: &Store,
+    note_id: &str,
+    home: &Path,
+    results: &[SegmentRemoval],
+) -> Result<bool, StoreError> {
+    let mut flags = store.removed_audio(note_id)?;
+    flags.extend(
+        results
+            .iter()
+            .filter(|r| r.outcome != SegmentOutcome::UnsafeName)
+            .filter(|r| folder::audio_removed(home, &r.audio_file))
+            .map(|r| r.audio_file.clone()),
+    );
+    flags.sort();
+    flags.dedup();
+    store.set_removed_audio(note_id, &flags)
+}
+
+fn run_step<F, S, R>(
+    store: &SharedStore,
+    claims: &Claims,
+    note_id: &str,
+    guard: Guard<F, S>,
+    sync: NoteSync,
+    mut remove: R,
+    scope: Scope,
+) -> Result<Removal, RemoveAudioError>
+where
+    F: FnOnce(&SessionRecord) -> Result<(), &'static str>,
+    S: FnOnce(&Store, &SessionRecord) -> Result<(), &'static str>,
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    // The claim comes before the home folder is read, as in
+    // `session_core::jobs::delete_session`.
+    let _claim = delete_claim(claims, note_id)?;
+    let Guarded {
+        home,
+        segments,
+        refreshed,
+    } = guarded_note(store, note_id, guard)?;
+
+    let results = remove_segments(&home, &segments, scope, &mut remove);
 
     // The removal is complete when the audio of each segment of the note is
     // removed. `recognition.jsonl` has no use without the audio (KTD8).
@@ -358,21 +426,10 @@ where
         }
     }
 
-    let store = lock(store);
-    let mut flags = store.removed_audio(note_id)?;
-    flags.extend(
-        results
-            .iter()
-            .filter(|r| r.outcome != SegmentOutcome::UnsafeName)
-            .filter(|r| folder::audio_removed(&home, &r.audio_file))
-            .map(|r| r.audio_file.clone()),
-    );
-    flags.sort();
-    flags.dedup();
-    let flags_changed = store.set_removed_audio(note_id, &flags)?;
+    let flags_changed = record_flags(&lock(store), note_id, &home, &results)?;
     Ok(Removal {
         segments: results,
-        row_changed: refreshed.changed || flags_changed,
+        row_changed: refreshed || flags_changed,
     })
 }
 

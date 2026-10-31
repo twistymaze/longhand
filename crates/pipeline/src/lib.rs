@@ -27,6 +27,7 @@ pub mod recognition;
 pub mod recover;
 pub mod remove_audio;
 pub mod remove_copies;
+pub mod remove_transcript;
 pub mod reprocess;
 pub mod resample;
 pub mod runner;

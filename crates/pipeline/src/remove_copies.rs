@@ -16,7 +16,8 @@
 //!   after the last audio delete.
 //!
 //! Each other entry stays, and the step logs it. The step deletes the
-//! copies only when `transcript.md` and `summary.md` exist (R14). It checks
+//! copies only when `transcript.md` and `summary.md` exist (R14), or when
+//! `summary.md` and the transcript marker exist. It checks
 //! with metadata only, and opens no file (R12). Before each delete, it
 //! checks that the note folder is reachable. The step never writes a file,
 //! and never deletes a document or audio.
@@ -144,10 +145,12 @@ where
         remove: &mut remove,
         cleanup: &mut cleanup,
     };
-    // Metadata only: an online-only file is not downloaded (R12).
-    let has_result = ["transcript.md", "summary.md"]
-        .iter()
-        .all(|name| home.join(name).metadata().is_ok_and(|m| m.is_file()));
+    // Metadata only: an online-only file is not downloaded (R12). A note
+    // whose transcript was removed keeps no copy of the transcript (KTD4 of
+    // the transcript removal plan).
+    let file = |name: &str| home.join(name).metadata().is_ok_and(|m| m.is_file());
+    let has_result =
+        file("summary.md") && (file("transcript.md") || folder::transcript_removed(&home));
     if has_result {
         step.clean_results()?;
         step.reachable()?;
@@ -200,6 +203,36 @@ fn copy_file_name(name: &str) -> bool {
         && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
+/// Delete the [`RESULTS_FOLDER`] copies in the canonical home folder
+/// `home` with `remove`, as [`remove_copies_with`] does, and add what it
+/// did to `cleanup`. The caller holds the delete claim and checked the
+/// note.
+pub(crate) fn clean_results_in<R>(
+    home: &Path,
+    remove: &mut R,
+    cleanup: &mut Cleanup,
+) -> Result<(), RemoveAudioError>
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    Step {
+        home,
+        remove,
+        cleanup,
+    }
+    .clean_results()
+}
+
+/// Stop when the note folder `home` or its storage folder is not
+/// reachable. See [`Step::reachable`].
+pub(crate) fn reachable(home: &Path) -> Result<(), RemoveAudioError> {
+    if home.is_dir() && library::scan::storage_place(home).is_some() {
+        Ok(())
+    } else {
+        Err(RemoveAudioError::NoFolder)
+    }
+}
+
 /// The state of the step in one note folder.
 struct Step<'a, R> {
     /// The canonical home folder.
@@ -217,12 +250,7 @@ where
     /// The storage folder is the parent folder, or the parent of a type
     /// folder (KTD4 of the note types plan), with its library marker.
     fn reachable(&self) -> Result<(), RemoveAudioError> {
-        let reachable = self.home.is_dir() && library::scan::storage_place(self.home).is_some();
-        if reachable {
-            Ok(())
-        } else {
-            Err(RemoveAudioError::NoFolder)
-        }
+        reachable(self.home)
     }
 
     fn keep(&mut self, path: PathBuf, reason: &str) {
