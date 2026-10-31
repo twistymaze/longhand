@@ -20,3 +20,5 @@ Privacy. A transcript holds every word that each person said. Some users want ol
 - Off by default, so current users keep their transcripts.
 - The transcript delay is never shorter than the audio delay.
 - The plan holds the requirements.
+- Follow-up (found in code review): when the marker syncs to another computer before the deletions, that computer can keep the audio of the note until the audio delay ends. See the PR.
+- Shipped in PR 87, merged 2026-10-31.

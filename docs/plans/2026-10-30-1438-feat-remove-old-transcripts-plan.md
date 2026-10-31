@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A user can choose that old notes keep only their summary, manual notes, title and tags. The full transcript of a note does not stay on disk longer than the user wants, and Longhand's database keeps no copy of a note's transcript or summary text after processing is done.
 - **Means:** A `transcript.removed` marker beside the transcript, a removal step that reuses the audio removal step, and a transcript part in the existing removal pass (KTD1, KTD3, KTD6). The database clears recognition data at save and the summary cache after the title (KTD12), and Resume reads old timed text from `recognition.jsonl` (KTD14).
-- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Audio removal behavior does not change, except where R4 links the two settings. Source idea: `docs/ideas/next/remove-old-transcripts.md`.
+- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Audio removal behavior does not change, except where R4 links the two settings. Source idea: `docs/ideas/done/remove-old-transcripts.md`.
 - **Stop conditions:** Stop and ask when a change would remove a transcript while the shared settings cannot be read, would delete a file other than the names in KTD4 or the audio that KTD3's existing audio step removes, would let any computer write `transcript.md` into a note with a marker, or would make a note with a removed transcript show as waiting for sync after the sync is complete.
 - **Execution profile:** Implement with `ce-work` in a worktree from `origin/main`, one commit per unit, then one PR (`feat`; ask patch or minor before the PR). Settings, removal and the note page are testable in `tauri dev`; give a signed build for the manual test of two computers on one synced folder.
 - **Open blockers:** None.
@@ -626,4 +626,4 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 - The Verification Contract passes, and CI is green with CodeQL.
 - `CONCEPTS.md` and the skill describe the shipped behavior.
 - No dead code from abandoned attempts is in the diff.
-- After merge, `docs/ideas/next/remove-old-transcripts.md` moves to `done/` with `node scripts/ideas.ts move`.
+- After merge, `docs/ideas/done/remove-old-transcripts.md` moves to `done/` with `node scripts/ideas.ts move`.
