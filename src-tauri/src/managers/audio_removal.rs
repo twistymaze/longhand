@@ -1,16 +1,26 @@
 //! The removal pass (U6 of the audio removal plan): each computer that uses
 //! the storage folder removes the audio of old saved notes (R5, R9, R11).
 //!
-//! One pass does two things, in this order (KTD2, KTD5):
+//! The same pass also removes old transcripts (KTD6 of the transcript
+//! removal plan).
+//!
+//! One pass does three things, in this order (KTD2, KTD5):
 //!
 //! 1. It finishes the delete of each segment that has its removal marker
 //!    and still has its audio file, whether the setting is on or off. It
-//!    writes no marker in this part. Then it deletes the old result copies
-//!    of the note and `recognition.jsonl` of a note with no audio left, as
+//!    finishes the transcript removal of each note that has the transcript
+//!    marker and needs it ([`pipeline::remove_transcript::finish_due`]),
+//!    whether the transcript setting is on or off. It writes no marker in
+//!    this part. Then it deletes the old result copies of the note and
+//!    `recognition.jsonl` of a note with no audio left, as
 //!    [`pipeline::remove_copies`] describes (R13, KTD9 of the result copies
 //!    plan). It skips a note that waits for a sync.
 //! 2. While the setting is known and on (KTD3), it removes the audio of each
 //!    saved note whose last recording end plus the delay is in the past.
+//! 3. While the effective transcript delay is known and on (KTD7 of the
+//!    transcript removal plan), it removes the transcript of each saved note
+//!    whose last recording end plus that delay is in the past. It skips a
+//!    note whose summary is the stub of a failed summary (R28).
 //!
 //! Before each note, the pass checks every guard again: the note is Saved
 //! and has no claim, no Move is open, the storage folder and the note's
@@ -43,6 +53,10 @@ use pipeline::remove_audio::{
     eligibility, finish_removal, remove_audio, safe_audio_name,
 };
 use pipeline::remove_copies::{cleanup_due, remove_copies};
+use pipeline::remove_transcript::{
+    RemoveTranscriptError, TranscriptEligibility, TranscriptRemoval, finish_due,
+    finish_transcript_removal, remove_transcript, summary_stub_in, transcript_eligibility,
+};
 use session_core::jobs::Claims;
 use session_core::{SessionRecord, SessionState, Store, folder};
 use tauri::{AppHandle, Manager};
@@ -66,6 +80,10 @@ const SETTING_OFF: &str = "setting off";
 /// The reason that the guard gives when the note is not eligible now.
 const NOT_DUE: &str = "not due";
 
+/// The reason that the guard gives when the summary of the note is the
+/// stub of a failed summary (R28 of the transcript removal plan).
+const SUMMARY_FAILED: &str = "summary failed";
+
 /// What a pass reads from outside the store. The app gives the real
 /// values, and a test gives its own.
 pub struct PassInputs<'a> {
@@ -84,6 +102,10 @@ pub struct PassInputs<'a> {
     /// is off, is not known, or the shared settings are not available
     /// (KTD3). The pass reads it again before each note.
     pub delay_days: &'a dyn Fn() -> Option<u32>,
+    /// The effective delay of transcript removal in whole days, or `None`
+    /// when no transcript goes automatically (KTD7 of the transcript
+    /// removal plan). The pass reads it again before each note.
+    pub transcript_delay_days: &'a dyn Fn() -> Option<u32>,
     /// The time now.
     pub now: &'a dyn Fn() -> DateTime<FixedOffset>,
     /// The row of the note with this id changed. The app sends a row change
@@ -116,6 +138,11 @@ pub struct PassReport {
     pub removed: Vec<String>,
     /// The notes whose old result copies the pass deleted (part 1).
     pub cleaned: Vec<String>,
+    /// The notes whose marked transcript removal the pass finished (part
+    /// 1).
+    pub transcripts_finished: Vec<String>,
+    /// The notes whose transcript the pass removed (part 3).
+    pub transcripts_removed: Vec<String>,
     /// The notes whose row changed.
     pub changed: Vec<String>,
 }
@@ -246,6 +273,17 @@ fn new_removal_store_checks(
     }
 }
 
+/// Whether a fresh in-use marker is in the home folder `home` at `now`. A
+/// folder that cannot be read counts as in use. `None` when the folder is
+/// missing: the note is skipped.
+fn home_in_use(home: &Path, now: DateTime<FixedOffset>) -> Option<bool> {
+    match pipeline::in_use::in_use(home, now) {
+        Ok(in_use) => Some(in_use),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => Some(true),
+    }
+}
+
 /// Whether the removal of the audio of the note can start now with the
 /// delay `delay_days`. The pass and [`count_eligible`] share this check. It
 /// reads the store, the claims and file metadata only (KTD11).
@@ -254,12 +292,8 @@ fn eligible_now(inputs: &PassInputs, id: &str, home: &Path, delay_days: u32) -> 
         return false;
     }
     let now = (inputs.now)();
-    // A folder that cannot be read counts as in use. A missing folder is
-    // not eligible: the note is skipped.
-    let in_use = match pipeline::in_use::in_use(home, now) {
-        Ok(in_use) => in_use,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return false,
-        Err(_) => true,
+    let Some(in_use) = home_in_use(home, now) else {
+        return false;
     };
     let check = EligibilityInputs {
         now,
@@ -352,6 +386,219 @@ fn clean_note(inputs: &PassInputs, id: &str, home: &Path, cleaned: &mut Vec<Stri
     }
 }
 
+// ------------------------------------------------------- transcript removal
+
+/// What the transcript part of a pass does with one note.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TranscriptCheck {
+    /// The removal of the transcript can start now.
+    Remove,
+    /// The delay has passed, but the summary of the note is the stub of a
+    /// failed summary, so the transcript stays (R28).
+    SummaryFailed,
+    /// The transcript stays for another reason.
+    Keep,
+}
+
+/// How many notes a pass with a transcript delay would act on now (R19,
+/// R28 of the transcript removal plan).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
+pub struct TranscriptCount {
+    /// The notes whose transcript the pass would remove.
+    pub remove: u32,
+    /// The notes whose delay has passed and whose transcript the pass
+    /// keeps, because their summary failed (R28).
+    pub skipped: u32,
+}
+
+/// Whether the last recording end of the note `id` plus `delay_days` is
+/// at or before `now`.
+fn delay_passed(
+    store: &SharedStore,
+    id: &str,
+    delay_days: u32,
+    now: DateTime<FixedOffset>,
+) -> bool {
+    let segments = match lock(store).segments(id) {
+        Ok(segments) => segments,
+        Err(e) => {
+            log::warn!("transcript removal: cannot read the segments of {id}: {e}");
+            return false;
+        }
+    };
+    segments
+        .iter()
+        .map(|s| s.wall_end)
+        .max()
+        .is_some_and(|end| end + chrono::TimeDelta::days(i64::from(delay_days)) <= now)
+}
+
+/// What the transcript part of a pass with the effective delay
+/// `delay_days` does with the note now. The pass and [`count_transcripts`]
+/// share this check. It reads the store, the claims and file metadata, and
+/// `longhand.json` of a note that is otherwise eligible (R28).
+fn transcript_check(
+    inputs: &PassInputs,
+    id: &str,
+    home: &Path,
+    delay_days: u32,
+) -> TranscriptCheck {
+    if !note_available(inputs, id, home) {
+        return TranscriptCheck::Keep;
+    }
+    let now = (inputs.now)();
+    let Some(in_use) = home_in_use(home, now) else {
+        return TranscriptCheck::Keep;
+    };
+    let check = EligibilityInputs {
+        now,
+        delay_days,
+        claimed: inputs.claims.busy(id),
+        in_use,
+    };
+    let eligibility = transcript_eligibility(&lock(inputs.store), id, &check);
+    match eligibility {
+        // A note that another computer saved has no failed-summary row
+        // here. Its `longhand.json` records the stub.
+        Ok(TranscriptEligibility::Eligible) if summary_stub_in(home) => {
+            TranscriptCheck::SummaryFailed
+        }
+        Ok(TranscriptEligibility::Eligible) => TranscriptCheck::Remove,
+        Ok(TranscriptEligibility::SummaryFailed)
+            if delay_passed(inputs.store, id, delay_days, now) =>
+        {
+            TranscriptCheck::SummaryFailed
+        }
+        _ => TranscriptCheck::Keep,
+    }
+}
+
+/// The folder checks of a new transcript removal in a pass, with no store
+/// lock: those of [`pass_folder_guard`], and the summary of the note is not
+/// the stub of a failed summary (R28).
+fn transcript_folder_guard(
+    inputs: &PassInputs,
+    record: &SessionRecord,
+) -> Result<(), &'static str> {
+    pass_folder_guard(inputs, record)?;
+    if record
+        .home_path
+        .as_deref()
+        .is_some_and(|home| summary_stub_in(Path::new(home)))
+    {
+        return Err(SUMMARY_FAILED);
+    }
+    Ok(())
+}
+
+/// The store checks of a new transcript removal in a pass, under the store
+/// lock: those of Remove Audio (no open Move), the effective delay is still
+/// known and on, and the note is eligible with the row that the step just
+/// brought up to date.
+fn new_transcript_store_checks(
+    inputs: &PassInputs,
+    store: &Store,
+    record: &SessionRecord,
+) -> Result<(), &'static str> {
+    removal_store_checks(store)?;
+    let Some(delay_days) = (inputs.transcript_delay_days)() else {
+        return Err(SETTING_OFF);
+    };
+    // The step holds its own claim, and `pass_folder_guard` checks the
+    // in-use markers.
+    let check = EligibilityInputs {
+        now: (inputs.now)(),
+        delay_days,
+        claimed: false,
+        in_use: false,
+    };
+    match transcript_eligibility(store, &record.id, &check) {
+        Ok(TranscriptEligibility::Eligible) => Ok(()),
+        Ok(TranscriptEligibility::SummaryFailed) => Err(SUMMARY_FAILED),
+        _ => Err(NOT_DUE),
+    }
+}
+
+/// Log the result of the transcript step for one note, and report its row
+/// change.
+fn record_transcript_step(
+    inputs: &PassInputs,
+    id: &str,
+    result: Result<TranscriptRemoval, RemoveTranscriptError>,
+    done: &mut Vec<String>,
+    changed: &mut Vec<String>,
+) {
+    match result {
+        Ok(removal) => {
+            if removal.row_changed {
+                changed.push(id.to_string());
+                (inputs.row_changed)(id);
+            }
+            if removal.removed
+                && (removal.row_changed
+                    || !removal.audio.is_empty()
+                    || !removal.files.deleted.is_empty())
+            {
+                done.push(id.to_string());
+            }
+            for path in &removal.files.kept {
+                log::warn!(
+                    "transcript removal: {} of {id} is not a regular file, so it stays",
+                    path.display()
+                );
+            }
+        }
+        Err(RemoveTranscriptError::Busy(reason)) => {
+            log::debug!("transcript removal: skipped {id}: {reason}");
+        }
+        Err(RemoveTranscriptError::NoFolder) => {
+            log::debug!("transcript removal: skipped {id}: its folder is not available");
+        }
+        Err(RemoveTranscriptError::AudioLeft(segments)) => {
+            for segment in &segments {
+                log::warn!(
+                    "transcript removal: the audio {} of {id} was not removed, so the transcript stays: {:?}",
+                    segment.audio_file,
+                    segment.outcome
+                );
+            }
+        }
+        Err(RemoveTranscriptError::Failed(message)) => {
+            log::warn!(
+                "transcript removal: the removal of the transcript of {id} failed: {message}"
+            );
+        }
+    }
+}
+
+/// Whether one of the notes `ids` has the transcript marker and needs
+/// [`finish_transcript_removal`] (KTD3, KTD6 of the transcript removal
+/// plan). A scan that changed such a note wakes the pass, so a
+/// `transcript.md` that a late write put back does not wait for the timer.
+/// It reads the store and file metadata, and `longhand.json` of a note with
+/// the marker.
+pub fn needs_finish(store: &SharedStore, ids: &[String]) -> bool {
+    ids.iter().any(|id| {
+        let (home, flag) = {
+            let store = lock(store);
+            let Ok(Some(record)) = store.session(id) else {
+                return false;
+            };
+            if record.state != SessionState::Saved {
+                return false;
+            }
+            let Some(home) = record.home_path else {
+                return false;
+            };
+            (
+                PathBuf::from(home),
+                store.transcript_removed(id).unwrap_or(false),
+            )
+        };
+        finish_due(&home, flag)
+    })
+}
+
 /// One removal pass (KTD5). See the module documentation.
 pub fn run_pass(inputs: &PassInputs) -> PassReport {
     let mut report = PassReport::default();
@@ -396,6 +643,21 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
                 &mut report.changed,
             );
         }
+        // The transcript marker makes the transcript removed, whether the
+        // transcript setting is on or off (KTD3 of the transcript removal
+        // plan).
+        let flag = lock(inputs.store).transcript_removed(id).unwrap_or(false);
+        if finish_due(home, flag) {
+            let result =
+                finish_transcript_removal(inputs.store, inputs.claims, id, part_one_guard(inputs));
+            record_transcript_step(
+                inputs,
+                id,
+                result,
+                &mut report.transcripts_finished,
+                &mut report.changed,
+            );
+        }
         clean_note(inputs, id, home, &mut report.cleaned);
     }
 
@@ -427,7 +689,70 @@ pub fn run_pass(inputs: &PassInputs) -> PassReport {
         );
         record_step(inputs, id, result, &mut report.removed, &mut report.changed);
     }
+
+    // Part 3: new transcript markers, only while the effective transcript
+    // delay is known and on (KTD6, KTD7 of the transcript removal plan).
+    // The step removes any audio that is left first. The setting is off by
+    // default (R2), so a pass that starts with no delay ends as done.
+    if (inputs.transcript_delay_days)().is_none() {
+        return report;
+    }
+    for (id, home) in &notes {
+        if let Some(end) = stop_reason(inputs) {
+            report.end = end;
+            return report;
+        }
+        let Some(delay_days) = (inputs.transcript_delay_days)() else {
+            report.end = PassEnd::SettingOff;
+            return report;
+        };
+        if transcript_check(inputs, id, home, delay_days) != TranscriptCheck::Remove {
+            continue;
+        }
+        let guard = Guard {
+            folder: |record: &SessionRecord| transcript_folder_guard(inputs, record),
+            store: |store: &Store, record: &SessionRecord| {
+                new_transcript_store_checks(inputs, store, record)
+            },
+        };
+        let result = remove_transcript(inputs.store, inputs.claims, id, guard);
+        record_transcript_step(
+            inputs,
+            id,
+            result,
+            &mut report.transcripts_removed,
+            &mut report.changed,
+        );
+    }
     report
+}
+
+/// How many notes a pass with the effective transcript delay `delay_days`
+/// would remove the transcript of now, and how many it would keep because
+/// their summary failed (R19, R28 of the transcript removal plan). This
+/// uses the same per-note check as the pass. It is zero while the storage
+/// folder is not available or a Move is open. The pass checks each note
+/// again when it runs.
+pub fn count_transcripts(inputs: &PassInputs, delay_days: u32) -> TranscriptCount {
+    let mut count = TranscriptCount::default();
+    if stop_reason(inputs).is_some() {
+        return count;
+    }
+    let notes = match saved_notes(inputs.store) {
+        Ok(notes) => notes,
+        Err(e) => {
+            log::error!("transcript removal: cannot read the notes: {e}");
+            return count;
+        }
+    };
+    for (id, home) in &notes {
+        match transcript_check(inputs, id, home, delay_days) {
+            TranscriptCheck::Remove => count.remove = count.remove.saturating_add(1),
+            TranscriptCheck::SummaryFailed => count.skipped = count.skipped.saturating_add(1),
+            TranscriptCheck::Keep => {}
+        }
+    }
+    count
 }
 
 /// How many notes a pass with the delay `delay_days` would remove the audio
@@ -494,6 +819,24 @@ impl AudioRemovalManager {
         if at_once {
             self.run_now();
         }
+        // A scan that changed a note that needs its transcript removal
+        // finished wakes the pass (KTD6 of the transcript removal plan).
+        // The check reads folders, so it runs on a blocking thread.
+        let woken = Arc::downgrade(self);
+        LibraryChanged::listen_any(&self.app, move |event| {
+            let Some(manager) = woken.upgrade() else {
+                return;
+            };
+            let changed = event.payload.changed;
+            if changed.is_empty() {
+                return;
+            }
+            tauri::async_runtime::spawn_blocking(move || {
+                if needs_finish(&manager.store, &changed) {
+                    manager.run_now();
+                }
+            });
+        });
         let manager = Arc::clone(self);
         tauri::async_runtime::spawn(async move {
             let start = tokio::time::Instant::now() + PASS_EVERY;
@@ -534,6 +877,14 @@ impl AudioRemovalManager {
         self.with_inputs(|inputs| count_eligible(inputs, delay_days))
     }
 
+    /// How many notes a pass with the effective transcript delay
+    /// `delay_days` would remove the transcript of now, and how many it
+    /// would skip ([`count_transcripts`]). This reads folders: call it off
+    /// the main thread.
+    pub fn count_transcripts(&self, delay_days: u32) -> TranscriptCount {
+        self.with_inputs(|inputs| count_transcripts(inputs, delay_days))
+    }
+
     fn pass(&self) {
         if self.stopped.load(Ordering::SeqCst) {
             return;
@@ -544,6 +895,13 @@ impl AudioRemovalManager {
                 "audio removal: finished the removal for {} note(s) and removed the audio of {} note(s)",
                 report.finished.len(),
                 report.removed.len()
+            );
+        }
+        if !report.transcripts_finished.is_empty() || !report.transcripts_removed.is_empty() {
+            log::info!(
+                "transcript removal: finished the removal for {} note(s) and removed the transcript of {} note(s)",
+                report.transcripts_finished.len(),
+                report.transcripts_removed.len()
             );
         }
         if report.end != PassEnd::Done {
@@ -558,6 +916,11 @@ impl AudioRemovalManager {
             shared
                 .as_ref()
                 .and_then(|shared| shared.snapshot().audio_removal_days())
+        };
+        let transcript_delay_days = || {
+            shared
+                .as_ref()
+                .and_then(|shared| shared.snapshot().transcript_removal_days())
         };
         let note_readable =
             |id: &str, home: &Path| !self.status.storage_unavailable(id, Some(home));
@@ -579,6 +942,7 @@ impl AudioRemovalManager {
             note_readable: &note_readable,
             note_sync: &sync,
             delay_days: &delay_days,
+            transcript_delay_days: &transcript_delay_days,
             now: &now,
             row_changed: &row_changed,
         };
@@ -693,6 +1057,8 @@ mod tests {
     struct Env<'a> {
         library: &'a Library,
         delay: Cell<Option<u32>>,
+        /// The effective delay of transcript removal (KTD7).
+        transcript_delay: Cell<Option<u32>>,
         readable: Cell<bool>,
         /// The status of the library that [`Env::scan`] gives.
         status: Arc<library::status::LibraryStatus>,
@@ -706,6 +1072,7 @@ mod tests {
             Self {
                 library,
                 delay: Cell::new(delay),
+                transcript_delay: Cell::new(None),
                 readable: Cell::new(true),
                 status: Arc::default(),
                 changed: RefCell::default(),
@@ -725,6 +1092,7 @@ mod tests {
             };
             let sync = |id: &str| note_sync(&self.status, id);
             let delay_days = || self.delay.get();
+            let transcript_delay_days = || self.transcript_delay.get();
             let row_changed = |id: &str| {
                 self.changed.borrow_mut().push(id.to_string());
                 (self.after_change)(self);
@@ -736,6 +1104,7 @@ mod tests {
                 note_readable: &note_readable,
                 note_sync: &sync,
                 delay_days: &delay_days,
+                transcript_delay_days: &transcript_delay_days,
                 now: &now,
                 row_changed: &row_changed,
             };
@@ -1336,5 +1705,287 @@ mod tests {
         assert!(!removes_more(Some(30), Some(90)));
         assert!(!removes_more(Some(30), None));
         assert!(!removes_more(None, None));
+    }
+
+    // ------------------------------------------------- transcript removal
+
+    fn has_transcript(home: &Path) -> bool {
+        home.join("transcript.md").symlink_metadata().is_ok()
+    }
+
+    fn has_transcript_marker(home: &Path) -> bool {
+        session_core::folder::transcript_removed(home)
+    }
+
+    /// The documents that transcript removal keeps (R7).
+    fn kept_documents(home: &Path) -> Vec<Vec<u8>> {
+        ["session.md", "summary.md", "notes.md"]
+            .iter()
+            .map(|name| std::fs::read(home.join(name)).unwrap())
+            .collect()
+    }
+
+    /// Record in `longhand.json` that the summary of the note in `home` is
+    /// the stub of a failed summary, as another computer saves it (R28).
+    fn record_summary_stub(home: &Path) {
+        let mut record = session_core::note_folder::NoteFiles::read(home)
+            .unwrap()
+            .record;
+        record.summary = Some(session_core::folder::SummaryMeta::Stub {
+            failed_stage: "summarize".into(),
+        });
+        session_save::note_files::write_record(home, &record).unwrap();
+    }
+
+    /// The state that a crash after step (2) of the transcript step leaves
+    /// (KTD3): no audio, the transcript marker, and every transcript file.
+    fn crash_after_the_marker(home: &Path) {
+        std::fs::write(home.join(removal_marker(AUDIO)), REMOVAL_MARKER_TEXT).unwrap();
+        std::fs::remove_file(home.join(AUDIO)).unwrap();
+        std::fs::write(
+            home.join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+        )
+        .unwrap();
+    }
+
+    fn flag(library: &Library, id: &str) -> bool {
+        library
+            .store
+            .lock()
+            .unwrap()
+            .transcript_removed(id)
+            .unwrap()
+    }
+
+    // Covers R6, R7, R10: with audio at 30 days and transcripts at 90
+    // days, a note that stopped 100 days ago loses its transcript and a
+    // note that stopped 50 days ago keeps it.
+    #[test]
+    fn a_pass_removes_a_due_transcript_and_keeps_one_that_is_not_due() {
+        let library = library();
+        let old = library.saved_note("20260623-0900-aaaa", "Old", 100);
+        let recent = library.saved_note("20260812-0900-bbbb", "Recent", 50);
+        let before = [kept_documents(&old), kept_documents(&recent)];
+        let env = Env::new(&library, Some(30));
+        env.transcript_delay.set(Some(90));
+
+        let report = env.pass();
+
+        assert_eq!(report.end, PassEnd::Done);
+        assert_eq!(report.transcripts_removed, vec!["20260623-0900-aaaa"]);
+        assert!(has_transcript_marker(&old));
+        assert!(!has_transcript(&old));
+        assert!(!has_audio(&old));
+        assert!(flag(&library, "20260623-0900-aaaa"));
+        // The recent note loses only its audio.
+        assert!(has_transcript(&recent));
+        assert!(!has_transcript_marker(&recent));
+        assert!(!has_audio(&recent));
+        assert_eq!([kept_documents(&old), kept_documents(&recent)], before);
+        assert!(
+            env.changed
+                .borrow()
+                .contains(&"20260623-0900-aaaa".to_string())
+        );
+    }
+
+    // KTD6: part 1 finishes a marked note whether the setting is on, off
+    // or not known, and writes no new marker.
+    #[test]
+    fn a_pass_with_no_known_setting_finishes_a_marked_note_and_removes_no_new_transcript() {
+        let library = library();
+        let marked = library.saved_note("20260623-0900-aaaa", "Marked", 100);
+        crash_after_the_marker(&marked);
+        let plain = library.saved_note("20260623-0900-bbbb", "Plain", 100);
+        let env = Env::new(&library, None);
+
+        let report = env.pass();
+
+        assert_eq!(report.end, PassEnd::SettingOff);
+        assert_eq!(report.transcripts_finished, vec!["20260623-0900-aaaa"]);
+        assert!(report.transcripts_removed.is_empty());
+        assert!(!has_transcript(&marked));
+        assert!(flag(&library, "20260623-0900-aaaa"));
+        assert!(has_transcript(&plain));
+        assert!(!has_transcript_marker(&plain));
+        assert!(has_audio(&plain));
+
+        // A second pass changes nothing.
+        let report = env.pass();
+        assert!(report.transcripts_finished.is_empty());
+    }
+
+    #[test]
+    fn a_transcript_setting_that_turns_off_during_a_pass_stops_the_next_removal() {
+        let library = library();
+        let first = library.saved_note("20260623-0900-aaaa", "First", 100);
+        let second = library.saved_note("20260623-0900-bbbb", "Second", 100);
+        let mut env = Env::new(&library, Some(30));
+        env.transcript_delay.set(Some(90));
+        let marked = first.clone();
+        env.after_change = Box::new(move |env| {
+            if has_transcript_marker(&marked) {
+                env.transcript_delay.set(None);
+            }
+        });
+
+        let report = env.pass();
+
+        assert_eq!(report.end, PassEnd::SettingOff);
+        assert_eq!(report.transcripts_removed, vec!["20260623-0900-aaaa"]);
+        assert!(!has_transcript(&first));
+        assert!(has_transcript(&second));
+        assert!(!has_transcript_marker(&second));
+    }
+
+    // R11: the in-use guard and an open Move keep the transcript.
+    #[test]
+    fn a_fresh_in_use_marker_or_an_open_move_keeps_the_transcript() {
+        let library = library();
+        let used = library.saved_note("20260623-0900-aaaa", "Used", 100);
+        assert!(pipeline::in_use::write_marker(&used, "computer-a", now()).unwrap());
+        let env = Env::new(&library, Some(30));
+        env.transcript_delay.set(Some(90));
+
+        let report = env.pass();
+
+        assert!(report.transcripts_removed.is_empty());
+        assert!(has_transcript(&used));
+        assert!(!has_transcript_marker(&used));
+
+        let other = self::library();
+        let moving = other.saved_note("20260623-0900-bbbb", "Moving", 100);
+        other
+            .store
+            .lock()
+            .unwrap()
+            .open_move(Path::new("/old"), Path::new("/new"))
+            .unwrap();
+        let env = Env::new(&other, Some(30));
+        env.transcript_delay.set(Some(90));
+
+        let report = env.pass();
+
+        assert_eq!(report.end, PassEnd::MoveOpen);
+        assert!(has_transcript(&moving));
+        assert!(!has_transcript_marker(&moving));
+        assert_eq!(
+            env.run(|inputs| count_transcripts(inputs, 90)),
+            TranscriptCount::default()
+        );
+    }
+
+    // R11: a computer that did not record the note removes its transcript.
+    #[test]
+    fn the_transcript_of_a_note_that_another_computer_recorded_goes() {
+        let library = library();
+        let home = library.saved_note("20260623-0900-aaaa", "Planning", 100);
+        let old = now() - TimeDelta::days(99);
+        assert!(pipeline::in_use::write_marker(&home, "computer-a", old).unwrap());
+        let env = Env::new(&library, Some(30));
+        env.transcript_delay.set(Some(90));
+
+        let report = env.pass();
+
+        assert_eq!(report.transcripts_removed, vec!["20260623-0900-aaaa"]);
+        assert!(!has_transcript(&home));
+    }
+
+    // Covers AE14, R28: a note whose summary failed keeps its transcript,
+    // on the computer that saved it (the store row) and on another
+    // computer (`longhand.json`). The count names it as skipped.
+    #[test]
+    fn ae14_a_note_whose_summary_failed_keeps_its_transcript_and_the_count_names_it() {
+        let library = library();
+        let here = library.saved_note("20260623-0900-aaaa", "Here", 100);
+        library
+            .store
+            .lock()
+            .unwrap()
+            .put_checkpoint(
+                "20260623-0900-aaaa",
+                Stage::Summarize,
+                pipeline::save::SUMMARY_FAILED,
+                "\"failed\"",
+            )
+            .unwrap();
+        let elsewhere = library.saved_note("20260623-0900-bbbb", "Elsewhere", 100);
+        record_summary_stub(&elsewhere);
+        let plain = library.saved_note("20260623-0900-cccc", "Plain", 100);
+        let env = Env::new(&library, Some(30));
+        env.transcript_delay.set(Some(90));
+
+        assert_eq!(
+            env.run(|inputs| count_transcripts(inputs, 60)),
+            TranscriptCount {
+                remove: 1,
+                skipped: 2
+            }
+        );
+
+        let report = env.pass();
+
+        assert_eq!(report.transcripts_removed, vec!["20260623-0900-cccc"]);
+        assert!(!has_transcript(&plain));
+        for home in [&here, &elsewhere] {
+            assert!(has_transcript(home), "{}", home.display());
+            assert!(!has_transcript_marker(home), "{}", home.display());
+        }
+        // A note whose delay has not passed is not counted as skipped.
+        assert_eq!(
+            env.run(|inputs| count_transcripts(inputs, 365)),
+            TranscriptCount::default()
+        );
+    }
+
+    // Covers AE5: the count with 90 days counts the notes that are 100 days
+    // old, and changes no file.
+    #[test]
+    fn ae5_the_transcript_count_uses_the_given_delay_and_the_same_guards() {
+        let library = library();
+        let first = library.saved_note("20260623-0900-aaaa", "First", 100);
+        library.saved_note("20260623-0900-bbbb", "Second", 100);
+        let busy = library.saved_note("20260623-0900-cccc", "Busy", 100);
+        assert!(pipeline::in_use::write_marker(&busy, "computer-a", now()).unwrap());
+        library.saved_note("20260911-0900-dddd", "Recent", 20);
+        let env = Env::new(&library, Some(30));
+        env.transcript_delay.set(Some(365));
+
+        assert_eq!(
+            env.run(|inputs| count_transcripts(inputs, 90)),
+            TranscriptCount {
+                remove: 2,
+                skipped: 0
+            }
+        );
+        assert_eq!(
+            env.run(|inputs| count_transcripts(inputs, 365)),
+            TranscriptCount::default()
+        );
+        assert!(has_transcript(&first));
+        assert!(has_audio(&first));
+    }
+
+    // KTD6: a scan that finds a note that needs finishing wakes the pass.
+    #[test]
+    fn only_a_note_that_needs_finishing_wakes_the_pass() {
+        let library = library();
+        let marked = library.saved_note("20260623-0900-aaaa", "Marked", 100);
+        library.saved_note("20260623-0900-bbbb", "Plain", 100);
+        let plain = vec!["20260623-0900-bbbb".to_string()];
+        let both = vec![
+            "20260623-0900-aaaa".to_string(),
+            "20260623-0900-bbbb".to_string(),
+        ];
+        assert!(!needs_finish(&library.store, &both));
+
+        crash_after_the_marker(&marked);
+        assert!(needs_finish(&library.store, &both));
+        assert!(!needs_finish(&library.store, &plain));
+
+        let env = Env::new(&library, None);
+        env.pass();
+        assert!(!needs_finish(&library.store, &both));
     }
 }

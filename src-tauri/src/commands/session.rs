@@ -1980,7 +1980,8 @@ pub fn set_shown_note(shown: State<'_, ShownNote>, note_id: Option<String>) {
     shown.set(note_id);
 }
 
-/// Why Remove Audio did not complete (R13).
+/// Why Remove Audio (R13) or Remove Transcript (R17 of the transcript
+/// removal plan) did not complete.
 #[derive(Debug, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoveAudioFailure {
@@ -2001,25 +2002,35 @@ const IN_USE_REASON: &str = "in use";
 /// The text of a refusal of Remove Audio. `reason` is a state name, a
 /// claim name or a guard reason.
 fn removal_refusal(reason: &str) -> String {
+    refusal_of(reason, "audio")
+}
+
+/// The text of a refusal of Remove Audio or Remove Transcript. `thing` is
+/// what the action removes: "audio" or "transcript".
+fn refusal_of(reason: &str, thing: &str) -> String {
     match reason {
-        "capturing" => "This note is recording. Stop the recording before you remove its audio.",
+        "capturing" => {
+            format!("This note is recording. Stop the recording before you remove its {thing}.")
+        }
         "interrupted" => {
-            "This note’s recording was interrupted. Stop it before you remove its audio."
+            format!("This note’s recording was interrupted. Stop it before you remove its {thing}.")
         }
-        "queued" | "processing" | "blocked" => {
-            "This note is being processed. You can remove its audio when processing is done."
-        }
-        "regenerating" => {
-            "This note’s summary is being made again. You can remove its audio when that is done."
-        }
-        "moving" | MOVE_OPEN_REASON => {
-            "Longhand is moving your notes. You can remove the audio when the move is done."
-        }
-        "deleting" => "This note is being deleted.",
-        IN_USE_REASON => "This note is in use on another computer. Try again later.",
-        _ => "You can remove the audio of this note only after it is saved.",
+        "queued" | "processing" | "blocked" => format!(
+            "This note is being processed. You can remove its {thing} when processing is done."
+        ),
+        "regenerating" => format!(
+            "This note’s summary is being made again. You can remove its {thing} when that is done."
+        ),
+        "moving" | MOVE_OPEN_REASON => format!(
+            "Longhand is moving your notes. You can remove the {thing} when the move is done."
+        ),
+        "converting" => format!(
+            "Longhand is updating this note’s files. You can remove its {thing} when that is done."
+        ),
+        "deleting" => "This note is being deleted.".to_string(),
+        IN_USE_REASON => "This note is in use on another computer. Try again later.".to_string(),
+        _ => format!("You can remove the {thing} of this note only after it is saved."),
     }
-    .to_string()
 }
 
 /// The text of a note whose storage folder is unavailable (R16).
@@ -2141,6 +2152,85 @@ pub async fn remove_audio(
     let claims = processing.claims();
     // A folder on a network volume can be slow.
     tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &note_id, sync))
+        .await
+        .map_err(|e| RemoveAudioFailure::Failed {
+            message: e.to_string(),
+        })?
+}
+
+/// Remove the transcript of the note `note_id`, and any audio that is
+/// left, with the checks of Remove Audio (R17, R18 of the transcript
+/// removal plan). The transcript removal setting has no effect here, and
+/// a note whose summary failed is removed too (R28).
+fn run_transcript_removal(
+    store: &pipeline::SharedStore,
+    claims: &session_core::jobs::Claims,
+    note_id: &str,
+) -> Result<(), RemoveAudioFailure> {
+    use pipeline::remove_transcript::RemoveTranscriptError;
+    pipeline::remove_transcript::remove_transcript(store, claims, note_id, removal_guard())
+        .map_err(|e| match e {
+            RemoveTranscriptError::Busy(reason) => RemoveAudioFailure::Refused {
+                message: refusal_of(reason, "transcript"),
+            },
+            RemoveTranscriptError::NoFolder => RemoveAudioFailure::Refused {
+                message: FOLDER_UNAVAILABLE.to_string(),
+            },
+            RemoveTranscriptError::AudioLeft(segments) => {
+                for segment in &segments {
+                    log::warn!(
+                        "the audio {} of session {note_id} was not removed: {:?}",
+                        segment.audio_file,
+                        segment.outcome
+                    );
+                }
+                RemoveAudioFailure::Failed {
+                    message: "Some of the audio of this note could not be removed, so its transcript stays.".to_string(),
+                }
+            }
+            RemoveTranscriptError::Failed(message) => RemoveAudioFailure::Failed {
+                message: format!("Could not remove the transcript of this note: {message}"),
+            },
+        })?;
+    log::info!("removed the transcript of session {note_id}");
+    Ok(())
+}
+
+/// Remove the transcript of a saved note now, and any audio that is left,
+/// whether the transcript removal setting is on or off (R17, R18 of the
+/// transcript removal plan). The summary, notes, title and tags stay.
+/// Refused while the note is busy, while a Move runs or is paused, or while
+/// its storage folder is unavailable. A failure after the transcript
+/// marker is written counts as removed, and the next pass finishes it
+/// (KTD3).
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_transcript(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    note_id: String,
+) -> Result<(), RemoveAudioFailure> {
+    let store = capture.shared_store();
+    let home = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .session(&note_id)
+            .map_err(|e| RemoveAudioFailure::Failed {
+                message: e.to_string(),
+            })?
+            .and_then(|r| r.home_path)
+    };
+    if processing
+        .library_status()
+        .storage_unavailable(&note_id, home.as_deref().map(Path::new))
+    {
+        return Err(RemoveAudioFailure::Refused {
+            message: FOLDER_UNAVAILABLE.to_string(),
+        });
+    }
+    let claims = processing.claims();
+    // A folder on a network volume can be slow.
+    tauri::async_runtime::spawn_blocking(move || run_transcript_removal(&store, &claims, &note_id))
         .await
         .map_err(|e| RemoveAudioFailure::Failed {
             message: e.to_string(),
@@ -2328,6 +2418,99 @@ mod remove_audio_tests {
             let message = removal_refusal(reason);
             assert!(message.contains(word), "{reason}: {message}");
         }
+    }
+
+    // ------------------------------------------------- Remove Transcript
+
+    /// A saved note in a storage folder with its library marker. The
+    /// transcript step deletes only in a folder that has one.
+    fn marked_note() -> Note {
+        let note = saved_note();
+        assert!(library::scan::write_marker(note.home.parent().unwrap()));
+        note
+    }
+
+    // Covers AE6, R17, R18: with the setting off, Remove Transcript removes
+    // the transcript and the audio at once, and the summary, notes and
+    // records stay.
+    #[test]
+    fn remove_transcript_removes_the_transcript_and_the_audio() {
+        let note = marked_note();
+        std::fs::write(note.home.join(ARTIFACT_FILE), b"{\"version\":1}\n").unwrap();
+        let kept: Vec<Vec<u8>> = ["session.md", "summary.md", "notes.md"]
+            .iter()
+            .map(|name| std::fs::read(note.home.join(name)).unwrap())
+            .collect();
+
+        run_transcript_removal(&note.store, &Claims::default(), ID).unwrap();
+
+        assert!(session_core::folder::transcript_removed(&note.home));
+        assert!(!note.home.join("transcript.md").exists());
+        assert!(!note.home.join(ARTIFACT_FILE).exists());
+        assert!(!note.home.join("audio/segment-01.opus").exists());
+        let after: Vec<Vec<u8>> = ["session.md", "summary.md", "notes.md"]
+            .iter()
+            .map(|name| std::fs::read(note.home.join(name)).unwrap())
+            .collect();
+        assert_eq!(after, kept);
+        assert!(note.store.lock().unwrap().transcript_removed(ID).unwrap());
+    }
+
+    // R28: the action removes the transcript of a note whose summary
+    // failed.
+    #[test]
+    fn remove_transcript_removes_the_transcript_of_a_note_whose_summary_failed() {
+        let note = marked_note();
+        let mut record = session_core::note_folder::NoteFiles::read(&note.home)
+            .unwrap()
+            .record;
+        record.summary = Some(session_core::folder::SummaryMeta::Stub {
+            failed_stage: "summarize".into(),
+        });
+        session_save::note_files::write_record(&note.home, &record).unwrap();
+
+        run_transcript_removal(&note.store, &Claims::default(), ID).unwrap();
+
+        assert!(!note.home.join("transcript.md").exists());
+    }
+
+    fn transcript_kept(note: &Note) -> bool {
+        note.home.join("transcript.md").is_file()
+            && !session_core::folder::transcript_removed(&note.home)
+    }
+
+    #[test]
+    fn remove_transcript_refuses_an_open_move_a_busy_note_and_a_missing_folder() {
+        let note = marked_note();
+        note.store
+            .lock()
+            .unwrap()
+            .open_move(Path::new("/old"), Path::new("/new"))
+            .unwrap();
+        let message = refused(run_transcript_removal(&note.store, &Claims::default(), ID));
+        assert!(message.contains("moving your notes"), "{message}");
+        assert!(message.contains("transcript"), "{message}");
+        assert!(transcript_kept(&note));
+
+        let note = marked_note();
+        let claims = Claims::default();
+        let _claim = claims.regenerate(ID).unwrap();
+        let message = refused(run_transcript_removal(&note.store, &claims, ID));
+        assert!(message.contains("summary"), "{message}");
+        assert!(transcript_kept(&note));
+
+        let note = marked_note();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&note.home, "other-computer", now).unwrap());
+        let message = refused(run_transcript_removal(&note.store, &Claims::default(), ID));
+        assert!(message.contains("in use on another computer"), "{message}");
+        assert!(transcript_kept(&note));
+
+        let note = marked_note();
+        std::fs::remove_dir_all(&note.home).unwrap();
+        let message = refused(run_transcript_removal(&note.store, &Claims::default(), ID));
+        assert_eq!(message, FOLDER_UNAVAILABLE);
+        assert!(!note.home.exists(), "the step makes no folder");
     }
 }
 
