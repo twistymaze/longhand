@@ -509,7 +509,10 @@ export function buildKeymap() {
       if (!itemName) return false;
       const nodeType = state.schema.nodes[itemName];
       if (!nodeType) return false;
-      return splitListItem(nodeType)(state, dispatch);
+      // A new task starts unchecked. A copied checked state marks a task
+      // done that the user did not touch.
+      const itemAttrs = itemName === "taskItem" ? { checked: false } : undefined;
+      return splitListItem(nodeType, itemAttrs)(state, dispatch);
     },
     createParagraphNear,
     liftEmptyBlock,

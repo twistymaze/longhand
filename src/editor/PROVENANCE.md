@@ -50,7 +50,7 @@ Borrowed material in this directory, one record per file (R27). The source is An
 ## `note/keymap.ts`
 
 - Repository: https://github.com/fastrepl/anarlog
-- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Revision: ce4d1bd0d31db48ad49542375a54481026ea584f
 - Source paths: `packages/editor/src/note/keymap.ts`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
@@ -221,7 +221,7 @@ Borrowed material in this directory, one record per file (R27). The source is An
 ## `note/keymap.test.ts`
 
 - Repository: https://github.com/fastrepl/anarlog
-- Revision: 39613e537ba4c2ddbd2eb5fb4f33c6bf9e79d11e
+- Revision: ce4d1bd0d31db48ad49542375a54481026ea584f
 - Source paths: `packages/editor/src/note/keymap.test.ts`
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
