@@ -408,7 +408,7 @@ pub fn check_database(app: &tauri::AppHandle, liveness: &Liveness) -> Result<(),
 /// launch never waits on it or fails. Call it after `store` opened and
 /// migrated, and only when this build holds the instance lock. A backup
 /// that cannot be cleaned is deleted only when `store` passes
-/// `PRAGMA quick_check` first.
+/// `PRAGMA quick_check`.
 pub fn clean_backups_in_background(
     app: &tauri::AppHandle,
     store: std::sync::Arc<std::sync::Mutex<session_core::Store>>,
@@ -421,19 +421,23 @@ pub fn clean_backups_in_background(
         }
     };
     std::thread::spawn(move || {
-        let checked = store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .quick_check();
-        let checked = match checked {
-            Ok(true) => true,
-            Ok(false) => {
-                log::warn!("the notes database did not pass its check; every backup stays");
-                false
-            }
-            Err(e) => {
-                log::warn!("could not check the notes database; every backup stays: {e}");
-                false
+        // The check reads every page with the store locked, so it runs
+        // only when a backup cannot be cleaned.
+        let checked = || {
+            let checked = store
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .quick_check();
+            match checked {
+                Ok(true) => true,
+                Ok(false) => {
+                    log::warn!("the notes database did not pass its check; every backup stays");
+                    false
+                }
+                Err(e) => {
+                    log::warn!("could not check the notes database; every backup stays: {e}");
+                    false
+                }
             }
         };
         let results = match backup::clean_backups(&app_data, checked) {

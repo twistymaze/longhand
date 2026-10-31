@@ -30,6 +30,7 @@ use session_core::jobs::Claims;
 use session_core::recognition::ARTIFACT_FILE;
 use session_core::{Segment, SessionRecord, Store};
 
+use crate::join::TRANSCRIPT_FILE;
 use crate::remove_audio::{
     FileDelete, Guard, RemoveAudioError, delete_claim, home_dir, remove_recognition,
     remove_regular_file, safe_audio_name, saved_row,
@@ -46,7 +47,7 @@ pub const TRANSITION_FILE: &str = ".longhand-result-transition.json";
 const FINDER_FILE: &str = ".DS_Store";
 
 /// The result files that a child folder of [`RESULTS_FOLDER`] can hold.
-const RESULT_FILES: [&str; 3] = ["transcript.md", "summary.md", ARTIFACT_FILE];
+const RESULT_FILES: [&str; 3] = [TRANSCRIPT_FILE, "summary.md", ARTIFACT_FILE];
 
 /// What the cleanup did in one note folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -150,7 +151,7 @@ where
     // the transcript removal plan).
     let file = |name: &str| home.join(name).metadata().is_ok_and(|m| m.is_file());
     let has_result =
-        file("summary.md") && (file("transcript.md") || folder::transcript_removed(&home));
+        file("summary.md") && (file(TRANSCRIPT_FILE) || folder::transcript_removed(&home));
     if has_result {
         step.clean_results()?;
         step.reachable()?;

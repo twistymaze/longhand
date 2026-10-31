@@ -44,7 +44,9 @@ use rusqlite::{Connection, OpenFlags, params};
 
 use crate::Stage;
 use crate::inspect::column_exists;
-use crate::jobs::{AGAIN_STAGES, RECOGNITION_STAGES, SUMMARY_FAILED, previous_key, stage_key};
+use crate::jobs::{
+    AGAIN_STAGES, RECOGNITION_STAGES, SUMMARY_FAILED, TITLE_REQUEST, previous_key, stage_key,
+};
 
 /// The folder in the app data folder that holds every backup.
 pub const BACKUPS_DIR: &str = "database-backups";
@@ -384,11 +386,6 @@ pub fn apply_retention(app_data: &Path) -> Result<Vec<PathBuf>, BackupError> {
 
 // ------------------------------------------------------------ cleanup of note content
 
-/// Under the Summarize stage: a title request that waits. The same key as
-/// `pipeline::summarize::TITLE_REQUEST`. A saved note with this row keeps
-/// its summary cache until the title job ends the request (KTD12).
-const TITLE_REQUEST: &str = "title-request";
-
 /// How long the cleanup waits for a lock on a backup database.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -416,16 +413,20 @@ pub enum Cleanup {
 /// does, and it reads the note column of each table before a delete.
 ///
 /// A backup that the cleanup cannot open or change is deleted permanently
-/// when `store_checked` is true: the current store opened, migrated and
-/// passed `PRAGMA quick_check` in this launch. Otherwise it stays.
+/// when `store_checked` returns true: the current store opened, migrated and
+/// passed `PRAGMA quick_check` in this launch. Otherwise it stays. The
+/// cleanup calls `store_checked` at most once, and only when a backup
+/// cannot be cleaned.
 ///
 /// The cleanup keeps no record. Each launch runs it, and a clean backup
 /// costs one open. A folder with the "incomplete" flag, or with no
 /// database and no WAL, is not in the result.
 pub fn clean_backups(
     app_data: &Path,
-    store_checked: bool,
+    store_checked: impl FnOnce() -> bool,
 ) -> Result<Vec<(PathBuf, Cleanup)>, BackupError> {
+    let mut store_checked = Some(store_checked);
+    let mut checked = None;
     let mut results = Vec::new();
     for folder in backup_folders(app_data)? {
         if folder.join(INCOMPLETE_FLAG).exists() {
@@ -443,13 +444,20 @@ pub fn clean_backups(
         };
         let cleanup = match attempt {
             Ok((removed, vacuumed)) => Cleanup::Cleaned { removed, vacuumed },
-            Err(error) if store_checked => match fs::remove_dir_all(&folder) {
-                Ok(()) => Cleanup::Deleted { error },
-                Err(e) => Cleanup::Kept {
-                    error: format!("{error}; remove: {e}"),
-                },
-            },
-            Err(error) => Cleanup::Kept { error },
+            Err(error) => {
+                let checked = *checked
+                    .get_or_insert_with(|| store_checked.take().is_some_and(|check| check()));
+                if checked {
+                    match fs::remove_dir_all(&folder) {
+                        Ok(()) => Cleanup::Deleted { error },
+                        Err(e) => Cleanup::Kept {
+                            error: format!("{error}; remove: {e}"),
+                        },
+                    }
+                } else {
+                    Cleanup::Kept { error }
+                }
+            }
         };
         results.push((folder, cleanup));
     }

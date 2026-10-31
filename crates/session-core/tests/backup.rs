@@ -472,7 +472,7 @@ fn a_backup_from_the_previous_schema_loses_the_content_of_its_saved_notes() {
     let open_rows = content_rows(&backup.join(DB), "open");
     assert!(backup_holds(&backup, TRANSCRIPT_TEXT));
 
-    let results = clean_backups(app.path(), true).unwrap();
+    let results = clean_backups(app.path(), || true).unwrap();
 
     assert_eq!(
         results,
@@ -499,9 +499,9 @@ fn a_backup_from_the_previous_schema_loses_the_content_of_its_saved_notes() {
 fn a_second_launch_deletes_no_rows_and_runs_no_vacuum() {
     let app = tempfile::tempdir().unwrap();
     let backup = old_backup(app.path(), 24);
-    clean_backups(app.path(), true).unwrap();
+    clean_backups(app.path(), || true).unwrap();
 
-    let results = clean_backups(app.path(), true).unwrap();
+    let results = clean_backups(app.path(), || true).unwrap();
 
     assert_eq!(
         results,
@@ -529,7 +529,7 @@ fn after_the_cleanup_no_file_of_the_backup_holds_the_transcript() {
     let backup = move_aside(app.path(), BackupKind::Automatic).unwrap();
     assert!(backup_holds(&backup, TRANSCRIPT_TEXT));
 
-    clean_backups(app.path(), true).unwrap();
+    clean_backups(app.path(), || true).unwrap();
 
     assert!(!backup_holds(&backup, TRANSCRIPT_TEXT));
 }
@@ -540,7 +540,7 @@ fn a_backup_from_before_the_note_id_columns_is_cleaned() {
     let backup = old_backup(app.path(), 21);
     let open_rows = content_rows(&backup.join(DB), "open");
 
-    let results = clean_backups(app.path(), true).unwrap();
+    let results = clean_backups(app.path(), || true).unwrap();
 
     assert_eq!(
         results[0].1,
@@ -559,7 +559,7 @@ fn a_backup_with_no_recognition_tables_is_cleaned() {
     let app = tempfile::tempdir().unwrap();
     let backup = old_backup(app.path(), 9);
 
-    let results = clean_backups(app.path(), true).unwrap();
+    let results = clean_backups(app.path(), || true).unwrap();
 
     assert_eq!(
         results[0].1,
@@ -582,7 +582,7 @@ fn a_backup_that_cannot_be_opened_is_deleted_when_the_store_passed_its_check() {
     let app = tempfile::tempdir().unwrap();
     let backup = unreadable_backup(app.path());
 
-    let results = clean_backups(app.path(), true).unwrap();
+    let results = clean_backups(app.path(), || true).unwrap();
 
     assert!(matches!(results[..], [(ref f, Cleanup::Deleted { .. })] if *f == backup));
     assert!(!backup.exists());
@@ -593,7 +593,7 @@ fn a_backup_that_cannot_be_opened_stays_when_the_store_did_not_pass_its_check() 
     let app = tempfile::tempdir().unwrap();
     let backup = unreadable_backup(app.path());
 
-    let results = clean_backups(app.path(), false).unwrap();
+    let results = clean_backups(app.path(), || false).unwrap();
 
     assert!(matches!(results[..], [(ref f, Cleanup::Kept { .. })] if *f == backup));
     assert!(backup.join(DB).exists());
@@ -605,7 +605,7 @@ fn a_backup_with_a_wal_and_no_database_is_deleted_when_the_store_passed_its_chec
     fs::write(app.path().join(WAL), TRANSCRIPT_TEXT).unwrap();
     let backup = move_orphan_wal(app.path()).unwrap().unwrap();
 
-    let results = clean_backups(app.path(), true).unwrap();
+    let results = clean_backups(app.path(), || true).unwrap();
 
     assert!(matches!(results[..], [(_, Cleanup::Deleted { .. })]));
     assert!(!backup.exists());
@@ -617,7 +617,7 @@ fn a_backup_with_no_database_and_no_wal_is_not_touched() {
     fs::create_dir_all(app.path().join(SESSIONS).join("s1")).unwrap();
     let backup = move_aside(app.path(), BackupKind::Automatic).unwrap();
 
-    assert!(clean_backups(app.path(), true).unwrap().is_empty());
+    assert!(clean_backups(app.path(), || true).unwrap().is_empty());
     assert!(backup.join(SESSIONS).exists());
 }
 

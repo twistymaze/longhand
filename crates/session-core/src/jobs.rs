@@ -2653,6 +2653,11 @@ pub(crate) fn clear_recognition_data_in(conn: &Connection, id: &str) -> Result<(
 /// The transcript removal pass reads it (R28).
 pub const SUMMARY_FAILED: &str = "failed";
 
+/// Under the Summarize stage: a title request that waits. A saved note with
+/// this row keeps its summary cache until the title job ends the request
+/// (KTD12).
+pub const TITLE_REQUEST: &str = "title-request";
+
 /// Delete the note's Summarize checkpoints on `conn`, also the copy from
 /// before a Transcribe Again run. The [`SUMMARY_FAILED`] row stays.
 fn clear_summary_cache_in(conn: &Connection, id: &str) -> Result<()> {

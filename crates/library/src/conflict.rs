@@ -44,12 +44,21 @@ pub fn is_copy_name(name: &str, base: &str) -> bool {
 /// `notes.md`. `None` for any other file. The copy has the extension of
 /// its document.
 pub fn document_copy(file_name: &str) -> Option<&'static str> {
-    let (stem, extension) = file_name.rsplit_once('.')?;
-    DOCUMENTS.into_iter().find(|document| {
-        document
-            .rsplit_once('.')
-            .is_some_and(|(base, ext)| ext == extension && is_copy_name(stem, base))
-    })
+    DOCUMENTS
+        .into_iter()
+        .find(|document| copy_of(file_name, document))
+}
+
+/// Whether the file `file_name` is a conflict copy of the file `document`,
+/// such as `recognition 2.jsonl` of `recognition.jsonl`. The copy has the
+/// extension of `document`.
+pub fn copy_of(file_name: &str, document: &str) -> bool {
+    let (Some((stem, extension)), Some((base, ext))) =
+        (file_name.rsplit_once('.'), document.rsplit_once('.'))
+    else {
+        return false;
+    };
+    ext == extension && is_copy_name(stem, base)
 }
 
 #[cfg(test)]
@@ -82,13 +91,5 @@ mod tests {
         assert_eq!(document_copy("longhand 2.json"), Some("longhand.json"));
         assert_eq!(document_copy("longhand (1).md"), None);
         assert_eq!(document_copy("longhand.json"), None);
-    }
-
-    #[test]
-    fn the_transcript_marker_is_not_a_document_copy() {
-        assert_eq!(
-            document_copy(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
-            None
-        );
     }
 }

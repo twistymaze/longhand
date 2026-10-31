@@ -261,19 +261,9 @@ fn read_files(home: &Path) -> Result<NoteFiles, RemoveTranscriptError> {
 /// `transcript.md`, `recognition.jsonl`, or a sync conflict copy of one of
 /// them. The names compare with their case.
 fn transcript_file(name: &str) -> bool {
-    if name == TRANSCRIPT_FILE || name == ARTIFACT_FILE {
-        return true;
-    }
-    if library::conflict::document_copy(name) == Some(TRANSCRIPT_FILE) {
-        return true;
-    }
-    // `conflict::document_copy` knows only the documents, so the copies of
-    // `recognition.jsonl` use the same name rule here.
-    let (base, extension) = ARTIFACT_FILE
-        .rsplit_once('.')
-        .expect("the artifact name has an extension");
-    name.rsplit_once('.')
-        .is_some_and(|(stem, ext)| ext == extension && library::conflict::is_copy_name(stem, base))
+    [TRANSCRIPT_FILE, ARTIFACT_FILE]
+        .into_iter()
+        .any(|file| name == file || library::conflict::copy_of(name, file))
 }
 
 /// The regular files in the canonical home folder `home` that
