@@ -2779,7 +2779,7 @@ simd-adler32 0.3.10
 siphasher 1.0.3
 slab 0.4.12
     Copyright (c) 2019 Carl Lerche
-smallvec 1.16.3
+smallvec 1.16.4
     Copyright (c) 2018 The Servo Project Developers
 socket2 0.6.5
     Copyright (c) 2014 Alex Crichton
@@ -2873,7 +2873,7 @@ tokio-stream 0.1.19
     Copyright (c) Tokio Contributors
 tokio-util 0.7.20
     Copyright (c) Tokio Contributors
-toml 1.1.6+spec-1.1.0
+toml 1.1.8+spec-1.1.0
     Copyright (c) Individual contributors
 toml_datetime 1.1.2+spec-1.1.0
     Copyright (c) Individual contributors
@@ -3581,7 +3581,7 @@ prosemirror-gapcursor 1.4.0
 prosemirror-history 1.5.1
 prosemirror-inputrules 1.5.1
 prosemirror-keymap 1.2.3
-prosemirror-markdown 1.13.8
+prosemirror-markdown 1.13.9
 prosemirror-model 1.25.12
 prosemirror-schema-list 1.5.1
 prosemirror-state 1.4.4
