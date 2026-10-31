@@ -31,11 +31,20 @@
 //!
 //! Recovery is manual: put back both the database and the working folder,
 //! then open the build that owns the database.
+//!
+//! At each launch, [`clean_backups`] deletes the content of saved notes
+//! from the database of each backup (KTD15 of the transcript removal plan).
 
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+use rusqlite::{Connection, OpenFlags, params};
+
+use crate::Stage;
+use crate::inspect::column_exists;
+use crate::jobs::{AGAIN_STAGES, RECOGNITION_STAGES, SUMMARY_FAILED, previous_key, stage_key};
 
 /// The folder in the app data folder that holds every backup.
 pub const BACKUPS_DIR: &str = "database-backups";
@@ -371,4 +380,165 @@ pub fn apply_retention(app_data: &Path) -> Result<Vec<PathBuf>, BackupError> {
         fs::remove_dir_all(folder).map_err(io_error("remove", folder))?;
     }
     Ok(old)
+}
+
+// ------------------------------------------------------------ cleanup of note content
+
+/// Under the Summarize stage: a title request that waits. The same key as
+/// `pipeline::summarize::TITLE_REQUEST`. A saved note with this row keeps
+/// its summary cache until the title job ends the request (KTD12).
+const TITLE_REQUEST: &str = "title-request";
+
+/// How long the cleanup waits for a lock on a backup database.
+const BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// What [`clean_backups`] did with one backup (KTD15 of the transcript
+/// removal plan).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Cleanup {
+    /// The backup database holds no content of a saved note. The delete
+    /// removed `removed` rows. A VACUUM ran when it removed rows.
+    Cleaned { removed: usize, vacuumed: bool },
+    /// The cleanup could not open or change the backup database, and the
+    /// current store passed its check. The backup folder is deleted.
+    Deleted { error: String },
+    /// The cleanup could not open or change the backup database, and the
+    /// backup folder stays. Either the current store did not pass its
+    /// check, or the delete of the folder failed. The next launch tries
+    /// again.
+    Kept { error: String },
+}
+
+/// Delete the content of each saved note from the database of each backup
+/// (R27, KTD15 of the transcript removal plan): the rows that the save
+/// clears (KTD12). The cleanup never uses `Store::open`, which migrates.
+/// It opens each database with its own connection, as [`crate::inspect`]
+/// does, and it reads the note column of each table before a delete.
+///
+/// A backup that the cleanup cannot open or change is deleted permanently
+/// when `store_checked` is true: the current store opened, migrated and
+/// passed `PRAGMA quick_check` in this launch. Otherwise it stays.
+///
+/// The cleanup keeps no record. Each launch runs it, and a clean backup
+/// costs one open. A folder with the "incomplete" flag, or with no
+/// database and no WAL, is not in the result.
+pub fn clean_backups(
+    app_data: &Path,
+    store_checked: bool,
+) -> Result<Vec<(PathBuf, Cleanup)>, BackupError> {
+    let mut results = Vec::new();
+    for folder in backup_folders(app_data)? {
+        if folder.join(INCOMPLETE_FLAG).exists() {
+            continue;
+        }
+        let db = folder.join(DB);
+        let attempt = if exists(&db) {
+            clean_database(&db).map_err(|e| e.to_string())
+        } else if exists(&folder.join(WAL)) {
+            // A WAL with no database can hold old pages, and no
+            // connection can read it.
+            Err("the backup has a WAL and no database".to_string())
+        } else {
+            continue;
+        };
+        let cleanup = match attempt {
+            Ok((removed, vacuumed)) => Cleanup::Cleaned { removed, vacuumed },
+            Err(error) if store_checked => match fs::remove_dir_all(&folder) {
+                Ok(()) => Cleanup::Deleted { error },
+                Err(e) => Cleanup::Kept {
+                    error: format!("{error}; remove: {e}"),
+                },
+            },
+            Err(error) => Cleanup::Kept { error },
+        };
+        results.push((folder, cleanup));
+    }
+    Ok(results)
+}
+
+/// Delete the content of each saved note in the database at `path`, then
+/// run a VACUUM when the delete removed rows. Returns the number of rows
+/// removed and whether a VACUUM ran. The connection closes before this
+/// returns.
+fn clean_database(path: &Path) -> rusqlite::Result<(usize, bool)> {
+    let mut conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.busy_timeout(BUSY_TIMEOUT)?;
+    // The delete overwrites the deleted content (KTD5).
+    conn.pragma_update(None, "secure_delete", "ON")?;
+    let tx = conn.transaction()?;
+    let removed = delete_saved_note_content(&tx)?;
+    tx.commit()?;
+    let vacuumed = removed > 0;
+    if vacuumed {
+        // The VACUUM removes the free pages of earlier deletes. The
+        // checkpoint then empties the WAL.
+        conn.execute_batch("VACUUM")?;
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    }
+    conn.close().map_err(|(_, e)| e)?;
+    Ok((removed, vacuumed))
+}
+
+/// The note column of `table`: `note_id`, or `session_id` in a database
+/// from before migration 0022. `None` when the table or the column does
+/// not exist. `pragma table_info` of a missing table has no rows.
+fn note_column(conn: &Connection, table: &str) -> rusqlite::Result<Option<&'static str>> {
+    for column in ["note_id", "session_id"] {
+        if column_exists(conn, table, column)? {
+            return Ok(Some(column));
+        }
+    }
+    Ok(None)
+}
+
+/// Delete the rows of KTD12 for each note in the Saved state: the rows of
+/// `clear_recognition_data_in`, and the rows of `clear_summary_cache_in`
+/// for each note with no [`TITLE_REQUEST`] row. Migration 0025 deletes the
+/// same rows in the store. A table that does not exist is skipped.
+/// Returns the number of rows removed.
+fn delete_saved_note_content(conn: &Connection) -> rusqlite::Result<usize> {
+    if !column_exists(conn, "sessions", "state")? {
+        return Ok(0);
+    }
+    const SAVED: &str = "SELECT id FROM sessions WHERE json_extract(state, '$.state') = 'saved'";
+    let mut removed = 0;
+    if let Some(note) = note_column(conn, "checkpoints")? {
+        let stages = RECOGNITION_STAGES
+            .into_iter()
+            .map(stage_key)
+            .chain(AGAIN_STAGES.into_iter().map(previous_key));
+        for stage in stages {
+            removed += conn.execute(
+                &format!("DELETE FROM checkpoints WHERE {note} IN ({SAVED}) AND stage = ?1"),
+                [stage],
+            )?;
+        }
+        removed += conn.execute(
+            &format!(
+                "DELETE FROM checkpoints
+                 WHERE {note} IN (
+                     SELECT s.id FROM sessions s
+                     WHERE json_extract(s.state, '$.state') = 'saved'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM checkpoints t
+                         WHERE t.{note} = s.id AND t.stage = ?1 AND t.key = ?2
+                     )
+                 )
+                 AND stage = ?1 AND key != ?3"
+            ),
+            params![stage_key(Stage::Summarize), TITLE_REQUEST, SUMMARY_FAILED],
+        )?;
+    }
+    for table in ["recognition_output", "recognition_epochs"] {
+        if let Some(note) = note_column(conn, table)? {
+            removed += conn.execute(
+                &format!("DELETE FROM {table} WHERE {note} IN ({SAVED})"),
+                [],
+            )?;
+        }
+    }
+    Ok(removed)
 }

@@ -338,6 +338,8 @@ fn setup_app(
         // After the recovery, so that the notes it recovers keep
         // their models (R9).
         commands::models::remove_unneeded_supporting_models(&handle);
+        // The store opened and migrated in `CaptureManager::new` (KTD15).
+        startup::clean_backups_in_background(&handle, capture.shared_store());
     }
     let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
     app.manage(std::sync::Arc::clone(&alerts));

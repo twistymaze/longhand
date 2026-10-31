@@ -402,6 +402,65 @@ pub fn check_database(app: &tauri::AppHandle, liveness: &Liveness) -> Result<(),
     }
 }
 
+/// Delete the content of saved notes from each database backup (R27,
+/// KTD15 of the transcript removal plan), on a thread of its own, so the
+/// launch never waits on it or fails. Call it after `store` opened and
+/// migrated, and only when this build holds the instance lock. A backup
+/// that cannot be cleaned is deleted only when `store` passes
+/// `PRAGMA quick_check` first.
+pub fn clean_backups_in_background(
+    app: &tauri::AppHandle,
+    store: std::sync::Arc<std::sync::Mutex<session_core::Store>>,
+) {
+    let app_data = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log::warn!("could not find the app data folder to clean the backups: {e}");
+            return;
+        }
+    };
+    std::thread::spawn(move || {
+        let checked = store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .quick_check();
+        let checked = match checked {
+            Ok(true) => true,
+            Ok(false) => {
+                log::warn!("the notes database did not pass its check; every backup stays");
+                false
+            }
+            Err(e) => {
+                log::warn!("could not check the notes database; every backup stays: {e}");
+                false
+            }
+        };
+        let results = match backup::clean_backups(&app_data, checked) {
+            Ok(results) => results,
+            Err(e) => {
+                log::warn!("could not clean the database backups: {e}");
+                return;
+            }
+        };
+        for (folder, cleanup) in results {
+            let folder = folder.display();
+            match cleanup {
+                backup::Cleanup::Cleaned { removed: 0, .. } => {}
+                backup::Cleanup::Cleaned { removed, vacuumed } => log::info!(
+                    "deleted {removed} rows of saved notes from the backup {folder} \
+                     (VACUUM: {vacuumed})"
+                ),
+                backup::Cleanup::Deleted { error } => {
+                    log::info!("deleted the backup {folder}, which could not be cleaned: {error}")
+                }
+                backup::Cleanup::Kept { error } => {
+                    log::warn!("could not clean the backup {folder}; it stays: {error}")
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

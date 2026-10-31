@@ -258,7 +258,11 @@ fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
     .map(|row| row.is_some())
 }
 
-fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
+pub(crate) fn column_exists(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+) -> rusqlite::Result<bool> {
     conn.query_row(
         "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2",
         [table, column],

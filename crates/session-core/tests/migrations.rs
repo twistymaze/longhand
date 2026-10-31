@@ -254,9 +254,11 @@ fn migration_seven_keeps_saved_notes_and_gives_them_no_transcript_fingerprint() 
                 [id],
             )
             .unwrap();
+            // A Join row: migration 0025 deletes the Transcribe rows of a
+            // saved note.
             conn.execute(
                 "INSERT INTO checkpoints (session_id, stage, key, payload)
-                 VALUES (?1, 'transcribe', 'w1', '{}')",
+                 VALUES (?1, 'join', 'w1', '{}')",
                 [id],
             )
             .unwrap();
@@ -283,7 +285,7 @@ fn migration_seven_keeps_saved_notes_and_gives_them_no_transcript_fingerprint() 
     for id in ["s1", "s2"] {
         assert_eq!(
             store
-                .checkpoints(id, session_core::Stage::Transcribe)
+                .checkpoints(id, session_core::Stage::Join)
                 .unwrap()
                 .len(),
             1
@@ -757,9 +759,14 @@ fn recognition_block() -> session_core::recognition::OutputBlock {
 }
 
 /// Add the note `id` and one row for it in each table of [`NOTE_ID_TABLES`],
-/// with the version-21 column name.
+/// with the version-21 column name. The note is not saved, so migration
+/// 0025 keeps its rows.
 fn add_a_row_in_each_table(conn: &Connection, id: &str) {
-    add_session(conn, id);
+    conn.execute(
+        "INSERT INTO sessions (id, created_at, state) VALUES (?1, ?2, ?3)",
+        params![id, "2026-09-22T10:00:00-05:00", r#"{"state":"capturing"}"#],
+    )
+    .unwrap();
     let statements = [
         "INSERT INTO segments
          (session_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file)
@@ -1037,5 +1044,185 @@ fn the_first_open_after_migration_twenty_four_leaves_no_free_pages() {
     assert!(!file_holds(
         &dir.path().join("longhand.db-wal"),
         DELETED_TEXT
+    ));
+}
+
+// ------------------------------------------------ migration 0025: saved note content
+
+fn version_twenty_four(path: &std::path::Path) -> Connection {
+    let mut conn = Connection::open(path).unwrap();
+    session_core::schema::migrations()
+        .to_version(&mut conn, 24)
+        .unwrap();
+    conn
+}
+
+/// Text that only the recognition rows and the summary cache hold.
+const TRANSCRIPT_TEXT: &str = "the budget for the spring term is final";
+
+/// The stages and keys of the checkpoints that [`add_content`] writes.
+const CONTENT_CHECKPOINTS: [(&str, &str); 10] = [
+    ("assemble", "done"),
+    ("transcribe", "w1"),
+    ("diarize", "d1"),
+    ("previous_transcribe", "w1"),
+    ("previous_assemble", "done"),
+    ("previous_summarize", "chunk-0"),
+    ("previous_save", "done"),
+    ("summarize", "chunk-0"),
+    ("summarize", "failed"),
+    ("join", "done"),
+];
+
+/// Add the note `id` in `state` with a row in each table of note content,
+/// as an earlier build left it: each payload holds [`TRANSCRIPT_TEXT`].
+fn add_content(conn: &Connection, id: &str, state: &str) {
+    conn.execute(
+        "INSERT INTO sessions (id, created_at, state) VALUES (?1, ?2, ?3)",
+        params![id, "2026-09-22T10:00:00-05:00", state],
+    )
+    .unwrap();
+    let payload = serde_json::to_string(&TRANSCRIPT_TEXT.repeat(30)).unwrap();
+    for (stage, key) in CONTENT_CHECKPOINTS {
+        // The rows that the clear keeps hold no transcript.
+        let kept = stage == "join" || key == "failed";
+        conn.execute(
+            "INSERT INTO checkpoints (note_id, stage, key, payload) VALUES (?1, ?2, ?3, ?4)",
+            params![id, stage, key, if kept { "{}" } else { payload.as_str() }],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO recognition_output (note_id, generation, key, revision, payload)
+         VALUES (?1, 'g', 'window-0', 1, ?2)",
+        params![id, payload],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO recognition_epochs (note_id, generation, next_epoch) VALUES (?1, 'g', 1)",
+        [id],
+    )
+    .unwrap();
+}
+
+/// The stage and key of each checkpoint of `id`, in order.
+fn checkpoint_rows(conn: &Connection, id: &str) -> Vec<(String, String)> {
+    let mut stmt = conn
+        .prepare("SELECT stage, key FROM checkpoints WHERE note_id = ?1 ORDER BY stage, key")
+        .unwrap();
+    stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn recognition_rows(conn: &Connection, id: &str) -> i64 {
+    ["recognition_output", "recognition_epochs"]
+        .iter()
+        .map(|table| {
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE note_id = ?1"),
+                [id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        })
+        .sum()
+}
+
+fn pairs(rows: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = rows
+        .iter()
+        .map(|(s, k)| (s.to_string(), k.to_string()))
+        .collect();
+    out.sort();
+    out
+}
+
+const SAVED: &str = r#"{"state":"saved"}"#;
+const CAPTURING: &str = r#"{"state":"capturing"}"#;
+
+#[test]
+fn migration_twenty_five_clears_saved_notes_and_keeps_unfinished_ones() {
+    // AE13: a database from the previous schema.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_four(&path);
+        add_content(&conn, "saved", SAVED);
+        add_content(&conn, "open", CAPTURING);
+    }
+
+    drop(Store::open(&path).unwrap());
+
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        checkpoint_rows(&conn, "saved"),
+        pairs(&[("join", "done"), ("summarize", "failed")])
+    );
+    assert_eq!(recognition_rows(&conn, "saved"), 0);
+    assert_eq!(checkpoint_rows(&conn, "open"), pairs(&CONTENT_CHECKPOINTS));
+    assert_eq!(recognition_rows(&conn, "open"), 2);
+}
+
+#[test]
+fn migration_twenty_five_keeps_the_summary_cache_of_a_waiting_title_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_four(&path);
+        add_content(&conn, "titled", SAVED);
+        conn.execute(
+            "INSERT INTO checkpoints (note_id, stage, key, payload)
+             VALUES ('titled', 'summarize', 'title-request', '{}')",
+            [],
+        )
+        .unwrap();
+    }
+
+    drop(Store::open(&path).unwrap());
+
+    let conn = Connection::open(&path).unwrap();
+    assert_eq!(
+        checkpoint_rows(&conn, "titled"),
+        pairs(&[
+            ("join", "done"),
+            ("summarize", "chunk-0"),
+            ("summarize", "failed"),
+            ("summarize", "title-request"),
+        ])
+    );
+    assert_eq!(recognition_rows(&conn, "titled"), 0);
+}
+
+#[test]
+fn after_migration_twenty_five_no_file_holds_the_transcript_of_a_saved_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let conn = version_twenty_four(&path);
+        add_content(&conn, "saved", SAVED);
+        // A build with migration 0024 already ran its VACUUM.
+        conn.execute("UPDATE computer SET vacuum_owed = 0", [])
+            .unwrap();
+        // Free pages from an earlier delete with no secure_delete.
+        conn.execute(
+            "INSERT INTO checkpoints (note_id, stage, key, payload)
+             VALUES ('saved', 'verify', 'v1', ?1)",
+            [TRANSCRIPT_TEXT.repeat(200)],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM checkpoints WHERE stage = 'verify'", [])
+            .unwrap();
+    }
+    assert!(file_holds(&path, TRANSCRIPT_TEXT));
+
+    let store = Store::open(&path).unwrap();
+    assert!(store.session("saved").unwrap().is_some());
+    assert_eq!(free_pages(&path), 0);
+    assert!(!file_holds(&path, TRANSCRIPT_TEXT));
+    assert!(!file_holds(
+        &dir.path().join("longhand.db-wal"),
+        TRANSCRIPT_TEXT
     ));
 }

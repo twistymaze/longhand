@@ -624,41 +624,6 @@ impl Store {
         tx.commit()?;
         Ok(())
     }
-
-    /// Delete the live NeMo blocks (`nemo/{epoch}/`) of each epoch of the
-    /// current generation that has a native-final copy
-    /// (`native-final/{epoch}/`). The save of the note calls this.
-    /// An epoch that a live worker still writes has no native-final copy,
-    /// so its blocks stay.
-    pub fn delete_finished_live_blocks(&mut self, id: &str) -> crate::jobs::Result<()> {
-        let tx = self.conn.transaction()?;
-        let Some(generation) =
-            generation_in(&tx, id, &crate::jobs::stage_key(crate::Stage::Transcribe))?
-        else {
-            return Ok(());
-        };
-        // The epoch starts after the prefix. SQLite counts characters from 1.
-        let epoch_start = NATIVE_FINAL_PREFIX.chars().count() as i64 + 1;
-        let end = format!("{NATIVE_FINAL_PREFIX}{}", char::MAX);
-        let epochs = {
-            let mut stmt = tx.prepare(
-                "SELECT DISTINCT substr(key, ?3, instr(substr(key, ?3), '/') - 1) \
-                 FROM recognition_output \
-                 WHERE note_id=?1 AND generation=?2 AND key >= ?4 AND key < ?5 \
-                 AND instr(substr(key, ?3), '/') > 0",
-            )?;
-            stmt.query_map(
-                params![id, generation, epoch_start, NATIVE_FINAL_PREFIX, end],
-                |r| r.get::<_, String>(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for epoch in epochs {
-            delete_prefix(&tx, id, &generation, &format!("{LIVE_NEMO_PREFIX}{epoch}/"))?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
 }
 
 /// The generation that the checkpoints of the stage name `stage` hold.

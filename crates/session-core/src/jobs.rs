@@ -237,13 +237,14 @@ impl Adoption {
 /// The stages that hold this computer's recognition results for a note:
 /// the decoded audio, the transcription (window rows and live parts) and
 /// the speaker analysis (KTD12).
-const RECOGNITION_STAGES: [Stage; 3] = [Stage::Assemble, Stage::Transcribe, Stage::Diarize];
+pub(crate) const RECOGNITION_STAGES: [Stage; 3] =
+    [Stage::Assemble, Stage::Transcribe, Stage::Diarize];
 
 /// The stages whose checkpoints a Transcribe Again run replaces: every
 /// stage. Assemble is one of them because its completion mark would skip
 /// the stage, and the run needs the processing files that Assemble decodes
 /// again from the session's folder (KTD14).
-const AGAIN_STAGES: [Stage; 7] = [
+pub(crate) const AGAIN_STAGES: [Stage; 7] = [
     Stage::Assemble,
     Stage::Diarize,
     Stage::Transcribe,
@@ -265,7 +266,7 @@ const START_OVER_STAGES: [Stage; 5] = [
 
 /// The stage name that holds a copy of `stage`'s checkpoints from before a
 /// Transcribe Again run. [`Store::checkpoints`] never reads it.
-fn previous_key(stage: Stage) -> String {
+pub(crate) fn previous_key(stage: Stage) -> String {
     format!("previous_{}", stage_key(stage))
 }
 
@@ -1219,6 +1220,16 @@ impl Store {
             .conn
             .pragma_query_value(None, "secure_delete", |r| r.get::<_, i64>(0))?
             == 1)
+    }
+
+    /// Whether `PRAGMA quick_check` finds the store correct. The cleanup
+    /// of old backups deletes a backup that it cannot clean only after
+    /// this check passed (KTD15 of the transcript removal plan).
+    pub fn quick_check(&self) -> Result<bool> {
+        let first: String = self
+            .conn
+            .query_row("PRAGMA quick_check", [], |r| r.get(0))?;
+        Ok(first == "ok")
     }
 
     // ------------------------------------------------------------ last-written fingerprints
