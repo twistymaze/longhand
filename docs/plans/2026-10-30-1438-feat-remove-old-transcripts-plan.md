@@ -13,8 +13,10 @@ execution: code
 ## Goal Capsule
 
 - **Objective:** A user can choose that old notes keep only their summary, manual notes, title and tags. The full transcript of a note does not stay on disk longer than the user wants.
-- **Means:** A second removal setting and a Remove Transcript action, built on the mechanisms of audio removal (`docs/plans/2026-09-30-0357-feat-remove-old-audio-plan.md`).
-- **Product authority:** The Product Contract wins on behavior. Audio removal behavior does not change, except where R4 links the two settings. Source idea: `docs/ideas/next/remove-old-transcripts.md`.
+- **Means:** A `transcript.removed` marker beside the transcript, a removal step that reuses the audio removal step, and a transcript part in the existing removal pass (KTD1, KTD3, KTD6).
+- **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Audio removal behavior does not change, except where R4 links the two settings. Source idea: `docs/ideas/next/remove-old-transcripts.md`.
+- **Stop conditions:** Stop and ask when a change would remove a transcript while the shared settings cannot be read, would delete a file other than the names in KTD4, would let any computer write `transcript.md` into a note with a marker, or would make a note with a removed transcript show as waiting for sync after the sync is complete.
+- **Execution profile:** Implement with `ce-work` in a worktree from `origin/main`, one commit per unit, then one PR (`feat`; ask patch or minor before the PR). Settings, removal and the note page are testable in `tauri dev`; give a signed build for the manual test of two computers on one synced folder.
 - **Open blockers:** None.
 
 ---
@@ -98,6 +100,7 @@ Audio removal deletes the most private part of a note after 30 days by default. 
 - No change to audio removal, except R5.
 - Copies that the sync service keeps, such as its recycle bin or version history, are out of Longhand's control.
 - Delete Note does not change.
+- Considered and not built: removing transcript rows from the automatic rebuild backups of the store (`crates/session-core/src/backup.rs`). They are rare, deleted by count, and local to one computer. A report that users keep these backups would change this.
 
 ### Dependencies / Assumptions
 
@@ -108,13 +111,12 @@ Audio removal deletes the most private part of a note after 30 days by default. 
 
 ### Outstanding Questions
 
-**Deferred to Planning**
+**Deferred to Implementation**
 
-- How another computer tells an intentional removal of `transcript.md` from a partial sync or a hand delete. The audio removal marker is the pattern to consider.
-- Which stored copies R7 covers. Known copies: `recognition.jsonl` (today removed only with the last audio); the `recognition_snapshot`, `recognition_artifact`, `recognition_audio` and `found_speakers` fields of `longhand.json`; the transcript fingerprints in `longhand.json`, `session.md` and the store; and, in the local store, the `recognition_output` and `recognition_epochs` rows, the Transcribe, Diarize and Assemble checkpoints, and `sessions.recognition_snapshot`.
 - The controls for the two linked delays in Settings > Storage (R3–R5). Use the `apple-design` skill.
 - The UI text of the confirmations (R17, R18, R19) and of the explanation on the unavailable actions (R15).
-- What a user hand delete of `transcript.md` means after this feature: a removal, or a hand edit as today.
+
+The other questions that the brainstorm deferred are resolved in KTD1 (the removal signal), KTD4 (the copies that go) and KTD2 (a hand delete stays a hand edit).
 
 ### Sources / Research
 
@@ -125,3 +127,361 @@ Audio removal deletes the most private part of a note after 30 days by default. 
 - `crates/session-core/src/note_record.rs` — the fields of `longhand.json`.
 - `CONCEPTS.md` — Remove Audio, Note record file, the waiting state for a fingerprint mismatch, Regenerate Summary, Transcribe Again.
 - `plugins/longhand/skills/longhand-notes/SKILL.md`, `references/files.md` — list `transcript.md` as an editable file and do not say that it can be missing.
+
+**Product Contract preservation:** restructured, no scope change: the deferred planning questions are resolved in KTD1, KTD2 and KTD4; R-IDs, AEs and Key Decisions unchanged.
+
+---
+
+## Planning Contract
+
+### Key Technical Decisions
+
+- KTD1. **A marker file `transcript.removed` in the home folder records the removal.** It has fixed content, no leading dot (the watcher skips dot names, `src-tauri/src/managers/library.rs` `should_skip_path`), and a name that `crates/library/src/conflict.rs` `document_copy` does not match. A marker present means the transcript is removed, whether `transcript.md` is still on disk or not. A field in `longhand.json` was rejected for the reason in KTD1 of the audio plan: other writers rebuild the record from their own store, and older builds drop unknown fields. A higher `layout` was rejected because older builds then show a problem notice on each such note (session-settled: user-approved — chosen over a `longhand.json` field and over a higher `layout`: the marker survives every writer, and only the sync service moves it). Governs R11, R13, R16.
+- KTD2. **Only the marker makes a removal.** A `transcript.md` that a person deletes by hand, with no marker, stays a hand edit as today (`crates/library/src/reconcile.rs` `HAND_EDIT_WAIT`). Governs R13.
+- KTD3. **The transcript step reuses the audio step and keeps its order.** Under one Delete Note claim and the same guards as `crates/pipeline/src/remove_audio.rs` `run_step`: (1) remove each segment's audio that is left, with the existing per-segment marker-then-delete; (2) only when (1) left every segment with its removal marker and no audio file (`Removal::complete()`, or the note has no segments), write `transcript.removed` — otherwise stop with the audio reason and keep the transcript; (3) delete the files of KTD4; (4) write `longhand.json` last, under the store lock, with the fields of KTD4 cleared; (5) clear the store rows of KTD4 and set the store flag. A crash after (2) leaves a marker, and any computer's next pass finishes (3) to (5), as `finish_removal` does for audio. A note needs finishing when it has the marker and a file of KTD4 is still present, or this computer's store flag is not set, or its record still has a field of KTD4. Each effect is detected from disk alone, so a repeat run changes nothing (`docs/solutions/logic-errors/save-state-machine-crash-window-recovery.md`). Governs R7, R8, R18.
+- KTD4. **The copies that go, by fixed name only.** In the canonical home folder: `transcript.md`, its sync conflict copies (`conflict::document_copy` of `transcript.md`), `recognition.jsonl`, and the `.longhand-results/` copies (`crates/pipeline/src/remove_copies.rs` deletes them when the marker is present, not only when `transcript.md` and `summary.md` both exist). In `longhand.json`: `transcript_fingerprint`, `recognition_snapshot`, `recognition_artifact` and `recognition_audio`; `found_speakers` stays, because it is a count with no text. In the store: `Store::clear_recognition_results`, the transcript fingerprint, `recognition_snapshot`, the `replacement-base` and `pending-snapshot` result state, and any Summarize checkpoints of the note. Deletes use `remove_regular_file` (metadata only, `symlink_metadata`, refuses links and folders) and a canonical-equality folder check (`docs/solutions/security-issues/audio-removal-trusted-synced-file-names-before-delete.md`). No name is read from a synced file. Governs R7, R9.
+- KTD5. **The store overwrites deleted text.** `Store::open` sets `secure_delete` with the other pragmas (`crates/session-core/src/jobs.rs`). `secure_delete` clears only pages freed while it is on, so the first open after the new migration runs one `VACUUM` outside a transaction to remove the free pages of earlier builds. The store uses WAL, so a step, a pass or a refresh that cleared rows of KTD4 ends with a `wal_checkpoint(TRUNCATE)` outside the transaction. After that, neither the database file nor the WAL holds the removed text. Governs R7.
+- KTD6. **One pass removes audio and transcripts.** The transcript part joins `src-tauri/src/managers/audio_removal.rs` `run_pass`: part 1 also finishes each note that needs finishing (KTD3) whatever the setting, and a scan that finds such a note wakes the pass, so a `transcript.md` that a late publication wrote does not wait for the timer; a new part 3 writes new transcript markers only while the effective delay (KTD7) is known and on. The same timer, launch run, settings-change run, in-use guard (`own_runs`), open-Move stop and per-note re-check under the lock apply. An unfinished local publication of the note counts as in use. Governs R10, R11, R12.
+- KTD7. **The effective delay enforces R4 where it is read.** The shared file keeps the user's two values (rule 8 of `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`). The pass, the count and Remove Transcript's guards use one function: unknown if either value is unknown or the shared settings are not available; off if the transcript value is off or absent, or audio removal is off; otherwise the larger of the two delays. A pair that two computers saved out of order gives the longer delay, never a shorter one. `set_audio_removal` writes both fields in one save when R5 changes the transcript value. `set_transcript_removal` refuses a value that breaks R4. Governs R2, R4, R5, R20.
+- KTD8. **The new shared field follows the audio field.** `KEY_TRANSCRIPT_REMOVAL = "transcript_removal"` in `crates/shared-settings/src/file.rs`, with the same off-or-days encoding and range (1 to 3650), a `SharedValue` variant and `Field::Unknown` for a value this build cannot read. Unlike audio, `Absent` means off. `default_settings()` writes `"off"`. Governs R1, R2.
+- KTD9. **Every reader treats the marker as a finished removal.** The scan (`crates/library/src/scan.rs` `read_folder`) reads the marker with metadata only, carries it on `NoteFolder`, and adds no `Waiting::Transcript` for a note with a marker. The refresh and adopt (`crates/library/src/refresh.rs`, `reconcile.rs`) set the store flag from the folder and clear this computer's own store rows of KTD4. A receiving computer writes nothing into the home folder for this, except the pass of KTD6. A new migration (next free number on `main` at merge; `0024` today) adds the flag. A rebuild derives it from the marker, so no state lives only in the store. Governs R13, R16, R18.
+- KTD10. **No writer puts a transcript back.** The publication (`crates/session-save/src/publication.rs` `publish_with` and its roll-forward) is the only writer into the home folder. It checks for `transcript.removed` together with its existing `fields()? != before` check before each file write, and again under the lock before `longhand.json`, for both `WriteSet::Result` and `WriteSet::Summary`, and returns `Outcome::Conflict` when the marker is there. `crates/pipeline/src/join.rs` and `crates/pipeline/src/recognition/stages.rs` write only the working folder and need no guard. Regenerate Summary, Transcribe Again and Resume refuse up front with the transcript reason (R14). Governs R13, R14.
+- KTD11. **The note page reads the transcript as optional.** `session_document` (`src-tauri/src/commands/session.rs` `read_document`) returns the summary when `transcript.md` is missing; today a missing transcript fails the whole call. `SessionDetail` gets a transcript state (`present` or `removed`) beside `audio`, from the store flag. Governs R15, R16.
+
+### High-Level Technical Design
+
+The transcript of one note, as each computer sees it:
+
+```mermaid
+stateDiagram-v2
+  [*] --> Present
+  Present --> Marked: the step writes transcript.removed
+  Marked --> Removed: the same computer deletes the files and writes longhand.json
+  Marked --> Removed: any computer's pass finishes the step
+  Present --> HandEdit: transcript.md goes with no marker (KTD2)
+  Removed --> [*]
+```
+
+Present shows the Transcript tab and offers its actions. Marked and Removed both count as removed for every reader (KTD9): no tab, no wait, the reasons of R15. HandEdit is today's path.
+
+The transcript part of one pass, for each candidate note:
+
+```mermaid
+flowchart TB
+  M[Part 1: a note with a marker and files left? finish the step under the in-use guard] --> A
+  A[Effective delay known and on? KTD7] -->|no| Z[Stop the transcript part]
+  A -->|yes| B[Saved, no claim, no open Move, folder available, not in use?]
+  B -->|no| S[Skip the note]
+  B -->|yes| C[Has a transcript and last recording end plus delay in the past?]
+  C -->|no| S
+  C -->|yes| D[Take the claim, check the guards again under the lock]
+  D --> E[Audio left -> remove it; marker; delete files; longhand.json; store]
+```
+
+### Assumptions
+
+- Every shipped build fails to open the note page of a note with no `transcript.md` (`read_document`) and fails Regenerate Summary with "The transcript is missing." A user who runs an older build on the same storage folder sees this for removed notes until they update. An older build cannot write the transcript again: Transcribe Again and Resume need audio, which R4 removed first.
+- The sync service delivers a new file (the marker) and a delete in either order; KTD1 and KTD9 cover both orders.
+
+### Risks
+
+- **Automatic rebuild backups keep old databases.** `crates/session-core/src/backup.rs` keeps up to three moved-aside databases from a rebuild, with the transcript rows of that time. They are deleted by count, not by this feature. Accepted; see Scope Boundaries.
+- **A partial pair of settings from two computers.** KTD7 makes the result the longer delay, so a wrong pair keeps data longer, never shorter.
+- **The agent skill check sees Longhand's own removal during an agent session.** U9 teaches `check.py` the marker and the deletes that go with it (`docs/solutions/integration-issues/note-check-must-follow-what-longhand-and-a-sync-do.md`).
+
+### Sequencing
+
+U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U2. U7 needs U5. U8 needs U5 and U6. U9 needs U1 and U2. U10 last.
+
+---
+
+## Implementation Units
+
+| U-ID | Title | Key files | Depends on |
+|---|---|---|---|
+| U1 | Shared setting and effective delay | `crates/shared-settings/src/file.rs`, `view.rs`, `src-tauri/src/managers/settings.rs`, `shared.rs` | — |
+| U2 | Marker, folder state and store flag | `crates/session-core/src/folder.rs`, `migrations/0024_*`, `jobs.rs` | — |
+| U3 | Readers and writer guards | `crates/library/src/scan.rs`, `refresh.rs`, `reconcile.rs`, `status.rs`, `crates/session-save/src/publication.rs` | U2 |
+| U4 | The removal step | `crates/pipeline/src/remove_transcript.rs`, `remove_audio.rs`, `remove_copies.rs` | U2, U3 |
+| U5 | Pass, count and commands | `src-tauri/src/managers/audio_removal.rs`, `commands/session.rs`, `commands/settings.rs`, `lib.rs` | U1, U4 |
+| U6 | Note read paths and refusals | `src-tauri/src/commands/session.rs`, `managers/processing.rs`, `crates/pipeline/src/reprocess.rs` | U2 |
+| U7 | Settings UI | `src/settings/TranscriptRemoval.tsx`, `AudioRemoval.tsx`, `DestinationPicker.tsx` | U5 |
+| U8 | Note page UI | `src/session/RemoveTranscript.tsx`, `SessionPage.tsx` | U5, U6 |
+| U9 | Agent skill and drift test | `plugins/longhand/skills/longhand-notes/**`, `crates/library/tests/skill_drift.rs`, `testdata/storage-folder/` | U1, U2 |
+| U10 | Docs | `CONCEPTS.md`, `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md` | all |
+
+### U1. Shared setting and effective delay
+
+**Goal:** The transcript removal value is a shared setting with an effective delay that enforces R4 wherever it is read.
+
+**Requirements:** R1, R2, R4, R5; KTD7, KTD8.
+
+**Dependencies:** None.
+
+**Files:** `crates/shared-settings/src/file.rs`, `crates/shared-settings/src/view.rs`, `crates/shared-settings/tests/file.rs`, `crates/shared-settings/tests/two_computers.rs`, `src-tauri/src/managers/settings.rs`, `src-tauri/src/managers/shared.rs`.
+
+**Approach:**
+1. Add the field per KTD8; share the off-or-days encoding with `AudioRemoval` where that keeps the code smaller.
+2. Add the view reader (`Absent` = off, `Unknown` = unknown, not `Available` = unknown) and the effective-delay function of KTD7 beside `audio_removal_days()`.
+3. Add `TranscriptRemovalSetting` to the app `Settings`, its patch in the diff, apply from `SharedValue`, and `SharedSnapshot::transcript_removal_days` returning the effective value.
+
+**Patterns to follow:** `AudioRemoval`, `audio_removal_days`, `AudioRemovalSetting` and their tests.
+
+**Test scenarios:**
+- Covers AE9. A settings file with no `transcript_removal` key reads as off.
+- `"off"`, `1`, `3650` parse; `0`, `3651` and `"soon"` read as `Unknown`, and a save of another field keeps the unknown value.
+- Effective delay: transcript 60, audio 30 gives 60; transcript 20, audio 30 gives 30; audio off gives off; either unknown gives unknown; shared settings not available gives unknown.
+- A save of the audio field from another computer keeps the transcript field.
+- `default_settings()` writes `"off"`.
+
+**Verification:** The shared-settings and settings tests pass, and the drift test of U9 lists the new `SharedValue`.
+
+### U2. Marker, folder state and store flag
+
+**Goal:** The marker exists as a named concept, the store can hold the flag, and the store overwrites deleted rows.
+
+**Requirements:** R7, R16; KTD1, KTD5, KTD9.
+
+**Dependencies:** None.
+
+**Files:** `crates/session-core/src/folder.rs`, `crates/session-core/migrations/0024_transcript_removed.sql` (next free number at merge), `crates/session-core/src/schema.rs`, `crates/session-core/src/jobs.rs`, `crates/session-core/tests/folder.rs`, `crates/session-core/tests/jobs.rs`, `crates/session-core/tests/migrations.rs`.
+
+**Approach:**
+1. Add the marker name and fixed text beside `REMOVAL_MARKER_SUFFIX`, and a metadata-only `transcript_removed(home)` check.
+2. Add the flag column and `Store::transcript_removed` / `set_transcript_removed`, plus one store call that clears the rows of KTD4 for a note.
+3. Set `secure_delete` in `Store::open`.
+
+**Patterns to follow:** `audio_removed`, migration `0014_segment_audio_removed.sql`, `Store::set_removed_audio`, `clear_recognition_results`.
+
+**Test scenarios:**
+- The marker name has no leading dot, and `conflict::document_copy` does not match it.
+- A marker with any content counts.
+- The migration runs on a database of the previous schema with rows in it, and every existing note reads as not removed.
+- The clear call removes the recognition rows, fingerprint, snapshot, result state and Summarize checkpoints of one note and leaves another note's rows.
+- `secure_delete` is on for a store that `Store::open` opened.
+- A store with rows deleted before the migration has no free pages after the first open.
+
+**Verification:** session-core tests pass, including the migration test from the old schema.
+
+### U3. Readers and writer guards
+
+**Goal:** Every computer reads a marker as a finished removal, and no writer puts a transcript back.
+
+**Requirements:** R13, R16; AE8; KTD2, KTD9, KTD10.
+
+**Dependencies:** U2.
+
+**Files:** `crates/library/src/scan.rs`, `crates/library/src/refresh.rs`, `crates/library/src/reconcile.rs`, `crates/library/src/status.rs`, `crates/session-save/src/publication.rs`, `crates/library/tests/scan.rs`, `crates/library/tests/two_computers.rs`, `crates/session-save/tests/publication.rs`.
+
+**Approach:**
+1. `read_folder` reads the marker and adds no `Waiting::Transcript` when it is present (KTD9).
+2. Refresh and adopt set the store flag and clear this computer's rows (U2) when the folder has the marker.
+3. The publication checks for the marker before each write, for both write sets (KTD10).
+
+**Execution note:** Write the two-computer tests red first, with the whole change delivered and with each partial order.
+
+**Patterns to follow:** `removed_audio` in `scan.rs`; `a_missing_transcript_expires_after_the_wait` and `a_new_transcript_from_b_clears_as_recognition_results_for_that_note` in `crates/library/tests/two_computers.rs`.
+
+**Test scenarios:**
+- Covers AE8. B's whole removal reaches A: A shows the note complete, with no wait, the flag set and A's recognition rows cleared.
+- The marker arrives before the delete of `transcript.md`: no wait, and the receiving scan writes nothing into the home folder.
+- The delete arrives before the marker: the note waits as today until the marker arrives, then is complete.
+- `transcript.md` deleted with no marker still waits, then counts as a hand edit after the wait.
+- A publication (result or summary) on a note whose folder has the marker writes no `recognition.jsonl`, `transcript.md` or `longhand.json` and ends as a conflict.
+- A roll-forward of an unfinished publication after the marker arrived writes nothing.
+- An open note page gets a `LibraryChanged` for the note when the marker arrives.
+
+**Verification:** library and session-save tests pass; each new test fails when its guard is removed for a moment.
+
+### U4. The removal step
+
+**Goal:** One step removes a note's transcript and any audio left, in the order of KTD3.
+
+**Requirements:** R6, R7, R8, R9, R10, R17, R18; KTD3, KTD4.
+
+**Dependencies:** U2, U3.
+
+**Files:** `crates/pipeline/src/remove_transcript.rs` (new), `crates/pipeline/src/remove_audio.rs`, `crates/pipeline/src/remove_copies.rs`, `crates/pipeline/src/lib.rs`, `crates/pipeline/tests/remove_transcript.rs` (new), `crates/pipeline/tests/remove_copies.rs`.
+
+**Approach:**
+1. Expose from `remove_audio.rs` the claim, guard, canonical home and per-segment removal so the transcript step reuses them inside one claim.
+2. Add `remove_transcript`, `finish_transcript_removal` (the finishing condition of KTD3) and a transcript eligibility shared by pass and count: Saved, no claim, not in use, has a transcript, last `wall_end` plus the effective delay in the past; store only, opens no file.
+3. Change `remove_copies` so a marker lets it delete the `.longhand-results/` copies.
+4. Write `longhand.json` with the existing record writer, which handles both layouts, holding the store lock from read to write (`docs/solutions/logic-errors/note-record-writers-undid-each-other.md`).
+
+**Patterns to follow:** `remove_audio.rs` (`run_step`, `finish_removal`, `eligibility`) and its tests.
+
+**Test scenarios:**
+- Covers AE1. A note 100 days old with transcript delay 90 loses `transcript.md`, `recognition.jsonl` and the record fields; summary, notes, title and tags are unchanged.
+- Covers AE6. A note with audio loses audio and transcript in one call.
+- A crash after the marker leaves files; `finish_transcript_removal` deletes them and writes the record.
+- A crash after the file deletes and before the `longhand.json` write; the next pass clears the record fields and the store rows.
+- An unsafe audio name or a failed audio marker write on one segment leaves `transcript.md` and writes no `transcript.removed`.
+- The marker is written before the first delete (an injected delete that fails leaves the marker).
+- A second run changes nothing.
+- A conflict copy `transcript (1).md` goes; `Transcript.MD`, a symlink named `transcript.md` and a folder named `transcript.md` are refused or skipped as `remove_audio` does.
+- A hand-edited `transcript.md` goes (R9).
+- A note that is not Saved, is claimed, or has a fresh in-use marker of another run is not touched.
+- Eligibility: no recording, already removed, and not yet due are not eligible; the check opens no file.
+- `.longhand-results/` copies go when the marker is present.
+
+**Verification:** pipeline tests pass; each new test fails under a mutation of the code it guards.
+
+### U5. Pass, count and commands
+
+**Goal:** The pass removes old transcripts, and the commands give Remove Transcript, the setting and its confirmation count.
+
+**Requirements:** R3, R4, R5, R10, R11, R12, R17, R19, R20; AE2, AE3, AE5; KTD6, KTD7.
+
+**Dependencies:** U1, U4.
+
+**Files:** `src-tauri/src/managers/audio_removal.rs`, `src-tauri/src/commands/session.rs`, `src-tauri/src/commands/settings.rs`, `src-tauri/src/lib.rs`, `src/bindings.ts` (generated).
+
+**Approach:**
+1. Add the transcript work to `run_pass` per KTD6, with the effective delay re-read per note, and a `count_eligible` for transcripts.
+2. Add the `remove_transcript` command beside `remove_audio`, with the same refusals and `own_runs` in-use check.
+3. Add `set_transcript_removal` and `transcript_removal_count` beside the audio pair; the count is 0 unless the change removes more.
+4. In `set_audio_removal`, write the transcript field in the same save when R5 moves it; that save never asks and never removes.
+
+**Patterns to follow:** the audio parts of the same files and their tests (`Library::saved_note`, `Pass::new`).
+
+**Test scenarios:**
+- A pass with the effective delay on removes a due transcript and leaves a note that is not due.
+- A pass with the shared settings not available removes nothing new and still finishes a marked note.
+- A setting that turns off during a pass stops the next new removal.
+- A fresh in-use marker and an open Move keep the transcript.
+- Covers AE2. Audio 30 to 90 with transcripts at 60 sets transcripts to 90 in the same save and removes nothing.
+- Covers AE3. Turning audio off turns transcripts off.
+- `set_transcript_removal` refuses a value below the audio delay and refuses on while audio is off.
+- Covers AE5. The count for 365 to 90 counts the 100-day notes; the count for 90 to 365 is 0.
+- `remove_transcript` refuses an unavailable folder, a busy note and an open Move with plain-word reasons.
+
+**Verification:** src-tauri tests pass and the bindings are regenerated.
+
+### U6. Note read paths and refusals
+
+**Goal:** A note with a removed transcript opens with its summary and gives the transcript reason on each unavailable action.
+
+**Requirements:** R14, R15, R16; AE7; KTD10, KTD11.
+
+**Dependencies:** U2.
+
+**Files:** `src-tauri/src/commands/session.rs`, `src-tauri/src/managers/processing.rs`, `crates/pipeline/src/reprocess.rs`, `crates/pipeline/src/save.rs`.
+
+**Approach:**
+1. `read_document` returns no transcript and no lines when `transcript.md` is missing (KTD11).
+2. Add the transcript state to `SessionDetail`.
+3. Regenerate Summary refuses before the claim; Transcribe Again gets a `Cause` for a removed transcript that wins over the audio cause; the Resume refusal gives the transcript reason ahead of `AUDIO_REMOVED`.
+
+**Patterns to follow:** `AudioView`, `Cause::RemovedAudio`, `record_refusal`.
+
+**Test scenarios:**
+- `session_document` of a note with no `transcript.md` returns its summary.
+- `SessionDetail` of a note with the flag says `removed`.
+- Covers AE7. Regenerate Summary, Transcribe Again and Resume each refuse with the transcript reason and start no job.
+- A note with only removed audio still gives the audio reason.
+
+**Verification:** src-tauri and pipeline tests pass.
+
+### U7. Settings UI
+
+**Goal:** Settings > Storage shows the transcript control below audio removal with R4 and R5 visible.
+
+**Requirements:** R3, R4, R5, R19, R20; AE2, AE3, AE4, AE5.
+
+**Dependencies:** U5.
+
+**Files:** `src/settings/TranscriptRemoval.tsx` (new), `src/settings/TranscriptRemoval.test.tsx` (new), `src/settings/AudioRemoval.tsx`, `src/settings/AudioRemoval.test.tsx`, `src/settings/DestinationPicker.tsx`.
+
+**Approach:** Invoke `apple-design` first. Mirror `AudioRemoval.tsx`: `CommitField` and `Switch`, a confirmation only when the count is above 0, no question and no removal on an unattended commit, the latest state from a ref at unmount (`docs/solutions/ui-bugs/single-line-setting-lost-at-close-or-pane-change.md`). The control is unavailable while audio removal is off and does not accept fewer days than the audio delay. After an R5 change, show the saved transcript value without waiting for the props (`docs/solutions/ui-bugs/own-save-taken-for-a-change-on-another-computer.md`).
+
+**Test scenarios:**
+- Covers AE4. With audio off, the transcript control is unavailable.
+- Covers AE5. A shorter delay with a count above 0 asks; Cancel keeps 365.
+- Covers AE2. Raising audio above the transcript delay shows the new transcript value and asks nothing.
+- An unattended commit (pane change) of a shorter transcript delay saves nothing.
+- A value below the audio delay is not accepted.
+
+**Verification:** `npm test` and `npm run typecheck` pass.
+
+### U8. Note page UI
+
+**Goal:** Remove Transcript is on the note menu, and a removed transcript shows no tab and no mark.
+
+**Requirements:** R14, R15, R17, R18; AE6, AE7.
+
+**Dependencies:** U5, U6.
+
+**Files:** `src/session/RemoveTranscript.tsx` (new), `src/session/SessionPage.tsx`, `src/session/SessionPage.test.tsx`.
+
+**Approach:** Invoke `apple-design` first. Mirror `RemoveAudio.tsx`: one destructive confirmation that names the audio when the note still has it (R18). Filter the Transcript tab out and fall back to Notes when the transcript is removed. Give Regenerate Summary (menu and Summary tab button), Transcribe Again and Copy of the transcript the reason or hide them, as the audio pattern does. Show no notice for an automatic removal.
+
+**Test scenarios:**
+- Covers AE6. Confirm removes; the tab goes and the summary stays.
+- Cancel and Escape remove nothing.
+- The confirmation names the audio only when the note has audio.
+- Covers AE7. A removed note shows no Transcript tab and no mark, and the menu gives the transcript reason.
+- A refused removal shows its reason.
+
+**Verification:** `npm test` passes.
+
+### U9. Agent skill and drift test
+
+**Goal:** The Longhand notes skill accepts a missing `transcript.md`, knows the marker and the setting, and its check does not report Longhand's own removal.
+
+**Requirements:** R21.
+
+**Dependencies:** U1, U2.
+
+**Files:** `plugins/longhand/skills/longhand-notes/SKILL.md`, `references/files.md`, `references/layout.md`, `references/answering.md`, `references/settings.md`, `scripts/_longhand.py`, `scripts/check.py`, `scripts/tests/test_check.py`, `crates/library/tests/skill_drift.rs`, `testdata/storage-folder/`.
+
+**Approach:**
+1. Add `transcript.removed` to the never-edit list; say that a note can have no `transcript.md` and that the agent must not create one.
+2. In `check.py`, a deleted `transcript.md` or `recognition.jsonl` and a new marker are not problems when the folder has the marker.
+3. Add the `transcript_removal` settings row and its value check, and say that Longhand uses the longer of the two delays (KTD7).
+4. Update `skill_drift.rs` and write the test storage folder again.
+
+**Test scenarios:**
+- A check across a Longhand removal (marker added, files deleted) passes.
+- A deleted `transcript.md` with no marker is still a problem.
+- An agent edit that creates `transcript.md` in a folder with the marker is a problem.
+- `skill_drift.rs` lists the new setting.
+
+**Verification:** the skill script tests and `skill_drift.rs` pass.
+
+### U10. Docs
+
+**Goal:** The glossary and the rules describe the shipped behavior.
+
+**Requirements:** All.
+
+**Dependencies:** U1–U9.
+
+**Files:** `CONCEPTS.md`, `docs/solutions/integration-issues/shared-settings-in-a-synced-folder-rules.md`.
+
+**Approach:** Add a Transcript removal entry beside Audio removal; change "Audio removal is the one exception" in the Library entry; add the marker to Waiting for a sync; name the new setting in rule 8 of the shared-settings rules.
+
+**Test expectation:** none -- docs only.
+
+**Verification:** The docs use the terms of the code and say nothing that the code does not do.
+
+---
+
+## Verification Contract
+
+- `cargo fmt --all --check` before each push.
+- Per unit: the new tests red first, then `cargo test -p <crate>` for the touched crates (`shared-settings`, `session-core`, `library`, `session-save`, `pipeline`, and `longhand` for `src-tauri`). Give each cargo test run a time limit.
+- At the end: one full `cargo test --workspace` and `cargo clippy --workspace --all-targets -- -D warnings`.
+- `npm run typecheck` and `npm test`.
+- The skill script tests: `uv run --no-project python -m unittest discover -s plugins/longhand/skills/longhand-notes/scripts/tests -t plugins/longhand/skills/longhand-notes/scripts`.
+- `scripts/check-windows.sh`.
+- Manual test in a signed build: two computers on one synced folder, the setting on with a short delay, removal on one and the open note page on the other.
+
+## Definition of Done
+
+- Every R1–R21 and AE1–AE9 is covered by a passing test or by the manual test.
+- Each new test was shown to fail under a mutation of the code it guards.
+- The Verification Contract passes, and CI is green with CodeQL.
+- `CONCEPTS.md` and the skill describe the shipped behavior.
+- No dead code from abandoned attempts is in the diff.
+- After merge, `docs/ideas/next/remove-old-transcripts.md` moves to `done/` with `node scripts/ideas.ts move`.
