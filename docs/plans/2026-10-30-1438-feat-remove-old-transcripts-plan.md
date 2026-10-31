@@ -15,7 +15,7 @@ execution: code
 - **Objective:** A user can choose that old notes keep only their summary, manual notes, title and tags. The full transcript of a note does not stay on disk longer than the user wants, and Longhand's database keeps no copy of a note's transcript or summary text after processing is done.
 - **Means:** A `transcript.removed` marker beside the transcript, a removal step that reuses the audio removal step, and a transcript part in the existing removal pass (KTD1, KTD3, KTD6). The database clears recognition data at save and the summary cache after the title (KTD12), and Resume reads old timed text from `recognition.jsonl` (KTD14).
 - **Product authority:** The Product Contract wins on behavior; the KTDs win on mechanism within it. Audio removal behavior does not change, except where R4 links the two settings. Source idea: `docs/ideas/next/remove-old-transcripts.md`.
-- **Stop conditions:** Stop and ask when a change would remove a transcript while the shared settings cannot be read, would delete a file other than the names in KTD4, would let any computer write `transcript.md` into a note with a marker, or would make a note with a removed transcript show as waiting for sync after the sync is complete.
+- **Stop conditions:** Stop and ask when a change would remove a transcript while the shared settings cannot be read, would delete a file other than the names in KTD4 or the audio that KTD3's existing audio step removes, would let any computer write `transcript.md` into a note with a marker, or would make a note with a removed transcript show as waiting for sync after the sync is complete.
 - **Execution profile:** Implement with `ce-work` in a worktree from `origin/main`, one commit per unit, then one PR (`feat`; ask patch or minor before the PR). Settings, removal and the note page are testable in `tauri dev`; give a signed build for the manual test of two computers on one synced folder.
 - **Open blockers:** None.
 
@@ -27,7 +27,7 @@ execution: code
 
 A second shared setting in Settings > Storage, off by default, permanently deletes the transcript of each saved note a set number of days after the note last recorded. Its delay is never shorter than the audio delay, so a note never keeps audio after its transcript is gone. A Remove Transcript action removes the transcript of one note, and any audio that is left, at once. Any computer that uses the storage folder can remove old transcripts.
 
-Longhand's database becomes an index only. When processing of a note is done, the database keeps no recognition data or summary cache for it; the files in the note folder are the only copy. Transcribe Again always transcribes from the audio, and Resume reads the old timed text from the note folder.
+Longhand's database becomes an index only. When processing of a note is done, the database keeps no timed recognition text, live part, speaker data or summary cache for it; the files in the note folder are the only copy. Index data stays: the state, the recognition settings snapshot, the found speaker count and the file fingerprints. Transcribe Again always transcribes from the audio, and Resume reads the old timed text from the note folder.
 
 ### Problem Frame
 
@@ -39,13 +39,14 @@ The transcript also has a second home. After a save, Longhand's local database k
 
 - **The transcript delay is never shorter than the audio delay.** A note with audio and no transcript can make the transcript again with Transcribe Again, so the transcript would not really be gone. Governs R4, R5. (session-settled: user-directed — chosen over "removing the transcript also removes the audio" and over two independent settings: the rule keeps the two settings in a fixed order.)
 - **Off by default.** Current users keep every transcript after the update. The transcript stays the record until the user chooses otherwise. Governs R2. (session-settled: user-approved — chosen over on by default at a long delay and over on for new installs only: no surprise loss for current users.)
-- **Remove Transcript also removes audio that is left.** One action takes a note down to its summary, manual notes, title and tags, and it keeps the order of R4 for one note. Governs R17. (session-settled: user-approved — chosen over an action that is available only after Remove Audio, and over no per-note action.)
+- **Remove Transcript also removes audio that is left.** One action takes a note down to its summary, manual notes, title and tags, and it keeps the order of R4 for one note. Governs R17, R18. (session-settled: user-approved — chosen over an action that is available only after Remove Audio, and over no per-note action.)
 - **Copy audio removal for everything else.** Permanent delete, the delay from the last recording, any computer removes, the in-use guard, no removal while the shared settings cannot be read, and a confirmation when a change removes data at once. Users learn one model, and the plan reuses tested mechanisms. Governs R6–R13, R19, R20.
-- **The database is an index, not a second copy.** Note content lives in files. The database keeps only what makes bulk reads fast, and state of unfinished work while that work runs. Governs R22, R23, R26, R27. (session-settled: user-directed — chosen over keeping recognition data in the database after the save for reuse: files are the source of truth.)
+- **The database is an index, not a second copy.** Note content lives in files. The database keeps only index data (R22) and the state of unfinished work while that work runs. Governs R22, R23, R26, R27. (session-settled: user-directed — chosen over keeping recognition data in the database after the save for reuse: files are the source of truth.)
 - **Transcribe Again transcribes again.** It reuses no earlier timed text; that is the point of the action. Governs R24. (session-settled: user-directed — chosen over reuse of compatible timed text.)
 - **Resume reads the old timed text from the note folder.** `recognition.jsonl` is the source; a run on any computer can use it while the audio is there. Governs R25. (session-settled: user-approved — chosen over transcribing every segment again on Resume.)
 - **Regenerate Summary calls the model for every part.** The summary cache goes when the title is done. Governs R23. (session-settled: user-approved — chosen over keeping the summary cache.)
-- **Old database backups are cleaned once.** Governs R27. (session-settled: user-directed — chosen over accepting the backups as an exception.)
+- **Old database backups are cleaned once.** Governs R27. (session-settled: user-directed — chosen over accepting the backups as an exception.) A backup that cannot be cleaned is deleted when the current database is valid; users keep their own backups against disk faults. (session-settled: user-directed — chosen over keeping and retrying it.)
+- **The setting skips a note whose summary failed.** Its transcript is the only record of the meeting. Governs R28. (session-settled: user-approved — chosen over removing it like any other note.)
 - **A note shows no mark that its transcript is gone.** The audio decision applies here too: most old notes will have no transcript, so a mark is noise. The fact shows only where it explains an unavailable action. Governs R15.
 
 ### Requirements
@@ -96,7 +97,11 @@ The transcript also has a second home. After a save, Longhand's local database k
 - R24. Transcribe Again transcribes all audio of the note again. It reuses no earlier timed text.
 - R25. Resume of a saved note reuses the old segments' timed text from `recognition.jsonl` in the note folder when the file matches the audio and the transcript, on any computer. Otherwise Resume transcribes all segments again.
 - R26. The first launch after the update clears the data of R22 and R23 for every saved note in the database, and leaves no free pages that hold it.
-- R27. The first launch after the update also clears that data from each database backup that Longhand keeps on this computer.
+- R27. The first launch after the update also clears that data from each database backup that Longhand keeps on this computer. A backup that Longhand cannot open or change is deleted, but only after the current database opened and passed its check.
+
+**Notes with no summary**
+
+- R28. The transcript removal setting does not remove the transcript of a note whose summary is the stub that a failed summary leaves. The confirmation of R19 says how many notes it skips for that reason. Remove Transcript on one note still removes it (R17).
 
 ### Acceptance Examples
 
@@ -113,6 +118,7 @@ The transcript also has a second home. After a save, Longhand's local database k
 - AE11. **Covers R24.** Given a saved note with audio, when the user runs Transcribe Again with no change in Settings, every segment is transcribed again.
 - AE12. **Covers R25.** Given a note that computer A recorded, when the user resumes it on computer B, only the new recording is transcribed and the old text is the same as before.
 - AE13. **Covers R26, R27.** Given a database and one rebuild backup from before the update, after the first launch neither holds timed text or summary cache of a saved note.
+- AE14. **Covers R28.** Given transcripts at 90 days and a 100-day-old note whose summary failed, the pass keeps its transcript, and a change to 60 days asks with a confirmation that names one skipped note.
 
 ### Scope Boundaries
 
@@ -138,6 +144,7 @@ The transcript also has a second home. After a save, Longhand's local database k
 
 - The controls for the two linked delays in Settings > Storage (R3–R5). Use the `apple-design` skill.
 - The UI text of the confirmations (R17, R18, R19) and of the explanation on the unavailable actions (R15).
+- How every computer knows from the store, with no file read, that a note's summary is the failed-summary stub (R28). If no store field records it for notes that another computer saved, add one that the scan sets from the note record.
 
 The other questions that the brainstorm deferred are resolved in KTD1 (the removal signal), KTD4 (the copies that go) and KTD2 (a hand delete stays a hand edit).
 
@@ -151,7 +158,7 @@ The other questions that the brainstorm deferred are resolved in KTD1 (the remov
 - `CONCEPTS.md` — Remove Audio, Note record file, the waiting state for a fingerprint mismatch, Regenerate Summary, Transcribe Again.
 - `plugins/longhand/skills/longhand-notes/SKILL.md`, `references/files.md` — list `transcript.md` as an editable file and do not say that it can be missing.
 
-**Product Contract preservation:** changed: R22–R27 and AE10–AE13 added, with their Key Decisions — the user widened the scope after the plan review to remove note content from the database and to make Transcribe Again transcribe again. R7 now also covers the database rows that R22 and R23 clear. The deferred planning questions are resolved in KTD1, KTD2 and KTD4. Other R-IDs and AEs unchanged.
+**Product Contract preservation:** changed: R22–R28 and AE10–AE14 added, with their Key Decisions — the user widened the scope after the plan review to remove note content from the database and to make Transcribe Again transcribe again. R7 now also covers the database rows that R22 and R23 clear. The deferred planning questions are resolved in KTD1, KTD2 and KTD4. Other R-IDs and AEs unchanged.
 
 ---
 
@@ -170,10 +177,10 @@ The other questions that the brainstorm deferred are resolved in KTD1 (the remov
 - KTD9. **Every reader treats the marker as a finished removal.** The scan (`crates/library/src/scan.rs` `read_folder`) reads the marker with metadata only, carries it on `NoteFolder`, and adds no `Waiting::Transcript` for a note with a marker. The refresh and adopt (`crates/library/src/refresh.rs`, `reconcile.rs`) set the store flag from the folder and clear this computer's own store rows of KTD4. A receiving computer writes nothing into the home folder for this, except the pass of KTD6. A new migration (next free number on `main` at merge; `0024` today) adds the flag. A rebuild derives it from the marker, so no state lives only in the store. Governs R13, R16, R18.
 - KTD10. **No writer puts a transcript back.** The publication (`crates/session-save/src/publication.rs` `publish_with` and its roll-forward) is the only writer into the home folder. It checks for `transcript.removed` together with its existing `fields()? != before` check before each file write, and again under the lock before `longhand.json`, for both `WriteSet::Result` and `WriteSet::Summary`, and returns `Outcome::Conflict` when the marker is there. `crates/pipeline/src/join.rs` and `crates/pipeline/src/recognition/stages.rs` write only the working folder and need no guard. Regenerate Summary, Transcribe Again and Resume refuse up front with the transcript reason (R14). Governs R13, R14.
 - KTD11. **The note page reads the transcript as optional.** `session_document` (`src-tauri/src/commands/session.rs` `read_document`) returns the summary when `transcript.md` is missing; today a missing transcript fails the whole call. `SessionDetail` gets a transcript state (`present` or `removed`) beside `audio`, from the store flag. Governs R15, R16.
-- KTD12. **Processing ends with no note content in the store.** In `crates/pipeline/src/save.rs`, on both paths to Saved (the first save and `update_home`), under the same lock and before `apply(Event::Saved)`, one store call clears the note's Transcribe rows (window rows, live parts, `live-source-*`, `live-snapshot-*`), Diarize, Assemble and `previous_*` checkpoints, and its `recognition_output` and `recognition_epochs` rows. `recognition_snapshot`, `found_speakers` and the fingerprints stay: they are index data, and Resume and the model-deletion guard read the snapshot. The Summarize checkpoints stay until the title job ends (`crates/pipeline/src/runner.rs` title job; `src-tauri/src/managers/processing.rs` `summary_made`), and are cleared then, or at Saved when no title job is queued. Both end with the WAL checkpoint of KTD5. Governs R22, R23.
+- KTD12. **Processing ends with no note content in the store.** In `crates/pipeline/src/save.rs`, on both paths to Saved (the first save and `update_home`), under the same lock, one store transaction clears the note's Transcribe rows (window rows, live parts, `live-source-*`, `live-snapshot-*`), Diarize, Assemble and `previous_*` checkpoints, and its `recognition_output` and `recognition_epochs` rows, and applies Saved in the same transaction, so a crash leaves both undone. `recognition_snapshot`, `found_speakers` and the fingerprints stay: they are index data, and Resume and the model-deletion guard read the snapshot. The Summarize checkpoints are cleared when the note has no `title-request` row: at Saved when none was stored, otherwise when the title job sends, keeps or drops the request (`crates/pipeline/src/runner.rs` title job). A request that waits, for example for a locked secret store or a note that is not yet due, is unfinished work and keeps the rows until it ends. `summary_made` (`src-tauri/src/managers/processing.rs`) must not depend on the rows after the clear. Each clear is followed, after its commit, by the WAL checkpoint of KTD5. Governs R22, R23.
 - KTD13. **Transcribe Again has no reuse path.** Delete the reuse branch in `crates/pipeline/src/recognition/stages.rs` (the `pending-snapshot` branch that calls `reprocess::read_reusable`), `read_reusable` in `crates/pipeline/src/reprocess.rs`, and the dead `durable::reusable_artifact`. The run still writes `recognition.jsonl` for Resume (KTD14). `begin_reprocess` and the `previous_*` restore on failure stay as they are; with KTD12 they move empty sets. Governs R24.
-- KTD14. **Resume takes its saved prefix from `recognition.jsonl`.** `crates/pipeline/src/recognition/saved_prefix.rs` drops the check that the store's Transcribe generation equals the file header's generation, and keeps every file-side check: the note record's `recognition_artifact` and `recognition_audio`, the per-file audio digests, the transcript digest, the fingerprints and the coverage. A matching prefix seeds the run's Transcribe rows from the file blocks, so the later stages and the live view read them as today. A missing or mismatched file gives a full run. `seed_from_transcript` for legacy notes does not change. Governs R25.
-- KTD15. **The update cleans the store and its backups once.** A new migration deletes the rows of KTD12, and the Summarize checkpoints, of every note whose state is Saved; KTD5's one `VACUUM` then removes the free pages. At the first launch after the update, a step opens each kept rebuild backup (`crates/session-core/src/backup.rs`) with its own connection and never with `Store::open`, as `crates/session-core/src/inspect.rs` does. It checks that each table exists before a delete, sets `secure_delete`, deletes the same rows of the notes that the backup holds as Saved, and runs `VACUUM`. A backup that cannot be opened or changed is skipped and logged; the launch never waits on it or fails. Each backup is cleaned once, and a record of that stops a second run. Governs R26, R27.
+- KTD14. **Resume takes its saved prefix from `recognition.jsonl`.** `crates/pipeline/src/recognition/saved_prefix.rs` drops the check that the store's Transcribe generation equals the file header's generation, and keeps every file-side check: the note record's `recognition_artifact` and `recognition_audio`, the per-file audio digests, the transcript digest, the fingerprints and the coverage. A matching prefix seeds the run's Transcribe rows from the file blocks, so the later stages, and the live view after the Transcribe stage, read them as today. A missing or mismatched file gives a full run. `seed_from_transcript` for legacy notes does not change. Governs R25.
+- KTD15. **The update cleans the store and its backups once.** A new migration deletes the rows of KTD12 of every note whose state is Saved, and the Summarize checkpoints of those that have no `title-request` row; KTD5's one `VACUUM` then removes the free pages. At the first launch after the update, a step opens each kept rebuild backup (`crates/session-core/src/backup.rs`) with its own connection and never with `Store::open`, as `crates/session-core/src/inspect.rs` does. It checks that each table exists and reads its note column with `pragma table_info` (`note_id`, or `session_id` in backups from before migration 0022) before a delete, sets `secure_delete`, deletes the same rows of the notes that the backup holds as Saved, and runs `VACUUM` only when the delete removed rows. A backup that cannot be opened or changed is deleted permanently, but only when the current store opened, migrated and passed `PRAGMA quick_check` in this launch; otherwise it is kept and tried again. The launch never waits on it or fails. The step is idempotent and keeps no record: it runs at each launch, so a backup that was skipped is tried again, and a clean backup costs one open. Governs R26, R27.
 
 ### High-Level Technical Design
 
@@ -212,8 +219,9 @@ flowchart TB
 
 ### Risks
 
-- **A backup with a schema this build does not know.** KTD15 checks each table before a delete and skips a backup it cannot read. A skipped backup keeps its rows until a newer backup replaces it.
+- **A backup with a schema this build does not know.** KTD15 checks each table before a delete and skips a backup it cannot read. A backup is deleted only when the current store is valid in the same launch.
 - **Resume after another computer's Transcribe Again.** The file then has a new generation and transcript digest; KTD14's checks fail and Resume transcribes everything again. Correct, only slower.
+- **The live view during a Resume** shows only the new recording until the Transcribe stage ends, on every computer, as a Resume on another computer does today. Accepted.
 - **The live view of a saved note that is still loading** reads the store and is empty for a moment after KTD12. Accepted.
 - **A partial pair of settings from two computers.** KTD7 makes the result the longer delay, so a wrong pair keeps data longer, never shorter.
 - **The agent skill check sees Longhand's own removal during an agent session.** U9 teaches `check.py` the marker and the deletes that go with it (`docs/solutions/integration-issues/note-check-must-follow-what-longhand-and-a-sync-do.md`).
@@ -338,7 +346,7 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 
 **Approach:**
 1. Expose from `remove_audio.rs` the claim, guard, canonical home and per-segment removal so the transcript step reuses them inside one claim.
-2. Add `remove_transcript`, `finish_transcript_removal` (the finishing condition of KTD3) and a transcript eligibility shared by pass and count: Saved, no claim, not in use, has a transcript, last `wall_end` plus the effective delay in the past; store only, opens no file.
+2. Add `remove_transcript`, `finish_transcript_removal` (the finishing condition of KTD3) and a transcript eligibility shared by pass and count: Saved, no claim, not in use, has a transcript, its summary is not the failed-summary stub (R28; read from the store's summary state, never from `summary.md`), last `wall_end` plus the effective delay in the past; store only, opens no file.
 3. Change `remove_copies` so a marker lets it delete the `.longhand-results/` copies.
 4. Write `longhand.json` with the existing record writer, which handles both layouts, holding the store lock from read to write (`docs/solutions/logic-errors/note-record-writers-undid-each-other.md`).
 
@@ -356,6 +364,7 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 - A hand-edited `transcript.md` goes (R9).
 - A note that is not Saved, is claimed, or has a fresh in-use marker of another run is not touched.
 - Eligibility: no recording, already removed, and not yet due are not eligible; the check opens no file.
+- Covers AE14. A note with the failed-summary stub is not eligible for the pass; Remove Transcript on it still works.
 - `.longhand-results/` copies go when the marker is present.
 
 **Verification:** pipeline tests pass; each new test fails under a mutation of the code it guards.
@@ -364,7 +373,7 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 
 **Goal:** The pass removes old transcripts, and the commands give Remove Transcript, the setting and its confirmation count.
 
-**Requirements:** R3, R4, R5, R10, R11, R12, R17, R19, R20; AE2, AE3, AE5; KTD6, KTD7.
+**Requirements:** R3, R4, R5, R10, R11, R12, R17, R19, R20, R28; AE2, AE3, AE5, AE14; KTD6, KTD7.
 
 **Dependencies:** U1, U4.
 
@@ -386,6 +395,7 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 - Covers AE2. Audio 30 to 90 with transcripts at 60 sets transcripts to 90 in the same save and removes nothing.
 - Covers AE3. Turning audio off turns transcripts off.
 - `set_transcript_removal` refuses a value below the audio delay and refuses on while audio is off.
+- Covers AE14. The count returns the notes it skips for a failed summary, and the confirmation names them.
 - Covers AE5. The count for 365 to 90 counts the 100-day notes; the count for 90 to 365 is 0.
 - `remove_transcript` refuses an unavailable folder, a busy note and an open Move with plain-word reasons.
 
@@ -522,7 +532,9 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 - The same after a Resume save and after a Transcribe Again save.
 - A note whose title is set by the user clears the summary cache at Saved.
 - `recognition_snapshot` and `found_speakers` stay.
-- A crash between the clear and `apply(Saved)` leaves the note in its earlier state, and the next run clears again.
+- A crash before the commit of the clear-and-Saved transaction leaves both undone, and the next run does both.
+- A title job that ends with the secret store locked keeps the Summarize rows; the job that later sends the request clears them.
+- Resume with no store rows on the recording computer reuses the prefix from `recognition.jsonl`.
 - The tests of live catchup and `summary_made` that read rows after a save change to read them before it.
 
 **Verification:** session-core, pipeline and src-tauri tests pass.
@@ -560,7 +572,6 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 
 **Test scenarios:**
 - Covers AE12. A note recorded on A and resumed on B, with no store rows on B, transcribes only the new segment, and the old text is unchanged.
-- Resume with no store rows on the recording computer (after U11) reuses the prefix.
 - A changed audio digest, a changed `transcript.md` or a changed fingerprint gives a full run.
 - A missing `recognition.jsonl` gives a full run.
 - A failed Resume that is retried reuses the prefix again.
@@ -586,9 +597,12 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 
 **Test scenarios:**
 - Covers AE13. A database from the previous schema with a Saved note and an unfinished note: after the migration, the Saved note has no recognition rows, and the unfinished note keeps all of its rows.
-- A backup with Saved-note rows is cleaned, and a second launch does not open it again.
+- A backup with Saved-note rows is cleaned; a second launch deletes no rows and runs no `VACUUM`.
+- A backup built from the schema before migration 0022 (`session_id` columns) is cleaned.
+- A Saved note with a waiting `title-request` keeps its Summarize rows after the migration.
 - A backup from an older schema that lacks `recognition_output` is cleaned without error.
-- A backup that cannot be opened is skipped, and the launch completes.
+- A backup that cannot be opened is deleted when the current store passed its check, and the launch completes.
+- The same backup is kept when the current store failed its check.
 - After the cleanup, neither file contains a known transcript string.
 
 **Verification:** session-core tests pass, including the migration from the old schema.
@@ -607,7 +621,7 @@ U1 and U2 first. U3 needs U2. U4 needs U2 and U3. U5 needs U1 and U4. U6 needs U
 
 ## Definition of Done
 
-- Every R1–R27 and AE1–AE13 is covered by a passing test or by the manual test.
+- Every R1–R28 and AE1–AE14 is covered by a passing test or by the manual test.
 - Each new test was shown to fail under a mutation of the code it guards.
 - The Verification Contract passes, and CI is green with CodeQL.
 - `CONCEPTS.md` and the skill describe the shipped behavior.
