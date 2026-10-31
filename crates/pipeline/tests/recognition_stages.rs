@@ -1327,6 +1327,7 @@ fn saved_resume_case(tail: &[f32]) -> SavedResume {
 }
 fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
     saved_resume_with(
+        Computer::Same,
         SpeakerSource::Nemotron,
         old,
         tail,
@@ -1335,9 +1336,20 @@ fn saved_resume_audio(old: &[f32], tail: &[f32]) -> SavedResume {
         },
     )
 }
+/// The computer that resumes a saved note.
+#[derive(PartialEq)]
+enum Computer {
+    /// The computer that recorded the note. Its store keeps the rows of the
+    /// first run.
+    Same,
+    /// Another computer on the same synced folder. Its store has no
+    /// recognition rows of the note (AE12).
+    Other,
+}
 /// Process and save a note, then resume it with `tail` as a new segment.
 /// `first_run` does the first Transcribe, Join and Verify.
 fn saved_resume_with(
+    computer: Computer,
     source: SpeakerSource,
     old: &[f32],
     tail: &[f32],
@@ -1395,6 +1407,9 @@ fn saved_resume_with(
             .apply("route", &session_core::Event::Dequeued)
             .unwrap();
         guard.apply("route", &session_core::Event::Saved).unwrap();
+        if computer == Computer::Other {
+            guard.clear_recognition_data("route").unwrap();
+        }
         guard
             .apply(
                 "route",
@@ -1806,6 +1821,89 @@ fn completed_nemo_resume(separate: bool) {
     assert_eq!(saved["scope"], serde_json::to_value(&scope).unwrap());
 }
 
+/// Resume a saved note on another computer, whose store has no
+/// recognition rows of the note (AE12). With `cancel_first`, the first
+/// Transcribe attempt stops and a retry follows.
+fn resume_on_another_computer(cancel_first: bool) {
+    struct Cancel;
+    impl pipeline::Control for Cancel {
+        fn proceed(&self) -> Result<(), pipeline::StageError> {
+            Err(pipeline::StageError::Cancelled)
+        }
+    }
+    let case = saved_resume_with(
+        Computer::Other,
+        SpeakerSource::Off,
+        &common::speech(),
+        &common::speech(),
+        |temp, store, spec, segments, provider| {
+            run_to_verify(temp, store, spec, segments, provider).unwrap();
+        },
+    );
+    let run = |stage, control: &dyn pipeline::Control| {
+        pipeline::recognition::execute(
+            &case.store,
+            "route",
+            &case.dir,
+            &case.segments,
+            &case.spec,
+            &case.provider,
+            stage,
+            control,
+            &mut |_| {},
+        )
+    };
+    if cancel_first {
+        let error = run(Stage::Transcribe, &Cancel).unwrap_err();
+        assert!(matches!(error, pipeline::StageError::Cancelled));
+    }
+    case.provider.calls.store(0, Ordering::SeqCst);
+    for stage in [Stage::Transcribe, Stage::Join, Stage::Verify] {
+        run(stage, &Unattended).unwrap();
+    }
+    assert!(case.appended_windows() > 0);
+    assert_eq!(
+        case.provider.calls.load(Ordering::SeqCst),
+        case.appended_windows(),
+        "the saved audio was transcribed again"
+    );
+    let result = pipeline::recognition::saved_result(&case.store, "route")
+        .unwrap()
+        .unwrap();
+    let start = case.segments[1].offset_ms * 16;
+    let text = |rows: &[asr::RecognitionSegment]| {
+        rows.iter()
+            .filter(|row| row.range.start < start)
+            .map(|row| (row.range, row.timing, row.text.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert!(!case.original.rows.is_empty());
+    assert_eq!(
+        text(&result.rows),
+        text(&case.original.rows),
+        "the old text changed"
+    );
+    assert!(
+        result
+            .rows
+            .iter()
+            .any(|row| row.range.start >= start && row.text == "Hello there")
+    );
+    let old = std::fs::read_to_string(case.home.join("transcript.md")).unwrap();
+    let new = std::fs::read_to_string(case.dir.join("transcript.md")).unwrap();
+    assert!(new.matches("Hello there").count() > old.matches("Hello there").count());
+}
+
+#[test]
+fn resume_on_another_computer_transcribes_only_the_new_recording() {
+    resume_on_another_computer(false);
+}
+
+#[test]
+fn a_retried_resume_on_another_computer_reuses_the_saved_prefix_again() {
+    resume_on_another_computer(true);
+}
+
 #[test]
 fn resumed_recognition_retry_retains_prefix_after_cancellation() {
     struct Cancel;
@@ -2184,6 +2282,7 @@ fn voiced_sound_without_words_and_without_a_gap_fill_continues_with_low_coverage
 #[test]
 fn a_resumed_note_keeps_the_verify_pass_of_its_saved_gap_filled_segment() {
     let case = saved_resume_with(
+        Computer::Same,
         SpeakerSource::Off,
         &common::speech(),
         &common::speech(),

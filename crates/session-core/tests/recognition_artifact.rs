@@ -58,25 +58,6 @@ fn store() -> Store {
     store
 }
 #[test]
-fn fingerprints_separate_asr_reuse_from_labels_and_reject_external_edits() {
-    let old = header();
-    let mut next = fingerprints();
-    assert_eq!(old.reuse(&next, b"transcript"), Reuse::Complete);
-    next.speakers = digest(b"different speaker artifact");
-    next.execution = digest(b"new execution");
-    assert_eq!(old.reuse(&next, b"transcript"), Reuse::TimedAsr);
-    assert_eq!(old.reuse(&next, b"external edit"), Reuse::TranscribeAgain);
-    for field in ["asr", "audio", "preprocessing"] {
-        let mut next = fingerprints();
-        match field {
-            "asr" => next.asr = digest(b"new"),
-            "audio" => next.audio = digest(b"new"),
-            _ => next.preprocessing = digest(b"new"),
-        }
-        assert_eq!(old.reuse(&next, b"transcript"), Reuse::TranscribeAgain);
-    }
-}
-#[test]
 fn committed_output_and_revision_are_one_durable_operation() {
     let mut store = store();
     assert!(store.commit_recognition("s", &block(2, true)).unwrap());

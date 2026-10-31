@@ -138,12 +138,6 @@ pub struct Fingerprints {
     pub audio: String,
     pub preprocessing: String,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reuse {
-    Complete,
-    TimedAsr,
-    TranscribeAgain,
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactHeader {
     pub version: u32,
@@ -153,23 +147,6 @@ pub struct ArtifactHeader {
     pub transcript: String,
     pub limitations: Vec<String>,
     pub coverage: Vec<SampleRange>,
-}
-impl ArtifactHeader {
-    pub fn reuse(&self, next: &Fingerprints, transcript: &[u8]) -> Reuse {
-        if self.version != ARTIFACT_VERSION
-            || digest(transcript) != self.transcript
-            || self.fingerprints.asr != next.asr
-            || self.fingerprints.audio != next.audio
-            || self.fingerprints.preprocessing != next.preprocessing
-        {
-            return Reuse::TranscribeAgain;
-        }
-        if &self.fingerprints == next {
-            Reuse::Complete
-        } else {
-            Reuse::TimedAsr
-        }
-    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactReference {
