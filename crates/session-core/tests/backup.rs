@@ -465,6 +465,43 @@ fn backup_holds(folder: &Path, text: &str) -> bool {
 }
 
 #[test]
+fn a_saved_note_with_a_waiting_title_request_keeps_its_summary_cache() {
+    // KTD12: the title job still needs the cache, as in migration 0025.
+    let app = tempfile::tempdir().unwrap();
+    let backup = old_backup(app.path(), 24);
+    Connection::open(backup.join(DB))
+        .unwrap()
+        .execute(
+            "INSERT INTO checkpoints (note_id, stage, key, payload)
+             VALUES ('saved', 'summarize', 'title-request', '{}')",
+            [],
+        )
+        .unwrap();
+
+    clean_backups(app.path(), || true).unwrap();
+
+    let conn = Connection::open(backup.join(DB)).unwrap();
+    let mut keys: Vec<(String, String)> = conn
+        .prepare("SELECT stage, key FROM checkpoints WHERE note_id = 'saved'")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    keys.sort();
+    let expected: Vec<(String, String)> = [
+        ("join", "done"),
+        ("summarize", "chunk-0"),
+        ("summarize", "failed"),
+        ("summarize", "title-request"),
+    ]
+    .iter()
+    .map(|(stage, key)| (stage.to_string(), key.to_string()))
+    .collect();
+    assert_eq!(keys, expected);
+}
+
+#[test]
 fn a_backup_from_the_previous_schema_loses_the_content_of_its_saved_notes() {
     // AE13: one rebuild backup from before the update.
     let app = tempfile::tempdir().unwrap();

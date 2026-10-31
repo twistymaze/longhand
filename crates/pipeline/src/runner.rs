@@ -2038,16 +2038,16 @@ fn title_gate(store: &session_core::Store, claims: &Claims, note_id: &str) -> Op
 }
 
 /// Delete the title request of `note_id`, then its summary cache (KTD12
-/// of the transcript removal plan). A note that a delete, a Move or a
-/// regeneration holds keeps the cache: a regeneration uses it. An error
-/// is logged: the note keeps its title in every case. The caller holds
-/// the store lock.
+/// of the transcript removal plan). A note that a regeneration holds keeps
+/// the cache: the regeneration uses it, and its end clears it. A delete or
+/// a Move does not use the cache. An error is logged: the note keeps its
+/// title in every case. The caller holds the store lock.
 fn drop_title_request(store: &session_core::Store, claims: &Claims, note_id: &str) {
     if let Err(e) = store.delete_checkpoint(note_id, Stage::Summarize, summarize::TITLE_REQUEST) {
         log::warn!("could not delete the title request of {note_id}: {e}");
         return;
     }
-    if claims.busy(note_id) {
+    if claims.is_regenerating(note_id) {
         return;
     }
     if let Err(e) = save::clear_summary_cache(store, note_id) {

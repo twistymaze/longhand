@@ -72,7 +72,8 @@ const ORPHAN_ORDER: [&str; 2] = [SHM, WAL];
 const INCOMPLETE_TEXT: &str = "Longhand did not finish moving files into this folder. \
 At the next launch, Longhand moves them back into the app data folder.\n";
 const MARKER_TEXT: &str = "The user chose Rebuild in an alert. \
-Longhand does not delete this backup.\n";
+Longhand keeps this backup. It deletes the backup only when it cannot \
+remove the content of saved notes from it.\n";
 
 /// Why a backup is made. Retention (R11) keeps every `ChosenInAlert` backup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

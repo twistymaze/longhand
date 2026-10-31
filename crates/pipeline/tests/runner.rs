@@ -10132,6 +10132,24 @@ async fn a_failed_title_turn_keeps_the_title_and_the_folder_and_deletes_the_requ
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_request_that_a_delete_claim_drops_takes_the_summary_cache_with_it() {
+    // KTD12: only a regeneration uses the summary cache, so the cache goes
+    // when a delete or a Move holds the note.
+    let r = rig().await;
+    saved_session(&r, None).await;
+    assert!(pending(&r).is_some());
+    assert!(!summary_rows(&r, "s").is_empty());
+
+    let claim = r.runner.claims().delete("s").unwrap();
+    let jobs = r.runner.run_titles().await;
+    drop(claim);
+
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert_eq!(pending(&r), None);
+    assert!(summary_rows(&r, "s").is_empty());
+}
+
 /// The keys of the note's checkpoints of the stages that hold its
 /// recognition data (KTD12), and the number of recognition rows of the
 /// generation at the last save. A route with no generation writes no

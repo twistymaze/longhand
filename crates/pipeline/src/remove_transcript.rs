@@ -38,7 +38,10 @@ use crate::remove_audio::{
     EligibilityInputs, FileDelete, Guard, Guarded, RemoveAudioError, Scope, SegmentOutcome,
     SegmentRemoval, delete_claim, guarded_note, record_flags, remove_regular_file, remove_segments,
 };
-use crate::remove_copies::{Cleanup, RESULTS_FOLDER, clean_results_in, reachable};
+use crate::remove_copies::{
+    Cleanup, clean_results_in, delete_in_results, files_in_results, reachable, write_leftover,
+};
+use crate::summarize::SUMMARY_FILE;
 use crate::{SharedStore, lock};
 
 /// The result of the step for one note.
@@ -229,9 +232,18 @@ where
     }
     result.removed = true;
 
-    // (3) The files with the transcript text.
+    // (3) The files with the transcript text, also the copies in the
+    // results folder of older builds. The other copies go only when
+    // `summary.md` is there, because a copy can hold the only summary (R14).
     delete_files(&home, &mut remove, &mut result.files)?;
-    clean_results_in(&home, &mut remove, &mut result.files)?;
+    delete_in_results(&home, &mut remove, &mut result.files, transcript_file)?;
+    if home
+        .join(SUMMARY_FILE)
+        .metadata()
+        .is_ok_and(|meta| meta.is_file())
+    {
+        clean_results_in(&home, &mut remove, &mut result.files)?;
+    }
 
     // (4) `longhand.json` last, with the store lock held from the read to
     // the write, so that other writers on this computer do not undo it.
@@ -258,12 +270,13 @@ fn read_files(home: &Path) -> Result<NoteFiles, RemoveTranscriptError> {
 }
 
 /// Whether `name` is a file that holds transcript text (KTD4):
-/// `transcript.md`, `recognition.jsonl`, or a sync conflict copy of one of
-/// them. The names compare with their case.
+/// `transcript.md`, `recognition.jsonl`, a sync conflict copy of one of
+/// them, or a write leftover of one of them. The names compare with their
+/// case.
 fn transcript_file(name: &str) -> bool {
-    [TRANSCRIPT_FILE, ARTIFACT_FILE]
-        .into_iter()
-        .any(|file| name == file || library::conflict::copy_of(name, file))
+    [TRANSCRIPT_FILE, ARTIFACT_FILE].into_iter().any(|file| {
+        name == file || library::conflict::copy_of(name, file) || write_leftover(name, file)
+    })
 }
 
 /// The regular files in the canonical home folder `home` that
@@ -354,7 +367,7 @@ pub fn finish_due(home: &Path, flag: bool) -> bool {
     if !folder::transcript_removed(home) {
         return false;
     }
-    if !flag || home.join(RESULTS_FOLDER).symlink_metadata().is_ok() {
+    if !flag || !files_in_results(home, transcript_file).is_empty() {
         return true;
     }
     let file_left = transcript_files(home).is_ok_and(|files| {
@@ -394,8 +407,9 @@ pub enum TranscriptEligibility {
     NoRecording,
     /// The transcript of the note is already removed.
     NoTranscript,
-    /// The summary of the note is the stub that a failed summary leaves
-    /// (R28). The transcript is the only record of the meeting.
+    /// The delay has passed, and the summary of the note is the stub that
+    /// a failed summary leaves (R28). The transcript is the only record of
+    /// the meeting.
     SummaryFailed,
     /// The delay has not passed. The removal can start at `due`.
     NotYet {
@@ -436,15 +450,15 @@ pub fn transcript_eligibility(
     if store.transcript_removed(note_id)? {
         return Ok(TranscriptEligibility::NoTranscript);
     }
+    let due = end + TimeDelta::days(i64::from(inputs.delay_days));
+    if due > inputs.now {
+        return Ok(TranscriptEligibility::NotYet { due });
+    }
     if store
         .checkpoint_value(note_id, Stage::Summarize, crate::save::SUMMARY_FAILED)?
         .is_some()
     {
         return Ok(TranscriptEligibility::SummaryFailed);
-    }
-    let due = end + TimeDelta::days(i64::from(inputs.delay_days));
-    if due > inputs.now {
-        return Ok(TranscriptEligibility::NotYet { due });
     }
     Ok(TranscriptEligibility::Eligible)
 }

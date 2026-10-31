@@ -189,19 +189,87 @@ fn generation_name(name: &str) -> bool {
 /// can hold: a result file, `.DS_Store`, or a write leftover
 /// `.<result file>.<16 lowercase hex>.tmp`.
 fn copy_file_name(name: &str) -> bool {
-    if RESULT_FILES.contains(&name) || name == FINDER_FILE {
-        return true;
-    }
-    let Some((file, hex)) = name
+    RESULT_FILES
+        .into_iter()
+        .any(|file| name == file || write_leftover(name, file))
+        || name == FINDER_FILE
+}
+
+/// Whether `name` is a write leftover of the file `file`:
+/// `.<file>.<16 lowercase hex>.tmp`.
+pub(crate) fn write_leftover(name: &str, file: &str) -> bool {
+    let Some((leftover, hex)) = name
         .strip_prefix('.')
         .and_then(|rest| rest.strip_suffix(".tmp"))
         .and_then(|rest| rest.rsplit_once('.'))
     else {
         return false;
     };
-    RESULT_FILES.contains(&file)
+    leftover == file
         && hex.len() == 16
         && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The regular files whose names `wanted` accepts in the child folders of
+/// [`RESULTS_FOLDER`] in the home folder `home`. This reads metadata only.
+/// A folder that cannot be listed gives no files, and the reason goes to
+/// the log.
+pub(crate) fn files_in_results(home: &Path, wanted: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+    let dir = home.join(RESULTS_FOLDER);
+    if !dir.symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
+        return Vec::new();
+    }
+    let children = match list(&dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::warn!("cannot list {}: {e}", dir.display());
+            return Vec::new();
+        }
+    };
+    let mut files = Vec::new();
+    for (name, child, meta) in children {
+        if !(meta.is_dir() && name.as_deref().is_some_and(generation_name)) {
+            continue;
+        }
+        match list(&child) {
+            Ok(entries) => files.extend(
+                entries
+                    .into_iter()
+                    .filter(|(name, _, meta)| {
+                        meta.is_file() && name.as_deref().is_some_and(&wanted)
+                    })
+                    .map(|(_, path, _)| path),
+            ),
+            Err(e) => log::warn!("cannot list {}: {e}", child.display()),
+        }
+    }
+    files
+}
+
+/// Delete the [`files_in_results`] that `wanted` accepts in the canonical
+/// home folder `home` with `remove`, and add what it did to `cleanup`. The
+/// other entries and the folders stay. The caller holds the delete claim
+/// and checked the note.
+pub(crate) fn delete_in_results<R>(
+    home: &Path,
+    remove: &mut R,
+    cleanup: &mut Cleanup,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<(), RemoveAudioError>
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    let mut step = Step {
+        home,
+        remove,
+        cleanup,
+    };
+    for path in files_in_results(home, wanted) {
+        step.reachable()?;
+        let deleted = remove_regular_file(&path, step.remove);
+        step.record(path, deleted);
+    }
+    Ok(())
 }
 
 /// Delete the [`RESULTS_FOLDER`] copies in the canonical home folder

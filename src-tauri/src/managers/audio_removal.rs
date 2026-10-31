@@ -411,28 +411,6 @@ pub struct TranscriptCount {
     pub skipped: u32,
 }
 
-/// Whether the last recording end of the note `id` plus `delay_days` is
-/// at or before `now`.
-fn delay_passed(
-    store: &SharedStore,
-    id: &str,
-    delay_days: u32,
-    now: DateTime<FixedOffset>,
-) -> bool {
-    let segments = match lock(store).segments(id) {
-        Ok(segments) => segments,
-        Err(e) => {
-            log::warn!("transcript removal: cannot read the segments of {id}: {e}");
-            return false;
-        }
-    };
-    segments
-        .iter()
-        .map(|s| s.wall_end)
-        .max()
-        .is_some_and(|end| end + chrono::TimeDelta::days(i64::from(delay_days)) <= now)
-}
-
 /// What the transcript part of a pass with the effective delay
 /// `delay_days` does with the note now. The pass and [`count_transcripts`]
 /// share this check. It reads the store, the claims and file metadata, and
@@ -464,11 +442,7 @@ fn transcript_check(
             TranscriptCheck::SummaryFailed
         }
         Ok(TranscriptEligibility::Eligible) => TranscriptCheck::Remove,
-        Ok(TranscriptEligibility::SummaryFailed)
-            if delay_passed(inputs.store, id, delay_days, now) =>
-        {
-            TranscriptCheck::SummaryFailed
-        }
+        Ok(TranscriptEligibility::SummaryFailed) => TranscriptCheck::SummaryFailed,
         _ => TranscriptCheck::Keep,
     }
 }

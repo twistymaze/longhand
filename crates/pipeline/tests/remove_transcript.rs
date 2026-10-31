@@ -554,6 +554,79 @@ fn the_old_result_copies_go() {
 }
 
 #[test]
+fn an_old_summary_copy_stays_until_summary_md_is_there() {
+    // R14: with no `summary.md`, an old copy can hold the only summary.
+    let note = saved_note(&two_segments());
+    let child = note.home.join(RESULTS_FOLDER).join("committed-1");
+    fs::create_dir_all(&child).unwrap();
+    fs::write(child.join("transcript.md"), "old transcript").unwrap();
+    fs::write(child.join(ARTIFACT_FILE), "old recognition").unwrap();
+    fs::write(child.join("summary.md"), "old summary").unwrap();
+    fs::remove_file(note.home.join("summary.md")).unwrap();
+
+    run(&note);
+
+    assert!(!present(&child.join("transcript.md")));
+    assert!(!present(&child.join(ARTIFACT_FILE)));
+    assert_eq!(
+        fs::read_to_string(child.join("summary.md")).unwrap(),
+        "old summary"
+    );
+    assert!(!finish_due(&note.home, true));
+}
+
+#[test]
+fn an_old_transcript_copy_goes_next_to_an_entry_that_stays() {
+    // KTD4: a conflict copy or an unknown file keeps the child folder, but
+    // not the transcript text in it.
+    let note = saved_note(&two_segments());
+    let child = note.home.join(RESULTS_FOLDER).join("committed-1");
+    fs::create_dir_all(&child).unwrap();
+    fs::write(child.join("transcript.md"), "old transcript").unwrap();
+    fs::write(child.join("transcript (1).md"), "old transcript").unwrap();
+    fs::write(child.join("unknown.txt"), "other").unwrap();
+
+    run(&note);
+
+    assert!(!present(&child.join("transcript.md")));
+    assert!(!present(&child.join("transcript (1).md")));
+    assert!(present(&child.join("unknown.txt")));
+    assert!(!finish_due(&note.home, true));
+    assert_removed(&note);
+}
+
+#[test]
+fn a_write_leftover_of_the_transcript_goes() {
+    let note = saved_note(&two_segments());
+    let leftover = note.home.join(".transcript.md.0123456789abcdef.tmp");
+    fs::write(&leftover, TRANSCRIPT).unwrap();
+
+    run(&note);
+
+    assert!(!present(&leftover));
+    assert_removed(&note);
+}
+
+#[test]
+fn a_note_in_the_old_layout_is_not_touched() {
+    // The records are in `session.md` until the conversion.
+    let note = saved_note(&two_segments());
+    let doc = NoteFiles::read_timed(&note.home, READ_TIMEOUT).unwrap().doc;
+    fs::write(note.home.join("session.md"), doc.render()).unwrap();
+    fs::remove_file(note.home.join("longhand.json")).unwrap();
+    let before = contents(&note.home);
+
+    let result = remove_transcript(&note.store, &note.claims, ID, no_guard());
+
+    assert!(
+        matches!(result, Err(RemoveTranscriptError::Busy("converting"))),
+        "{result:?}"
+    );
+    assert_eq!(contents(&note.home), before);
+    assert!(!note.store.lock().unwrap().transcript_removed(ID).unwrap());
+}
+
+#[test]
 fn a_storage_folder_that_is_not_reachable_stops_the_step() {
     let note = saved_note(&two_segments());
     remove_all_audio(&note);
