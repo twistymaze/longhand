@@ -22,9 +22,14 @@ export function parseDays(text: string): number | null {
   return days >= MIN_DAYS && days <= MAX_DAYS ? days : null;
 }
 
+/// The audio setting that the pane shows. A settings view with no value
+/// shows the default.
+export function audioRemovalOf(settings: Settings): AudioRemovalSetting {
+  return settings.audio_removal ?? { kind: "after_days", days: DEFAULT_DAYS };
+}
+
 export function AudioRemoval({ settings, onSettings }: { settings: Settings; onSettings: (s: Settings) => void }) {
-  // A settings view with no value shows the default.
-  const removal: AudioRemovalSetting = settings.audio_removal ?? { kind: "after_days", days: DEFAULT_DAYS };
+  const removal = audioRemovalOf(settings);
   const on = removal.kind === "after_days";
   // The setting of the last render.
   const latest = useRef(removal);
