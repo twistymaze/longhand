@@ -3059,6 +3059,17 @@ check_updates_automatically: boolean;
  */
 audio_removal: AudioRemovalSetting; 
 /**
+ * A shared setting. When the transcript of a saved note goes. Off by
+ * default. This is the user's value: it can be shorter than the audio
+ * delay when two computers saved the pair out of order. A value that
+ * this version does not know shows as off here and in
+ * `shared.unknown_values`. The removal pass does not read this field:
+ * it reads `SharedSnapshot::transcript_removal_days`, which applies R4
+ * and gives no delay for such a value or while the shared settings are
+ * read-only (KTD7).
+ */
+transcript_removal: TranscriptRemovalSetting; 
+/**
  * A shared setting. The custom summary prompts, in the order that
  * Settings shows them (KTD6).
  */
@@ -3359,6 +3370,19 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * A shared setting: when Longhand removes the transcript of a saved note
+ * (R1, R3 of the plan for removing old transcripts). The file form is
+ * [`TranscriptRemoval`]; this is the form of the Settings window. It is
+ * the user's value: the removal uses the effective delay of
+ * `SharedSnapshot::transcript_removal_days` (KTD7).
+ */
+export type TranscriptRemovalSetting = { kind: "off" } | 
+/**
+ * The transcript goes this many whole days after the note last
+ * recorded.
+ */
+{ kind: "after_days"; days: number }
 /**
  * What a type change did (R5). The note has the new type in every case
  * but `Unchanged`.

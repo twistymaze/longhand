@@ -9,10 +9,10 @@ use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
 use serde_json::{Value, json};
 use shared_settings::file::{
     AUDIO_REMOVAL_MAX_DAYS, AudioRemoval, DEFAULT_AUDIO_REMOVAL_DAYS, Field, FileRead,
-    SCHEMA_VERSION, SETTINGS_FILE, SaveError, SharedValue, Unavailable, read_settings,
-    save_settings,
+    KEY_TRANSCRIPT_REMOVAL, SCHEMA_VERSION, SETTINGS_FILE, SaveError, SharedValue,
+    TranscriptRemoval, Unavailable, read_settings, save_settings,
 };
-use shared_settings::view::load;
+use shared_settings::view::{RemovalDelay, effective_transcript_removal, load};
 
 fn folder() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
@@ -585,6 +585,217 @@ fn a_save_of_audio_removal_keeps_every_other_field_and_unknown_fields() {
     save_settings(root.path(), &[SharedValue::AudioRemoval(AudioRemoval::Off)]).unwrap();
     expected["audio_removal"] = json!("off");
     assert_eq!(on_disk(root.path()), expected);
+}
+
+// The transcript removal setting (U1 of the plan for removing old
+// transcripts: R1, R2, R4, AE9, KTD7, KTD8).
+
+/// The transcript removal value of the shared view of `root`, before R4
+/// applies. This reads the folder and writes nothing.
+fn transcript_removal(root: &Path) -> RemovalDelay {
+    load(root, None).view.transcript_removal()
+}
+
+#[test]
+fn a_file_with_no_transcript_removal_key_reads_as_off() {
+    // AE9: a storage folder from before this feature keeps every
+    // transcript.
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"schema_version": 1, "audio_removal": 30}),
+    );
+    assert_eq!(parsed(root.path()).fields.transcript_removal, Field::Absent);
+    assert_eq!(transcript_removal(root.path()), RemovalDelay::Off);
+    assert_eq!(load(root.path(), None).view.transcript_removal_days(), None);
+}
+
+#[test]
+fn off_and_the_first_and_the_last_day_of_the_range_parse_as_known() {
+    let root = folder();
+    write_raw(root.path(), &json!({"transcript_removal": "off"}));
+    assert_eq!(
+        parsed(root.path()).fields.transcript_removal,
+        Field::Known(TranscriptRemoval::Off)
+    );
+    assert_eq!(transcript_removal(root.path()), RemovalDelay::Off);
+    for days in [1, 3650] {
+        write_raw(root.path(), &json!({"transcript_removal": days}));
+        assert_eq!(
+            parsed(root.path()).fields.transcript_removal,
+            Field::Known(TranscriptRemoval::AfterDays(days))
+        );
+        assert_eq!(
+            transcript_removal(root.path()),
+            RemovalDelay::AfterDays(days)
+        );
+    }
+}
+
+#[test]
+fn a_transcript_removal_value_outside_the_range_or_of_another_form_is_unknown() {
+    let root = folder();
+    for value in [json!(0), json!(3651), json!("soon")] {
+        write_raw(
+            root.path(),
+            &json!({"audio_removal": 30, "transcript_removal": value}),
+        );
+        let fields = parsed(root.path()).fields;
+        assert_eq!(
+            fields.transcript_removal,
+            Field::Unknown(value.clone()),
+            "{value}"
+        );
+        assert_eq!(
+            fields.unknown_values(),
+            vec![(KEY_TRANSCRIPT_REMOVAL, &value)],
+            "{value}"
+        );
+        assert_eq!(transcript_removal(root.path()), RemovalDelay::Unknown);
+        assert_eq!(
+            load(root.path(), None).view.transcript_removal_days(),
+            None,
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn a_save_of_another_field_keeps_the_transcript_removal_value() {
+    let root = folder();
+    for value in [json!("off"), json!(60), json!(0), json!("soon")] {
+        write_raw(
+            root.path(),
+            &json!({"schema_version": 1, "transcript_removal": value}),
+        );
+        save_settings(
+            root.path(),
+            &[SharedValue::AudioRemoval(AudioRemoval::AfterDays(90))],
+        )
+        .unwrap();
+        assert_eq!(on_disk(root.path())["transcript_removal"], value);
+    }
+}
+
+#[test]
+fn a_save_writes_the_transcript_removal_value_in_the_audio_form() {
+    let root = folder();
+    write_raw(root.path(), &json!({"schema_version": 1}));
+    save_settings(
+        root.path(),
+        &[SharedValue::TranscriptRemoval(
+            TranscriptRemoval::AfterDays(90),
+        )],
+    )
+    .unwrap();
+    assert_eq!(on_disk(root.path())["transcript_removal"], json!(90));
+    save_settings(
+        root.path(),
+        &[SharedValue::TranscriptRemoval(TranscriptRemoval::Off)],
+    )
+    .unwrap();
+    assert_eq!(on_disk(root.path())["transcript_removal"], json!("off"));
+}
+
+#[test]
+fn the_defaults_write_transcript_removal_off() {
+    // R2, KTD8.
+    let defaults = shared_settings::file::default_settings();
+    assert_eq!(defaults["transcript_removal"], json!("off"));
+    assert_eq!(
+        shared_settings::file::SharedFields::from_raw(&defaults).transcript_removal,
+        Field::Known(TranscriptRemoval::Off)
+    );
+}
+
+#[test]
+fn the_effective_transcript_delay_is_never_shorter_than_the_audio_delay() {
+    // R4, KTD7.
+    use RemovalDelay::{AfterDays, Off, Unknown};
+    for (audio, transcript, effective) in [
+        (AfterDays(30), AfterDays(60), AfterDays(60)),
+        (AfterDays(30), AfterDays(20), AfterDays(30)),
+        (AfterDays(30), Off, Off),
+        (Off, AfterDays(60), Off),
+        (Off, Off, Off),
+        (Unknown, AfterDays(60), Unknown),
+        (AfterDays(30), Unknown, Unknown),
+        (Unknown, Off, Unknown),
+        (Off, Unknown, Unknown),
+    ] {
+        assert_eq!(
+            effective_transcript_removal(audio, transcript),
+            effective,
+            "audio {audio:?}, transcript {transcript:?}"
+        );
+    }
+    assert_eq!(AfterDays(60).days(), Some(60));
+    assert_eq!(Off.days(), None);
+    assert_eq!(Unknown.days(), None);
+}
+
+#[test]
+fn the_view_gives_the_effective_transcript_delay() {
+    let root = folder();
+    for (file, days) in [
+        (
+            json!({"audio_removal": 30, "transcript_removal": 60}),
+            Some(60),
+        ),
+        (
+            json!({"audio_removal": 30, "transcript_removal": 20}),
+            Some(30),
+        ),
+        (
+            json!({"transcript_removal": 20}),
+            Some(DEFAULT_AUDIO_REMOVAL_DAYS),
+        ),
+        (
+            json!({"audio_removal": "off", "transcript_removal": 60}),
+            None,
+        ),
+        (json!({"audio_removal": 0, "transcript_removal": 60}), None),
+    ] {
+        write_raw(root.path(), &file);
+        assert_eq!(
+            load(root.path(), None).view.transcript_removal_days(),
+            days,
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn a_view_that_is_not_available_gives_no_transcript_delay() {
+    // R2: while the shared settings cannot be read, no transcript goes,
+    // also when the cache holds a delay.
+    let root = folder();
+    write_raw(
+        root.path(),
+        &json!({"audio_removal": 30, "transcript_removal": 60}),
+    );
+    let cache = load(root.path(), None)
+        .cache
+        .expect("a first load gives a cache");
+    fs::write(
+        root.path().join(".longhand").join(SETTINGS_FILE),
+        "{\"transcript",
+    )
+    .unwrap();
+    let view = load(root.path(), Some(&cache)).view;
+    assert_eq!(
+        view.fields.transcript_removal,
+        Field::Known(TranscriptRemoval::AfterDays(60))
+    );
+    assert_eq!(view.transcript_removal(), RemovalDelay::Unknown);
+    assert_eq!(view.audio_removal(), RemovalDelay::Unknown);
+    assert_eq!(view.transcript_removal_days(), None);
+
+    let gone = root.path().join("gone");
+    assert_eq!(
+        load(&gone, Some(&cache)).view.transcript_removal_days(),
+        None
+    );
 }
 
 // ------------------------------------------------------------ note types

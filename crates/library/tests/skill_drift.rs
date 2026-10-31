@@ -30,8 +30,8 @@ use session_save::home_write::write_atomic;
 use session_save::naming::folder_name;
 use session_save::note_files::{new_session_md, write_record};
 use shared_settings::file::{
-    AudioRemoval, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue, default_settings,
-    read_settings, save_settings, settings_path,
+    AudioRemoval, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue, TranscriptRemoval,
+    default_settings, read_settings, save_settings, settings_path,
 };
 use shared_settings::prompts::{
     prompts_folder, render_prompt_file, render_prompt_file_with_title, scan_prompts,
@@ -206,6 +206,7 @@ fn field_of(value: &SharedValue) -> &'static str {
         SharedValue::RecognitionLanguage(_) => "recognition_language",
         SharedValue::CheckUpdatesAutomatically(_) => "check_updates_automatically",
         SharedValue::AudioRemoval(_) => "audio_removal",
+        SharedValue::TranscriptRemoval(_) => "transcript_removal",
         SharedValue::NoteTypes(_) => "note_types",
         SharedValue::DefaultNoteType(_) => "default_note_type",
         SharedValue::NoteTypePrompts(_) => "note_type_prompts",
@@ -228,6 +229,7 @@ fn every_setting() -> Vec<SharedValue> {
         SharedValue::RecognitionLanguage(Some("en".to_string())),
         SharedValue::CheckUpdatesAutomatically(true),
         SharedValue::AudioRemoval(AudioRemoval::AfterDays(30)),
+        SharedValue::TranscriptRemoval(TranscriptRemoval::AfterDays(60)),
         SharedValue::NoteTypes(vec!["Meetings".to_string()]),
         SharedValue::DefaultNoteType(Some("Meetings".to_string())),
         SharedValue::NoteTypePrompts(BTreeMap::from([(
@@ -281,6 +283,7 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         recognition_language,
         check_updates_automatically,
         audio_removal,
+        transcript_removal,
         note_types,
         default_note_type,
         note_type_prompts,
@@ -314,6 +317,7 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         &check_updates_automatically,
     );
     assert_known(&mut checked, "audio_removal", &audio_removal);
+    assert_known(&mut checked, "transcript_removal", &transcript_removal);
     assert_known(&mut checked, "note_types", &note_types);
     assert_known(&mut checked, "default_note_type", &default_note_type);
     assert_known(&mut checked, "note_type_prompts", &note_type_prompts);
