@@ -242,6 +242,10 @@ pub enum RunnerEvent {
         note_id: String,
         path: PathBuf,
         copied: bool,
+        /// The Summarize stage made the summary (see
+        /// [`save::summary_made`]). The save clears the stage's rows, so
+        /// this is the record of it.
+        summary: bool,
     },
     /// A Transcribe Again run failed before its save. The session is saved
     /// with its previous transcript and summary (R19).
@@ -1921,6 +1925,7 @@ fn execute(
                 note_id: id.to_string(),
                 path: saved.path,
                 copied: saved.copied,
+                summary: saved.summary,
             });
             Ok(())
         }
@@ -2026,17 +2031,27 @@ fn title_gate(store: &session_core::Store, claims: &Claims, note_id: &str) -> Op
         TitleDue::Yes => None,
         TitleDue::No => Some(TitleJob::Skipped),
         TitleDue::Dropped => {
-            drop_title_request(store, note_id);
+            drop_title_request(store, claims, note_id);
             Some(TitleJob::Skipped)
         }
     }
 }
 
-/// Delete the title request of `note_id`. An error is logged: the note
-/// keeps its title in every case. The caller holds the store lock.
-fn drop_title_request(store: &session_core::Store, note_id: &str) {
+/// Delete the title request of `note_id`, then its summary cache (KTD12
+/// of the transcript removal plan). A note that a delete, a Move or a
+/// regeneration holds keeps the cache: a regeneration uses it. An error
+/// is logged: the note keeps its title in every case. The caller holds
+/// the store lock.
+fn drop_title_request(store: &session_core::Store, claims: &Claims, note_id: &str) {
     if let Err(e) = store.delete_checkpoint(note_id, Stage::Summarize, summarize::TITLE_REQUEST) {
         log::warn!("could not delete the title request of {note_id}: {e}");
+        return;
+    }
+    if claims.busy(note_id) {
+        return;
+    }
+    if let Err(e) = save::clear_summary_cache(store, note_id) {
+        log::warn!("could not clear the summary cache of {note_id}: {e}");
     }
 }
 
@@ -2055,7 +2070,7 @@ fn send_title(
     }
     let kept = |why: &str| {
         log::warn!("proposing a title for {note_id} failed: {why}; the note keeps its title");
-        drop_title_request(&lock(&env.store), note_id);
+        drop_title_request(&lock(&env.store), claims, note_id);
         TitleJob::Kept
     };
     let request = match summarize::pending_title_request(&env.store, note_id) {
@@ -2084,7 +2099,7 @@ fn send_title(
             // the same thread waits for ever.
             let store = lock(&env.store);
             if let TitleDue::Dropped = title_due(&store, claims, note_id) {
-                drop_title_request(&store, note_id);
+                drop_title_request(&store, claims, note_id);
             }
             return TitleJob::Skipped;
         }
@@ -2137,7 +2152,7 @@ fn send_title(
             TitleJob::Kept
         }
     };
-    drop_title_request(&guard, note_id);
+    drop_title_request(&guard, claims, note_id);
     job
 }
 

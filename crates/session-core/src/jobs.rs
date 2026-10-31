@@ -1172,18 +1172,31 @@ impl Store {
 
     /// Remove the note's summary cache (KTD12 of the transcript removal
     /// plan): its Summarize checkpoints, also the copy from before a
-    /// Transcribe Again run. Run [`Store::checkpoint_wal`] after it.
+    /// Transcribe Again run. The [`SUMMARY_FAILED`] row stays. Run
+    /// [`Store::checkpoint_wal`] after it.
     pub fn clear_summary_cache(&self, id: &str) -> Result<()> {
         self.require(id)?;
-        self.conn.execute(
-            "DELETE FROM checkpoints WHERE note_id = ?1 AND stage IN (?2, ?3)",
-            params![
-                id,
-                stage_key(Stage::Summarize),
-                previous_key(Stage::Summarize)
-            ],
-        )?;
-        Ok(())
+        clear_summary_cache_in(&self.conn, id)
+    }
+
+    /// [`Store::apply`] with the clear of the note's recognition data in
+    /// the same transaction (KTD12 of the transcript removal plan), and
+    /// with the clear of its summary cache when `summary_cache` is true.
+    /// A failure before the commit leaves the state and the rows as they
+    /// were. Run [`Store::checkpoint_wal`] after it.
+    pub fn apply_clearing_content(
+        &mut self,
+        id: &str,
+        event: &Event,
+        summary_cache: bool,
+    ) -> Result<SessionState> {
+        self.apply_with(id, event, |tx| {
+            clear_recognition_data_in(tx, id)?;
+            if summary_cache {
+                clear_summary_cache_in(tx, id)?;
+            }
+            Ok(())
+        })
     }
 
     /// Copy the WAL into the database file and make the WAL empty (KTD5 of
@@ -2621,6 +2634,27 @@ pub(crate) fn clear_recognition_data_in(conn: &Connection, id: &str) -> Result<(
     }
     conn.execute("DELETE FROM recognition_output WHERE note_id = ?1", [id])?;
     conn.execute("DELETE FROM recognition_epochs WHERE note_id = ?1", [id])?;
+    Ok(())
+}
+
+/// Under the Summarize stage: the error of a summary that failed. It is a
+/// status, not note content, so the clear of the summary cache keeps it.
+/// The transcript removal pass reads it (R28).
+pub const SUMMARY_FAILED: &str = "failed";
+
+/// Delete the note's Summarize checkpoints on `conn`, also the copy from
+/// before a Transcribe Again run. The [`SUMMARY_FAILED`] row stays.
+fn clear_summary_cache_in(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM checkpoints WHERE note_id = ?1
+         AND (stage = ?3 OR (stage = ?2 AND key != ?4))",
+        params![
+            id,
+            stage_key(Stage::Summarize),
+            previous_key(Stage::Summarize),
+            SUMMARY_FAILED
+        ],
+    )?;
     Ok(())
 }
 

@@ -347,6 +347,7 @@ impl From<RunnerEvent> for Sent {
                 note_id,
                 path,
                 copied,
+                ..
             } => (
                 note_id,
                 ProcessingStep::Saved {
@@ -737,35 +738,6 @@ fn saved_notice(folder: &str, has_summary: bool) -> (&'static str, String) {
     ("Note ready", body)
 }
 
-/// Whether the Summarize stage made the summary of `note_id`: the stage
-/// is complete for each segment and no summary failure is recorded. In
-/// the other cases the save writes the stub summary. A read error gives
-/// false.
-fn summary_made(store: &pipeline::SharedStore, note_id: &str) -> bool {
-    use session_core::Stage;
-    let read = || -> Result<bool, pipeline::StageError> {
-        let segments = store
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .segments(note_id)?
-            .len();
-        Ok(
-            pipeline::checkpoint::is_complete(store, note_id, Stage::Summarize, segments)?
-                && pipeline::checkpoint::get::<String>(
-                    store,
-                    note_id,
-                    Stage::Summarize,
-                    pipeline::save::SUMMARY_FAILED,
-                )?
-                .is_none(),
-        )
-    };
-    read().unwrap_or_else(|e| {
-        log::warn!("could not read if the note {note_id} has a summary: {e}");
-        false
-    })
-}
-
 /// Whether `event` ends the work on a note: its in-use marker goes at
 /// Saved, and a failed Transcribe Again run is Saved again.
 fn ends_work(event: &RunnerEvent) -> bool {
@@ -790,12 +762,9 @@ fn suspended(
     move || capture.is_capturing() || live.busy()
 }
 
-fn notify_saved(
-    app: &AppHandle,
-    store: &pipeline::SharedStore,
-    note_id: &str,
-    path: &std::path::Path,
-) {
+/// `summary` is true when the Summarize stage made the summary
+/// ([`pipeline::save::summary_made`]).
+fn notify_saved(app: &AppHandle, path: &std::path::Path, summary: bool) {
     use tauri::Manager;
     use tauri_plugin_notification::NotificationExt;
     let visible = app
@@ -809,7 +778,7 @@ fn notify_saved(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let (title, body) = saved_notice(&folder, summary_made(store, note_id));
+    let (title, body) = saved_notice(&folder, summary);
     if let Err(e) = app.notification().builder().title(title).body(body).show() {
         log::warn!("could not post the save notification: {e}");
     }
@@ -900,7 +869,6 @@ impl ProcessingManager {
         liveness: session_core::jobs::Liveness,
     ) -> Self {
         let events = app.clone();
-        let saved = capture.shared_store();
         let runner = Runner::new(Environment {
             store: capture.shared_store(),
             working_root: capture.working_root().to_path_buf(),
@@ -911,8 +879,8 @@ impl ProcessingManager {
             }),
             suspended: Box::new(suspended(capture, live)),
             events: Box::new(move |event| {
-                if let RunnerEvent::Saved { note_id, path, .. } = &event {
-                    notify_saved(&events, &saved, note_id, path);
+                if let RunnerEvent::Saved { path, summary, .. } = &event {
+                    notify_saved(&events, path, *summary);
                 }
                 if ends_work(&event)
                     && let Some(processing) = events.try_state::<Arc<ProcessingManager>>()
@@ -3004,15 +2972,15 @@ mod tests {
                 .unwrap();
         }
         // The Summarize stage did not run.
-        assert!(!summary_made(&store, "n"));
+        assert!(!pipeline::save::summary_made(&store, "n", 2).unwrap());
         // The stage is complete for one of the two segments only.
         pipeline::checkpoint::mark_complete(&store, "n", Stage::Summarize, 1).unwrap();
-        assert!(!summary_made(&store, "n"));
+        assert!(!pipeline::save::summary_made(&store, "n", 2).unwrap());
         pipeline::checkpoint::mark_complete(&store, "n", Stage::Summarize, 2).unwrap();
-        assert!(summary_made(&store, "n"));
+        assert!(pipeline::save::summary_made(&store, "n", 2).unwrap());
         pipeline::save::record_summary_failure(&store, "n", "no summary service").unwrap();
-        assert!(!summary_made(&store, "n"));
-        assert!(!summary_made(&store, "bad"));
+        assert!(!pipeline::save::summary_made(&store, "n", 2).unwrap());
+        assert!(pipeline::save::summary_made(&store, "bad", 2).is_err());
     }
 
     #[test]
@@ -3024,6 +2992,7 @@ mod tests {
                 note_id: id(),
                 path: "/notes/a".into(),
                 copied: false,
+                summary: true,
             },
             RunnerEvent::StageFailed {
                 note_id: id(),

@@ -27,6 +27,8 @@ use pipeline::{
 use session_core::{SessionState, Stage};
 
 type Hook = Box<dyn Fn(usize) + Send + Sync>;
+/// The checkpoints (stage, key, payload) of each note, by note id.
+type RowsByNote = std::collections::HashMap<String, Vec<(Stage, String, String)>>;
 
 #[derive(Default)]
 struct Script {
@@ -50,6 +52,12 @@ struct Script {
     /// The attempt of the saved speaker progress at each start of the
     /// speaker stage.
     saved_at_start: Mutex<Vec<Option<String>>>,
+    /// The recognition generation of the note at the last start of the
+    /// save stage.
+    generation_at_save: Mutex<Option<String>>,
+    /// The Assemble, Transcribe and Diarize checkpoints of the note at the
+    /// last start of the save stage, which clears them (KTD12).
+    rows_at_save: Mutex<RowsByNote>,
     /// Where summaries go; unset is an unconfigured endpoint.
     summary: Mutex<Option<Result<SummaryEndpoint, EndpointProblem>>>,
     /// Filler sentences each window decodes, to make transcripts long.
@@ -532,6 +540,34 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
                     .unwrap()
                     .push(progress.map(|p| p.attempt));
             }
+            if let RunnerEvent::StageStarted {
+                note_id,
+                stage: Stage::Save,
+            } = &e
+            {
+                *recording.generation_at_save.lock().unwrap() = saved
+                    .lock()
+                    .unwrap()
+                    .checkpoint_value(
+                        note_id,
+                        Stage::Transcribe,
+                        session_core::recognition::GENERATION_KEY,
+                    )
+                    .unwrap()
+                    .map(|value| serde_json::from_str(&value).unwrap());
+                let store = saved.lock().unwrap();
+                let mut rows = Vec::new();
+                for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
+                    for (key, payload) in store.checkpoints(note_id, stage).unwrap() {
+                        rows.push((stage, key, payload));
+                    }
+                }
+                recording
+                    .rows_at_save
+                    .lock()
+                    .unwrap()
+                    .insert(note_id.clone(), rows);
+            }
             sink.lock().unwrap().push(e)
         }),
     });
@@ -612,6 +648,25 @@ fn conversation() -> Vec<f32> {
     audio.resize(audio.len() + 16_000 * 5, 0.0);
     audio.extend_from_slice(&speech);
     audio
+}
+
+/// A store with the note `id`, its segments, and the recognition
+/// checkpoints that it had at the last start of the save stage. The save
+/// clears them (KTD12), so a test reads them here.
+fn store_at_save(r: &Rig, id: &str) -> SharedStore {
+    let at_save = store();
+    let segments = r.store.lock().unwrap().segments(id).unwrap();
+    {
+        let mut s = at_save.lock().unwrap();
+        s.create_session(id, common::at(0), None).unwrap();
+        for segment in &segments {
+            s.put_segment(id, segment).unwrap();
+        }
+        for (stage, key, payload) in r.script.rows_at_save.lock().unwrap()[id].iter() {
+            s.put_checkpoint(id, *stage, key, payload).unwrap();
+        }
+    }
+    at_save
 }
 
 fn plan(store: &SharedStore, id: &str) -> WindowPlan {
@@ -712,8 +767,9 @@ async fn two_queued_sessions_run_one_stage_at_a_time_in_stop_order() {
     );
     // One engine load serves both sessions.
     assert_eq!(*r.script.loads.lock().unwrap(), vec!["m".to_string()]);
-    let results = transcribe::results(&r.store, "earlier").unwrap();
-    assert_eq!(results.len(), plan(&r.store, "earlier").windows.len());
+    let at_save = store_at_save(&r, "earlier");
+    let results = transcribe::results(&at_save, "earlier").unwrap();
+    assert_eq!(results.len(), plan(&at_save, "earlier").windows.len());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -768,7 +824,7 @@ async fn a_run_dropped_part_way_resumes_at_the_first_unfinished_window() {
     let (_, outcome) = second.runner.run_next().await.unwrap();
     assert_eq!(outcome, Outcome::Finished);
     assert_eq!(second.script.calls.load(Ordering::SeqCst), total - 2);
-    let after = transcribe::results(&store, "s").unwrap();
+    let after = transcribe::results(&store_at_save(&second, "s"), "s").unwrap();
     assert_eq!(after.len(), total);
     assert_eq!(after[..2], before[..]);
     // Assemble was not redone: its stage never started in the new process.
@@ -1103,7 +1159,9 @@ fn the_save_stage_keeps_the_working_folder_while_audio_is_not_registered() {
 }
 
 #[test]
-fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
+fn the_save_removes_every_recognition_row_of_the_note() {
+    // KTD12: also the live blocks that a live worker still wrote, and the
+    // final copies.
     use session_core::recognition::{
         Coverage, GENERATION_KEY, OutputBlock, SampleRange, SpeakerScope,
     };
@@ -1185,12 +1243,10 @@ fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
             Ok(())
         })
         .unwrap();
+    assert!(keys.is_empty(), "{keys:?}");
     assert_eq!(
-        keys,
-        [
-            format!("native-final/{:020}/row/0", 1),
-            format!("nemo/{:020}/word/0", 2),
-        ]
+        checkpoint::get::<String>(&store, "s", Stage::Transcribe, GENERATION_KEY).unwrap(),
+        None
     );
     assert_eq!(
         std::fs::read_to_string(saved.path.join(TRANSCRIPT_FILE)).unwrap(),
@@ -1198,7 +1254,8 @@ fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
     );
 
     // The save of a resumed note updates the folder in place, and also
-    // removes the live blocks of each epoch that has a final copy.
+    // removes every recognition row.
+    checkpoint::put(&store, "s", Stage::Transcribe, GENERATION_KEY, &"g").unwrap();
     {
         let mut s = store.lock().unwrap();
         s.apply(
@@ -1244,14 +1301,7 @@ fn the_save_removes_the_live_blocks_of_each_epoch_that_has_a_final_copy() {
             Ok(())
         })
         .unwrap();
-    assert_eq!(
-        keys,
-        [
-            format!("native-final/{:020}/row/0", 1),
-            format!("native-final/{:020}/row/0", 3),
-            format!("nemo/{:020}/word/0", 2),
-        ]
-    );
+    assert!(keys.is_empty(), "{keys:?}");
 }
 
 #[test]
@@ -1984,7 +2034,7 @@ async fn a_long_transcript_is_summarized_in_parts_and_merged_in_layers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_starts_there() {
+async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_sends_every_part() {
     let r = rig().await;
     let n = Arc::new(AtomicUsize::new(0));
     let count = Arc::clone(&n);
@@ -2015,18 +2065,19 @@ async fn a_server_error_on_part_five_saves_a_stub_and_regenerating_starts_there(
     );
     assert!(stub.body.contains("part 5 of"), "{}", stub.body);
 
-    // Regenerate (AE17) picks up at the part that failed.
+    // The save cleared the summary cache (KTD12), so Regenerate sends
+    // every part again.
     assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
     let calls = chat_calls(&mock);
     assert!(
-        calls[5].contains("<transcript part=\"5\">"),
+        calls[5].contains("<transcript part=\"1\">"),
         "{}",
         &calls[5][..80]
     );
     assert!(
         calls[5..]
             .iter()
-            .all(|c| !c.contains("<transcript part=\"4\">"))
+            .any(|c| c.contains("<transcript part=\"4\">"))
     );
     let summary = summary_at(&path);
     assert!(matches!(
@@ -2276,7 +2327,7 @@ async fn one_at_the_same_time_sends_the_parts_one_by_one() {
 /// open. The parts that finished keep their results, and the next run
 /// sends only the parts that have none.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_failed_part_drops_the_open_parts_and_the_next_run_sends_only_the_missing_parts() {
+async fn a_failed_part_drops_the_open_parts_and_the_regeneration_sends_every_part() {
     let r = rig().await;
     let done = Arc::new(tokio::sync::watch::channel(0usize).0);
     let first_run = Arc::new(AtomicBool::new(true));
@@ -2363,8 +2414,9 @@ async fn a_failed_part_drops_the_open_parts_and_the_next_run_sends_only_the_miss
     let total = part_named(&completions(&mock)[0]).unwrap().1;
     let mut sorted = again.clone();
     sorted.sort_unstable();
-    let missing: Vec<usize> = (1..=total).filter(|k| *k != 1 && *k != 3).collect();
-    assert_eq!(sorted, missing, "{again:?}");
+    // The save cleared the summary cache (KTD12), so the regeneration
+    // sends every part.
+    assert_eq!(sorted, (1..=total).collect::<Vec<_>>(), "{again:?}");
     assert_eq!(
         merged_parts(&completions(&mock)[first_calls..]),
         (1..=total).collect::<Vec<_>>()
@@ -3177,56 +3229,18 @@ async fn a_summary_that_resumes_after_a_type_change_uses_the_prompt_of_the_new_t
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn regenerating_a_stub_with_the_same_prompt_reuses_its_part_notes() {
+async fn regenerating_a_stub_with_the_same_prompt_sends_every_part_again() {
+    // The save cleared the summary cache (KTD12).
     let r = rig().await;
     let (mock, path) = stub_after_part_five(&r).await;
     assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
     let calls = chat_calls(&mock);
     assert!(
-        calls[5].contains("<transcript part=\"5\">"),
+        calls[5].contains("<transcript part=\"1\">"),
         "{}",
         &calls[5][..80]
     );
     assert_eq!(prompt_name(&path), Some("Topic summary".into()));
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn regenerating_a_stub_planned_under_an_old_default_budget_plans_again() {
-    // An older version used 8,192 tokens when the probe found nothing, and
-    // kept that plan with the stub. Its reply room is too small for a
-    // whole summary, so a regeneration that keeps the plan never finishes.
-    let r = rig().await;
-    let (mock, path) = stub_after_part_five_at(&r, 8_192).await;
-    let mut plan: serde_json::Value =
-        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN)
-            .unwrap()
-            .unwrap();
-    plan["budget"]["source"] = "default".into();
-    checkpoint::put(
-        &r.store,
-        "s",
-        Stage::Summarize,
-        pipeline::summarize::PLAN,
-        &plan,
-    )
-    .unwrap();
-    // No context limit is set, and the server reports none.
-    *r.script.summary.lock().unwrap() = Some(Ok(endpoint(&mock.base)));
-    let before = chat_calls(&mock).len();
-
-    assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
-    let after = &chat_calls(&mock)[before..];
-    assert_eq!(after.len(), 1, "the whole transcript fits the new default");
-    assert!(
-        !after[0].contains("<transcript part="),
-        "{}",
-        &after[0][..80]
-    );
-    let plan: serde_json::Value =
-        checkpoint::get(&r.store, "s", Stage::Summarize, pipeline::summarize::PLAN)
-            .unwrap()
-            .unwrap_or_default();
-    assert_ne!(plan["budget"]["limit"], 8_192, "{plan}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -3312,8 +3326,7 @@ async fn regenerating_a_stub_with_no_saved_prompt_makes_every_call_again() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn regenerating_a_stub_after_its_prompt_is_renamed_reuses_the_calls_and_records_the_new_name()
-{
+async fn regenerating_a_stub_after_its_prompt_is_renamed_records_the_new_name() {
     let r = rig().await;
     let before = custom_prompt("Team sync", "RECAP-MARKER");
     use_prompt(&r, &before);
@@ -3326,9 +3339,10 @@ async fn regenerating_a_stub_after_its_prompt_is_renamed_reuses_the_calls_and_re
         },
     );
     assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
+    // The save cleared the summary cache (KTD12).
     let calls = chat_calls(&mock);
     assert!(
-        calls[5].contains("<transcript part=\"5\">"),
+        calls[5].contains("<transcript part=\"1\">"),
         "{}",
         &calls[5][..80]
     );
@@ -3590,7 +3604,8 @@ async fn regenerating_a_stub_after_the_background_changes_makes_every_call_again
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn regenerating_a_stub_with_the_same_background_reuses_its_part_notes() {
+async fn regenerating_a_stub_with_the_same_background_sends_every_part_again() {
+    // The save cleared the summary cache (KTD12).
     let r = rig().await;
     use_background(&r, "SAME-BACKGROUND");
     let (mock, path) = stub_after_part_five_at(&r, BACKGROUND_CONTEXT).await;
@@ -3599,7 +3614,7 @@ async fn regenerating_a_stub_with_the_same_background_reuses_its_part_notes() {
     assert_eq!(r.runner.regenerate_summary("s").await.unwrap(), path);
     let calls = chat_calls(&mock);
     assert!(
-        calls[5].contains("<transcript part=\"5\">"),
+        calls[5].contains("<transcript part=\"1\">"),
         "{}",
         &calls[5][..80]
     );
@@ -5012,6 +5027,11 @@ fn resume_completed(r: &Rig, id: &str, audio: &[f32]) {
         },
     )
     .unwrap();
+    // The save cleared the recognition data (KTD12), so the Resume takes
+    // the text of the recorded segments from `transcript.md`, as the
+    // Resume command does.
+    let home = s.session(id).unwrap().unwrap().home_path.unwrap();
+    pipeline::transcribe::seed_from_transcript(&s, id, std::path::Path::new(&home)).unwrap();
     drop(s);
     record_resumed_segment(r, id, audio);
 }
@@ -5098,11 +5118,17 @@ async fn a_resumed_completed_session_updates_its_folder_in_place() {
         .filter(|l| matches!(l, TranscriptLine::Gap { .. }))
         .count();
     assert_eq!(gaps, 2, "both recordings and the day between them");
+    // The save of the resumed run clears the note content (KTD12).
+    assert_eq!(recognition_rows(&r, "s"), (Vec::new(), 0));
     // Only the new segment was transcribed again.
-    let plan: WindowPlan =
-        checkpoint::get(&r.store, "s", Stage::Transcribe, &checkpoint::plan_key(2))
-            .unwrap()
-            .unwrap();
+    let plan: WindowPlan = checkpoint::get(
+        &store_at_save(&r, "s"),
+        "s",
+        Stage::Transcribe,
+        &checkpoint::plan_key(2),
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(
         r.script.calls.load(Ordering::SeqCst) - calls,
         plan.windows.len()
@@ -6480,9 +6506,16 @@ async fn transcribe_again_replaces_the_transcript_and_the_summary_and_keeps_the_
     assert_eq!(marks(&r), Default::default());
     // A full pass, with the new model only.
     let called = r.script.models_called.lock().unwrap()[calls..].to_vec();
-    assert_eq!(called.len(), plan(&r.store, "s").windows.len());
+    assert_eq!(
+        called.len(),
+        plan(&store_at_save(&r, "s"), "s").windows.len()
+    );
     assert!(called.iter().all(|m| m == MODEL), "{called:?}");
     assert!(!r.root.join("s").exists(), "the working copy is gone");
+    // The save of the run clears the note content (KTD12). The note has a
+    // user title, so no title job follows.
+    assert_eq!(recognition_rows(&r, "s"), (Vec::new(), 0));
+    assert!(summary_rows(&r, "s").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -6603,7 +6636,7 @@ async fn transcribe_again_runs_asr_on_every_window(config: RecognitionConfig) {
     let _mock = numbered_summaries(&r).await;
     let home = note_with_timed_text(&r).await;
     // The windows of the full run that saved the timed text.
-    let windows = plan(&r.store, "s").windows.len();
+    let windows = plan(&store_at_save(&r, "s"), "s").windows.len();
     let calls = r.script.calls.load(Ordering::SeqCst);
     again_with(&r, &config).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
@@ -8109,7 +8142,7 @@ fn queue_stereo(r: &Rig, segments: &[common::Recorded]) {
 
 /// How many times the transcript holds each remote sentence.
 fn times_heard(r: &Rig) -> Vec<(String, usize)> {
-    let text: String = transcribe::results(&r.store, "s")
+    let text: String = transcribe::results(&store_at_save(r, "s"), "s")
         .unwrap()
         .iter()
         .map(|w| format!(" {} ", w.text))
@@ -8184,7 +8217,7 @@ async fn a_call_on_the_speakers_is_transcribed_from_the_plain_mix() {
     queue_stereo(&r, &[common::Recorded::Stereo(16_000, mic, system)]);
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
-        pipeline::echo::saved(&r.store, "s", 0).unwrap(),
+        pipeline::echo::saved(&store_at_save(&r, "s"), "s", 0).unwrap(),
         Some(no_echo(0))
     );
     assert_eq!(times_heard(&r), twice_each());
@@ -8220,10 +8253,10 @@ async fn a_stereo_segment_keeps_all_its_live_words() {
 
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
-        pipeline::echo::saved(&r.store, "s", 0).unwrap(),
+        pipeline::echo::saved(&store_at_save(&r, "s"), "s", 0).unwrap(),
         Some(no_echo(0))
     );
-    let live: Vec<String> = transcribe::results(&r.store, "s")
+    let live: Vec<String> = transcribe::results(&store_at_save(&r, "s"), "s")
         .unwrap()
         .into_iter()
         .filter(|w| w.live)
@@ -8260,7 +8293,7 @@ async fn transcribe_again_on_a_stereo_note_uses_the_plain_mix() {
     confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
     assert_eq!(
-        pipeline::echo::saved(&r.store, "s", 0).unwrap(),
+        pipeline::echo::saved(&store_at_save(&r, "s"), "s", 0).unwrap(),
         Some(no_echo(0))
     );
     assert_eq!(times_heard_in_transcript(&r), twice_each());
@@ -8289,9 +8322,12 @@ async fn transcribe_again_on_a_note_with_a_mono_and_a_stereo_segment_decodes_eac
     );
     confirm_again(&r).unwrap();
     assert_eq!(r.runner.run_next().await.unwrap().1, Outcome::Finished);
-    assert_eq!(pipeline::echo::saved(&r.store, "s", 0).unwrap(), None);
     assert_eq!(
-        pipeline::echo::saved(&r.store, "s", 1).unwrap(),
+        pipeline::echo::saved(&store_at_save(&r, "s"), "s", 0).unwrap(),
+        None
+    );
+    assert_eq!(
+        pipeline::echo::saved(&store_at_save(&r, "s"), "s", 1).unwrap(),
         Some(no_echo(1))
     );
     assert_eq!(times_heard_in_transcript(&r), twice_each());
@@ -8302,8 +8338,10 @@ async fn a_cancelled_transcribe_again_restores_the_previous_echo_spans() {
     let r = stereo_rig().await;
     let (mic, system) = speaker_call([2.0, 9.0, 16.0]);
     saved_stereo_note(&r, &[common::Recorded::Stereo(16_000, mic, system)]).await;
+    // The save cleared the Assemble rows (KTD12), so the previous set is
+    // empty.
     let before = checkpoint::all(&r.store, "s", Stage::Assemble).unwrap();
-    assert!(before.iter().any(|(k, _)| k == &checkpoint::echo_key(0)));
+    assert!(before.is_empty(), "{before:?}");
 
     let calls = r.script.calls.load(Ordering::SeqCst);
     confirm_again(&r).unwrap();
@@ -8408,10 +8446,10 @@ fn calls(r: &Rig) -> usize {
     r.script.calls.load(Ordering::SeqCst)
 }
 
-/// The windows planned for the segment `index` of "s".
+/// The windows planned for the segment `index` of "s", at the last save.
 fn windows_of(r: &Rig, index: u32) -> usize {
     let plan: WindowPlan = checkpoint::get(
-        &r.store,
+        &store_at_save(r, "s"),
         "s",
         Stage::Transcribe,
         &checkpoint::plan_key(index),
@@ -10045,11 +10083,9 @@ async fn after_the_save_the_title_job_proposes_the_cleaned_reply_and_renames_the
     );
     assert!(summary_is_complete(&renamed));
     assert_eq!(pending(&r), None);
-    assert_eq!(
-        checkpoint::get::<String>(&r.store, "s", Stage::Summarize, pipeline::summarize::TITLE)
-            .unwrap(),
-        Some("Weekly sync".into())
-    );
+    // The title is done, so the summary cache goes, with the title call
+    // (KTD12).
+    assert!(summary_rows(&r, "s").is_empty());
     assert_eq!(
         proposed_titles(&r),
         [("s".to_string(), "Weekly sync".to_string())]
@@ -10090,6 +10126,150 @@ async fn a_failed_title_turn_keeps_the_title_and_the_folder_and_deletes_the_requ
     assert!(summary_is_complete(&folder));
     assert_eq!(pending(&r), None);
     assert!(proposed_titles(&r).is_empty());
+    assert!(
+        summary_rows(&r, "s").is_empty(),
+        "the job dropped the request"
+    );
+}
+
+/// The keys of the note's checkpoints of the stages that hold its
+/// recognition data (KTD12), and the number of recognition rows of the
+/// generation at the last save. A route with no generation writes no
+/// recognition rows.
+fn recognition_rows(r: &Rig, id: &str) -> (Vec<(Stage, String)>, usize) {
+    let store = r.store.lock().unwrap();
+    let mut keys = Vec::new();
+    for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
+        for (key, _) in store.checkpoints(id, stage).unwrap() {
+            keys.push((stage, key));
+        }
+    }
+    let mut rows = 0;
+    if let Some(generation) = r.script.generation_at_save.lock().unwrap().clone() {
+        store
+            .visit_recognition(id, &generation, |_| {
+                rows += 1;
+                Ok(())
+            })
+            .unwrap();
+    }
+    (keys, rows)
+}
+
+/// The keys of the note's Summarize checkpoints.
+fn summary_rows(r: &Rig, id: &str) -> Vec<String> {
+    r.store
+        .lock()
+        .unwrap()
+        .checkpoints(id, Stage::Summarize)
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+/// The `summary` flag of the last Saved event of `id`.
+fn saved_with_summary(r: &Rig, id: &str) -> Option<bool> {
+    r.events.lock().unwrap().iter().rev().find_map(|e| match e {
+        RunnerEvent::Saved {
+            note_id, summary, ..
+        } if note_id == id => Some(*summary),
+        _ => None,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn after_the_save_and_the_title_the_store_holds_no_note_content() {
+    // Covers AE10.
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let _mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    assert!(
+        !r.script.rows_at_save.lock().unwrap()["s"].is_empty(),
+        "the note had recognition rows before the save"
+    );
+    assert_eq!(recognition_rows(&r, "s"), (Vec::new(), 0));
+    // Index data stays. The session-core tests check the snapshot and the
+    // found speaker count; this route records neither.
+    assert!(
+        r.store
+            .lock()
+            .unwrap()
+            .transcript_fingerprint("s")
+            .unwrap()
+            .is_some()
+    );
+    // The title request waits, so the summary cache stays until the job.
+    assert!(pending(&r).is_some());
+    assert!(!summary_rows(&r, "s").is_empty());
+    assert_eq!(saved_with_summary(&r, "s"), Some(true));
+
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert!(summary_rows(&r, "s").is_empty());
+    let folder = saved_folder(&r, "s");
+    assert_eq!(folder, r.dest.join(name_for(Some("Weekly sync"))));
+    assert!(summary_is_complete(&folder));
+    assert_eq!(title_of(&r).unwrap().text, "Weekly sync");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_note_with_a_user_title_clears_the_summary_cache_at_the_save() {
+    let r = rig().await;
+    let title = title_reply("Something else");
+    let _mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    let folder = saved_session(&r, Some("Budget review")).await;
+    assert_eq!(pending(&r), None);
+    assert!(summary_rows(&r, "s").is_empty());
+    assert_eq!(recognition_rows(&r, "s"), (Vec::new(), 0));
+    assert!(summary_is_complete(&folder));
+    // The summary was made, also with no Summarize rows left.
+    assert_eq!(saved_with_summary(&r, "s"), Some(true));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_save_with_no_summary_says_so_in_its_event() {
+    let r = rig().await;
+    *r.script.summary.lock().unwrap() = None;
+    saved_session(&r, None).await;
+    assert_eq!(saved_with_summary(&r, "s"), Some(false));
+    // The failure status stays; it is not note content.
+    assert_eq!(summary_rows(&r, "s"), [pipeline::save::SUMMARY_FAILED]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_title_job_that_waits_for_the_secret_store_keeps_the_summary_cache() {
+    let r = rig().await;
+    let title = title_reply("Weekly sync");
+    let mock = summaries_and_titles(&r, a_summary(), &title, None).await;
+    saved_session(&r, None).await;
+    let endpoint = r
+        .script
+        .summary
+        .lock()
+        .unwrap()
+        .replace(Err(EndpointProblem::Locked(
+            "the login keychain is locked".into(),
+        )));
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(job_for(&jobs, "s"), Some(TitleJob::Skipped));
+    assert!(pending(&r).is_some());
+    assert!(!summary_rows(&r, "s").is_empty());
+
+    *r.script.summary.lock().unwrap() = endpoint;
+    // The next launch queues the request again.
+    assert_eq!(r.runner.queue_pending_titles().unwrap(), ["s"]);
+    let jobs = r.runner.run_titles().await;
+    assert_eq!(
+        job_for(&jobs, "s"),
+        Some(TitleJob::Proposed("Weekly sync".into()))
+    );
+    assert_eq!(title_calls(&mock).len(), 1);
+    assert!(summary_rows(&r, "s").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -10254,6 +10434,16 @@ async fn a_request_left_after_its_title_was_proposed_is_dropped_at_launch() {
     r.runner.run_titles().await;
     assert_eq!(title_of(&r).unwrap().text, "Weekly sync");
     // A stop between the title checkpoint and the delete of the request.
+    // The job clears the summary cache after the delete (KTD12), so both
+    // rows come back here.
+    checkpoint::put(
+        &r.store,
+        "s",
+        Stage::Summarize,
+        pipeline::summarize::TITLE,
+        &"Weekly sync",
+    )
+    .unwrap();
     checkpoint::put(
         &r.store,
         "s",
@@ -10274,6 +10464,7 @@ async fn a_request_left_after_its_title_was_proposed_is_dropped_at_launch() {
     assert_eq!(title_calls(&mock).len(), 1);
     assert_eq!(pending(&r), None);
     assert_eq!(title_of(&r).unwrap().text, "Weekly sync");
+    assert!(summary_rows(&r, "s").is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -11661,28 +11852,6 @@ async fn a_regenerate_after_the_custom_path_changes_on_the_same_host_discards_th
 
 /// Covers R26: a plan that an older version saved names no provider, so
 /// it is not used again.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_saved_plan_with_no_provider_is_discarded_on_regenerate() {
-    let r = rig().await;
-    let mock = summaries_from(&r, failing_on(2), Some(2_048)).await;
-    failed_after_two_parts(&r, &mock).await;
-    // The plan as an older version saved it: no provider, address or model.
-    let key = pipeline::summarize::PLAN;
-    let mut plan: serde_json::Value = checkpoint::get(&r.store, "s", Stage::Summarize, key)
-        .unwrap()
-        .unwrap();
-    assert!(plan.as_object_mut().unwrap().remove("source").is_some());
-    checkpoint::put(&r.store, "s", Stage::Summarize, key, &plan).unwrap();
-
-    r.runner.regenerate_summary("s").await.unwrap();
-    let calls = chat_calls(&mock);
-    assert!(
-        calls[3].contains("<transcript part=\"1\">"),
-        "{}",
-        &calls[3][..80]
-    );
-}
-
 /// Covers AE10, R25: a summary keeps the provider that it started with.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_summary_finishes_with_the_provider_it_started_with_and_the_next_uses_the_new_one() {
