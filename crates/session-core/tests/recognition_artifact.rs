@@ -58,25 +58,6 @@ fn store() -> Store {
     store
 }
 #[test]
-fn fingerprints_separate_asr_reuse_from_labels_and_reject_external_edits() {
-    let old = header();
-    let mut next = fingerprints();
-    assert_eq!(old.reuse(&next, b"transcript"), Reuse::Complete);
-    next.speakers = digest(b"different speaker artifact");
-    next.execution = digest(b"new execution");
-    assert_eq!(old.reuse(&next, b"transcript"), Reuse::TimedAsr);
-    assert_eq!(old.reuse(&next, b"external edit"), Reuse::TranscribeAgain);
-    for field in ["asr", "audio", "preprocessing"] {
-        let mut next = fingerprints();
-        match field {
-            "asr" => next.asr = digest(b"new"),
-            "audio" => next.audio = digest(b"new"),
-            _ => next.preprocessing = digest(b"new"),
-        }
-        assert_eq!(old.reuse(&next, b"transcript"), Reuse::TranscribeAgain);
-    }
-}
-#[test]
 fn committed_output_and_revision_are_one_durable_operation() {
     let mut store = store();
     assert!(store.commit_recognition("s", &block(2, true)).unwrap());
@@ -142,7 +123,7 @@ fn previous_schema_migrates_without_changing_old_results() {
         session_core::schema::migrations()
             .to_version(&mut connection, 9)
             .unwrap();
-        connection.execute("INSERT INTO sessions(id,created_at,state) VALUES ('s','2026-09-27T10:00:00-05:00','{\"state\":\"saved\"}')", []).unwrap();
+        connection.execute("INSERT INTO sessions(id,created_at,state) VALUES ('s','2026-09-27T10:00:00-05:00','{\"state\":\"capturing\"}')", []).unwrap();
         connection.execute("INSERT INTO checkpoints(session_id,stage,key,payload) VALUES ('s','transcribe','legacy','{}')", []).unwrap();
     }
     let mut store = Store::open(&path).unwrap();
@@ -421,48 +402,5 @@ fn an_index_put_and_the_deletion_of_the_old_prefix_are_one_transaction() {
     assert_eq!(
         keys_of(&store, "s", "g"),
         ["result/1/row/0", "result/2/row/0"]
-    );
-}
-
-#[test]
-fn live_blocks_go_only_for_epochs_of_the_current_generation_with_a_final_copy() {
-    let mut store = store();
-    store
-        .put_checkpoint(
-            "s",
-            session_core::Stage::Transcribe,
-            GENERATION_KEY,
-            "\"g\"",
-        )
-        .unwrap();
-    for key in [
-        "nemo/00000000000000000001/word/0",
-        "nemo/00000000000000000001/turn/0",
-        "native-final/00000000000000000001/row/0",
-        // A live worker still writes epoch 2: it has no final copy.
-        "nemo/00000000000000000002/word/0",
-    ] {
-        store.commit_recognition("s", &keyed("g", key)).unwrap();
-    }
-    for key in [
-        "nemo/00000000000000000001/word/0",
-        "native-final/00000000000000000001/row/0",
-    ] {
-        store.commit_recognition("s", &keyed("h", key)).unwrap();
-    }
-
-    store.delete_finished_live_blocks("s").unwrap();
-
-    assert_eq!(
-        keys_of(&store, "s", "g"),
-        [
-            "native-final/00000000000000000001/row/0",
-            "nemo/00000000000000000002/word/0",
-        ]
-    );
-    assert_eq!(
-        keys_of(&store, "s", "h").len(),
-        2,
-        "another generation stays"
     );
 }

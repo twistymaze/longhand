@@ -2780,3 +2780,403 @@ fn an_importing_note_can_be_deleted() {
     assert_eq!(calls, [working]);
     assert!(store.lock().unwrap().session("i").unwrap().is_none());
 }
+
+// ---------------------------------------------------------------- transcript removal (U2)
+
+/// Text that only the content rows of the tests below hold.
+const SECRET: &str = "words that only the transcript holds";
+
+/// Every stage name that a checkpoint row can have: each stage and its
+/// copy from before a Transcribe Again run.
+const CHECKPOINT_STAGES: [&str; 14] = [
+    "assemble",
+    "diarize",
+    "transcribe",
+    "join",
+    "verify",
+    "summarize",
+    "save",
+    "previous_assemble",
+    "previous_diarize",
+    "previous_transcribe",
+    "previous_join",
+    "previous_verify",
+    "previous_summarize",
+    "previous_save",
+];
+
+/// A store file with the saved notes `s1` and `s2`. Each note has one
+/// checkpoint of each stage name, recognition rows, result state and a
+/// recognition snapshot. Each checkpoint and recognition row holds
+/// [`SECRET`].
+fn store_with_content(path: &Path) -> Store {
+    let mut store = Store::open(path).unwrap();
+    for id in ["s1", "s2"] {
+        store.adopt(&adoption(id, &format!("/notes/{id}"))).unwrap();
+        store
+            .set_recognition_snapshot(id, &serde_json::json!({"config": {"asr_model": "m"}}))
+            .unwrap();
+    }
+    let conn = rusqlite::Connection::open(path).unwrap();
+    for id in ["s1", "s2"] {
+        for stage in CHECKPOINT_STAGES {
+            conn.execute(
+                "INSERT INTO checkpoints (note_id, stage, key, payload) VALUES (?1, ?2, 'k', ?3)",
+                rusqlite::params![id, stage, serde_json::to_string(SECRET).unwrap()],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO recognition_output (note_id, generation, key, revision, payload)
+             VALUES (?1, 'g', 'window-0', 1, ?2)",
+            rusqlite::params![id, SECRET],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO recognition_epochs (note_id, generation, next_epoch) VALUES (?1, 'g', 1)",
+            [id],
+        )
+        .unwrap();
+        for key in [
+            "pending-snapshot",
+            "replacement-base",
+            "summary-publication",
+        ] {
+            conn.execute(
+                "INSERT INTO result_state (note_id, key, value) VALUES (?1, ?2, '{}')",
+                rusqlite::params![id, key],
+            )
+            .unwrap();
+        }
+    }
+    store
+}
+
+/// The stage names of the note's checkpoints, sorted.
+fn checkpoint_stages(conn: &rusqlite::Connection, id: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare("SELECT stage FROM checkpoints WHERE note_id = ?1 ORDER BY stage")
+        .unwrap();
+    stmt.query_map([id], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+/// The number of rows of `table` for the note.
+fn rows_in(conn: &rusqlite::Connection, table: &str, id: &str) -> i64 {
+    conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE note_id = ?1"),
+        [id],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// The result state keys of the note, sorted.
+fn result_keys(conn: &rusqlite::Connection, id: &str) -> Vec<String> {
+    let mut stmt = conn
+        .prepare("SELECT key FROM result_state WHERE note_id = ?1 ORDER BY key")
+        .unwrap();
+    stmt.query_map([id], |r| r.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+}
+
+fn sorted(names: &[&str]) -> Vec<String> {
+    let mut names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn opens_with_secure_delete() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(&dir.path().join("longhand.db")).unwrap();
+    assert!(store.secure_delete().unwrap());
+    assert!(Store::open_in_memory().unwrap().secure_delete().unwrap());
+}
+
+#[test]
+fn the_transcript_removed_flag_is_off_for_a_new_note_and_can_be_set() {
+    let mut store = Store::open_in_memory().unwrap();
+    store.adopt(&adoption("s1", "/notes/s1")).unwrap();
+    store.adopt(&adoption("s2", "/notes/s2")).unwrap();
+    assert!(!store.transcript_removed("s1").unwrap());
+    assert!(store.set_transcript_removed("s1", true).unwrap());
+    assert!(
+        !store.set_transcript_removed("s1", true).unwrap(),
+        "no change"
+    );
+    assert!(store.transcript_removed("s1").unwrap());
+    assert!(!store.transcript_removed("s2").unwrap());
+    assert!(store.set_transcript_removed("s1", false).unwrap());
+    assert!(!store.transcript_removed("s1").unwrap());
+    assert!(matches!(
+        store.transcript_removed("nope"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+    assert!(matches!(
+        store.set_transcript_removed("nope", true),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn clearing_recognition_data_keeps_the_index_data_and_the_other_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = store_with_content(&path);
+    store.clear_recognition_data("s1").unwrap();
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        checkpoint_stages(&conn, "s1"),
+        sorted(&["join", "verify", "summarize", "save"])
+    );
+    assert_eq!(rows_in(&conn, "recognition_output", "s1"), 0);
+    assert_eq!(rows_in(&conn, "recognition_epochs", "s1"), 0);
+    assert_eq!(
+        result_keys(&conn, "s1"),
+        sorted(&[
+            "pending-snapshot",
+            "replacement-base",
+            "summary-publication"
+        ])
+    );
+    // Index data stays (KTD12).
+    assert!(store.recognition_snapshot("s1").unwrap().is_some());
+    assert_eq!(store.found_speakers("s1").unwrap(), Some(3));
+    assert_eq!(
+        store.transcript_fingerprint("s1").unwrap().as_deref(),
+        Some("abc123")
+    );
+    // The other note keeps each row.
+    assert_eq!(checkpoint_stages(&conn, "s2"), sorted(&CHECKPOINT_STAGES));
+    assert_eq!(rows_in(&conn, "recognition_output", "s2"), 1);
+    assert_eq!(rows_in(&conn, "recognition_epochs", "s2"), 1);
+
+    assert!(matches!(
+        store.clear_recognition_data("nope"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn clearing_the_transcript_index_clears_the_fingerprint_and_the_snapshot_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let store = store_with_content(&path);
+    store.clear_transcript_index("s1").unwrap();
+
+    assert_eq!(store.transcript_fingerprint("s1").unwrap(), None);
+    assert_eq!(store.recognition_snapshot("s1").unwrap(), None);
+    assert_eq!(store.found_speakers("s1").unwrap(), Some(3));
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    // The copies of the snapshot for a Transcribe Again run go too.
+    assert_eq!(result_keys(&conn, "s1"), ["summary-publication"]);
+    assert_eq!(checkpoint_stages(&conn, "s1"), sorted(&CHECKPOINT_STAGES));
+    assert_eq!(rows_in(&conn, "recognition_output", "s1"), 1);
+
+    assert_eq!(
+        store.transcript_fingerprint("s2").unwrap().as_deref(),
+        Some("abc123")
+    );
+    assert!(store.recognition_snapshot("s2").unwrap().is_some());
+    assert_eq!(result_keys(&conn, "s2").len(), 3);
+
+    assert!(matches!(
+        store.clear_transcript_index("nope"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+#[test]
+fn clearing_the_summary_cache_clears_the_summarize_checkpoints_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let store = store_with_content(&path);
+    store.clear_summary_cache("s1").unwrap();
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let kept: Vec<&str> = CHECKPOINT_STAGES
+        .into_iter()
+        .filter(|s| !["summarize", "previous_summarize"].contains(s))
+        .collect();
+    assert_eq!(checkpoint_stages(&conn, "s1"), sorted(&kept));
+    assert_eq!(checkpoint_stages(&conn, "s2"), sorted(&CHECKPOINT_STAGES));
+    assert!(matches!(
+        store.clear_summary_cache("nope"),
+        Err(StoreError::NoSuchSession(_))
+    ));
+}
+
+/// The keys of the note's checkpoints of `stage`.
+fn stage_keys(store: &Store, id: &str, stage: Stage) -> Vec<String> {
+    store
+        .checkpoints(id, stage)
+        .unwrap()
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect()
+}
+
+#[test]
+fn the_summary_cache_clears_keep_the_summary_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = processing_with_content(&path);
+    store
+        .put_checkpoint(
+            "s1",
+            Stage::Summarize,
+            session_core::jobs::SUMMARY_FAILED,
+            "\"no AI provider\"",
+        )
+        .unwrap();
+    store.clear_summary_cache("s1").unwrap();
+    assert_eq!(
+        stage_keys(&store, "s1", Stage::Summarize),
+        [session_core::jobs::SUMMARY_FAILED]
+    );
+    store
+        .put_checkpoint("s1", Stage::Summarize, "k", "\"text\"")
+        .unwrap();
+    store
+        .apply_clearing_content("s1", &Event::Saved, true)
+        .unwrap();
+    assert_eq!(
+        stage_keys(&store, "s1", Stage::Summarize),
+        [session_core::jobs::SUMMARY_FAILED]
+    );
+}
+
+/// Whether the file at `path` holds `text`. A missing file holds nothing.
+fn file_holds(path: &Path, text: &str) -> bool {
+    std::fs::read(path)
+        .map(|bytes| bytes.windows(text.len()).any(|w| w == text.as_bytes()))
+        .unwrap_or(false)
+}
+
+#[test]
+fn after_the_clears_and_a_wal_checkpoint_no_file_holds_the_text() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let wal = dir.path().join("longhand.db-wal");
+    let mut store = store_with_content(&path);
+    for id in ["s1", "s2"] {
+        store.clear_recognition_data(id).unwrap();
+        store.clear_summary_cache(id).unwrap();
+        // The clears keep these checkpoints; remove them here.
+        for stage in [Stage::Join, Stage::Verify, Stage::Save] {
+            store.clear_checkpoints(id, stage).unwrap();
+        }
+    }
+    assert!(
+        file_holds(&wal, SECRET) || file_holds(&path, SECRET),
+        "the text is on disk before the checkpoint"
+    );
+    assert!(store.checkpoint_wal().unwrap());
+    assert!(!file_holds(&path, SECRET));
+    assert!(!file_holds(&wal, SECRET));
+}
+
+/// A store file with the note `s1` in processing, with one checkpoint of
+/// each stage name, recognition rows and the index data.
+fn processing_with_content(path: &Path) -> Store {
+    let mut store = Store::open(path).unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    stop(&mut store, "s1", 5);
+    store.dequeue("run", t(6)).unwrap();
+    store
+        .set_recognition_snapshot("s1", &serde_json::json!({"config": {"asr_model": "m"}}))
+        .unwrap();
+    store.set_found_speakers("s1", Some(2)).unwrap();
+    store
+        .set_transcript_fingerprint("s1", Some("abc123"))
+        .unwrap();
+    let conn = rusqlite::Connection::open(path).unwrap();
+    for stage in CHECKPOINT_STAGES {
+        conn.execute(
+            "INSERT INTO checkpoints (note_id, stage, key, payload) VALUES ('s1', ?1, 'k', ?2)",
+            rusqlite::params![stage, serde_json::to_string(SECRET).unwrap()],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO recognition_output (note_id, generation, key, revision, payload)
+         VALUES ('s1', 'g', 'window-0', 1, ?1)",
+        [SECRET],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO recognition_epochs (note_id, generation, next_epoch) VALUES ('s1', 'g', 1)",
+        [],
+    )
+    .unwrap();
+    store
+}
+
+#[test]
+fn saved_and_the_clear_apply_in_one_transaction() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = processing_with_content(&path);
+    assert_eq!(
+        store
+            .apply_clearing_content("s1", &Event::Saved, true)
+            .unwrap(),
+        SessionState::Saved
+    );
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        checkpoint_stages(&conn, "s1"),
+        sorted(&["join", "verify", "save"])
+    );
+    assert_eq!(rows_in(&conn, "recognition_output", "s1"), 0);
+    assert_eq!(rows_in(&conn, "recognition_epochs", "s1"), 0);
+    // Index data stays (KTD12).
+    assert!(store.recognition_snapshot("s1").unwrap().is_some());
+    assert_eq!(store.found_speakers("s1").unwrap(), Some(2));
+    assert_eq!(
+        store.transcript_fingerprint("s1").unwrap().as_deref(),
+        Some("abc123")
+    );
+}
+
+#[test]
+fn saved_keeps_the_summary_cache_for_a_title_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = processing_with_content(&path);
+    store
+        .apply_clearing_content("s1", &Event::Saved, false)
+        .unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(
+        checkpoint_stages(&conn, "s1"),
+        sorted(&["join", "verify", "summarize", "save"])
+    );
+}
+
+#[test]
+fn a_refused_event_clears_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    let mut store = processing_with_content(&path);
+    // A note in processing cannot take a SavedEdit.
+    assert!(
+        store
+            .apply_clearing_content("s1", &Event::SavedEdit, true)
+            .is_err()
+    );
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(checkpoint_stages(&conn, "s1"), sorted(&CHECKPOINT_STAGES));
+    assert_eq!(rows_in(&conn, "recognition_output", "s1"), 1);
+    assert!(matches!(
+        store.session("s1").unwrap().unwrap().state,
+        SessionState::Processing { .. }
+    ));
+}

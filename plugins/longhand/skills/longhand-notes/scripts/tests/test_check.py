@@ -324,6 +324,86 @@ class CompareTests(support.StorageFolderTest):
         self.assertIn(".longhand/library changed", out)
 
 
+TRANSCRIPT_MARKER = "transcript.removed"
+TRANSCRIPT_MARKER_TEXT = "Longhand removed the transcript of this note.\n"
+
+
+class TranscriptRemovalTests(support.StorageFolderTest):
+    """Longhand removes the transcript of an old note: it writes the marker,
+    deletes `transcript.md`, `recognition.jsonl` and their conflict copies,
+    and clears the transcript records in `longhand.json`."""
+
+    def remove_transcript(self, note):
+        self.write(TRANSCRIPT_MARKER_TEXT, note, TRANSCRIPT_MARKER)
+        for name in ("transcript.md", "recognition.jsonl", "transcript (1).md"):
+            if os.path.exists(self.path(note, name)):
+                os.remove(self.path(note, name))
+        record = json.loads(self.read(note, "longhand.json"))
+        for key in ("transcript_fingerprint", "recognition_snapshot", "recognition_artifact", "recognition_audio"):
+            record.pop(key, None)
+        self.write(json.dumps(record, indent=2, sort_keys=True) + "\n", note, "longhand.json")
+
+    def test_a_longhand_removal_passes(self):
+        self.write("A conflict copy.\n", BUDGET, "transcript (1).md")
+        snapshot = self.snapshot()
+        self.remove_transcript(BUDGET)
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+        self.assertIn("transcript.md", section(out, "Changes"))
+
+    def test_a_longhand_removal_with_an_agent_edit_of_the_same_note_passes(self):
+        snapshot = self.snapshot()
+        self.remove_transcript(BUDGET)
+        self.write(BUDGET_SESSION.replace("- Finance\n", "- Finance\n- Travel\n"), BUDGET, "session.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PASS, out)
+
+    def test_a_deleted_transcript_with_no_marker_is_a_problem(self):
+        snapshot = self.snapshot()
+        os.remove(self.path(BUDGET, "transcript.md"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("%s: transcript.md was deleted" % BUDGET, out)
+
+    def test_a_deleted_recognition_file_with_no_marker_is_a_problem(self):
+        snapshot = self.snapshot()
+        os.remove(self.path(BUDGET, "recognition.jsonl"))
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("recognition.jsonl changed", out)
+
+    def test_a_new_transcript_in_a_note_with_the_marker_is_a_problem(self):
+        self.remove_transcript(BUDGET)
+        snapshot = self.snapshot()
+        self.write("# Transcript\n\n- [00:00:01] Speaker 1: Again.\n", BUDGET, "transcript.md")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("%s: transcript.md is a new file" % BUDGET, out)
+
+    def test_an_edit_or_delete_of_the_marker_is_a_problem(self):
+        self.remove_transcript(BUDGET)
+        for edit in ("change", "delete"):
+            with self.subTest(edit=edit):
+                snapshot = self.snapshot()
+                if edit == "change":
+                    self.write("Another text.\n", BUDGET, TRANSCRIPT_MARKER)
+                else:
+                    os.remove(self.path(BUDGET, TRANSCRIPT_MARKER))
+                code, out, _ = self.compare(snapshot)
+                self.assertEqual(code, PROBLEM, out)
+                self.assertIn("%s: %s changed" % (BUDGET, TRANSCRIPT_MARKER), out)
+                self.write(TRANSCRIPT_MARKER_TEXT, BUDGET, TRANSCRIPT_MARKER)
+
+    def test_a_records_edit_in_a_note_with_an_old_marker_is_a_problem(self):
+        self.remove_transcript(BUDGET)
+        snapshot = self.snapshot()
+        self.write(self.read(BUDGET, "longhand.json").replace('"found_speakers": 2', '"found_speakers": 3'),
+                   BUDGET, "longhand.json")
+        code, out, _ = self.compare(snapshot)
+        self.assertEqual(code, PROBLEM, out)
+        self.assertIn("%s: longhand.json changed" % BUDGET, out)
+
+
 class LonghandAndSyncWorkTests(support.StorageFolderTest):
     """Folders that Longhand or a sync makes while the agent edits are never
     a problem, and the check never tells the agent to remove a folder."""
@@ -538,6 +618,7 @@ class SettingsTests(support.StorageFolderTest):
         value = self.settings()
         value["show_recording_widget"] = False
         value["audio_removal"] = "off"
+        value["transcript_removal"] = 90
         value["note_types"] = ["Meetings", "One on One"]
         value["default_note_type"] = "one on one"
         value["note_type_prompts"]["One on One"] = "play-by-play"
@@ -550,6 +631,10 @@ class SettingsTests(support.StorageFolderTest):
         cases = [
             ("show_recording_widget", "no"),
             ("audio_removal", 0),
+            ("transcript_removal", 0),
+            ("transcript_removal", 3651),
+            ("transcript_removal", "never"),
+            ("transcript_removal", True),
             ("speaker_source", "nobody"),
             ("active_summary_prompt", "a-prompt-that-is-not-there"),
             ("note_types", ["Meetings", "meetings"]),

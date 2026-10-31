@@ -62,6 +62,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   audio_kept: true,
   transcript_kept: true,
   audio: "present",
+  transcript: "present",
   asr_model: null,
   live_transcript: false,
   transcribe_again: false,

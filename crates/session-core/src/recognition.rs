@@ -138,12 +138,6 @@ pub struct Fingerprints {
     pub audio: String,
     pub preprocessing: String,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reuse {
-    Complete,
-    TimedAsr,
-    TranscribeAgain,
-}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactHeader {
     pub version: u32,
@@ -153,23 +147,6 @@ pub struct ArtifactHeader {
     pub transcript: String,
     pub limitations: Vec<String>,
     pub coverage: Vec<SampleRange>,
-}
-impl ArtifactHeader {
-    pub fn reuse(&self, next: &Fingerprints, transcript: &[u8]) -> Reuse {
-        if self.version != ARTIFACT_VERSION
-            || digest(transcript) != self.transcript
-            || self.fingerprints.asr != next.asr
-            || self.fingerprints.audio != next.audio
-            || self.fingerprints.preprocessing != next.preprocessing
-        {
-            return Reuse::TranscribeAgain;
-        }
-        if &self.fingerprints == next {
-            Reuse::Complete
-        } else {
-            Reuse::TimedAsr
-        }
-    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactReference {
@@ -643,41 +620,6 @@ impl Store {
         crate::jobs::put_checkpoint_in(&tx, id, stage, key, payload)?;
         if let Some((generation, prefix)) = replaced {
             delete_prefix(&tx, id, generation, prefix)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Delete the live NeMo blocks (`nemo/{epoch}/`) of each epoch of the
-    /// current generation that has a native-final copy
-    /// (`native-final/{epoch}/`). The save of the note calls this.
-    /// An epoch that a live worker still writes has no native-final copy,
-    /// so its blocks stay.
-    pub fn delete_finished_live_blocks(&mut self, id: &str) -> crate::jobs::Result<()> {
-        let tx = self.conn.transaction()?;
-        let Some(generation) =
-            generation_in(&tx, id, &crate::jobs::stage_key(crate::Stage::Transcribe))?
-        else {
-            return Ok(());
-        };
-        // The epoch starts after the prefix. SQLite counts characters from 1.
-        let epoch_start = NATIVE_FINAL_PREFIX.chars().count() as i64 + 1;
-        let end = format!("{NATIVE_FINAL_PREFIX}{}", char::MAX);
-        let epochs = {
-            let mut stmt = tx.prepare(
-                "SELECT DISTINCT substr(key, ?3, instr(substr(key, ?3), '/') - 1) \
-                 FROM recognition_output \
-                 WHERE note_id=?1 AND generation=?2 AND key >= ?4 AND key < ?5 \
-                 AND instr(substr(key, ?3), '/') > 0",
-            )?;
-            stmt.query_map(
-                params![id, generation, epoch_start, NATIVE_FINAL_PREFIX, end],
-                |r| r.get::<_, String>(0),
-            )?
-            .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for epoch in epochs {
-            delete_prefix(&tx, id, &generation, &format!("{LIVE_NEMO_PREFIX}{epoch}/"))?;
         }
         tx.commit()?;
         Ok(())

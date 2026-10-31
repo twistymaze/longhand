@@ -9,13 +9,14 @@ Reading is always safe. You do not need a snapshot to read.
 - `--tag "Person::Nathan"` finds the tag Person::Nathan in any case and with any spaces around `::`. `--tag "Person::"` finds each tag with the scope Person.
 - Use `--json` when you must read the output with a script.
 - To search the text of the notes, search `notes.md`, `transcript.md` and `summary.md` with your own search tools. Do not open the files in `audio/`.
+- A note can have no `transcript.md`. When it has `transcript.removed`, Longhand removed its transcript. Use `summary.md` and `notes.md` for that note.
 
 ## Read a note
 
 | To find | Read |
 |---|---|
 | What the user typed during the note | `notes.md` |
-| What the people said | `transcript.md` |
+| What the people said | `transcript.md`, or `summary.md` when the note has no transcript |
 | The main points, decisions and next steps | `summary.md` |
 | The title and the tags | `session.md` (or the output of `list_notes.py`) |
 | The type | The folder that holds the note folder (General when there is none) |
@@ -36,5 +37,6 @@ Reading is always safe. You do not need a snapshot to read.
 ## Answer
 
 - Give the date and the title of each note that you use, so the user can find it in Longhand.
+- Say when you answer from a summary because the note has no transcript. A summary does not have each detail of the meeting.
 - Say when the transcript is not clear. Recognition can write words that are wrong, most often names and special terms.
 - A note that `list_notes.py` shows as "not readable" can have text that you can read, but its title or tags can be out of date.

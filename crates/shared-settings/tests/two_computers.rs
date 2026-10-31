@@ -9,7 +9,8 @@ use serde_json::json;
 use shared_settings::background::save_background;
 use shared_settings::cache::read_cache;
 use shared_settings::file::{
-    AudioRemoval, Field, SharedValue, apply_patch, default_settings, save_settings, settings_path,
+    AudioRemoval, Field, SharedValue, TranscriptRemoval, apply_patch, default_settings,
+    save_settings, settings_path,
 };
 use shared_settings::join::{JoinKind, Joined, join_folder};
 use shared_settings::prompts::{
@@ -331,6 +332,36 @@ fn a_change_of_audio_removal_on_a_applies_on_b() {
     let on_b = b.refresh(folder.path());
     assert_eq!(on_b.fields.audio_removal, Field::Known(AudioRemoval::Off));
     assert_eq!(on_b.audio_removal_days(), None);
+}
+
+#[test]
+fn a_save_of_the_audio_field_on_b_keeps_the_transcript_field_of_a() {
+    // KTD7: the file keeps the user's two values, and each save sets only
+    // its own field.
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::SameFolder);
+    a.save(
+        folder.path(),
+        &[
+            SharedValue::AudioRemoval(AudioRemoval::AfterDays(30)),
+            SharedValue::TranscriptRemoval(TranscriptRemoval::AfterDays(60)),
+        ],
+    );
+    assert_eq!(b.refresh(folder.path()).transcript_removal_days(), Some(60));
+
+    b.save(
+        folder.path(),
+        &[SharedValue::AudioRemoval(AudioRemoval::AfterDays(90))],
+    );
+    let on_a = a.refresh(folder.path());
+    assert_eq!(
+        on_a.fields.transcript_removal,
+        Field::Known(TranscriptRemoval::AfterDays(60))
+    );
+    // R4: the effective delay is never shorter than the audio delay.
+    assert_eq!(on_a.transcript_removal_days(), Some(90));
 }
 
 #[test]

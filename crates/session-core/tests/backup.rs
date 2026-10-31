@@ -8,8 +8,8 @@ use std::time::Duration;
 use rusqlite::Connection;
 use session_core::Store;
 use session_core::backup::{
-    BACKUPS_DIR, BackupError, BackupKind, INCOMPLETE_FLAG, REBUILD_MARKER, apply_retention,
-    move_aside, move_aside_with, move_orphan_wal, undo_incomplete,
+    BACKUPS_DIR, BackupError, BackupKind, Cleanup, INCOMPLETE_FLAG, REBUILD_MARKER,
+    apply_retention, clean_backups, move_aside, move_aside_with, move_orphan_wal, undo_incomplete,
 };
 
 const DB: &str = "longhand.db";
@@ -340,4 +340,327 @@ fn a_failed_rename_in_a_read_only_folder_leaves_the_files_in_place() {
     assert!(result.is_err(), "the move should fail");
     assert_populated(app.path());
     assert!(backup_folders(app.path()).is_empty());
+}
+
+// ------------------------------------------------ cleanup of note content (KTD15)
+
+/// Text that only the recognition rows and the summary cache hold.
+const TRANSCRIPT_TEXT: &str = "the budget for the spring term is final";
+
+/// The checkpoints that [`add_note_content`] writes, and whether the
+/// cleanup deletes each one of a saved note.
+const CONTENT_CHECKPOINTS: [(&str, &str, bool); 8] = [
+    ("assemble", "done", true),
+    ("transcribe", "w1", true),
+    ("diarize", "d1", true),
+    ("previous_transcribe", "w1", true),
+    ("previous_summarize", "chunk-0", true),
+    ("summarize", "chunk-0", true),
+    ("summarize", "failed", false),
+    ("join", "done", false),
+];
+
+/// The rows that the cleanup deletes for one saved note with recognition
+/// tables: six checkpoints, one recognition output row and one epoch row.
+const SAVED_NOTE_ROWS: usize = 8;
+
+const SAVED: &str = r#"{"state":"saved"}"#;
+const CAPTURING: &str = r#"{"state":"capturing"}"#;
+
+/// Make `<app>/longhand.db` as a build with `version` migrations left it,
+/// in WAL mode as the store keeps it, with a saved note `saved` and an
+/// unfinished note `open`. Then move it aside into a backup, as a rebuild
+/// does. Returns the backup folder.
+fn old_backup(app: &Path, version: usize) -> PathBuf {
+    {
+        let mut conn = Connection::open(app.join(DB)).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, version)
+            .unwrap();
+        let note = if version >= 22 {
+            "note_id"
+        } else {
+            "session_id"
+        };
+        let recognition = version >= 10;
+        add_note_content(&conn, note, recognition, "saved", SAVED);
+        add_note_content(&conn, note, recognition, "open", CAPTURING);
+    }
+    move_aside(app, BackupKind::Automatic).unwrap()
+}
+
+/// Add the note `id` in `state` with a row of note content in each table,
+/// with the note column `note`. The rows that the cleanup deletes hold
+/// [`TRANSCRIPT_TEXT`].
+fn add_note_content(conn: &Connection, note: &str, recognition: bool, id: &str, state: &str) {
+    conn.execute(
+        "INSERT INTO sessions (id, created_at, state) VALUES (?1, ?2, ?3)",
+        rusqlite::params![id, "2026-09-22T10:00:00-05:00", state],
+    )
+    .unwrap();
+    let text = serde_json::to_string(&TRANSCRIPT_TEXT.repeat(30)).unwrap();
+    for (stage, key, deleted) in CONTENT_CHECKPOINTS {
+        conn.execute(
+            &format!(
+                "INSERT INTO checkpoints ({note}, stage, key, payload) VALUES (?1, ?2, ?3, ?4)"
+            ),
+            rusqlite::params![id, stage, key, if deleted { text.as_str() } else { "{}" }],
+        )
+        .unwrap();
+    }
+    if recognition {
+        conn.execute(
+            &format!(
+                "INSERT INTO recognition_output ({note}, generation, key, revision, payload)
+                 VALUES (?1, 'g', 'window-0', 1, ?2)"
+            ),
+            rusqlite::params![id, text],
+        )
+        .unwrap();
+        conn.execute(
+            &format!(
+                "INSERT INTO recognition_epochs ({note}, generation, next_epoch)
+                 VALUES (?1, 'g', 1)"
+            ),
+            [id],
+        )
+        .unwrap();
+    }
+}
+
+/// The number of rows of `id` in each table of note content that `db` has.
+fn content_rows(db: &Path, id: &str) -> usize {
+    let conn = Connection::open(db).unwrap();
+    let mut rows = 0;
+    for table in ["checkpoints", "recognition_output", "recognition_epochs"] {
+        let note: Option<String> = conn
+            .query_row(
+                "SELECT name FROM pragma_table_info(?1)
+                 WHERE name IN ('note_id', 'session_id')",
+                [table],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(note) = note {
+            rows += conn
+                .query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE {note} = ?1"),
+                    [id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap() as usize;
+        }
+    }
+    rows
+}
+
+/// Whether a file of the backup database holds `text`.
+fn backup_holds(folder: &Path, text: &str) -> bool {
+    [DB, WAL].iter().any(|name| {
+        fs::read(folder.join(name))
+            .map(|bytes| bytes.windows(text.len()).any(|w| w == text.as_bytes()))
+            .unwrap_or(false)
+    })
+}
+
+#[test]
+fn a_saved_note_with_a_waiting_title_request_keeps_its_summary_cache() {
+    // KTD12: the title job still needs the cache, as in migration 0025.
+    let app = tempfile::tempdir().unwrap();
+    let backup = old_backup(app.path(), 24);
+    Connection::open(backup.join(DB))
+        .unwrap()
+        .execute(
+            "INSERT INTO checkpoints (note_id, stage, key, payload)
+             VALUES ('saved', 'summarize', 'title-request', '{}')",
+            [],
+        )
+        .unwrap();
+
+    clean_backups(app.path(), || true).unwrap();
+
+    let conn = Connection::open(backup.join(DB)).unwrap();
+    let mut keys: Vec<(String, String)> = conn
+        .prepare("SELECT stage, key FROM checkpoints WHERE note_id = 'saved'")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    keys.sort();
+    let expected: Vec<(String, String)> = [
+        ("join", "done"),
+        ("summarize", "chunk-0"),
+        ("summarize", "failed"),
+        ("summarize", "title-request"),
+    ]
+    .iter()
+    .map(|(stage, key)| (stage.to_string(), key.to_string()))
+    .collect();
+    assert_eq!(keys, expected);
+}
+
+#[test]
+fn a_backup_from_the_previous_schema_loses_the_content_of_its_saved_notes() {
+    // AE13: one rebuild backup from before the update.
+    let app = tempfile::tempdir().unwrap();
+    let backup = old_backup(app.path(), 24);
+    let open_rows = content_rows(&backup.join(DB), "open");
+    assert!(backup_holds(&backup, TRANSCRIPT_TEXT));
+
+    let results = clean_backups(app.path(), || true).unwrap();
+
+    assert_eq!(
+        results,
+        vec![(
+            backup.clone(),
+            Cleanup::Cleaned {
+                removed: SAVED_NOTE_ROWS,
+                vacuumed: true
+            }
+        )]
+    );
+    // The summary failure and the Join row stay.
+    assert_eq!(content_rows(&backup.join(DB), "saved"), 2);
+    assert_eq!(content_rows(&backup.join(DB), "open"), open_rows);
+    // The VACUUM left no free pages.
+    let conn = Connection::open(backup.join(DB)).unwrap();
+    let free: i64 = conn
+        .pragma_query_value(None, "freelist_count", |r| r.get(0))
+        .unwrap();
+    assert_eq!(free, 0);
+}
+
+#[test]
+fn a_second_launch_deletes_no_rows_and_runs_no_vacuum() {
+    let app = tempfile::tempdir().unwrap();
+    let backup = old_backup(app.path(), 24);
+    clean_backups(app.path(), || true).unwrap();
+
+    let results = clean_backups(app.path(), || true).unwrap();
+
+    assert_eq!(
+        results,
+        vec![(
+            backup,
+            Cleanup::Cleaned {
+                removed: 0,
+                vacuumed: false
+            }
+        )]
+    );
+}
+
+#[test]
+fn after_the_cleanup_no_file_of_the_backup_holds_the_transcript() {
+    let app = tempfile::tempdir().unwrap();
+    {
+        let mut conn = Connection::open(app.path().join(DB)).unwrap();
+        conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, 24)
+            .unwrap();
+        add_note_content(&conn, "note_id", true, "saved", SAVED);
+    }
+    let backup = move_aside(app.path(), BackupKind::Automatic).unwrap();
+    assert!(backup_holds(&backup, TRANSCRIPT_TEXT));
+
+    clean_backups(app.path(), || true).unwrap();
+
+    assert!(!backup_holds(&backup, TRANSCRIPT_TEXT));
+}
+
+#[test]
+fn a_backup_from_before_the_note_id_columns_is_cleaned() {
+    let app = tempfile::tempdir().unwrap();
+    let backup = old_backup(app.path(), 21);
+    let open_rows = content_rows(&backup.join(DB), "open");
+
+    let results = clean_backups(app.path(), || true).unwrap();
+
+    assert_eq!(
+        results[0].1,
+        Cleanup::Cleaned {
+            removed: SAVED_NOTE_ROWS,
+            vacuumed: true
+        }
+    );
+    assert_eq!(content_rows(&backup.join(DB), "saved"), 2);
+    assert_eq!(content_rows(&backup.join(DB), "open"), open_rows);
+}
+
+#[test]
+fn a_backup_with_no_recognition_tables_is_cleaned() {
+    // Migration 0010 made recognition_output and recognition_epochs.
+    let app = tempfile::tempdir().unwrap();
+    let backup = old_backup(app.path(), 9);
+
+    let results = clean_backups(app.path(), || true).unwrap();
+
+    assert_eq!(
+        results[0].1,
+        Cleanup::Cleaned {
+            removed: SAVED_NOTE_ROWS - 2,
+            vacuumed: true
+        }
+    );
+    assert_eq!(content_rows(&backup.join(DB), "saved"), 2);
+}
+
+/// A backup folder whose database is not a database.
+fn unreadable_backup(app: &Path) -> PathBuf {
+    fs::write(app.join(DB), b"these bytes are not a database".repeat(200)).unwrap();
+    move_aside(app, BackupKind::ChosenInAlert).unwrap()
+}
+
+#[test]
+fn a_backup_that_cannot_be_opened_is_deleted_when_the_store_passed_its_check() {
+    let app = tempfile::tempdir().unwrap();
+    let backup = unreadable_backup(app.path());
+
+    let results = clean_backups(app.path(), || true).unwrap();
+
+    assert!(matches!(results[..], [(ref f, Cleanup::Deleted { .. })] if *f == backup));
+    assert!(!backup.exists());
+}
+
+#[test]
+fn a_backup_that_cannot_be_opened_stays_when_the_store_did_not_pass_its_check() {
+    let app = tempfile::tempdir().unwrap();
+    let backup = unreadable_backup(app.path());
+
+    let results = clean_backups(app.path(), || false).unwrap();
+
+    assert!(matches!(results[..], [(ref f, Cleanup::Kept { .. })] if *f == backup));
+    assert!(backup.join(DB).exists());
+}
+
+#[test]
+fn a_backup_with_a_wal_and_no_database_is_deleted_when_the_store_passed_its_check() {
+    let app = tempfile::tempdir().unwrap();
+    fs::write(app.path().join(WAL), TRANSCRIPT_TEXT).unwrap();
+    let backup = move_orphan_wal(app.path()).unwrap().unwrap();
+
+    let results = clean_backups(app.path(), || true).unwrap();
+
+    assert!(matches!(results[..], [(_, Cleanup::Deleted { .. })]));
+    assert!(!backup.exists());
+}
+
+#[test]
+fn a_backup_with_no_database_and_no_wal_is_not_touched() {
+    let app = tempfile::tempdir().unwrap();
+    fs::create_dir_all(app.path().join(SESSIONS).join("s1")).unwrap();
+    let backup = move_aside(app.path(), BackupKind::Automatic).unwrap();
+
+    assert!(clean_backups(app.path(), || true).unwrap().is_empty());
+    assert!(backup.join(SESSIONS).exists());
+}
+
+#[test]
+fn a_new_store_passes_its_check() {
+    let app = tempfile::tempdir().unwrap();
+    let store = Store::open(&app.path().join(DB)).unwrap();
+    assert!(store.quick_check().unwrap());
 }

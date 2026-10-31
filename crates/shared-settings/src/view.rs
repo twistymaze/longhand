@@ -132,13 +132,85 @@ impl SharedView {
     /// is only for display. An absent field in a file that parsed is the
     /// default.
     pub fn audio_removal_days(&self) -> Option<u32> {
+        self.audio_removal().days()
+    }
+
+    /// The audio removal value for the removal pass. It is unknown unless
+    /// the view comes from a settings file that parsed and this build
+    /// knows the value. An absent field is the default.
+    pub fn audio_removal(&self) -> RemovalDelay {
         if self.availability != Availability::Available {
-            return None;
+            return RemovalDelay::Unknown;
         }
         match &self.fields.audio_removal {
-            Field::Absent => AudioRemoval::default().days(),
-            Field::Known(removal) => removal.days(),
-            Field::Unknown(_) => None,
+            Field::Absent => AudioRemoval::default().days().into(),
+            Field::Known(removal) => removal.days().into(),
+            Field::Unknown(_) => RemovalDelay::Unknown,
+        }
+    }
+
+    /// The transcript removal value as the user set it, before R4 applies.
+    /// It is unknown unless the view comes from a settings file that
+    /// parsed and this build knows the value. An absent field is off
+    /// (R2, KTD8).
+    pub fn transcript_removal(&self) -> RemovalDelay {
+        if self.availability != Availability::Available {
+            return RemovalDelay::Unknown;
+        }
+        match &self.fields.transcript_removal {
+            Field::Absent => RemovalDelay::Off,
+            Field::Known(removal) => removal.days().into(),
+            Field::Unknown(_) => RemovalDelay::Unknown,
+        }
+    }
+
+    /// The delay in whole days after which the removal pass removes the
+    /// transcript of a saved note: the effective delay of KTD7. `None`
+    /// means that no transcript goes automatically.
+    pub fn transcript_removal_days(&self) -> Option<u32> {
+        effective_transcript_removal(self.audio_removal(), self.transcript_removal()).days()
+    }
+}
+
+/// A removal value as the removal pass reads it (KTD7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalDelay {
+    /// No removal: the shared settings are not available, or the value is
+    /// one that this build does not know.
+    Unknown,
+    Off,
+    AfterDays(u32),
+}
+
+impl RemovalDelay {
+    /// The delay in whole days. Off and unknown give `None`: nothing goes.
+    pub fn days(self) -> Option<u32> {
+        match self {
+            RemovalDelay::AfterDays(days) => Some(days),
+            RemovalDelay::Off | RemovalDelay::Unknown => None,
+        }
+    }
+}
+
+impl From<Option<u32>> for RemovalDelay {
+    /// A known value: a delay, or off.
+    fn from(days: Option<u32>) -> Self {
+        days.map_or(RemovalDelay::Off, RemovalDelay::AfterDays)
+    }
+}
+
+/// The transcript delay that the removal uses (R4, KTD7). The shared file
+/// keeps the user's two values, and this function applies R4 where the
+/// values are read. The result is unknown when either value is unknown,
+/// off when either value is off, and otherwise the larger of the two
+/// delays. So a pair of values that two computers saved out of order gives
+/// the longer delay, never a shorter one.
+pub fn effective_transcript_removal(audio: RemovalDelay, transcript: RemovalDelay) -> RemovalDelay {
+    match (audio, transcript) {
+        (RemovalDelay::Unknown, _) | (_, RemovalDelay::Unknown) => RemovalDelay::Unknown,
+        (RemovalDelay::Off, _) | (_, RemovalDelay::Off) => RemovalDelay::Off,
+        (RemovalDelay::AfterDays(audio), RemovalDelay::AfterDays(transcript)) => {
+            RemovalDelay::AfterDays(audio.max(transcript))
         }
     }
 }

@@ -42,6 +42,7 @@ function settings(extra: Partial<Settings> = {}): Settings {
     watched_folder: null,
     check_updates_automatically: true,
     audio_removal: { kind: "after_days", days: 30 },
+    transcript_removal: { kind: "off" },
     summary_prompts: [],
     active_summary_prompt: "topic-summary",
     shared: { availability: { kind: "available" }, newer_version: false, unknown_values: [], files_writable: true, damaged_file: null },

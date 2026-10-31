@@ -1,7 +1,7 @@
 ---
 title: Rules for settings that several computers share through a synced folder
 date: 2026-09-29
-last_updated: 2026-10-22
+last_updated: 2026-10-31
 category: integration-issues
 module: "Shared settings (crates/shared-settings/src/file.rs, prompts.rs, view.rs, join.rs; src-tauri/src/managers/shared.rs)"
 problem_type: integration_issue
@@ -16,7 +16,7 @@ symptoms:
   - "An older version that saves the whole file removes fields that a newer version added"
   - "A sync service makes copies of the file with names such as `settings 2.json`, and a computer uses the wrong one"
 resolution_type: design_rule
-tags: [sync, storage-folder, shared-settings, conflict-copy, schema-version, prompts, icloud, one-library, symlink, outside-link, size-limit]
+tags: [sync, storage-folder, shared-settings, conflict-copy, schema-version, prompts, icloud, one-library, symlink, outside-link, size-limit, removal]
 related_components: [library, summarize]
 ---
 
@@ -46,7 +46,9 @@ These rules come from building this feature. Each rule guards against a fault th
 
 7. **Accepted risk: a save made before another computer's change has synced can undo that change.** Computer A saves before the change of computer B arrives. A then writes a whole file that lacks the change of B, and the sync service can make A's file the winner. Rule 2 does not prevent this, because A's copy of the other fields is old. Only a person's edits write this file, so the risk needs edits on two computers within the sync delay. The user chose to accept it over one settings file for each computer (plan R15, AE12 and the Risks table). Do not add a per-computer file or a "not yet synced" wait without a new decision.
 
-8. **The last change wins, and conflicts belong to the sync service.** When computers change or copy settings, the last file that the sync service keeps applies to every computer. Longhand does not try to predict what the sync service will do: no "has this synced yet" guesses, no field that one path copies and another path leaves out, and no special handling for one setting. Every shared setting follows the same default and copy rules, including a setting whose value deletes data, such as audio removal. The rules above still apply: a file that cannot be read is not overwritten (rule 4), and only the exact name counts (rule 5). The user set this rule on 2026-09-30, during the plan for removing old audio (`docs/plans/2026-09-30-0357-feat-remove-old-audio-plan.md`).
+8. **The last change wins, and conflicts belong to the sync service.** When computers change or copy settings, the last file that the sync service keeps applies to every computer. Longhand does not try to predict what the sync service will do: no "has this synced yet" guesses, no field that one path copies and another path leaves out, and no special handling for one setting. Every shared setting follows the same default and copy rules, including a setting whose value deletes data, such as audio removal and transcript removal. The rules above still apply: a file that cannot be read is not overwritten (rule 4), and only the exact name counts (rule 5). The user set this rule on 2026-09-30, during the plan for removing old audio (`docs/plans/2026-09-30-0357-feat-remove-old-audio-plan.md`).
+
+   A rule that links two settings applies where Longhand reads them, not in the file. Transcript removal (`transcript_removal`) must never use a delay shorter than audio removal (`audio_removal`). The file keeps the two values that the user saved. The removal pass reads the delay with `transcript_removal_days`, which applies `effective_transcript_removal` (`crates/shared-settings/src/view.rs`): unknown when either value is unknown or the shared settings are not available, off when either value is off, else the larger of the two delays. Thus a pair that two computers saved out of order gives the longer delay, never a shorter one. On this computer, `set_audio_removal` writes both fields in one save when an audio change must change the transcript value, and `set_transcript_removal` refuses a value that breaks the rule (`src-tauri/src/commands/settings.rs`). Plan: `docs/plans/2026-10-30-1438-feat-remove-old-transcripts-plan.md` (KTD7).
 
 9. **The cache copy stands in only for a prompt file that exists and cannot be used now. A missing file is missing at once.** A prompt file can exist and still not be usable for a time: a sync delivered only a part of it (a front matter block with no closing line), it cannot be read, it has no prompt text, or it is not UTF-8. The scan puts its id in `PromptScan::unusable` (the id in the file, or the `file_name_id` when the file has no id), so the prompt is not missing. A file whose id the scan cannot read sets `unknown_unusable`, and then no custom prompt is missing. For such a prompt, `resolve` in `view.rs` uses the last copy in the cache. A prompt whose file is not in the folder has no cache stand-in: a summary uses the default prompt at once. The settings that name a missing prompt (the active prompt and the type prompt choices) clear only at a write that a user change on this computer causes, after the prompt has been missing for about one minute (`MISSING_PROMPT_WAIT`), and only for a prompt that this computer read before. The wait keeps the settings while a sync service delivers a rename as a delete and then a create. The clear needs a `settings.json` that parses.
 

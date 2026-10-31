@@ -1,16 +1,12 @@
 //! Resolve, check and queue a Transcribe Again run (KTD1, KTD2, KTD4). The
 //! run uses the recognition settings, the speaker count of the note and
-//! After Stop timing. The run decides at run time if it can use the saved
-//! timed text again ([`read_reusable`]).
-use crate::{StageError, recognition::durable, save};
+//! After Stop timing. The run transcribes all audio of the note again. It
+//! uses no saved timed text (R24).
+use crate::{StageError, save};
 use models::recognition::{
     ExecutionSpec, ProcessingMode, RecognitionConfig, ResolveError, SpeakerSource,
 };
-use session_core::{
-    Event, SessionState, Store,
-    folder::SessionDoc,
-    recognition::{self, Reuse},
-};
+use session_core::{Event, SessionState, Store};
 use session_save::note_files;
 use std::path::Path;
 
@@ -97,6 +93,9 @@ pub enum Cause {
     MissingAudio,
     /// At least one segment has a removal marker (R14, KTD9).
     RemovedAudio,
+    /// The transcript of the note was removed (R14 of the transcript
+    /// removal plan).
+    RemovedTranscript,
     AlreadyQueued,
     NotSaved,
     /// An older version of Longhand saved the note: its records are in
@@ -167,6 +166,10 @@ impl From<Cause> for Refusal {
             ),
             Cause::RemovedAudio => (
                 "The audio of this note was removed, so it can't be transcribed again.".into(),
+                false,
+            ),
+            Cause::RemovedTranscript => (
+                "The transcript of this note was removed, so it can't be transcribed again.".into(),
                 false,
             ),
             Cause::AlreadyQueued => (
@@ -333,6 +336,11 @@ fn resolve_run(
     {
         return Err(Cause::OldLayout.into());
     }
+    // A removed transcript does not come back. Its reason comes before the
+    // reason of the audio, which the removal also removed (R14).
+    if transcript_removed(store, note_id)? {
+        return Err(Cause::RemovedTranscript.into());
+    }
     // Removed audio does not come back, so its reason differs from the
     // reason for audio that the sync can still deliver (R14).
     match save::audio_state(store, note_id)? {
@@ -375,6 +383,18 @@ fn resolve_run(
     }
 }
 
+/// Whether the transcript of `note_id` was removed (KTD10 of the transcript
+/// removal plan): the store flag is set, or the home folder has the
+/// marker. The marker can arrive before a scan sets the flag. This reads
+/// metadata only.
+pub fn transcript_removed(store: &Store, note_id: &str) -> Result<bool, StageError> {
+    if store.transcript_removed(note_id)? {
+        return Ok(true);
+    }
+    let home = store.session(note_id)?.and_then(|r| r.home_path);
+    Ok(home.is_some_and(|home| session_core::folder::transcript_removed(Path::new(&home))))
+}
+
 pub(crate) fn speaker_count(spec: &ExecutionSpec) -> Option<session_core::SpeakerCount> {
     spec.config.speaker_count.map(|count| match count {
         models::recognition::SpeakerCount::Exact { count } => {
@@ -386,223 +406,9 @@ pub(crate) fn speaker_count(spec: &ExecutionSpec) -> Option<session_core::Speake
     })
 }
 
-/// Callers retain visited rows only when the returned header confirms reuse.
-pub(crate) fn read_reusable(
-    home: &Path,
-    doc: &SessionDoc,
-    spec: &ExecutionSpec,
-    mut visit: impl FnMut(recognition::OutputBlock),
-) -> Result<Option<recognition::ArtifactHeader>, StageError> {
-    if crate::recognition::TaskGraph::resolve(spec)?.route
-        == crate::recognition::Route::CombinedNemo
-    {
-        return Ok(None);
-    }
-    let (Some(reference), Some(audio)) = (&doc.recognition_artifact, &doc.recognition_audio) else {
-        return Ok(None);
-    };
-    if audio.len() != doc.segments.len() {
-        return Ok(None);
-    }
-    for segment in &doc.segments {
-        // A synced record can name any path. A name that can point outside
-        // the folder is not opened, and the saved text is not used again.
-        let Some(path) = crate::audio_path(home, &segment.audio) else {
-            return Ok(None);
-        };
-        if audio.get(&segment.audio) != Some(&recognition::file_digest(&path)?) {
-            return Ok(None);
-        }
-    }
-    // A missing file, or a file with another checksum, has no timed text to
-    // use again: the run transcribes in full (KTD8). A synced `session.md`
-    // can name any path, so check the name before the file is opened.
-    if reference.filename != recognition::ARTIFACT_FILE {
-        return Ok(None);
-    }
-    let path = home.join(recognition::ARTIFACT_FILE);
-    match recognition::file_digest(&path) {
-        Ok(sha256) if sha256 == reference.sha256 => {}
-        Ok(_) => return Ok(None),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
-    }
-    let mut timed = true;
-    let header = recognition::read_artifact(&path, reference, |b| {
-        timed &= b.timed_asr();
-        visit(b);
-        Ok(())
-    })
-    .map_err(|e| StageError::Failed(e.to_string()))?;
-    // With no transcript, the timed text cannot be checked against it.
-    let Some(transcript) = crate::summarize::transcript_bytes(home)? else {
-        return Ok(None);
-    };
-    let next = durable::spec_fingerprints(header.fingerprints.audio.clone(), spec)?;
-    Ok((timed && header.reuse(&next, &transcript) != Reuse::TranscribeAgain).then_some(header))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use models::recognition::{ProcessingMode, SpeakerSource};
-    use session_core::note_folder::NoteFiles;
-    use session_core::recognition::*;
-
-    fn saved(config: &RecognitionConfig) -> tempfile::TempDir {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path();
-        let spec = models::recognition::resolve(config).unwrap();
-        let transcript = b"Saved timed text";
-        let mut doc: SessionDoc = serde_json::from_value(serde_json::json!({
-            "session_id": "s", "started": "2026-09-27T10:00:00-05:00", "segments": []
-        }))
-        .unwrap();
-        let header = ArtifactHeader {
-            version: ARTIFACT_VERSION,
-            generation: "g".into(),
-            snapshot: serde_json::to_value(&spec).unwrap(),
-            fingerprints: durable::spec_fingerprints(digest(b"audio"), &spec).unwrap(),
-            transcript: digest(transcript),
-            limitations: vec![],
-            coverage: vec![SampleRange {
-                start: 0,
-                end: 16000,
-            }],
-        };
-        let range = SampleRange {
-            start: 0,
-            end: 16000,
-        };
-        let scope = SpeakerScope {
-            generation: "g".into(),
-            epoch: 0,
-        };
-        let block = OutputBlock {
-            key: "row".into(),
-            scope: scope.clone(),
-            revision: 1,
-            coverage: Coverage {
-                received: Some(range),
-                computed: Some(range),
-                provisional: None,
-                committed: Some(range),
-            },
-            rows: vec![RecognitionSegment {
-                id: RecognitionId {
-                    scope,
-                    input_start_sample: 0,
-                    ordinal: 0,
-                },
-                range,
-                timing: TimingPrecision::NativeSegment,
-                text: "Saved timed text".into(),
-                speaker: None,
-                revision: 1,
-                text_finality: Finality::Final,
-                speaker_finality: Finality::Final,
-            }],
-            speakers: vec![],
-        };
-        doc.recognition_artifact =
-            Some(write_artifact(&home.join("recognition.jsonl"), &header, [block]).unwrap());
-        doc.recognition_audio = Some(Default::default());
-        std::fs::write(home.join("transcript.md"), transcript).unwrap();
-        std::fs::write(home.join("summary.md"), b"Summary").unwrap();
-        note_files::write_doc(home, &doc).unwrap();
-        temp
-    }
-
-    /// Whether a run with `config` uses the saved timed text in `home` again.
-    fn reuses(home: &Path, config: &RecognitionConfig) -> Result<bool, StageError> {
-        let spec = models::recognition::resolve(config).unwrap();
-        let doc = NoteFiles::read(home)?.doc;
-        Ok(read_reusable(home, &doc, &spec, |_| {})?.is_some())
-    }
-
-    #[test]
-    fn only_the_combined_route_does_not_reuse_saved_text() {
-        let combined = RecognitionConfig {
-            asr_model: "nemotron-speech-streaming-en-0.6b-q80".into(),
-            speaker_source: SpeakerSource::Nemotron,
-            processing_mode: ProcessingMode::DuringRecording,
-            speaker_processing_mode: ProcessingMode::DuringRecording,
-            ..Default::default()
-        };
-        let temp = saved(&combined);
-        assert!(!reuses(temp.path(), &combined).unwrap());
-        for speaker_source in [
-            SpeakerSource::Off,
-            SpeakerSource::Pyannote,
-            SpeakerSource::Nemotron,
-        ] {
-            let config = RecognitionConfig {
-                asr_model: "whisper-large-v3-turbo-q5km".into(),
-                speaker_source,
-                ..Default::default()
-            };
-            let temp = saved(&config);
-            assert!(reuses(temp.path(), &config).unwrap(), "{speaker_source:?}");
-        }
-    }
-
-    #[test]
-    fn reusable_text_comes_from_the_note_files() {
-        let config = RecognitionConfig {
-            speaker_source: SpeakerSource::Off,
-            ..Default::default()
-        };
-        let temp = saved(&config);
-        assert!(reuses(temp.path(), &config).unwrap());
-        // A hand edit or a missing transcript makes the timed text unusable
-        // (R9): the run transcribes in full.
-        std::fs::write(temp.path().join("transcript.md"), b"External edit").unwrap();
-        assert!(!reuses(temp.path(), &config).unwrap(), "edited");
-        std::fs::remove_file(temp.path().join("transcript.md")).unwrap();
-        assert!(!reuses(temp.path(), &config).unwrap(), "missing");
-    }
-
-    #[test]
-    fn a_missing_or_changed_artifact_is_not_reusable() {
-        // KTD8: the run then transcribes in full.
-        let config = RecognitionConfig {
-            speaker_source: SpeakerSource::Off,
-            ..Default::default()
-        };
-        let temp = saved(&config);
-        std::fs::remove_file(temp.path().join(ARTIFACT_FILE)).unwrap();
-        assert!(!reuses(temp.path(), &config).unwrap(), "missing");
-        let temp = saved(&config);
-        let path = temp.path().join(ARTIFACT_FILE);
-        let mut bytes = std::fs::read(&path).unwrap();
-        bytes.extend_from_slice(b"\n");
-        std::fs::write(path, bytes).unwrap();
-        assert!(!reuses(temp.path(), &config).unwrap(), "checksum mismatch");
-    }
-
-    #[test]
-    fn an_artifact_with_another_name_is_not_opened() {
-        // A synced `session.md` can name any path. Only
-        // `recognition.jsonl` in the note folder is read.
-        let config = RecognitionConfig {
-            speaker_source: SpeakerSource::Off,
-            ..Default::default()
-        };
-        let temp = saved(&config);
-        let home = temp.path();
-        let outside = home.join("..").join(format!(
-            "{}-artifact.jsonl",
-            home.file_name().unwrap().to_string_lossy()
-        ));
-        std::fs::copy(home.join(ARTIFACT_FILE), &outside).unwrap();
-        let mut doc = NoteFiles::read(home).unwrap().doc;
-        doc.recognition_artifact.as_mut().unwrap().filename =
-            outside.to_string_lossy().into_owned();
-        note_files::write_doc(home, &doc).unwrap();
-        let reused = reuses(home, &config);
-        std::fs::remove_file(&outside).unwrap();
-        assert!(!reused.unwrap());
-    }
 
     #[test]
     fn each_cause_gives_its_text_and_says_if_the_fix_is_in_settings() {
@@ -693,6 +499,95 @@ mod tests {
                 in_settings: true
             }
         );
+    }
+
+    /// A store with the saved note "s" with one segment. `home` is its
+    /// home folder.
+    fn saved_note(home: Option<&Path>) -> Store {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-10-30T09:00:00+00:00").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s", at, None).unwrap();
+        store
+            .put_segment(
+                "s",
+                &session_core::Segment {
+                    index: 0,
+                    offset_ms: 0,
+                    duration_ms: 60_000,
+                    wall_start: at,
+                    wall_end: at + chrono::TimeDelta::minutes(1),
+                    audio_file: "audio/segment-01.opus".into(),
+                    channels: 1,
+                    ends_in_pause: false,
+                },
+            )
+            .unwrap();
+        store
+            .apply(
+                "s",
+                &Event::UserStop {
+                    at,
+                    retained_audio: true,
+                },
+            )
+            .unwrap();
+        store.apply("s", &Event::Dequeued).unwrap();
+        store.apply("s", &Event::Saved).unwrap();
+        if let Some(home) = home {
+            store.set_home_path("s", home.to_str().unwrap()).unwrap();
+        }
+        store
+    }
+
+    fn check_s(store: &Store) -> Refusal {
+        check(
+            store,
+            "s",
+            Guards::default(),
+            &RecognitionConfig::default(),
+            &|_| Readiness::Ready,
+        )
+        .unwrap_err()
+    }
+
+    const TRANSCRIPT_REMOVED: &str =
+        "The transcript of this note was removed, so it can't be transcribed again.";
+
+    // Covers R14, AE7 (U6): the transcript reason wins over the reason of
+    // the audio, which is also gone.
+    #[test]
+    fn a_removed_transcript_refuses_transcribe_again_before_the_audio() {
+        let store = saved_note(None);
+        // With no home folder, the audio counts as missing.
+        assert_eq!(
+            check_s(&store).message,
+            "The note's folder does not have all of its audio, so it can't be transcribed again."
+        );
+        store.set_transcript_removed("s", true).unwrap();
+        assert_eq!(
+            check_s(&store),
+            Refusal {
+                message: TRANSCRIPT_REMOVED.into(),
+                in_settings: false
+            }
+        );
+    }
+
+    // Covers KTD10 (U6): the marker refuses the run also before a scan
+    // sets the store flag.
+    #[test]
+    fn the_marker_refuses_transcribe_again_before_the_flag_is_set() {
+        let home = tempfile::tempdir().unwrap();
+        let store = saved_note(Some(home.path()));
+        assert!(!transcript_removed(&store, "s").unwrap());
+        std::fs::write(
+            home.path()
+                .join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+        )
+        .unwrap();
+        assert!(transcript_removed(&store, "s").unwrap());
+        assert_eq!(check_s(&store).message, TRANSCRIPT_REMOVED);
     }
 
     #[test]

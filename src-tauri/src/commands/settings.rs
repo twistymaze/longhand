@@ -507,6 +507,11 @@ pub async fn set_check_updates_automatically(
 /// days outside the range is refused and changes nothing. After a saved
 /// change that turns the setting on or shortens the delay, a removal pass
 /// starts (R17, KTD6). The Settings window asks for the confirmation first.
+///
+/// The same save moves the transcript removal setting when it must, so the
+/// transcript delay is never shorter than the audio delay (R4, R5 of the
+/// transcript removal plan). That change needs no confirmation: it never
+/// makes the effective transcript delay shorter (R20).
 #[tauri::command]
 #[specta::specta]
 pub async fn set_audio_removal(
@@ -519,7 +524,7 @@ pub async fn set_audio_removal(
         // can be older than a change that another computer made.
         let before = read_removal_delay(&app);
         let updated = settings::update_settings(&app, |s| {
-            s.audio_removal = removal;
+            set_audio_value(s, removal);
             Ok(())
         })?;
         if audio_removal::removes_more(before, shared_removal_delay(&app))
@@ -530,6 +535,148 @@ pub async fn set_audio_removal(
         Ok(updated)
     })
     .await
+}
+
+/// Set the audio removal value of `s` to `audio`, and move the transcript
+/// removal value so that R4 stays true (R5 of the transcript removal plan):
+///
+/// - Audio removal off turns transcript removal off.
+/// - Audio removal on again turns transcript removal off. A transcript
+///   value that was left on while audio removal was off (two computers can
+///   save such a pair) does not start to remove transcripts with no
+///   confirmation (R20).
+/// - Otherwise the transcript delay becomes at least the new audio delay,
+///   and at least the old audio delay, so the effective transcript delay
+///   never gets shorter (KTD7).
+fn set_audio_value(s: &mut Settings, audio: settings::AudioRemovalSetting) {
+    use settings::AudioRemovalSetting as Audio;
+    use settings::TranscriptRemovalSetting as Transcript;
+    s.transcript_removal = match (s.audio_removal, audio, s.transcript_removal) {
+        (_, Audio::Off, _) | (Audio::Off, _, _) => Transcript::Off,
+        (
+            Audio::AfterDays { days: before },
+            Audio::AfterDays { days: after },
+            Transcript::AfterDays { days },
+        ) => Transcript::AfterDays {
+            days: days.max(before).max(after),
+        },
+        (_, _, Transcript::Off) => Transcript::Off,
+    };
+    s.audio_removal = audio;
+}
+
+/// Refuse a transcript removal value that breaks R4 with the audio removal
+/// value `audio`: on while audio removal is off, or a delay shorter than the
+/// audio delay.
+fn check_transcript_value(
+    audio: settings::AudioRemovalSetting,
+    transcript: settings::TranscriptRemovalSetting,
+) -> Result<(), String> {
+    use settings::AudioRemovalSetting as Audio;
+    use settings::TranscriptRemovalSetting as Transcript;
+    match (audio, transcript) {
+        (_, Transcript::Off) => Ok(()),
+        (Audio::Off, Transcript::AfterDays { .. }) => {
+            Err("Turn on audio removal first. A note keeps its transcript at least as long as its audio.".to_string())
+        }
+        (Audio::AfterDays { days: audio }, Transcript::AfterDays { days }) if days < audio => {
+            Err(format!(
+                "Choose {audio} days or more. A note keeps its transcript at least as long as its audio."
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Choose when the transcript of a saved note goes, or turn automatic
+/// transcript removal off (R1, R3 of the transcript removal plan). The
+/// value goes into the shared settings file. A value that breaks R4 is
+/// refused and changes nothing: on while audio removal is off, or a delay
+/// shorter than the audio delay. After a saved change that makes the
+/// effective delay shorter or turns it on, a removal pass starts (R19,
+/// KTD6). The Settings window asks for the confirmation first.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_transcript_removal(
+    app: AppHandle,
+    removal: settings::TranscriptRemovalSetting,
+) -> Result<Settings, String> {
+    removal.validate()?;
+    blocking(move || {
+        // The comparison and the check of R4 start from the file, not from
+        // the cache: the cache can be older than a change that another
+        // computer made.
+        let before = read_shared(&app).and_then(|shared| shared.transcript_removal_days());
+        let updated = settings::update_settings(&app, |s| {
+            check_transcript_value(s.audio_removal, removal)?;
+            s.transcript_removal = removal;
+            Ok(())
+        })?;
+        let after = app
+            .try_state::<Arc<SharedSettingsManager>>()
+            .and_then(|shared| shared.snapshot().transcript_removal_days());
+        if audio_removal::removes_more(before, after)
+            && let Some(pass) = app.try_state::<Arc<AudioRemovalManager>>()
+        {
+            pass.run_now();
+        }
+        Ok(updated)
+    })
+    .await
+}
+
+/// The effective transcript delay to count with for the change to
+/// `proposed`, or `None` when the change does not remove more transcripts
+/// at once (R19): the change turns the setting off, keeps the effective
+/// delay, or makes it longer. `before` is the effective delay now, and
+/// `audio` the audio delay now (KTD7).
+fn transcript_count_delay(
+    before: Option<u32>,
+    audio: Option<u32>,
+    proposed: settings::TranscriptRemovalSetting,
+) -> Option<u32> {
+    let settings::TranscriptRemovalSetting::AfterDays { days } = proposed else {
+        return None;
+    };
+    let after = audio.map(|audio| audio.max(days));
+    audio_removal::removes_more(before, after).then_some(after?)
+}
+
+/// How many notes a pass would remove the transcript of now if the
+/// setting changed to `removal`, and how many it would keep because their
+/// summary failed (R19, R28 of the transcript removal plan). Both numbers
+/// are 0 when the change does not remove more transcripts at once. The
+/// count uses the same per-note check as the pass. The pass checks each
+/// note again after the confirmation. A number of days outside the range
+/// is refused.
+#[tauri::command]
+#[specta::specta]
+pub async fn transcript_removal_count(
+    app: AppHandle,
+    removal: settings::TranscriptRemovalSetting,
+) -> Result<audio_removal::TranscriptCount, String> {
+    removal.validate()?;
+    // The count reads the shared settings file and folders that can be on a
+    // slow volume. It starts from the file, as the save does.
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(shared) = read_shared(&app) else {
+            return audio_removal::TranscriptCount::default();
+        };
+        let delay = transcript_count_delay(
+            shared.transcript_removal_days(),
+            shared.audio_removal_days(),
+            removal,
+        );
+        let Some(days) = delay else {
+            return audio_removal::TranscriptCount::default();
+        };
+        app.try_state::<Arc<AudioRemovalManager>>()
+            .map_or_else(audio_removal::TranscriptCount::default, |pass| {
+                pass.count_transcripts(days)
+            })
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// The delay of the audio removal setting in the shared settings now, or
@@ -547,8 +694,15 @@ fn shared_removal_delay(app: &AppHandle) -> Option<u32> {
 /// does for that change. The read can wait for an online-only file, so call
 /// this off the main thread.
 fn read_removal_delay(app: &AppHandle) -> Option<u32> {
+    read_shared(app).and_then(|shared| shared.audio_removal_days())
+}
+
+/// The shared settings after a read of the shared settings file, as
+/// [`read_removal_delay`] does it. `None` when the shared settings are not
+/// ready. Call this off the main thread.
+fn read_shared(app: &AppHandle) -> Option<crate::managers::shared::SharedSnapshot> {
     let shared = app.try_state::<Arc<SharedSettingsManager>>()?;
-    let (changed, days) = reread_removal_delay(&shared);
+    let (changed, _) = reread_removal_delay(&shared);
     if changed {
         log::info!("shared settings: another computer changed them");
         settings::emit_settings_changed(app);
@@ -561,7 +715,7 @@ fn read_removal_delay(app: &AppHandle) -> Option<u32> {
             pass.run_now();
         }
     }
-    days
+    Some(shared.snapshot())
 }
 
 /// Read the shared settings file into the cache of `shared`. Returns
@@ -1757,6 +1911,111 @@ mod tests {
         assert_eq!(count_delay(Some(30), AfterDays { days: 30 }), None);
         assert_eq!(count_delay(Some(30), Off), None);
         assert_eq!(count_delay(None, Off), None);
+    }
+
+    // Covers AE2, AE3, R5, R20: a change of the audio setting keeps the
+    // transcript delay at least as long, in the same save, and never makes
+    // it shorter.
+    #[test]
+    fn an_audio_change_moves_the_transcript_value_in_the_same_save() {
+        use settings::AudioRemovalSetting as Audio;
+        use settings::TranscriptRemovalSetting as Transcript;
+        use shared_settings::file::{AudioRemoval, SharedValue, TranscriptRemoval};
+        let before = Settings {
+            audio_removal: Audio::AfterDays { days: 30 },
+            transcript_removal: Transcript::AfterDays { days: 60 },
+            ..Settings::default()
+        };
+
+        // AE2: audio 30 to 90 sets transcripts to 90.
+        let mut after = before.clone();
+        set_audio_value(&mut after, Audio::AfterDays { days: 90 });
+        assert_eq!(after.transcript_removal, Transcript::AfterDays { days: 90 });
+        let patch = settings::shared_patch(&before, &after);
+        assert!(patch.contains(&SharedValue::AudioRemoval(AudioRemoval::AfterDays(90))));
+        assert!(patch.contains(&SharedValue::TranscriptRemoval(
+            TranscriptRemoval::AfterDays(90)
+        )));
+
+        // AE3: audio off turns transcripts off.
+        let mut after = before.clone();
+        set_audio_value(&mut after, Audio::Off);
+        assert_eq!(after.transcript_removal, Transcript::Off);
+
+        // A shorter audio delay keeps the transcript delay.
+        let mut after = before.clone();
+        set_audio_value(&mut after, Audio::AfterDays { days: 10 });
+        assert_eq!(after.transcript_removal, Transcript::AfterDays { days: 60 });
+
+        // A pair that breaks R4 (from two computers) keeps its effective
+        // delay of 90 days when the audio delay gets shorter.
+        let mut broken = before.clone();
+        broken.audio_removal = Audio::AfterDays { days: 90 };
+        set_audio_value(&mut broken, Audio::AfterDays { days: 30 });
+        assert_eq!(
+            broken.transcript_removal,
+            Transcript::AfterDays { days: 90 }
+        );
+
+        // Audio on again does not turn on a transcript value that was left
+        // on while audio was off.
+        let mut off = before.clone();
+        off.audio_removal = Audio::Off;
+        set_audio_value(&mut off, Audio::AfterDays { days: 30 });
+        assert_eq!(off.transcript_removal, Transcript::Off);
+
+        // Off stays off.
+        let mut plain = before.clone();
+        plain.transcript_removal = Transcript::Off;
+        set_audio_value(&mut plain, Audio::AfterDays { days: 90 });
+        assert_eq!(plain.transcript_removal, Transcript::Off);
+    }
+
+    // Covers R4, AE4: the transcript delay is never shorter than the audio
+    // delay, and it cannot be on while audio removal is off.
+    #[test]
+    fn a_transcript_value_that_breaks_r4_is_refused() {
+        use settings::AudioRemovalSetting as Audio;
+        use settings::TranscriptRemovalSetting as Transcript;
+        let audio = Audio::AfterDays { days: 60 };
+        assert!(check_transcript_value(audio, Transcript::AfterDays { days: 30 }).is_err());
+        assert!(check_transcript_value(audio, Transcript::AfterDays { days: 60 }).is_ok());
+        assert!(check_transcript_value(audio, Transcript::Off).is_ok());
+        let message =
+            check_transcript_value(Audio::Off, Transcript::AfterDays { days: 90 }).unwrap_err();
+        assert!(message.contains("audio"), "{message}");
+        assert!(check_transcript_value(Audio::Off, Transcript::Off).is_ok());
+    }
+
+    // Covers AE5, R19: only a change that removes more transcripts at once
+    // gets a count, with the effective delay.
+    #[test]
+    fn the_transcript_count_uses_the_effective_delay_only_when_the_change_removes_more() {
+        use settings::TranscriptRemovalSetting::{AfterDays, Off};
+        // AE5: 365 to 90 counts with 90; 90 to 365 counts nothing.
+        assert_eq!(
+            transcript_count_delay(Some(365), Some(30), AfterDays { days: 90 }),
+            Some(90)
+        );
+        assert_eq!(
+            transcript_count_delay(Some(90), Some(30), AfterDays { days: 365 }),
+            None
+        );
+        // On, with the effective delay never shorter than the audio delay.
+        assert_eq!(
+            transcript_count_delay(None, Some(30), AfterDays { days: 60 }),
+            Some(60)
+        );
+        assert_eq!(
+            transcript_count_delay(None, Some(30), AfterDays { days: 10 }),
+            Some(30)
+        );
+        // Off, and audio removal off or not known.
+        assert_eq!(transcript_count_delay(Some(90), Some(30), Off), None);
+        assert_eq!(
+            transcript_count_delay(None, None, AfterDays { days: 90 }),
+            None
+        );
     }
 
     /// R17: the count starts from the file, not from an older cache. The

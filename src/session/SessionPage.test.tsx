@@ -82,6 +82,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   audio_kept: true,
   transcript_kept: true,
   audio: "present",
+  transcript: "present",
   asr_model: null,
   live_transcript: false,
   transcribe_again: false,
@@ -1654,6 +1655,143 @@ describe("SessionPage", () => {
       expect(screen.getByText(removedReason)).toBeTruthy();
       await userEvent.setup().click(retry);
       expect(tauri.calls.some((c) => c.cmd === "retry_session")).toBe(false);
+    });
+  });
+
+  describe("Remove Transcript", () => {
+    const transcriptReason = "The transcript of this note was removed.";
+    const summaryReason = "The transcript of this note was removed, so its summary can't be made again.";
+    const removedDoc: SessionDocument = { ...doc, lines: [], transcript_markdown: "" };
+
+    async function openMenu(
+      e: SessionEntry,
+      over: Partial<SessionDetail>,
+      extra: Record<string, CommandHandler> = {},
+    ) {
+      const tauri = mockPage(e, over, extra);
+      renderPage({ id: e.id, sessions: sessionsOf([e]) });
+      await act(async () => {});
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      return { tauri, user };
+    }
+
+    const item = (name: string) => screen.getByRole("menuitem", { name });
+
+    // Covers AE6. The page sends no setting: the command removes the
+    // transcript whether the setting is on or off.
+    test("one destructive confirmation removes the transcript and the audio; the Transcript tab goes and the summary stays", async () => {
+      const e = entry("s", { title: "Budget review" });
+      let removed = false;
+      const tauri = mockTauri({
+        load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
+        session_detail: () =>
+          detail(e, removed ? { audio: "removed", transcript: "removed" } : {}),
+        session_document: () => (removed ? removedDoc : doc),
+        remove_transcript: () => {
+          removed = true;
+          return null;
+        },
+      });
+      const sessions = sessionsOf([e]);
+      renderPage({ id: "s", sessions });
+      await act(async () => {});
+      const user = userEvent.setup();
+      await user.click(tab("Transcript"));
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(item("Remove Transcript…"));
+      const dialog = screen.getByRole("alertdialog", { name: "Remove the transcript of this note?" });
+      expect(dialog.textContent).toContain("The audio of this note is removed too.");
+      expect(dialog.textContent).toContain("The summary and notes stay.");
+      expect(dialog.textContent).toContain("You can’t undo this.");
+      expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Cancel" }));
+      await user.click(within(dialog).getByRole("button", { name: "Remove Transcript" }));
+      expect(tauri.calls.filter((c) => c.cmd === "remove_transcript").map((c) => c.args)).toEqual([{ noteId: "s" }]);
+      await act(async () => {});
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(sessions.refresh).toHaveBeenCalled();
+      expect(screen.queryByRole("tab", { name: "Transcript" })).toBeNull();
+      expect(tab("My Notes").getAttribute("aria-selected")).toBe("true");
+      await user.click(tab("Summary"));
+      expect(screen.getByText("We agreed the budget.")).toBeTruthy();
+      // An action removed the transcript, so the page shows no notice.
+      expect(screen.queryAllByRole("status")).toEqual([]);
+    });
+
+    test("Cancel and Escape close the dialog and remove nothing", async () => {
+      const { tauri, user } = await openMenu(entry("s"), {}, { remove_transcript: () => null });
+      await user.click(item("Remove Transcript…"));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      await user.click(item("Remove Transcript…"));
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+      expect(tauri.calls.some((c) => c.cmd === "remove_transcript")).toBe(false);
+    });
+
+    test("the confirmation does not name the audio when the note has no audio", async () => {
+      const { user } = await openMenu(entry("s"), { audio: "removed" });
+      await user.click(item("Remove Transcript…"));
+      const dialog = screen.getByRole("alertdialog");
+      expect(dialog.textContent).not.toMatch(/audio/i);
+      expect(dialog.textContent).toContain("The summary and notes stay.");
+    });
+
+    test("the confirmation says that the note has no summary when it has only the stub summary", async () => {
+      const stub = { ...doc, summary: { ...doc.summary!, body: "The summary could not be made.", stub: true } };
+      const { user } = await openMenu(entry("s"), {}, { session_document: () => stub });
+      await user.click(item("Remove Transcript…"));
+      const dialog = screen.getByRole("alertdialog");
+      expect(dialog.textContent).toContain("This note has no summary, and none can be made after the removal.");
+      expect(dialog.textContent).not.toContain("The summary and notes stay.");
+    });
+
+    // Covers AE7.
+    test("a note whose transcript was removed shows no Transcript tab and no mark, and its actions give the transcript reason", async () => {
+      const e = entry("s");
+      mockPage(
+        e,
+        {
+          audio: "removed",
+          transcript: "removed",
+          record: { kind: "resume", available: false, reason: transcriptReason },
+        },
+        { session_document: () => removedDoc },
+      );
+      renderPage({ id: "s", sessions: sessionsOf([e]) });
+      await act(async () => {});
+      expect(screen.queryByRole("tab", { name: "Transcript" })).toBeNull();
+      expect(screen.getByText("We agreed the budget.")).toBeTruthy();
+      expect(screen.queryAllByRole("status")).toEqual([]);
+      const regenerate = screen.getByRole("button", { name: "Regenerate Summary" });
+      expect(regenerate.hasAttribute("disabled")).toBe(true);
+      expect(regenerate.closest("[title]")?.getAttribute("title")).toBe(summaryReason);
+      const user = userEvent.setup();
+      await user.click(screen.getByRole("button", { name: "Actions" }));
+      expect(item("Regenerate Summary").hasAttribute("disabled")).toBe(true);
+      expect(item("Regenerate Summary").getAttribute("title")).toBe(summaryReason);
+      expect(item("Transcribe Again…").hasAttribute("disabled")).toBe(true);
+      expect(item("Transcribe Again…").getAttribute("title")).toBe(transcriptReason);
+      expect(screen.queryByRole("menuitem", { name: "Remove Transcript…" })).toBeNull();
+    });
+
+    test("a refused removal closes the dialog and shows the reason", async () => {
+      const message = "This note is in use on another computer. Try again later.";
+      const { user } = await openMenu(entry("s"), {}, {
+        remove_transcript: () => {
+          throw { kind: "refused", message };
+        },
+      });
+      await user.click(item("Remove Transcript…"));
+      await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove Transcript" }));
+      expect(await screen.findByText(message)).toBeTruthy();
+      expect(screen.queryByRole("alertdialog")).toBeNull();
+    });
+
+    test("a note that processes has no Remove Transcript", async () => {
+      await openMenu(entry("p", { state: "processing" }), {});
+      expect(screen.queryByRole("menuitem", { name: "Remove Transcript…" })).toBeNull();
     });
   });
 

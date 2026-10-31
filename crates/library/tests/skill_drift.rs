@@ -30,8 +30,8 @@ use session_save::home_write::write_atomic;
 use session_save::naming::folder_name;
 use session_save::note_files::{new_session_md, write_record};
 use shared_settings::file::{
-    AudioRemoval, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue, default_settings,
-    read_settings, save_settings, settings_path,
+    AudioRemoval, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue, TranscriptRemoval,
+    default_settings, read_settings, save_settings, settings_path,
 };
 use shared_settings::prompts::{
     prompts_folder, render_prompt_file, render_prompt_file_with_title, scan_prompts,
@@ -206,6 +206,7 @@ fn field_of(value: &SharedValue) -> &'static str {
         SharedValue::RecognitionLanguage(_) => "recognition_language",
         SharedValue::CheckUpdatesAutomatically(_) => "check_updates_automatically",
         SharedValue::AudioRemoval(_) => "audio_removal",
+        SharedValue::TranscriptRemoval(_) => "transcript_removal",
         SharedValue::NoteTypes(_) => "note_types",
         SharedValue::DefaultNoteType(_) => "default_note_type",
         SharedValue::NoteTypePrompts(_) => "note_type_prompts",
@@ -228,6 +229,7 @@ fn every_setting() -> Vec<SharedValue> {
         SharedValue::RecognitionLanguage(Some("en".to_string())),
         SharedValue::CheckUpdatesAutomatically(true),
         SharedValue::AudioRemoval(AudioRemoval::AfterDays(30)),
+        SharedValue::TranscriptRemoval(TranscriptRemoval::AfterDays(60)),
         SharedValue::NoteTypes(vec!["Meetings".to_string()]),
         SharedValue::DefaultNoteType(Some("Meetings".to_string())),
         SharedValue::NoteTypePrompts(BTreeMap::from([(
@@ -281,6 +283,7 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         recognition_language,
         check_updates_automatically,
         audio_removal,
+        transcript_removal,
         note_types,
         default_note_type,
         note_type_prompts,
@@ -314,6 +317,7 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         &check_updates_automatically,
     );
     assert_known(&mut checked, "audio_removal", &audio_removal);
+    assert_known(&mut checked, "transcript_removal", &transcript_removal);
     assert_known(&mut checked, "note_types", &note_types);
     assert_known(&mut checked, "default_note_type", &default_note_type);
     assert_known(&mut checked, "note_type_prompts", &note_type_prompts);
@@ -491,6 +495,65 @@ fn check_passes_a_tag_and_a_settings_edit_on_a_folder_that_the_writers_made() {
         result.out
     );
     assert!(!result.out.contains("imports"), "{}", result.out);
+}
+
+/// Longhand removes the transcript of a note while an agent edits it
+/// (U9 of the transcript removal plan). Longhand writes the marker,
+/// deletes `transcript.md` and `recognition.jsonl`, and clears the
+/// transcript records. `check.py` does not report the removal as an edit
+/// of the agent.
+#[test]
+fn check_passes_a_tag_edit_across_a_transcript_removal() {
+    let Some(python) = python_or_skip() else {
+        return;
+    };
+    let storage = storage_folder();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = storage.path();
+    let dir = root.join(EDITED);
+    write_atomic(&dir, "transcript.md", b"# Transcript\n").unwrap();
+    write_atomic(&dir, "recognition.jsonl", b"{}\n").unwrap();
+    let snapshot = snapshot(&python, root, tmp.path());
+
+    add_tag(&dir);
+    write_atomic(
+        &dir,
+        folder::TRANSCRIPT_REMOVED_MARKER,
+        folder::TRANSCRIPT_REMOVED_TEXT.as_bytes(),
+    )
+    .unwrap();
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    fs::remove_file(dir.join("recognition.jsonl")).unwrap();
+    let record = NoteRecord {
+        transcript_fingerprint: None,
+        recognition_snapshot: None,
+        recognition_artifact: None,
+        recognition_audio: None,
+        ..full_record(&dir, None)
+    };
+    write_record(&dir, &record).unwrap();
+
+    let result = run(
+        &python,
+        "check.py",
+        &["compare", &snapshot],
+        root,
+        tmp.path(),
+    );
+    assert_eq!(result.code, 0, "{}", result.out);
+
+    // An agent that makes a new transcript in the note is reported.
+    let snapshot = self::snapshot(&python, root, tmp.path());
+    write_atomic(&dir, "transcript.md", b"# Transcript\n").unwrap();
+    let result = run(
+        &python,
+        "check.py",
+        &["compare", &snapshot],
+        root,
+        tmp.path(),
+    );
+    assert_eq!(result.code, 1, "{}", result.out);
+    assert!(result.out.contains("transcript.md"), "{}", result.out);
 }
 
 #[test]

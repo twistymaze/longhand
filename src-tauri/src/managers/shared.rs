@@ -189,6 +189,19 @@ impl SharedSnapshot {
         self.view.audio_removal_days()
     }
 
+    /// The delay in whole days for the automatic removal of old
+    /// transcripts, or `None` when no transcript goes automatically (R2,
+    /// R4, KTD7). This is the effective delay: it is never shorter than
+    /// the audio delay, and it is `None` while audio removal is off. It is
+    /// `None` unless the view comes from the settings file of the storage
+    /// folder and this build knows both values.
+    pub fn transcript_removal_days(&self) -> Option<u32> {
+        if self.availability != SharedAvailability::Available {
+            return None;
+        }
+        self.view.transcript_removal_days()
+    }
+
     pub fn state(&self) -> SharedState {
         let fields = &self.view.fields;
         SharedState {
@@ -1207,7 +1220,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::managers::settings::{self, AudioRemovalSetting, LocalSettings, Settings};
+    use crate::managers::settings::{
+        self, AudioRemovalSetting, LocalSettings, Settings, TranscriptRemovalSetting,
+    };
 
     /// One computer: its local cache folder.
     struct Computer {
@@ -1565,6 +1580,56 @@ mod tests {
         let no_folder = computer.manager(None);
         assert!(!no_folder.join_at_launch());
         assert_eq!(no_folder.snapshot().audio_removal_days(), None);
+    }
+
+    #[test]
+    fn the_transcript_removal_delay_is_the_effective_delay_while_the_shared_settings_are_available()
+    {
+        // R2, R4, AE9, KTD7.
+        let folder = TempDir::new().unwrap();
+        let computer = Computer::new();
+        let manager = computer.manager(Some(folder.path()));
+        assert_eq!(manager.snapshot().transcript_removal_days(), None);
+        manager.join_at_launch();
+        // A new folder: audio at 30 days, transcripts off.
+        assert_eq!(manager.snapshot().transcript_removal_days(), None);
+        assert_eq!(
+            settings_of(&manager).transcript_removal,
+            TranscriptRemovalSetting::Off
+        );
+        manager
+            .save(&[SharedValue::TranscriptRemoval(
+                file::TranscriptRemoval::AfterDays(60),
+            )])
+            .unwrap();
+        assert_eq!(manager.snapshot().transcript_removal_days(), Some(60));
+        assert_eq!(
+            settings_of(&manager).transcript_removal,
+            TranscriptRemovalSetting::AfterDays { days: 60 }
+        );
+        // The user's value stays, and the delay is never shorter than the
+        // audio delay.
+        manager
+            .save(&[SharedValue::AudioRemoval(file::AudioRemoval::AfterDays(90))])
+            .unwrap();
+        assert_eq!(manager.snapshot().transcript_removal_days(), Some(90));
+        assert_eq!(
+            settings_of(&manager).transcript_removal,
+            TranscriptRemovalSetting::AfterDays { days: 60 }
+        );
+        manager
+            .save(&[SharedValue::AudioRemoval(file::AudioRemoval::Off)])
+            .unwrap();
+        assert_eq!(manager.snapshot().transcript_removal_days(), None);
+        manager
+            .save(&[SharedValue::AudioRemoval(file::AudioRemoval::AfterDays(30))])
+            .unwrap();
+        assert_eq!(manager.snapshot().transcript_removal_days(), Some(60));
+
+        // A half-synced file: no transcript goes.
+        std::fs::write(file::settings_path(folder.path()), b"{\"transcr").unwrap();
+        manager.reread();
+        assert_eq!(manager.snapshot().transcript_removal_days(), None);
     }
 
     #[test]
@@ -3456,7 +3521,7 @@ mod tests {
         let agents = std::fs::read_to_string(root.join(AGENTS_FILE)).unwrap();
         assert!(agents.starts_with("User text.\n\n"));
         assert!(!agents.contains("Old rules."));
-        assert!(agents.contains("version=1 -->"));
+        assert!(agents.contains(&format!("version={} -->", agent_block::BLOCK_VERSION)));
         // The update adds no block to a file that had none.
         assert!(!root.join(CLAUDE_FILE).exists());
         assert_eq!(manager.agent_block_status(), AgentBlockStatus::NotAdded);

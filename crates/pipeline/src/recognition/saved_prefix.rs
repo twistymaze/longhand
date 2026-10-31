@@ -222,7 +222,9 @@ fn candidate(
         Ok(())
     })
     .map_err(|e| failed(e.to_string()))?;
-    let generation: Option<String> = checkpoint::get(store, id, Stage::Transcribe, GENERATION_KEY)?;
+    // The store's Transcribe generation is not a check: another computer,
+    // or a store that a save cleared, has no generation or another one
+    // (KTD14 of the transcript removal plan).
     let expected = super::durable::configured_fingerprints(
         store,
         id,
@@ -237,8 +239,7 @@ fn candidate(
             .coverage
             .iter()
             .all(|range| super::covers(&expected_coverage, *range));
-    if generation.as_ref() != Some(&header.generation)
-        || header.snapshot != serde_json::to_value(spec)?
+    if header.snapshot != serde_json::to_value(spec)?
         || header.fingerprints != expected
         || digest(&transcript) != header.transcript
         || !same_coverage
@@ -255,6 +256,8 @@ fn candidate(
     if !same_audio(dir, home, &old, audio)? {
         return Ok(None);
     }
+    let run = super::stages::generation(store, id)?;
+    rescope(&mut result, &header.generation, &run);
     Ok(Some(Prefix {
         count: old.len(),
         result,
@@ -264,6 +267,42 @@ fn candidate(
             segments: segments.len(),
         },
     }))
+}
+
+/// The lowest epoch that [`rescope`] gives. The store gives epochs from 1
+/// up, and does not get to this value. JavaScript keeps each integer below
+/// 2^53 exact, and the live view sends epochs to it.
+const MOVED_EPOCH: u64 = 1 << 52;
+
+/// Put the saved rows and turns into the run's generation `run` when the
+/// file has another generation `file` (KTD14 of the transcript removal
+/// plan). The store keeps output under the generation of its scope, and
+/// the Diarize stage accepts only turns of the run's generation. Each old
+/// scope gets one new epoch from a digest of the old scope. Thus two old
+/// scopes stay apart, and no old scope gets an epoch that the store gives
+/// to new output. Text, timing and speaker groups do not change.
+fn rescope(result: &mut RouteResult, file: &str, run: &str) {
+    if file == run {
+        return;
+    }
+    let moved = |scope: &mut SpeakerScope| {
+        let text = digest(format!("{}\n{}", scope.generation, scope.epoch).as_bytes());
+        // 13 hexadecimal digits are 52 bits.
+        let low = u64::from_str_radix(&text[..13], 16).expect("a digest is hexadecimal");
+        *scope = SpeakerScope {
+            generation: run.into(),
+            epoch: MOVED_EPOCH | low,
+        };
+    };
+    for row in &mut result.rows {
+        moved(&mut row.id.scope);
+        if let Some(speaker) = &mut row.speaker {
+            moved(&mut speaker.scope);
+        }
+    }
+    for turn in &mut result.speakers {
+        moved(&mut turn.speaker.scope);
+    }
 }
 
 #[cfg(test)]
@@ -333,7 +372,8 @@ mod tests {
                 }
                 wav.finalize().unwrap();
             }
-            checkpoint::put(&store, "s", Stage::Transcribe, GENERATION_KEY, &"g").unwrap();
+            // The store has no Transcribe generation, as on a computer that
+            // did not record the note (KTD14).
             let case = Self {
                 temp,
                 store,
@@ -486,8 +526,8 @@ mod tests {
             "model",
             "runtime",
             "preprocessing",
-            "generation",
             "artifact",
+            "artifact-missing",
             "speaker-count",
         ] {
             let mut case = Case::new();
@@ -503,16 +543,11 @@ mod tests {
                 "model" => case.spec.artifacts[0].sha256.push('x'),
                 "runtime" => case.spec.runtimes[0].revision.push('x'),
                 "preprocessing" => case.spec.preprocessing_revision.push('x'),
-                "generation" => checkpoint::put(
-                    &case.store,
-                    "s",
-                    Stage::Transcribe,
-                    GENERATION_KEY,
-                    &"other",
-                )
-                .unwrap(),
                 "artifact" => {
                     std::fs::write(case.temp.path().join(ARTIFACT_FILE), b"incomplete").unwrap()
+                }
+                "artifact-missing" => {
+                    std::fs::remove_file(case.temp.path().join(ARTIFACT_FILE)).unwrap()
                 }
                 "speaker-count" => lock(&case.store)
                     .set_speaker_count("s", Some(session_core::SpeakerCount::Exact(3)))
@@ -598,6 +633,8 @@ mod tests {
     #[test]
     fn saved_prefix_accepts_next_completed_parent_on_repeated_resume() {
         let mut case = Case::new();
+        // The store has the file's generation, so the scopes do not move.
+        checkpoint::put(&case.store, "s", Stage::Transcribe, GENERATION_KEY, &"g").unwrap();
         let prefix = case.read().unwrap().unwrap();
         retain(&case.store, "s", &prefix).unwrap();
         case.publish(2);
@@ -611,6 +648,35 @@ mod tests {
         assert_eq!(prefix.result.rows.len(), 2);
         assert_eq!(prefix.result.speakers[0].speaker.scope.epoch, 10);
     }
+    #[test]
+    fn saved_prefix_moves_its_scopes_into_the_run_generation() {
+        // KTD14: the store keeps output under the generation of its scope.
+        // A store with no generation, or another one, gets the saved rows
+        // in the run's generation, with the speaker groups kept.
+        let case = Case::with_segments(3);
+        case.publish(2);
+        let prefix = case.read().unwrap().unwrap();
+        let run: String = checkpoint::get(&case.store, "s", Stage::Transcribe, GENERATION_KEY)
+            .unwrap()
+            .expect("the read makes the run's generation");
+        assert_ne!(run, "g");
+        let rows = &prefix.result.rows;
+        let turns = &prefix.result.speakers;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(turns.len(), 2);
+        for (row, turn) in rows.iter().zip(turns) {
+            assert_eq!(row.text, "saved");
+            assert_eq!(row.id.scope.generation, run);
+            assert_eq!(row.speaker.as_ref(), Some(&turn.speaker));
+            assert_eq!(turn.speaker.scope, row.id.scope);
+            let epoch = row.id.scope.epoch;
+            assert!((1 << 52..1 << 53).contains(&epoch), "epoch {epoch}");
+        }
+        assert_ne!(rows[0].id.scope, rows[1].id.scope);
+        // A second read gives the same scopes.
+        assert_eq!(case.read().unwrap().unwrap().result.rows, *rows);
+    }
+
     #[test]
     fn saved_prefix_reads_the_note_files_when_session_md_names_old_copies() {
         let case = Case::new();

@@ -11,13 +11,14 @@ A storage folder has the file `.longhand/library`. Start in the root of the stor
 
 ## Rules
 
-1. **The `.md` files are the user's. Longhand's records are not.** You can edit `session.md`, `notes.md`, `transcript.md` and `summary.md` in a note folder, and `settings.json`, `background.md` and the prompt files in `.longhand/`. Never edit, move or delete `longhand.json`, `recognition.jsonl`, the files in `audio/`, a `.longhand-in-use-*` file, `.longhand/library` or a file in `.longhand/imports/`. `references/files.md` gives the full list.
-2. **Do not edit a busy note.** A note is busy when a computer records or processes it, when its recording is not saved yet, or when a move to another type waits. `list_notes.py` shows the busy notes. A busy note can change on another computer at any time, and your edit can go.
-3. **Make a snapshot before an edit, and compare after it.** The steps are below. Do not tell the user that an edit is complete until the compare passes.
-4. **Do not make, copy or delete a note folder.** Longhand makes notes. To remove a note, the user deletes it in Longhand.
-5. **Do not write other files into the storage folder.** Keep drafts, scripts and output in a temporary folder or in the conversation. The scripts of this skill write nothing into the storage folder.
-6. **Do not look for, start or control the Longhand app.** Everything in this skill works on the files only. Longhand reads each change from the files, and the sync service copies it to the other computers.
-7. **Edit only what the user asked for.** Keep all other text, keys, comments and line ends in each file as they are.
+1. **The `.md` files are the user's. Longhand's records are not.** You can edit `session.md`, `notes.md`, `transcript.md` and `summary.md` in a note folder, and `settings.json`, `background.md` and the prompt files in `.longhand/`. Never edit, move or delete `longhand.json`, `recognition.jsonl`, `transcript.removed`, the files in `audio/`, a `.longhand-in-use-*` file, `.longhand/library` or a file in `.longhand/imports/`. `references/files.md` gives the full list.
+2. **A note can have no transcript.** Longhand removes the transcript of an old note when the user sets this. The note then has `transcript.removed` and no `transcript.md`. This is not an error. Do not make a new `transcript.md` for the note. Use `summary.md` and `notes.md`.
+3. **Do not edit a busy note.** A note is busy when a computer records or processes it, when its recording is not saved yet, or when a move to another type waits. `list_notes.py` shows the busy notes. A busy note can change on another computer at any time, and your edit can go.
+4. **Make a snapshot before an edit, and compare after it.** The steps are below. Do not tell the user that an edit is complete until the compare passes.
+5. **Do not make, copy or delete a note folder.** Longhand makes notes. To remove a note, the user deletes it in Longhand.
+6. **Do not write other files into the storage folder.** Keep drafts, scripts and output in a temporary folder or in the conversation. The scripts of this skill write nothing into the storage folder.
+7. **Do not look for, start or control the Longhand app.** Everything in this skill works on the files only. Longhand reads each change from the files, and the sync service copies it to the other computers.
+8. **Edit only what the user asked for.** Keep all other text, keys, comments and line ends in each file as they are.
 
 ## Python
 

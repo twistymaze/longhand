@@ -10,6 +10,7 @@ Do not edit, move, copy, rename or delete these files. Do not make new files wit
 |---|---|---|
 | `longhand.json` | In each note folder | Longhand's records of the note. A change can stop Transcribe Again, Regenerate Summary and Resume, or hide the note. |
 | `recognition.jsonl` | In each note folder | The recognition data. It must agree with the audio and the records. |
+| `transcript.removed` | In each note folder | The transcript marker. Longhand removed the transcript of the note: the note has no `transcript.md` and no `recognition.jsonl`. Do not make a new `transcript.md` in this note folder. |
 | `audio/*` | In each note folder | The audio and the removal files. A sync service can keep audio online only. Do not open it. |
 | `.longhand-in-use-*` | In each note folder | In-use markers. They tell each computer that a computer works on the note. |
 | `.longhand/library` | In the storage folder | The library marker. Without it, Longhand sees the storage folder as not available. |
@@ -23,7 +24,7 @@ Also do not touch the hidden folders that Longhand makes for a short time, such 
 |---|---|---|---|
 | `session.md` | In each note folder | The title and the tags. Other keys and text are the user's. | `editing.md`, `tags.md` |
 | `notes.md` | In each note folder | Any edit of the text. | `editing.md` |
-| `transcript.md` | In each note folder | Any edit of the text. | `editing.md` |
+| `transcript.md` | In each note folder | Any edit of the text. A note with `transcript.removed` has no `transcript.md`: do not make one. | `editing.md` |
 | `summary.md` | In each note folder | Any edit of the text. | `editing.md` |
 | `.longhand/settings.json` | In the storage folder | The values of the shared settings. | `settings.md` |
 | `.longhand/background.md` | In the storage folder | Any edit of the text, up to 4,000 characters. | `settings.md` |

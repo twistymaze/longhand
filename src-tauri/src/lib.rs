@@ -76,6 +76,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_check_updates_automatically,
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,
+            commands::settings::set_transcript_removal,
+            commands::settings::transcript_removal_count,
             commands::settings::set_hide_from_dock,
             commands::settings::set_keep_running_in_tray,
             commands::settings::summary_prompts,
@@ -161,6 +163,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::session::leave_note,
             commands::session::set_shown_note,
             commands::session::remove_audio,
+            commands::session::remove_transcript,
             commands::window::open_settings,
             commands::window::close_settings_window,
             commands::window::open_licences,
@@ -335,6 +338,8 @@ fn setup_app(
         // After the recovery, so that the notes it recovers keep
         // their models (R9).
         commands::models::remove_unneeded_supporting_models(&handle);
+        // The store opened and migrated in `CaptureManager::new` (KTD15).
+        startup::clean_backups_in_background(&handle, capture.shared_store());
     }
     let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
     app.manage(std::sync::Arc::clone(&alerts));

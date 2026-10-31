@@ -20,7 +20,7 @@ use crate::home_write;
 use crate::note_files;
 use serde::{Deserialize, Serialize};
 use session_core::SpeakerCount;
-use session_core::folder::fingerprint;
+use session_core::folder::{self, fingerprint};
 use session_core::note_folder::SESSION_FILE;
 use session_core::note_record::{LAYOUT, NOTE_RECORD_FILE, NoteRecord};
 use session_core::recognition::{ARTIFACT_FILE, ArtifactReference};
@@ -110,9 +110,11 @@ pub enum Outcome {
     Committed,
     /// The result fields of the note equal neither the fields before the
     /// first write nor the staged fields: another computer published a
-    /// result. This computer writes nothing after it finds the conflict
-    /// (KTD4). The files it wrote before that stay, and the note waits for
-    /// a sync until the mismatch counts as a hand edit.
+    /// result. Or the note folder has the transcript marker: the
+    /// transcript was removed (KTD10 of the transcript removal plan). This
+    /// computer writes nothing after it finds the conflict (KTD4). The
+    /// files it wrote before that stay, and the note waits for a sync
+    /// until the mismatch counts as a hand edit.
     Conflict,
 }
 
@@ -216,6 +218,9 @@ impl Publication {
         let fields = || -> io::Result<ResultFields> {
             Ok(ResultFields::of(&note_files::new_layout_record(home)?).compared(self.set))
         };
+        // No write puts a removed transcript back (KTD10 of the transcript
+        // removal plan). The marker stops each write, also a roll-forward.
+        let removed = || folder::transcript_removed(home);
         let now = fields()?;
         if now == after && now != before {
             return Ok(Outcome::Committed);
@@ -234,7 +239,7 @@ impl Publication {
             // Another computer's `longhand.json` can arrive during the
             // writes. Check before each write, so that at most the file in
             // progress replaces a file of the other result.
-            if fields()? != before {
+            if fields()? != before || removed() {
                 return Ok(Outcome::Conflict);
             }
             home_write::copy_atomic(home, name, &local.join(name))?;
@@ -247,7 +252,7 @@ impl Publication {
         // rerun from the record rolls forward.
         let _guard = hold();
         let current = note_files::new_layout_record(home)?;
-        if ResultFields::of(&current).compared(self.set) != before {
+        if ResultFields::of(&current).compared(self.set) != before || removed() {
             return Ok(Outcome::Conflict);
         }
         // An agent can delete `session.md`. The note gets it back with the

@@ -14,7 +14,7 @@ import {
   type MoveState,
   type Settings,
 } from "../bindings";
-import { AudioRemoval } from "./AudioRemoval";
+import { OldNoteRemoval } from "./TranscriptRemoval";
 import { useFolderChange } from "./OldNotesDialog";
 import { WatchedFolder } from "./WatchedFolder";
 import { damagedFileText, readOnlyReason } from "./shared";
@@ -345,7 +345,7 @@ export function DestinationPicker({
       </Group>
       {move && <MoveGroup move={move} onRetry={() => void retry()} />}
       <WatchedFolder settings={settings} turnedOff={watchedOff} onSettings={onSettings} />
-      <AudioRemoval settings={settings} onSettings={onSettings} />
+      <OldNoteRemoval settings={settings} onSettings={onSettings} />
       <AgentInstructions folder={current} folderStatus={status} />
       {dialog}
     </Pane>

@@ -342,6 +342,11 @@ async setCheckUpdatesAutomatically(enabled: boolean) : Promise<Result<Settings, 
  * days outside the range is refused and changes nothing. After a saved
  * change that turns the setting on or shortens the delay, a removal pass
  * starts (R17, KTD6). The Settings window asks for the confirmation first.
+ * 
+ * The same save moves the transcript removal setting when it must, so the
+ * transcript delay is never shorter than the audio delay (R4, R5 of the
+ * transcript removal plan). That change needs no confirmation: it never
+ * makes the effective transcript delay shorter (R20).
  */
 async setAudioRemoval(removal: AudioRemovalSetting) : Promise<Result<Settings, string>> {
     try {
@@ -361,6 +366,40 @@ async setAudioRemoval(removal: AudioRemovalSetting) : Promise<Result<Settings, s
 async audioRemovalCount(removal: AudioRemovalSetting) : Promise<Result<number, string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("audio_removal_count", { removal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Choose when the transcript of a saved note goes, or turn automatic
+ * transcript removal off (R1, R3 of the transcript removal plan). The
+ * value goes into the shared settings file. A value that breaks R4 is
+ * refused and changes nothing: on while audio removal is off, or a delay
+ * shorter than the audio delay. After a saved change that makes the
+ * effective delay shorter or turns it on, a removal pass starts (R19,
+ * KTD6). The Settings window asks for the confirmation first.
+ */
+async setTranscriptRemoval(removal: TranscriptRemovalSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_transcript_removal", { removal }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * How many notes a pass would remove the transcript of now if the
+ * setting changed to `removal`, and how many it would keep because their
+ * summary failed (R19, R28 of the transcript removal plan). Both numbers
+ * are 0 when the change does not remove more transcripts at once. The
+ * count uses the same per-note check as the pass. The pass checks each
+ * note again after the confirmation. A number of days outside the range
+ * is refused.
+ */
+async transcriptRemovalCount(removal: TranscriptRemovalSetting) : Promise<Result<TranscriptCount, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("transcript_removal_count", { removal }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -1372,6 +1411,23 @@ async setShownNote(noteId: string | null) : Promise<void> {
 async removeAudio(noteId: string) : Promise<Result<null, RemoveAudioFailure>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("remove_audio", { noteId }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Remove the transcript of a saved note now, and any audio that is left,
+ * whether the transcript removal setting is on or off (R17, R18 of the
+ * transcript removal plan). The summary, notes, title and tags stay.
+ * Refused while the note is busy, while a Move runs or is paused, or while
+ * its storage folder is unavailable. A failure after the transcript
+ * marker is written counts as removed, and the next pass finishes it
+ * (KTD3).
+ */
+async removeTranscript(noteId: string) : Promise<Result<null, RemoveAudioFailure>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_transcript", { noteId }) };
 } catch (e) {
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
@@ -2739,7 +2795,8 @@ export type RemoteView =
  */
 "not_finished"
 /**
- * Why Remove Audio did not complete (R13).
+ * Why Remove Audio (R13) or Remove Transcript (R17 of the transcript
+ * removal plan) did not complete.
  */
 export type RemoveAudioFailure = 
 /**
@@ -2817,6 +2874,12 @@ endpoint: EndpointView | null; audio_kept: boolean; transcript_kept: boolean;
  */
 audio: AudioView; 
 /**
+ * The transcript of the note (KTD11 of the transcript removal plan).
+ * A removed transcript has no Transcript tab. Regenerate Summary,
+ * Transcribe Again and Resume read it for their reason.
+ */
+transcript: TranscriptView; 
+/**
  * The recognition model that the note recorded when it started
  * (KTD2). `None` for a note that started before the update.
  */
@@ -2870,6 +2933,7 @@ not_saved_yet: string | null }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).
+ * Empty, with no `lines`, when the note has no `transcript.md`.
  */
 transcript_markdown: string; summary: SummaryView | null }
 export type SessionEntry = { id: string; 
@@ -3058,6 +3122,17 @@ check_updates_automatically: boolean;
  * value or while the shared settings are read-only.
  */
 audio_removal: AudioRemovalSetting; 
+/**
+ * A shared setting. When the transcript of a saved note goes. Off by
+ * default. This is the user's value: it can be shorter than the audio
+ * delay when two computers saved the pair out of order. A value that
+ * this version does not know shows as off here and in
+ * `shared.unknown_values`. The removal pass does not read this field:
+ * it reads `SharedSnapshot::transcript_removal_days`, which applies R4
+ * and gives no delay for such a value or while the shared settings are
+ * read-only (KTD7).
+ */
+transcript_removal: TranscriptRemovalSetting; 
 /**
  * A shared setting. The custom summary prompts, in the order that
  * Settings shows them (KTD6).
@@ -3359,6 +3434,47 @@ export type TranscribeAgainCheck = { model_id: string; model_name: string }
  * can fix the cause in Settings (KTD4).
  */
 export type TranscribeAgainRefusal = { message: string; in_settings: boolean }
+/**
+ * How many notes a pass with a transcript delay would act on now (R19,
+ * R28 of the transcript removal plan).
+ */
+export type TranscriptCount = { 
+/**
+ * The notes whose transcript the pass would remove.
+ */
+remove: number; 
+/**
+ * The notes whose delay has passed and whose transcript the pass
+ * keeps, because their summary failed (R28).
+ */
+skipped: number }
+/**
+ * A shared setting: when Longhand removes the transcript of a saved note
+ * (R1, R3 of the plan for removing old transcripts). The file form is
+ * [`TranscriptRemoval`]; this is the form of the Settings window. It is
+ * the user's value: the removal uses the effective delay of
+ * `SharedSnapshot::transcript_removal_days` (KTD7).
+ */
+export type TranscriptRemovalSetting = { kind: "off" } | 
+/**
+ * The transcript goes this many whole days after the note last
+ * recorded.
+ */
+{ kind: "after_days"; days: number }
+/**
+ * The transcript of a note, from the store flag (KTD11 of the transcript
+ * removal plan). The note page shows no mark for it. It gives the reason
+ * of an unavailable action only (R15).
+ */
+export type TranscriptView = 
+/**
+ * The note keeps its transcript.
+ */
+"present" | 
+/**
+ * The transcript was removed. It does not come back.
+ */
+"removed"
 /**
  * What a type change did (R5). The note has the new type in every case
  * but `Unchanged`.

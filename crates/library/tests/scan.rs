@@ -994,6 +994,80 @@ fn no_removal_marker_is_opened() {
     assert_eq!(result.notes[0].removed_audio, [AUDIO]);
 }
 
+// ---------------------------------------------------------------- removed transcript
+
+/// Write the transcript marker in the note folder `dir`.
+fn mark_transcript(dir: &Path) {
+    fs::write(
+        dir.join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+        session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+    )
+    .unwrap();
+}
+
+// Covers R16, KTD9.
+#[test]
+fn a_transcript_marker_and_no_transcript_scans_with_nothing_waiting() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "a1");
+    mark_transcript(&dir);
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert!(
+        result.notes[0].waiting.is_empty(),
+        "{:?}",
+        result.notes[0].waiting
+    );
+    assert!(result.notes[0].transcript_removed);
+}
+
+// Covers KTD1: a marker means a removal, also before the delete arrives.
+#[test]
+fn a_transcript_marker_with_the_transcript_still_present_scans_as_removed() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "a1");
+    fs::write(dir.join("transcript.md"), "# Transcript\n\nOther text.\n").unwrap();
+    mark_transcript(&dir);
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].waiting.is_empty());
+    assert!(result.notes[0].transcript_removed);
+}
+
+// Covers KTD2.
+#[test]
+fn a_missing_transcript_with_no_marker_still_waits() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "a1");
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    let result = run(root.path(), &Known::default());
+    assert_eq!(result.notes[0].waiting, [Waiting::Transcript]);
+    assert!(!result.notes[0].transcript_removed);
+}
+
+#[test]
+fn the_transcript_marker_is_not_a_conflict_copy() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "a1");
+    mark_transcript(&dir);
+    let result = run(root.path(), &Known::default());
+    assert!(result.notes[0].conflict_copies.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn no_transcript_marker_is_opened() {
+    let root = marked_root();
+    let dir = note(root.path(), "Planning", "a1");
+    fs::remove_file(dir.join("transcript.md")).unwrap();
+    // An open of a FIFO with no writer blocks, so a scan that opens the
+    // marker does not finish.
+    fifo(&dir.join(session_core::folder::TRANSCRIPT_REMOVED_MARKER));
+    let path = root.path().to_path_buf();
+    let result = within(move || scan(&[path], &Known::default(), &options()));
+    assert!(result.notes[0].waiting.is_empty());
+    assert!(result.notes[0].transcript_removed);
+}
+
 // ------------------------------------------- the early home folder (U3)
 
 mod early_home {

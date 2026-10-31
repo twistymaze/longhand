@@ -16,7 +16,8 @@
 //!   after the last audio delete.
 //!
 //! Each other entry stays, and the step logs it. The step deletes the
-//! copies only when `transcript.md` and `summary.md` exist (R14). It checks
+//! copies only when `transcript.md` and `summary.md` exist (R14), or when
+//! `summary.md` and the transcript marker exist. It checks
 //! with metadata only, and opens no file (R12). Before each delete, it
 //! checks that the note folder is reachable. The step never writes a file,
 //! and never deletes a document or audio.
@@ -29,6 +30,7 @@ use session_core::jobs::Claims;
 use session_core::recognition::ARTIFACT_FILE;
 use session_core::{Segment, SessionRecord, Store};
 
+use crate::join::TRANSCRIPT_FILE;
 use crate::remove_audio::{
     FileDelete, Guard, RemoveAudioError, delete_claim, home_dir, remove_recognition,
     remove_regular_file, safe_audio_name, saved_row,
@@ -45,7 +47,7 @@ pub const TRANSITION_FILE: &str = ".longhand-result-transition.json";
 const FINDER_FILE: &str = ".DS_Store";
 
 /// The result files that a child folder of [`RESULTS_FOLDER`] can hold.
-const RESULT_FILES: [&str; 3] = ["transcript.md", "summary.md", ARTIFACT_FILE];
+const RESULT_FILES: [&str; 3] = [TRANSCRIPT_FILE, "summary.md", ARTIFACT_FILE];
 
 /// What the cleanup did in one note folder.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,10 +146,12 @@ where
         remove: &mut remove,
         cleanup: &mut cleanup,
     };
-    // Metadata only: an online-only file is not downloaded (R12).
-    let has_result = ["transcript.md", "summary.md"]
-        .iter()
-        .all(|name| home.join(name).metadata().is_ok_and(|m| m.is_file()));
+    // Metadata only: an online-only file is not downloaded (R12). A note
+    // whose transcript was removed keeps no copy of the transcript (KTD4 of
+    // the transcript removal plan).
+    let file = |name: &str| home.join(name).metadata().is_ok_and(|m| m.is_file());
+    let has_result =
+        file("summary.md") && (file(TRANSCRIPT_FILE) || folder::transcript_removed(&home));
     if has_result {
         step.clean_results()?;
         step.reachable()?;
@@ -185,19 +189,117 @@ fn generation_name(name: &str) -> bool {
 /// can hold: a result file, `.DS_Store`, or a write leftover
 /// `.<result file>.<16 lowercase hex>.tmp`.
 fn copy_file_name(name: &str) -> bool {
-    if RESULT_FILES.contains(&name) || name == FINDER_FILE {
-        return true;
-    }
-    let Some((file, hex)) = name
+    RESULT_FILES
+        .into_iter()
+        .any(|file| name == file || write_leftover(name, file))
+        || name == FINDER_FILE
+}
+
+/// Whether `name` is a write leftover of the file `file`:
+/// `.<file>.<16 lowercase hex>.tmp`.
+pub(crate) fn write_leftover(name: &str, file: &str) -> bool {
+    let Some((leftover, hex)) = name
         .strip_prefix('.')
         .and_then(|rest| rest.strip_suffix(".tmp"))
         .and_then(|rest| rest.rsplit_once('.'))
     else {
         return false;
     };
-    RESULT_FILES.contains(&file)
+    leftover == file
         && hex.len() == 16
         && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// The regular files whose names `wanted` accepts in the child folders of
+/// [`RESULTS_FOLDER`] in the home folder `home`. This reads metadata only.
+/// A folder that cannot be listed gives no files, and the reason goes to
+/// the log.
+pub(crate) fn files_in_results(home: &Path, wanted: impl Fn(&str) -> bool) -> Vec<PathBuf> {
+    let dir = home.join(RESULTS_FOLDER);
+    if !dir.symlink_metadata().is_ok_and(|meta| meta.is_dir()) {
+        return Vec::new();
+    }
+    let children = match list(&dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::warn!("cannot list {}: {e}", dir.display());
+            return Vec::new();
+        }
+    };
+    let mut files = Vec::new();
+    for (name, child, meta) in children {
+        if !(meta.is_dir() && name.as_deref().is_some_and(generation_name)) {
+            continue;
+        }
+        match list(&child) {
+            Ok(entries) => files.extend(
+                entries
+                    .into_iter()
+                    .filter(|(name, _, meta)| {
+                        meta.is_file() && name.as_deref().is_some_and(&wanted)
+                    })
+                    .map(|(_, path, _)| path),
+            ),
+            Err(e) => log::warn!("cannot list {}: {e}", child.display()),
+        }
+    }
+    files
+}
+
+/// Delete the [`files_in_results`] that `wanted` accepts in the canonical
+/// home folder `home` with `remove`, and add what it did to `cleanup`. The
+/// other entries and the folders stay. The caller holds the delete claim
+/// and checked the note.
+pub(crate) fn delete_in_results<R>(
+    home: &Path,
+    remove: &mut R,
+    cleanup: &mut Cleanup,
+    wanted: impl Fn(&str) -> bool,
+) -> Result<(), RemoveAudioError>
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    let mut step = Step {
+        home,
+        remove,
+        cleanup,
+    };
+    for path in files_in_results(home, wanted) {
+        step.reachable()?;
+        let deleted = remove_regular_file(&path, step.remove);
+        step.record(path, deleted);
+    }
+    Ok(())
+}
+
+/// Delete the [`RESULTS_FOLDER`] copies in the canonical home folder
+/// `home` with `remove`, as [`remove_copies_with`] does, and add what it
+/// did to `cleanup`. The caller holds the delete claim and checked the
+/// note.
+pub(crate) fn clean_results_in<R>(
+    home: &Path,
+    remove: &mut R,
+    cleanup: &mut Cleanup,
+) -> Result<(), RemoveAudioError>
+where
+    R: FnMut(&Path) -> io::Result<()>,
+{
+    Step {
+        home,
+        remove,
+        cleanup,
+    }
+    .clean_results()
+}
+
+/// Stop when the note folder `home` or its storage folder is not
+/// reachable. See [`Step::reachable`].
+pub(crate) fn reachable(home: &Path) -> Result<(), RemoveAudioError> {
+    if home.is_dir() && library::scan::storage_place(home).is_some() {
+        Ok(())
+    } else {
+        Err(RemoveAudioError::NoFolder)
+    }
 }
 
 /// The state of the step in one note folder.
@@ -217,12 +319,7 @@ where
     /// The storage folder is the parent folder, or the parent of a type
     /// folder (KTD4 of the note types plan), with its library marker.
     fn reachable(&self) -> Result<(), RemoveAudioError> {
-        let reachable = self.home.is_dir() && library::scan::storage_place(self.home).is_some();
-        if reachable {
-            Ok(())
-        } else {
-            Err(RemoveAudioError::NoFolder)
-        }
+        reachable(self.home)
     }
 
     fn keep(&mut self, path: PathBuf, reason: &str) {

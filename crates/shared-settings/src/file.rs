@@ -41,6 +41,7 @@ pub const KEY_SPEAKER_PROCESSING_MODE: &str = "speaker_processing_mode";
 pub const KEY_RECOGNITION_LANGUAGE: &str = "recognition_language";
 pub const KEY_CHECK_UPDATES_AUTOMATICALLY: &str = "check_updates_automatically";
 pub const KEY_AUDIO_REMOVAL: &str = "audio_removal";
+pub const KEY_TRANSCRIPT_REMOVAL: &str = "transcript_removal";
 pub const KEY_NOTE_TYPES: &str = "note_types";
 pub const KEY_DEFAULT_NOTE_TYPE: &str = "default_note_type";
 pub const KEY_NOTE_TYPE_PROMPTS: &str = "note_type_prompts";
@@ -54,6 +55,10 @@ pub const DEFAULT_AUDIO_REMOVAL_DAYS: u32 = 30;
 pub const AUDIO_REMOVAL_MIN_DAYS: u32 = 1;
 /// The longest delay that the setting holds: about ten years.
 pub const AUDIO_REMOVAL_MAX_DAYS: u32 = 3650;
+/// The shortest transcript delay. It is the same as for audio (KTD8).
+pub const TRANSCRIPT_REMOVAL_MIN_DAYS: u32 = AUDIO_REMOVAL_MIN_DAYS;
+/// The longest transcript delay. It is the same as for audio (KTD8).
+pub const TRANSCRIPT_REMOVAL_MAX_DAYS: u32 = AUDIO_REMOVAL_MAX_DAYS;
 
 /// The hidden Longhand folder of the storage folder `root`.
 pub fn longhand_folder(root: &Path) -> PathBuf {
@@ -99,7 +104,7 @@ impl<T> Field<T> {
 /// the meaning of the delay must use a new key, because an older build
 /// reads each integer here as whole days after the last recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "AudioRemovalJson", into = "AudioRemovalJson")]
+#[serde(try_from = "RemovalJson", into = "RemovalJson")]
 pub enum AudioRemoval {
     Off,
     /// The audio goes this many whole days after the note last recorded.
@@ -133,34 +138,104 @@ impl Default for AudioRemoval {
     }
 }
 
-/// The JSON form of [`AudioRemoval`]: an integer, or a word.
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-enum AudioRemovalJson {
-    Days(u32),
-    Word(String),
+/// When Longhand removes the transcript of a saved note (R1, KTD8).
+///
+/// The file form is the same as for [`AudioRemoval`]: the string `"off"`,
+/// or the delay as a JSON integer of whole days from
+/// [`TRANSCRIPT_REMOVAL_MIN_DAYS`] to [`TRANSCRIPT_REMOVAL_MAX_DAYS`]. Every
+/// other value parses as [`Field::Unknown`], and no transcript goes for
+/// it. Unlike audio, the default is off (R2). The delay that the removal
+/// uses is never shorter than the audio delay (R4): see
+/// [`crate::view::effective_transcript_removal`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RemovalJson", into = "RemovalJson")]
+pub enum TranscriptRemoval {
+    #[default]
+    Off,
+    /// The transcript goes this many whole days after the note last
+    /// recorded.
+    AfterDays(u32),
 }
 
-const AUDIO_REMOVAL_OFF: &str = "off";
+impl TranscriptRemoval {
+    /// The delay in whole days, or `None` when the setting is off.
+    pub fn days(self) -> Option<u32> {
+        match self {
+            TranscriptRemoval::Off => None,
+            TranscriptRemoval::AfterDays(days) => Some(days),
+        }
+    }
 
-impl TryFrom<AudioRemovalJson> for AudioRemoval {
-    type Error = String;
-
-    fn try_from(json: AudioRemovalJson) -> Result<Self, Self::Error> {
-        match json {
-            AudioRemovalJson::Days(days) => Ok(AudioRemoval::AfterDays(days)),
-            AudioRemovalJson::Word(word) if word == AUDIO_REMOVAL_OFF => Ok(AudioRemoval::Off),
-            AudioRemovalJson::Word(word) => Err(format!("unknown audio removal value {word:?}")),
+    /// Whether this build can hold the value. A number of days outside
+    /// the range is not valid.
+    pub fn valid(self) -> bool {
+        match self {
+            TranscriptRemoval::Off => true,
+            TranscriptRemoval::AfterDays(days) => {
+                (TRANSCRIPT_REMOVAL_MIN_DAYS..=TRANSCRIPT_REMOVAL_MAX_DAYS).contains(&days)
+            }
         }
     }
 }
 
-impl From<AudioRemoval> for AudioRemovalJson {
-    fn from(removal: AudioRemoval) -> Self {
-        match removal {
-            AudioRemoval::Off => AudioRemovalJson::Word(AUDIO_REMOVAL_OFF.to_string()),
-            AudioRemoval::AfterDays(days) => AudioRemovalJson::Days(days),
+/// The JSON form of [`AudioRemoval`] and [`TranscriptRemoval`]: an
+/// integer, or a word.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum RemovalJson {
+    Days(u32),
+    Word(String),
+}
+
+const REMOVAL_OFF: &str = "off";
+
+impl RemovalJson {
+    /// The delay in whole days, or `None` for off.
+    fn days(self) -> Result<Option<u32>, String> {
+        match self {
+            RemovalJson::Days(days) => Ok(Some(days)),
+            RemovalJson::Word(word) if word == REMOVAL_OFF => Ok(None),
+            RemovalJson::Word(word) => Err(format!("unknown removal value {word:?}")),
         }
+    }
+
+    fn from_days(days: Option<u32>) -> Self {
+        match days {
+            None => RemovalJson::Word(REMOVAL_OFF.to_string()),
+            Some(days) => RemovalJson::Days(days),
+        }
+    }
+}
+
+impl TryFrom<RemovalJson> for AudioRemoval {
+    type Error = String;
+
+    fn try_from(json: RemovalJson) -> Result<Self, Self::Error> {
+        Ok(json
+            .days()?
+            .map_or(AudioRemoval::Off, AudioRemoval::AfterDays))
+    }
+}
+
+impl From<AudioRemoval> for RemovalJson {
+    fn from(removal: AudioRemoval) -> Self {
+        RemovalJson::from_days(removal.days())
+    }
+}
+
+impl TryFrom<RemovalJson> for TranscriptRemoval {
+    type Error = String;
+
+    fn try_from(json: RemovalJson) -> Result<Self, Self::Error> {
+        Ok(json
+            .days()?
+            .map_or(TranscriptRemoval::Off, TranscriptRemoval::AfterDays))
+    }
+}
+
+impl From<TranscriptRemoval> for RemovalJson {
+    fn from(removal: TranscriptRemoval) -> Self {
+        RemovalJson::from_days(removal.days())
     }
 }
 
@@ -186,6 +261,9 @@ pub struct SharedFields {
     /// When the audio of a saved note goes. An absent field is the
     /// default, 30 days (KTD3).
     pub audio_removal: Field<AudioRemoval>,
+    /// When the transcript of a saved note goes. An absent field is off
+    /// (R2, KTD8).
+    pub transcript_removal: Field<TranscriptRemoval>,
     /// The note types, in the order that Settings shows them (R2, KTD9).
     /// The list is one value: the last change wins. A name that fails the
     /// type name check stays in the file, but no type comes from it (see
@@ -228,6 +306,11 @@ impl SharedFields {
             audio_removal: parse(raw, KEY_AUDIO_REMOVAL, |removal: &AudioRemoval| {
                 removal.valid()
             }),
+            transcript_removal: parse(
+                raw,
+                KEY_TRANSCRIPT_REMOVAL,
+                |removal: &TranscriptRemoval| removal.valid(),
+            ),
             note_types: parse(raw, KEY_NOTE_TYPES, |_| true),
             default_note_type: parse(raw, KEY_DEFAULT_NOTE_TYPE, |_| true),
             note_type_prompts: parse(raw, KEY_NOTE_TYPE_PROMPTS, |_| true),
@@ -282,6 +365,7 @@ impl SharedFields {
                 unknown(&self.check_updates_automatically),
             ),
             (KEY_AUDIO_REMOVAL, unknown(&self.audio_removal)),
+            (KEY_TRANSCRIPT_REMOVAL, unknown(&self.transcript_removal)),
             (KEY_NOTE_TYPES, unknown(&self.note_types)),
             (KEY_DEFAULT_NOTE_TYPE, unknown(&self.default_note_type)),
             (KEY_NOTE_TYPE_PROMPTS, unknown(&self.note_type_prompts)),
@@ -337,6 +421,7 @@ pub enum SharedValue {
     RecognitionLanguage(Option<String>),
     CheckUpdatesAutomatically(bool),
     AudioRemoval(AudioRemoval),
+    TranscriptRemoval(TranscriptRemoval),
     NoteTypes(Vec<String>),
     DefaultNoteType(Option<String>),
     NoteTypePrompts(BTreeMap<String, String>),
@@ -357,6 +442,7 @@ impl SharedValue {
             SharedValue::RecognitionLanguage(_) => KEY_RECOGNITION_LANGUAGE,
             SharedValue::CheckUpdatesAutomatically(_) => KEY_CHECK_UPDATES_AUTOMATICALLY,
             SharedValue::AudioRemoval(_) => KEY_AUDIO_REMOVAL,
+            SharedValue::TranscriptRemoval(_) => KEY_TRANSCRIPT_REMOVAL,
             SharedValue::NoteTypes(_) => KEY_NOTE_TYPES,
             SharedValue::DefaultNoteType(_) => KEY_DEFAULT_NOTE_TYPE,
             SharedValue::NoteTypePrompts(_) => KEY_NOTE_TYPE_PROMPTS,
@@ -377,6 +463,7 @@ impl SharedValue {
             SharedValue::RecognitionLanguage(language) => serde_json::to_value(language),
             SharedValue::CheckUpdatesAutomatically(on) => serde_json::to_value(on),
             SharedValue::AudioRemoval(removal) => serde_json::to_value(removal),
+            SharedValue::TranscriptRemoval(removal) => serde_json::to_value(removal),
             SharedValue::NoteTypes(names) => serde_json::to_value(names),
             SharedValue::DefaultNoteType(name) => serde_json::to_value(name),
             SharedValue::NoteTypePrompts(map) => serde_json::to_value(map),
@@ -650,6 +737,7 @@ pub fn default_settings() -> Map<String, Value> {
         SharedValue::RecognitionLanguage(None),
         SharedValue::CheckUpdatesAutomatically(true),
         SharedValue::AudioRemoval(AudioRemoval::default()),
+        SharedValue::TranscriptRemoval(TranscriptRemoval::default()),
         SharedValue::ShowRecordingWidget(true),
         SharedValue::NewNoteRecords(true),
     ];

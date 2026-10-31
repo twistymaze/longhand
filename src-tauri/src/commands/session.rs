@@ -167,6 +167,29 @@ impl From<pipeline::save::AudioState> for AudioView {
     }
 }
 
+/// The transcript of a note, from the store flag (KTD11 of the transcript
+/// removal plan). The note page shows no mark for it. It gives the reason
+/// of an unavailable action only (R15).
+#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptView {
+    /// The note keeps its transcript.
+    Present,
+    /// The transcript was removed. It does not come back.
+    Removed,
+}
+
+impl From<bool> for TranscriptView {
+    /// The view of the store flag `removed`.
+    fn from(removed: bool) -> Self {
+        if removed {
+            Self::Removed
+        } else {
+            Self::Present
+        }
+    }
+}
+
 /// What the one recording button of the note page does (R11).
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug, Type)]
 #[serde(rename_all = "snake_case")]
@@ -200,6 +223,10 @@ const NOT_FINISHED_ELSEWHERE: &str =
 /// The reason of a note whose audio was removed (AE3).
 const AUDIO_REMOVED: &str = "The audio of this note was removed.";
 
+/// The reason of a note whose transcript was removed (R14, R15 of the
+/// transcript removal plan).
+const TRANSCRIPT_REMOVED: &str = "The transcript of this note was removed.";
+
 const CANNOT_RESUME: &str = "This note can’t be resumed.";
 
 const CANNOT_RECORD: &str = "This note can’t record now.";
@@ -211,6 +238,7 @@ struct RecordCheck<'a> {
     /// The state machine allows the event now, and no save has begun.
     allowed: bool,
     audio: AudioView,
+    transcript: TranscriptView,
     storage_unavailable: bool,
     waiting: &'a [WaitingPart],
     remote: Option<RemoteView>,
@@ -218,7 +246,7 @@ struct RecordCheck<'a> {
 
 /// Why Record or Resume cannot start now (R12), or `None` when it can.
 /// The work of another computer comes first, then the storage folder, the
-/// audio and the sync.
+/// transcript, the audio and the sync.
 fn record_refusal(check: &RecordCheck) -> Option<&'static str> {
     match check.remote {
         Some(RemoteView::InUse) => return Some(IN_USE_ELSEWHERE),
@@ -227,6 +255,11 @@ fn record_refusal(check: &RecordCheck) -> Option<&'static str> {
     }
     if check.storage_unavailable {
         return Some(FOLDER_UNAVAILABLE);
+    }
+    // A removed transcript comes before removed audio: the removal removed
+    // both (R14 of the transcript removal plan).
+    if check.kind == RecordKind::Resume && check.transcript == TranscriptView::Removed {
+        return Some(TRANSCRIPT_REMOVED);
     }
     if check.kind == RecordKind::Resume && check.audio == AudioView::Removed {
         return Some(AUDIO_REMOVED);
@@ -252,6 +285,7 @@ fn record_button(
     has_segments: bool,
     saving: bool,
     audio: pipeline::save::AudioState,
+    transcript: TranscriptView,
     status: &LibraryStatus,
 ) -> Option<RecordButton> {
     if matches!(
@@ -278,6 +312,7 @@ fn record_button(
         kind,
         allowed: !saving && record.state.transition(&event).is_ok(),
         audio: audio.into(),
+        transcript,
         storage_unavailable: storage_unavailable(status, record),
         waiting: &waiting,
         remote: status.remote(record).map(RemoteView::from),
@@ -320,7 +355,8 @@ pub(crate) fn check_record(
         let saving =
             record.state != SessionState::Saved && pipeline::save::begun(&store, id).map_err(e)?;
         let audio = pipeline::save::audio_state(&store, id).map_err(e)?;
-        let button = record_button(&record, has_segments, saving, audio, status);
+        let transcript = transcript_view(&store, id)?;
+        let button = record_button(&record, has_segments, saving, audio, transcript, status);
         (record, button)
     };
     match button {
@@ -343,7 +379,9 @@ pub(crate) fn check_record(
 
 /// The checks of Resume for the note `id` at `now` (R12, R21, R23): no
 /// other computer records into the note, processes it or did not finish
-/// its recording. An interrupted or recording note is the work of this
+/// its recording, and the transcript of the note was not removed (R14 of
+/// the transcript removal plan). An interrupted or recording note is the
+/// work of this
 /// computer, so its folder is not read. A stopped note is not open here:
 /// after this computer's work on it ends, another computer can use its
 /// folder, so its folder is read. `own_runs` are this computer's
@@ -356,12 +394,13 @@ pub(crate) fn check_resume(
     id: &str,
     now: chrono::DateTime<chrono::FixedOffset>,
 ) -> Result<(), String> {
-    let record = {
+    let (record, flag) = {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        store
+        let record = store
             .session(id)
             .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("no note {id}"))?
+            .ok_or_else(|| format!("no note {id}"))?;
+        (record, transcript_view(&store, id)?)
     };
     if matches!(
         record.state,
@@ -369,7 +408,17 @@ pub(crate) fn check_resume(
     ) {
         return Ok(());
     }
-    refuse_other_computer(&record, status, own_runs, now)
+    refuse_other_computer(&record, status, own_runs, now)?;
+    // The marker can arrive before a scan sets the store flag (KTD10 of
+    // the transcript removal plan).
+    let marker = record
+        .home_path
+        .as_deref()
+        .is_some_and(|home| session_core::folder::transcript_removed(Path::new(home)));
+    if flag == TranscriptView::Removed || marker {
+        return Err(TRANSCRIPT_REMOVED.to_string());
+    }
+    Ok(())
 }
 
 /// Why the work of another computer on the note of `record` refuses
@@ -414,6 +463,14 @@ fn folder_in_use(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(_) => Err(()),
     }
+}
+
+/// The transcript of the note `id`, from the store flag (KTD11).
+fn transcript_view(store: &session_core::Store, id: &str) -> Result<TranscriptView, String> {
+    store
+        .transcript_removed(id)
+        .map(TranscriptView::from)
+        .map_err(|e| e.to_string())
 }
 
 /// The parts that `waiting` names, in its order, each one time.
@@ -508,6 +565,10 @@ pub struct SessionDetail {
     /// The audio of the note (KTD9). Transcribe Again, Resume and Retry
     /// read it for their reason.
     pub audio: AudioView,
+    /// The transcript of the note (KTD11 of the transcript removal plan).
+    /// A removed transcript has no Transcript tab. Regenerate Summary,
+    /// Transcribe Again and Resume read it for their reason.
+    pub transcript: TranscriptView,
     /// The recognition model that the note recorded when it started
     /// (KTD2). `None` for a note that started before the update.
     pub asr_model: Option<String>,
@@ -592,6 +653,7 @@ pub struct SessionDocument {
     pub has_speakers: bool,
     pub lines: Vec<DocLine>,
     /// The text of `transcript.md`, which the Transcript tab copies (R17).
+    /// Empty, with no `lines`, when the note has no `transcript.md`.
     pub transcript_markdown: String,
     pub summary: Option<SummaryView>,
 }
@@ -962,7 +1024,7 @@ fn detail_of(
     let e = |e: pipeline::StageError| e.to_string();
     // The waits read the capture state, so they come before the store lock.
     let waits = processing.waits();
-    let (record, segments, saving, audio, again) = {
+    let (record, segments, saving, audio, transcript, again) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&note_id)
@@ -974,10 +1036,11 @@ fn detail_of(
         let saving = record.state != SessionState::Saved
             && pipeline::save::begun(&store, &note_id).map_err(e)?;
         let audio = pipeline::save::audio_state(&store, &note_id).map_err(e)?;
+        let transcript = transcript_view(&store, &note_id)?;
         let again = store
             .transcribe_again_marks(&note_id)
             .map_err(|e| e.to_string())?;
-        (record, segments, saving, audio, again)
+        (record, segments, saving, audio, transcript, again)
     };
     let audio_intact = audio == pipeline::save::AudioState::Present;
     let snapshot = pipeline::progress::snapshot(&shared, &note_id).map_err(e)?;
@@ -1031,7 +1094,14 @@ fn detail_of(
 
     let status = processing.library_status();
     let note = status.note(&note_id);
-    let record_button = record_button(&record, !segments.is_empty(), saving, audio, status);
+    let record_button = record_button(
+        &record,
+        !segments.is_empty(),
+        saving,
+        audio,
+        transcript,
+        status,
+    );
     Ok(SessionDetail {
         entry: entry(&record, &segments, snapshot.current, status, &waits),
         done: snapshot.done.into_iter().map(stage_name).collect(),
@@ -1050,6 +1120,7 @@ fn detail_of(
         audio_kept,
         transcript_kept,
         audio: audio.into(),
+        transcript,
         asr_model: record.asr_model.clone(),
         live_transcript: record.live_transcript == Some(true),
         transcribe_again: again.model.is_some(),
@@ -1450,16 +1521,16 @@ pub async fn session_document(
 /// in `session.md`. The note then shows the file that is there, with no
 /// error (R6). Each read stops after [`READ_TIMEOUT`].
 fn read_document(folder: &Path) -> Result<SessionDocument, String> {
-    let read = |name: &str| match read_timed(folder.join(name), READ_TIMEOUT) {
-        Read::Bytes(bytes) => Ok(bytes),
-        Read::Missing => Err(format!("{name} is not in {}", folder.display())),
+    // `None` when the file is not there.
+    let text = |name: &str| match read_timed(folder.join(name), READ_TIMEOUT) {
+        Read::Bytes(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|e| e.to_string()),
+        Read::Missing => Ok(None),
         Read::Failed(why) => Err(format!(
             "could not read {name} in {}: {why}",
             folder.display()
         )),
-    };
-    let text = |name: &str| {
-        read(name).and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string()))
     };
     let files = match read_note(folder, READ_TIMEOUT) {
         NoteRead::Note(files) => *files,
@@ -1479,14 +1550,25 @@ fn read_document(folder: &Path) -> Result<SessionDocument, String> {
             return Err(format!("{NOTE_RECORD_FILE} is not in {}", folder.display()));
         }
     };
-    let transcript_markdown = text(pipeline::join::TRANSCRIPT_FILE)?;
+    let summary_markdown = text(pipeline::summarize::SUMMARY_FILE).ok().flatten();
+    let summary = summary_of(&files, summary_markdown.as_deref()).map(summary_view);
+    // A note whose transcript was removed has no `transcript.md`. The note
+    // then shows its summary, with no transcript and no lines (KTD11 of the
+    // transcript removal plan).
+    let Some(transcript_markdown) = text(pipeline::join::TRANSCRIPT_FILE)? else {
+        return Ok(SessionDocument {
+            has_speakers: false,
+            lines: Vec::new(),
+            transcript_markdown: String::new(),
+            summary,
+        });
+    };
     let transcript = Transcript::parse(&transcript_markdown);
-    let summary_markdown = text(pipeline::summarize::SUMMARY_FILE).ok();
     Ok(SessionDocument {
         has_speakers: transcript.has_speakers,
         lines: doc_lines(&files.doc, transcript),
         transcript_markdown,
-        summary: summary_of(&files, summary_markdown.as_deref()).map(summary_view),
+        summary,
     })
 }
 
@@ -1898,7 +1980,8 @@ pub fn set_shown_note(shown: State<'_, ShownNote>, note_id: Option<String>) {
     shown.set(note_id);
 }
 
-/// Why Remove Audio did not complete (R13).
+/// Why Remove Audio (R13) or Remove Transcript (R17 of the transcript
+/// removal plan) did not complete.
 #[derive(Debug, Serialize, Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoveAudioFailure {
@@ -1919,25 +2002,35 @@ const IN_USE_REASON: &str = "in use";
 /// The text of a refusal of Remove Audio. `reason` is a state name, a
 /// claim name or a guard reason.
 fn removal_refusal(reason: &str) -> String {
+    refusal_of(reason, "audio")
+}
+
+/// The text of a refusal of Remove Audio or Remove Transcript. `thing` is
+/// what the action removes: "audio" or "transcript".
+fn refusal_of(reason: &str, thing: &str) -> String {
     match reason {
-        "capturing" => "This note is recording. Stop the recording before you remove its audio.",
+        "capturing" => {
+            format!("This note is recording. Stop the recording before you remove its {thing}.")
+        }
         "interrupted" => {
-            "This note’s recording was interrupted. Stop it before you remove its audio."
+            format!("This note’s recording was interrupted. Stop it before you remove its {thing}.")
         }
-        "queued" | "processing" | "blocked" => {
-            "This note is being processed. You can remove its audio when processing is done."
-        }
-        "regenerating" => {
-            "This note’s summary is being made again. You can remove its audio when that is done."
-        }
-        "moving" | MOVE_OPEN_REASON => {
-            "Longhand is moving your notes. You can remove the audio when the move is done."
-        }
-        "deleting" => "This note is being deleted.",
-        IN_USE_REASON => "This note is in use on another computer. Try again later.",
-        _ => "You can remove the audio of this note only after it is saved.",
+        "queued" | "processing" | "blocked" => format!(
+            "This note is being processed. You can remove its {thing} when processing is done."
+        ),
+        "regenerating" => format!(
+            "This note’s summary is being made again. You can remove its {thing} when that is done."
+        ),
+        "moving" | MOVE_OPEN_REASON => format!(
+            "Longhand is moving your notes. You can remove the {thing} when the move is done."
+        ),
+        "converting" => format!(
+            "Longhand is updating this note’s files. You can remove its {thing} when that is done."
+        ),
+        "deleting" => "This note is being deleted.".to_string(),
+        IN_USE_REASON => "This note is in use on another computer. Try again later.".to_string(),
+        _ => format!("You can remove the {thing} of this note only after it is saved."),
     }
-    .to_string()
 }
 
 /// The text of a note whose storage folder is unavailable (R16).
@@ -2059,6 +2152,85 @@ pub async fn remove_audio(
     let claims = processing.claims();
     // A folder on a network volume can be slow.
     tauri::async_runtime::spawn_blocking(move || run_removal(&store, &claims, &note_id, sync))
+        .await
+        .map_err(|e| RemoveAudioFailure::Failed {
+            message: e.to_string(),
+        })?
+}
+
+/// Remove the transcript of the note `note_id`, and any audio that is
+/// left, with the checks of Remove Audio (R17, R18 of the transcript
+/// removal plan). The transcript removal setting has no effect here, and
+/// a note whose summary failed is removed too (R28).
+fn run_transcript_removal(
+    store: &pipeline::SharedStore,
+    claims: &session_core::jobs::Claims,
+    note_id: &str,
+) -> Result<(), RemoveAudioFailure> {
+    use pipeline::remove_transcript::RemoveTranscriptError;
+    pipeline::remove_transcript::remove_transcript(store, claims, note_id, removal_guard())
+        .map_err(|e| match e {
+            RemoveTranscriptError::Busy(reason) => RemoveAudioFailure::Refused {
+                message: refusal_of(reason, "transcript"),
+            },
+            RemoveTranscriptError::NoFolder => RemoveAudioFailure::Refused {
+                message: FOLDER_UNAVAILABLE.to_string(),
+            },
+            RemoveTranscriptError::AudioLeft(segments) => {
+                for segment in &segments {
+                    log::warn!(
+                        "the audio {} of session {note_id} was not removed: {:?}",
+                        segment.audio_file,
+                        segment.outcome
+                    );
+                }
+                RemoveAudioFailure::Failed {
+                    message: "Some of the audio of this note could not be removed, so its transcript stays.".to_string(),
+                }
+            }
+            RemoveTranscriptError::Failed(message) => RemoveAudioFailure::Failed {
+                message: format!("Could not remove the transcript of this note: {message}"),
+            },
+        })?;
+    log::info!("removed the transcript of session {note_id}");
+    Ok(())
+}
+
+/// Remove the transcript of a saved note now, and any audio that is left,
+/// whether the transcript removal setting is on or off (R17, R18 of the
+/// transcript removal plan). The summary, notes, title and tags stay.
+/// Refused while the note is busy, while a Move runs or is paused, or while
+/// its storage folder is unavailable. A failure after the transcript
+/// marker is written counts as removed, and the next pass finishes it
+/// (KTD3).
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_transcript(
+    capture: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    note_id: String,
+) -> Result<(), RemoveAudioFailure> {
+    let store = capture.shared_store();
+    let home = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store
+            .session(&note_id)
+            .map_err(|e| RemoveAudioFailure::Failed {
+                message: e.to_string(),
+            })?
+            .and_then(|r| r.home_path)
+    };
+    if processing
+        .library_status()
+        .storage_unavailable(&note_id, home.as_deref().map(Path::new))
+    {
+        return Err(RemoveAudioFailure::Refused {
+            message: FOLDER_UNAVAILABLE.to_string(),
+        });
+    }
+    let claims = processing.claims();
+    // A folder on a network volume can be slow.
+    tauri::async_runtime::spawn_blocking(move || run_transcript_removal(&store, &claims, &note_id))
         .await
         .map_err(|e| RemoveAudioFailure::Failed {
             message: e.to_string(),
@@ -2246,6 +2418,99 @@ mod remove_audio_tests {
             let message = removal_refusal(reason);
             assert!(message.contains(word), "{reason}: {message}");
         }
+    }
+
+    // ------------------------------------------------- Remove Transcript
+
+    /// A saved note in a storage folder with its library marker. The
+    /// transcript step deletes only in a folder that has one.
+    fn marked_note() -> Note {
+        let note = saved_note();
+        assert!(library::scan::write_marker(note.home.parent().unwrap()));
+        note
+    }
+
+    // Covers AE6, R17, R18: with the setting off, Remove Transcript removes
+    // the transcript and the audio at once, and the summary, notes and
+    // records stay.
+    #[test]
+    fn remove_transcript_removes_the_transcript_and_the_audio() {
+        let note = marked_note();
+        std::fs::write(note.home.join(ARTIFACT_FILE), b"{\"version\":1}\n").unwrap();
+        let kept: Vec<Vec<u8>> = ["session.md", "summary.md", "notes.md"]
+            .iter()
+            .map(|name| std::fs::read(note.home.join(name)).unwrap())
+            .collect();
+
+        run_transcript_removal(&note.store, &Claims::default(), ID).unwrap();
+
+        assert!(session_core::folder::transcript_removed(&note.home));
+        assert!(!note.home.join("transcript.md").exists());
+        assert!(!note.home.join(ARTIFACT_FILE).exists());
+        assert!(!note.home.join("audio/segment-01.opus").exists());
+        let after: Vec<Vec<u8>> = ["session.md", "summary.md", "notes.md"]
+            .iter()
+            .map(|name| std::fs::read(note.home.join(name)).unwrap())
+            .collect();
+        assert_eq!(after, kept);
+        assert!(note.store.lock().unwrap().transcript_removed(ID).unwrap());
+    }
+
+    // R28: the action removes the transcript of a note whose summary
+    // failed.
+    #[test]
+    fn remove_transcript_removes_the_transcript_of_a_note_whose_summary_failed() {
+        let note = marked_note();
+        let mut record = session_core::note_folder::NoteFiles::read(&note.home)
+            .unwrap()
+            .record;
+        record.summary = Some(session_core::folder::SummaryMeta::Stub {
+            failed_stage: "summarize".into(),
+        });
+        session_save::note_files::write_record(&note.home, &record).unwrap();
+
+        run_transcript_removal(&note.store, &Claims::default(), ID).unwrap();
+
+        assert!(!note.home.join("transcript.md").exists());
+    }
+
+    fn transcript_kept(note: &Note) -> bool {
+        note.home.join("transcript.md").is_file()
+            && !session_core::folder::transcript_removed(&note.home)
+    }
+
+    #[test]
+    fn remove_transcript_refuses_an_open_move_a_busy_note_and_a_missing_folder() {
+        let note = marked_note();
+        note.store
+            .lock()
+            .unwrap()
+            .open_move(Path::new("/old"), Path::new("/new"))
+            .unwrap();
+        let message = refused(run_transcript_removal(&note.store, &Claims::default(), ID));
+        assert!(message.contains("moving your notes"), "{message}");
+        assert!(message.contains("transcript"), "{message}");
+        assert!(transcript_kept(&note));
+
+        let note = marked_note();
+        let claims = Claims::default();
+        let _claim = claims.regenerate(ID).unwrap();
+        let message = refused(run_transcript_removal(&note.store, &claims, ID));
+        assert!(message.contains("summary"), "{message}");
+        assert!(transcript_kept(&note));
+
+        let note = marked_note();
+        let now = chrono::Local::now().fixed_offset();
+        assert!(pipeline::in_use::write_marker(&note.home, "other-computer", now).unwrap());
+        let message = refused(run_transcript_removal(&note.store, &Claims::default(), ID));
+        assert!(message.contains("in use on another computer"), "{message}");
+        assert!(transcript_kept(&note));
+
+        let note = marked_note();
+        std::fs::remove_dir_all(&note.home).unwrap();
+        let message = refused(run_transcript_removal(&note.store, &Claims::default(), ID));
+        assert_eq!(message, FOLDER_UNAVAILABLE);
+        assert!(!note.home.exists(), "the step makes no folder");
     }
 }
 
@@ -2550,6 +2815,47 @@ mod tests {
         assert_eq!(summary.host.as_deref(), Some("api.example.com"));
         assert_eq!(summary.prompt.as_deref(), Some("Team sync"));
         assert_eq!(summary.prompt_id.as_deref(), Some("b1"));
+    }
+
+    // Covers R15, R16, KTD11 of the transcript removal plan (U6): a note
+    // with no `transcript.md` opens with its summary.
+    #[test]
+    fn a_note_with_no_transcript_gives_its_summary() {
+        let folder = tempfile::tempdir().unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339("2026-09-22T14:00:00+00:00").unwrap();
+        let mut record = session_core::note_record::NoteRecord::new("s", started);
+        record.summary = Some(SummaryMeta::Complete {
+            endpoint_host: "api.example.com".into(),
+            model: "m".into(),
+            prompt_name: None,
+            prompt_id: None,
+        });
+        std::fs::write(folder.path().join("session.md"), "---\ntitle: Plan\n---\n").unwrap();
+        std::fs::write(folder.path().join("longhand.json"), record.render()).unwrap();
+        std::fs::write(
+            folder.path().join("summary.md"),
+            "# Summary\n\nWe agreed.\n",
+        )
+        .unwrap();
+
+        let document = read_document(folder.path()).unwrap();
+        assert_eq!(document.summary.unwrap().body, "# Summary\n\nWe agreed.");
+        assert!(document.lines.is_empty());
+        assert_eq!(document.transcript_markdown, "");
+        assert!(!document.has_speakers);
+    }
+
+    // Covers R15, KTD11 (U6): the transcript state comes from the store
+    // flag.
+    #[test]
+    fn the_transcript_view_follows_the_store_flag() {
+        let mut store = session_core::Store::open_in_memory().unwrap();
+        store
+            .create_notes_only("n", chrono::Local::now().fixed_offset(), None)
+            .unwrap();
+        assert_eq!(transcript_view(&store, "n"), Ok(TranscriptView::Present));
+        store.set_transcript_removed("n", true).unwrap();
+        assert_eq!(transcript_view(&store, "n"), Ok(TranscriptView::Removed));
     }
 
     // Covers R7, KTD7: an agent added a free-text line to `transcript.md`
@@ -2975,7 +3281,15 @@ mod record_tests {
 
     fn button(record: &SessionRecord, has_segments: bool, audio: AudioState) -> RecordButton {
         let status: Arc<LibraryStatus> = Arc::default();
-        record_button(record, has_segments, false, audio, &status).unwrap()
+        record_button(
+            record,
+            has_segments,
+            false,
+            audio,
+            TranscriptView::Present,
+            &status,
+        )
+        .unwrap()
     }
 
     // Covers AE3 and R11, R12.
@@ -3018,7 +3332,14 @@ mod record_tests {
             ..saved(false)
         };
         assert_eq!(
-            record_button(&capturing, false, false, AudioState::Present, &status),
+            record_button(
+                &capturing,
+                false,
+                false,
+                AudioState::Present,
+                TranscriptView::Present,
+                &status
+            ),
             None
         );
         // A note whose save has begun cannot resume.
@@ -3028,9 +3349,25 @@ mod record_tests {
             },
             ..saved(true)
         };
-        let saving = record_button(&queued, true, true, AudioState::Present, &status).unwrap();
+        let saving = record_button(
+            &queued,
+            true,
+            true,
+            AudioState::Present,
+            TranscriptView::Present,
+            &status,
+        )
+        .unwrap();
         assert_eq!(saving.reason.as_deref(), Some(CANNOT_RESUME));
-        let waiting = record_button(&queued, true, false, AudioState::Present, &status).unwrap();
+        let waiting = record_button(
+            &queued,
+            true,
+            false,
+            AudioState::Present,
+            TranscriptView::Present,
+            &status,
+        )
+        .unwrap();
         assert!(waiting.available);
     }
 
@@ -3044,7 +3381,14 @@ mod record_tests {
             ..saved(false)
         };
         assert_eq!(
-            record_button(&importing, false, false, AudioState::Present, &status),
+            record_button(
+                &importing,
+                false,
+                false,
+                AudioState::Present,
+                TranscriptView::Present,
+                &status
+            ),
             None
         );
     }
@@ -3058,6 +3402,7 @@ mod record_tests {
                 kind: RecordKind::Record,
                 allowed: true,
                 audio: AudioView::Present,
+                transcript: TranscriptView::Present,
                 storage_unavailable,
                 waiting,
                 remote,
@@ -3081,6 +3426,7 @@ mod record_tests {
             kind: RecordKind::Record,
             allowed: false,
             audio: AudioView::Present,
+            transcript: TranscriptView::Present,
             storage_unavailable: false,
             waiting: &[],
             remote: None,
@@ -3089,6 +3435,67 @@ mod record_tests {
         for reason in [IN_USE_ELSEWHERE, NOT_FINISHED_ELSEWHERE, CANNOT_RECORD] {
             assert!(!reason.contains("session"), "{reason}");
         }
+    }
+
+    // Covers R14, AE7 of the transcript removal plan (U6): Resume gives the
+    // transcript reason ahead of the audio reason. A note with only removed
+    // audio still gives the audio reason.
+    #[test]
+    fn resume_gives_the_transcript_reason_ahead_of_the_audio_reason() {
+        let check = |audio, transcript| {
+            record_refusal(&RecordCheck {
+                kind: RecordKind::Resume,
+                allowed: false,
+                audio,
+                transcript,
+                storage_unavailable: false,
+                waiting: &[],
+                remote: None,
+            })
+        };
+        assert_eq!(
+            check(AudioView::Removed, TranscriptView::Removed),
+            Some(TRANSCRIPT_REMOVED)
+        );
+        assert_eq!(
+            check(AudioView::Present, TranscriptView::Removed),
+            Some(TRANSCRIPT_REMOVED)
+        );
+        assert_eq!(
+            check(AudioView::Removed, TranscriptView::Present),
+            Some(AUDIO_REMOVED)
+        );
+    }
+
+    // Covers R14, KTD10 of the transcript removal plan (U6): the Resume
+    // command refuses a saved note whose transcript was removed, by the
+    // store flag or by the marker before a scan sets the flag.
+    #[test]
+    fn resume_is_refused_for_a_note_whose_transcript_was_removed() {
+        let status: Arc<LibraryStatus> = Arc::default();
+        let now = chrono::Local::now().fixed_offset();
+        let (_root, _home, store) = placed_note();
+        assert_eq!(check_resume(&store, &status, &own(), "n", now), Ok(()));
+        store
+            .lock()
+            .unwrap()
+            .set_transcript_removed("n", true)
+            .unwrap();
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(TRANSCRIPT_REMOVED.to_string())
+        );
+
+        let (_root, home, store) = placed_note();
+        std::fs::write(
+            home.join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+            session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+        )
+        .unwrap();
+        assert_eq!(
+            check_resume(&store, &status, &own(), "n", now),
+            Err(TRANSCRIPT_REMOVED.to_string())
+        );
     }
 
     /// A store with the notes-only note "n" whose home folder is in a

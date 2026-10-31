@@ -37,7 +37,7 @@ pub const STATE: &str = session_core::jobs::SAVE_STATE;
 /// for a folder whose rename was not recorded, to another name.
 pub const FOLDER_NAME: &str = "folder_name";
 /// Under the summarize stage: why it failed, for the saved stub (KD13).
-pub const SUMMARY_FAILED: &str = "failed";
+pub const SUMMARY_FAILED: &str = session_core::jobs::SUMMARY_FAILED;
 /// A replacement reached publication. Preserve its local files on failure.
 /// Only the result fields of `session.md` prove that the replacement
 /// committed.
@@ -56,6 +56,66 @@ pub struct Saved {
     /// The destination is on another volume: the session was copied and
     /// verified rather than moved in one step.
     pub copied: bool,
+    /// The Summarize stage made the summary. Otherwise the note has the
+    /// summary stub, or the summary of an earlier run.
+    pub summary: bool,
+}
+
+/// Whether the Summarize stage made the summary of `note_id`: the stage
+/// is complete for each of the `segments` and no summary failure is
+/// recorded. The save reads it before Saved clears the rows.
+pub fn summary_made(
+    store: &SharedStore,
+    note_id: &str,
+    segments: usize,
+) -> Result<bool, StageError> {
+    Ok(
+        checkpoint::is_complete(store, note_id, Stage::Summarize, segments)?
+            && checkpoint::get::<String>(store, note_id, Stage::Summarize, SUMMARY_FAILED)?
+                .is_none(),
+    )
+}
+
+/// Apply Saved, and clear the note content in the same transaction
+/// (KTD12 of the transcript removal plan): the recognition data, and the
+/// summary cache when no title request waits. The title job clears the
+/// summary cache when it ends. The caller holds the store lock.
+fn apply_saved(store: &mut Store, note_id: &str) -> Result<(), StageError> {
+    let title_waits = store
+        .checkpoint_value(note_id, Stage::Summarize, summarize::TITLE_REQUEST)?
+        .is_some();
+    store.apply_clearing_content(note_id, &Event::Saved, !title_waits)?;
+    checkpoint_wal(store, note_id);
+    Ok(())
+}
+
+/// Clear the summary cache of `note_id` when no title request waits
+/// (KTD12 of the transcript removal plan). The caller holds the store
+/// lock.
+pub(crate) fn clear_summary_cache(store: &Store, note_id: &str) -> Result<(), StageError> {
+    if store
+        .checkpoint_value(note_id, Stage::Summarize, summarize::TITLE_REQUEST)?
+        .is_none()
+    {
+        store.clear_summary_cache(note_id)?;
+        checkpoint_wal(store, note_id);
+    }
+    Ok(())
+}
+
+/// Copy the store WAL into the database file after a clear of note
+/// content (KTD5 of the transcript removal plan). The clear is committed,
+/// so a failure is only logged: the next checkpoint removes the text.
+pub(crate) fn checkpoint_wal(store: &Store, note_id: &str) {
+    match store.checkpoint_wal() {
+        Ok(true) => {}
+        Ok(false) => log::warn!(
+            "the store WAL can still hold the cleared content of {note_id}: another connection blocked the checkpoint"
+        ),
+        Err(e) => {
+            log::warn!("could not checkpoint the store WAL after the clear of {note_id}: {e}")
+        }
+    }
 }
 
 /// Whether saving has begun for `note_id` (a resume must refuse).
@@ -140,7 +200,8 @@ fn summary_published(store: &mut Store, note_id: &str, segments: usize) -> Resul
     store.delete_checkpoint(note_id, Stage::Summarize, SUMMARY_FAILED)?;
     store.clear_summary_not_updated(note_id)?;
     store.apply(note_id, &Event::SavedEdit)?;
-    Ok(())
+    // With no title request, no title job follows to clear the cache.
+    clear_summary_cache(store, note_id)
 }
 
 /// The audio of a completed session, from its folder (KTD9 of the audio
@@ -379,6 +440,7 @@ pub fn run(
         unreachable!("the loop ends on Done");
     };
     crate::follow::mark_destination(destination);
+    let summary = summary_made(store, note_id, segments.len())?;
 
     // Reopen notes against the home folder (R22e): anything edited while
     // saving is in the store, and is written here. Under the lock, so an
@@ -396,12 +458,13 @@ pub fn run(
         })?,
     )?;
     guard.finish_transcribe_again(note_id, None)?;
-    // No Retry of this run follows the save. The native-final copies of
-    // the finished live epochs stay; their live blocks go.
-    guard.delete_finished_live_blocks(note_id)?;
-    guard.apply(note_id, &Event::Saved)?;
+    apply_saved(&mut guard, note_id)?;
     let path = reconcile_after_done(&guard, note_id, path, fs);
-    Ok(Saved { path, copied })
+    Ok(Saved {
+        path,
+        copied,
+        summary,
+    })
 }
 
 /// Room for the session in a destination on another volume, where saving
@@ -520,6 +583,7 @@ fn update_home(
         checkpoint::put(store, note_id, Stage::Save, STATE, &done)?;
     }
 
+    let summary = summary_made(store, note_id, segments.len())?;
     let mut guard = lock(store);
     let home = run_home(&guard, note_id)?;
     follow_run(&mut guard, note_id)?;
@@ -535,11 +599,10 @@ fn update_home(
     )?;
     // After `Done`: a crash before this line runs the bookkeeping again.
     guard.finish_transcribe_again(note_id, summary_error.as_deref())?;
-    guard.delete_finished_live_blocks(note_id)?;
     let published = NoteFiles::read(&home)?.doc;
     guard.promote_result_snapshot(note_id, published.recognition_snapshot.as_ref())?;
     guard.set_speaker_count(note_id, published.speaker_count)?;
-    guard.apply(note_id, &Event::Saved)?;
+    apply_saved(&mut guard, note_id)?;
     // The record goes with the working directory, after the bookkeeping.
     if working.exists() {
         std::fs::remove_dir_all(working)?;
@@ -548,6 +611,7 @@ fn update_home(
     Ok(Saved {
         path,
         copied: false,
+        summary,
     })
 }
 

@@ -36,7 +36,7 @@ use library::reconcile::{Changes, Reconciler, Target};
 use notify::event::{EventKind, ModifyKind, RenameMode};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shared_settings::background::BACKGROUND_FILE;
 use shared_settings::file::{LONGHAND_FOLDER, SETTINGS_FILE};
 use shared_settings::prompts::PROMPTS_FOLDER;
@@ -45,7 +45,7 @@ use specta::Type;
 /// The rows that a library reconcile changed (KTD10). `changed` holds
 /// adopted notes, refreshed notes and notes in a new folder. `removed`
 /// holds notes whose folder is gone.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq, Type, tauri_specta::Event)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Type, tauri_specta::Event)]
 pub struct LibraryChanged {
     pub changed: Vec<String>,
     pub removed: Vec<String>,

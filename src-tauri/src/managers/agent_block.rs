@@ -22,7 +22,7 @@ use crate::managers::destination::{self, DestinationStatus};
 
 /// The version of the block text. Increase it at each change of
 /// [`BLOCK_LINES`], so that a newer Longhand replaces the old block (R30).
-pub const BLOCK_VERSION: u32 = 1;
+pub const BLOCK_VERSION: u32 = 2;
 
 /// The file that every agent reads.
 pub const AGENTS_FILE: &str = "AGENTS.md";
@@ -51,10 +51,11 @@ const BLOCK_LINES: &[&str] = &[
     "",
     "Main rules:",
     "",
-    "1. You can edit `session.md`, `notes.md`, `transcript.md` and `summary.md` in a note folder, and `settings.json`, `background.md` and the prompt files in `.longhand/`. Never edit, move or delete `longhand.json`, `recognition.jsonl`, the files in `audio/`, a `.longhand-in-use-*` file or `.longhand/library`.",
-    "2. Do not edit a note that a computer records or processes.",
-    "3. Do not make, copy or delete a note folder. Do not write other files into this folder.",
-    "4. Do not look for, start or control the Longhand app.",
+    "1. You can edit `session.md`, `notes.md`, `transcript.md` and `summary.md` in a note folder, and `settings.json`, `background.md` and the prompt files in `.longhand/`. Never edit, move or delete `longhand.json`, `recognition.jsonl`, `transcript.removed`, the files in `audio/`, a `.longhand-in-use-*` file or `.longhand/library`.",
+    "2. A note can have no `transcript.md`: Longhand removed its transcript. This is not an error. Do not make a new `transcript.md` for the note.",
+    "3. Do not edit a note that a computer records or processes.",
+    "4. Do not make, copy or delete a note folder. Do not write other files into this folder.",
+    "5. Do not look for, start or control the Longhand app.",
     "",
     "Longhand writes the text between these markers and can replace it. Write your own text outside the markers.",
 ];
@@ -424,7 +425,7 @@ mod tests {
         assert!(agents.starts_with("# My rules\n\nUse short answers.\n"));
         assert_eq!(count(&agents, BEGIN_PREFIX), 1);
         assert_eq!(count(&agents, END_MARKER), 1);
-        assert!(agents.contains("version=1 -->"));
+        assert!(agents.contains(&format!("version={BLOCK_VERSION} -->")));
         assert!(agents.contains("`longhand-notes` skill"));
         assert!(agents.contains("/plugin marketplace add twistymaze/longhand"));
         assert!(agents.ends_with(&format!("{END_MARKER}\n")));
@@ -460,10 +461,9 @@ mod tests {
         assert_eq!(update(root), Ok(vec![AGENTS_FILE]));
 
         let agents = read(root, AGENTS_FILE);
-        assert!(
-            agents
-                .starts_with("Top text.\n\n<!-- BEGIN:longhand-agent-instructions version=1 -->\n")
-        );
+        assert!(agents.starts_with(&format!(
+            "Top text.\n\n<!-- BEGIN:longhand-agent-instructions version={BLOCK_VERSION} -->\n"
+        )));
         assert!(agents.ends_with(&format!("{END_MARKER}\n\nBottom text.\n")));
         assert!(!agents.contains("Old rules."));
         // The update never adds a block to a file that has none.
@@ -550,7 +550,7 @@ mod tests {
         assert!(agents.ends_with(&format!("{END_MARKER}\r\n")));
 
         // An update keeps them too.
-        let old = agents.replace("version=1 -->", "version=0 -->");
+        let old = agents.replace(&format!("version={BLOCK_VERSION} -->"), "version=0 -->");
         write(root, AGENTS_FILE, &old);
         update(root).unwrap();
         assert_eq!(read(root, AGENTS_FILE), agents);
@@ -752,5 +752,28 @@ mod tests {
         assert!(readme.contains("## Use your notes with an AI agent"));
         let skill = include_str!("../../../plugins/longhand/skills/longhand-notes/SKILL.md");
         assert!(skill.contains("name: longhand-notes"));
+    }
+
+    /// The block and the skill name the same files that an agent must
+    /// never edit, and both tell that a note can have no transcript.
+    #[test]
+    fn the_block_and_the_skill_name_the_same_never_edit_files() {
+        let skill = include_str!("../../../plugins/longhand/skills/longhand-notes/SKILL.md");
+        let block = block_text("\n");
+        for name in [
+            "`longhand.json`",
+            "`recognition.jsonl`",
+            "`transcript.removed`",
+            "`audio/`",
+            "`.longhand-in-use-*`",
+            "`.longhand/library`",
+        ] {
+            assert!(block.contains(name), "block: {name}");
+            assert!(skill.contains(name), "skill: {name}");
+        }
+        for text in [&block, &skill.to_string()] {
+            assert!(text.contains("A note can have no"), "{text}");
+            assert!(text.contains("Do not make a new `transcript.md`"), "{text}");
+        }
     }
 }

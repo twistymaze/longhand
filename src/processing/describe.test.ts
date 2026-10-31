@@ -31,6 +31,7 @@ const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   audio_kept: true,
   transcript_kept: false,
   audio: "present",
+  transcript: "present",
   asr_model: null,
   live_transcript: false,
   transcribe_again: false,

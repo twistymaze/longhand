@@ -644,3 +644,128 @@ fn a_folder_with_no_record_has_no_publication() {
     Publication::remove(&local).unwrap();
     assert!(!local.join(publication::RECORD).exists());
 }
+
+// ---------------------------------------------------------------- removed transcript
+
+/// Write the transcript marker into the note folder `home`, as another
+/// computer's removal does.
+fn mark_transcript_removed(home: &Path) -> io::Result<()> {
+    std::fs::write(
+        home.join(session_core::folder::TRANSCRIPT_REMOVED_MARKER),
+        session_core::folder::TRANSCRIPT_REMOVED_TEXT,
+    )
+}
+
+/// Each file of the note folder `home` and its content.
+fn contents(home: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    names(home)
+        .into_iter()
+        .map(|path| {
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect()
+}
+
+/// A publication of `set` into a note folder with the transcript marker
+/// writes nothing and is a conflict (KTD10).
+fn a_marker_before_the_publication_stops_it(set: WriteSet) {
+    let (_root, home, local, publication) = fixture(set);
+    publication.record(&local).unwrap();
+    mark_transcript_removed(&home).unwrap();
+    let before = contents(&home);
+    let mut written = Vec::new();
+    let outcome = publication
+        .publish_with(&home, &local, || (), &mut |name| {
+            written.push(name.to_string());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outcome, Outcome::Conflict);
+    assert!(written.is_empty(), "{written:?}");
+    assert_eq!(contents(&home), before);
+}
+
+// Covers R13.
+#[test]
+fn a_result_publication_into_a_note_with_a_transcript_marker_writes_nothing() {
+    a_marker_before_the_publication_stops_it(WriteSet::Result);
+}
+
+// Covers R13.
+#[test]
+fn a_summary_publication_into_a_note_with_a_transcript_marker_writes_nothing() {
+    a_marker_before_the_publication_stops_it(WriteSet::Summary);
+}
+
+// Covers R13: the marker arrives during the writes.
+#[test]
+fn a_transcript_marker_during_the_writes_stops_the_next_write() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    publication.record(&local).unwrap();
+    let marked_home = home.clone();
+    let mut written = Vec::new();
+    let outcome = publication
+        .publish_with(&home, &local, || (), &mut |name| {
+            written.push(name.to_string());
+            mark_transcript_removed(&marked_home)
+        })
+        .unwrap();
+    assert_eq!(outcome, Outcome::Conflict);
+    assert_eq!(written, [ARTIFACT_FILE]);
+    assert_eq!(read(&home, "transcript.md"), "old transcript");
+    assert_eq!(
+        records(&home).transcript_fingerprint,
+        Some(fingerprint(b"old transcript"))
+    );
+}
+
+// Covers R13: the marker arrives just before the publication takes the
+// lock. `longhand.json` stays.
+fn a_marker_before_the_lock_keeps_longhand_json(set: WriteSet) {
+    let (_root, home, local, publication) = fixture(set);
+    publication.record(&local).unwrap();
+    let record = read(&home, NOTE_RECORD_FILE);
+    let outcome = publication
+        .publish(&home, &local, || mark_transcript_removed(&home).unwrap())
+        .unwrap();
+    assert_eq!(outcome, Outcome::Conflict);
+    assert_eq!(read(&home, NOTE_RECORD_FILE), record);
+}
+
+#[test]
+fn a_transcript_marker_before_the_lock_keeps_longhand_json_for_a_result() {
+    a_marker_before_the_lock_keeps_longhand_json(WriteSet::Result);
+}
+
+#[test]
+fn a_transcript_marker_before_the_lock_keeps_longhand_json_for_a_summary() {
+    a_marker_before_the_lock_keeps_longhand_json(WriteSet::Summary);
+}
+
+// Covers R13: a roll-forward after a crash writes nothing when the marker
+// arrived in the meantime.
+#[test]
+fn a_roll_forward_after_a_transcript_marker_writes_nothing() {
+    let (_root, home, local, publication) = fixture(WriteSet::Result);
+    publication.record(&local).unwrap();
+    assert!(
+        publication
+            .publish_with(&home, &local, || (), &mut crash_after(1))
+            .is_err()
+    );
+    mark_transcript_removed(&home).unwrap();
+    let before = contents(&home);
+
+    let rerun = Publication::load(&local).unwrap().unwrap();
+    let mut written = Vec::new();
+    let outcome = rerun
+        .publish_with(&home, &local, || (), &mut |name| {
+            written.push(name.to_string());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(outcome, Outcome::Conflict);
+    assert!(written.is_empty(), "{written:?}");
+    assert_eq!(contents(&home), before);
+}

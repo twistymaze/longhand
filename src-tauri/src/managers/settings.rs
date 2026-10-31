@@ -17,7 +17,9 @@ use std::sync::{Arc, Condvar, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use shared_settings::file::{AudioRemoval, Field, SharedValue, is_catalog_asr_model};
+use shared_settings::file::{
+    AudioRemoval, Field, SharedValue, TranscriptRemoval, is_catalog_asr_model,
+};
 use shared_settings::view::ActivePrompt;
 use specta::Type;
 use summarize::prompts::TOPIC_SUMMARY_ID;
@@ -161,6 +163,54 @@ impl From<AudioRemoval> for AudioRemovalSetting {
         match removal {
             AudioRemoval::Off => AudioRemovalSetting::Off,
             AudioRemoval::AfterDays(days) => AudioRemovalSetting::AfterDays { days },
+        }
+    }
+}
+
+/// A shared setting: when Longhand removes the transcript of a saved note
+/// (R1, R3 of the plan for removing old transcripts). The file form is
+/// [`TranscriptRemoval`]; this is the form of the Settings window. It is
+/// the user's value: the removal uses the effective delay of
+/// `SharedSnapshot::transcript_removal_days` (KTD7).
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TranscriptRemovalSetting {
+    #[default]
+    Off,
+    /// The transcript goes this many whole days after the note last
+    /// recorded.
+    AfterDays { days: u32 },
+}
+
+impl TranscriptRemovalSetting {
+    /// Refuse a number of days that the shared settings file cannot hold.
+    pub fn validate(&self) -> Result<(), String> {
+        if TranscriptRemoval::from(*self).valid() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Choose from {} to {} days.",
+                shared_settings::file::TRANSCRIPT_REMOVAL_MIN_DAYS,
+                shared_settings::file::TRANSCRIPT_REMOVAL_MAX_DAYS
+            ))
+        }
+    }
+}
+
+impl From<TranscriptRemovalSetting> for TranscriptRemoval {
+    fn from(setting: TranscriptRemovalSetting) -> Self {
+        match setting {
+            TranscriptRemovalSetting::Off => TranscriptRemoval::Off,
+            TranscriptRemovalSetting::AfterDays { days } => TranscriptRemoval::AfterDays(days),
+        }
+    }
+}
+
+impl From<TranscriptRemoval> for TranscriptRemovalSetting {
+    fn from(removal: TranscriptRemoval) -> Self {
+        match removal {
+            TranscriptRemoval::Off => TranscriptRemovalSetting::Off,
+            TranscriptRemoval::AfterDays(days) => TranscriptRemovalSetting::AfterDays { days },
         }
     }
 }
@@ -787,6 +837,15 @@ pub struct Settings {
     /// `SharedSnapshot::audio_removal_days`, which gives no delay for such a
     /// value or while the shared settings are read-only.
     pub audio_removal: AudioRemovalSetting,
+    /// A shared setting. When the transcript of a saved note goes. Off by
+    /// default. This is the user's value: it can be shorter than the audio
+    /// delay when two computers saved the pair out of order. A value that
+    /// this version does not know shows as off here and in
+    /// `shared.unknown_values`. The removal pass does not read this field:
+    /// it reads `SharedSnapshot::transcript_removal_days`, which applies R4
+    /// and gives no delay for such a value or while the shared settings are
+    /// read-only (KTD7).
+    pub transcript_removal: TranscriptRemovalSetting,
     /// A shared setting. The custom summary prompts, in the order that
     /// Settings shows them (KTD6).
     pub summary_prompts: Vec<SummaryPrompt>,
@@ -994,6 +1053,7 @@ impl Default for Settings {
             show_recording_widget: true,
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
+            transcript_removal: TranscriptRemovalSetting::default(),
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
             shared: SharedState::default(),
@@ -1057,6 +1117,8 @@ impl Settings {
                 defaults.check_updates_automatically,
             ),
             audio_removal: known_or(&fields.audio_removal, AudioRemoval::default()).into(),
+            transcript_removal: known_or(&fields.transcript_removal, TranscriptRemoval::default())
+                .into(),
             summary_prompts: shared
                 .view
                 .prompts
@@ -1444,6 +1506,11 @@ pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
     }
     if before.audio_removal != after.audio_removal {
         patch.push(SharedValue::AudioRemoval(after.audio_removal.into()));
+    }
+    if before.transcript_removal != after.transcript_removal {
+        patch.push(SharedValue::TranscriptRemoval(
+            after.transcript_removal.into(),
+        ));
     }
     if before.show_recording_widget != after.show_recording_widget {
         patch.push(SharedValue::ShowRecordingWidget(
@@ -2210,6 +2277,7 @@ fn apply_shared(settings: &mut Settings, value: &SharedValue) {
         }
         SharedValue::CheckUpdatesAutomatically(on) => settings.check_updates_automatically = *on,
         SharedValue::AudioRemoval(removal) => settings.audio_removal = (*removal).into(),
+        SharedValue::TranscriptRemoval(removal) => settings.transcript_removal = (*removal).into(),
         SharedValue::ShowRecordingWidget(on) => settings.show_recording_widget = *on,
         SharedValue::NewNoteRecords(on) => settings.new_note_records = *on,
         SharedValue::NoteTypes(_)
@@ -3391,6 +3459,74 @@ mod tests {
                 .any(|v| v.key == "audio_removal" && v.value == "\"never\"")
         );
         assert_eq!(shared.audio_removal_days(), None);
+    }
+
+    #[test]
+    fn the_transcript_removal_setting_is_shared_off_by_default_and_its_range_is_checked() {
+        // R1, R2, KTD8.
+        let before = Settings::default();
+        assert_eq!(before.transcript_removal, TranscriptRemovalSetting::Off);
+        let mut after = before.clone();
+        after.transcript_removal = TranscriptRemovalSetting::AfterDays { days: 90 };
+        assert_eq!(
+            shared_patch(&before, &after),
+            [SharedValue::TranscriptRemoval(
+                TranscriptRemoval::AfterDays(90)
+            )]
+        );
+        assert_eq!(after.local(), before.local());
+        let mut applied = before.clone();
+        apply_shared(
+            &mut applied,
+            &SharedValue::TranscriptRemoval(TranscriptRemoval::AfterDays(90)),
+        );
+        assert_eq!(applied, after);
+        for days in [1, 3650] {
+            assert!(
+                TranscriptRemovalSetting::AfterDays { days }
+                    .validate()
+                    .is_ok()
+            );
+        }
+        for days in [0, 3651] {
+            assert!(
+                TranscriptRemovalSetting::AfterDays { days }
+                    .validate()
+                    .is_err()
+            );
+        }
+        assert!(TranscriptRemovalSetting::Off.validate().is_ok());
+    }
+
+    #[test]
+    fn an_unknown_transcript_removal_value_shows_as_off_and_as_unknown() {
+        use shared_settings::view::{self, Availability};
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert("audio_removal".into(), json!(30));
+        raw.insert("transcript_removal".into(), json!("soon"));
+        let cache = shared_settings::cache::Cache {
+            source: PathBuf::from("/Volumes/Notes"),
+            settings: raw,
+            prompts: Vec::new(),
+            active_prompt: None,
+            type_prompts: Vec::new(),
+            background: String::new(),
+        };
+        let shared = SharedSnapshot {
+            view: view::cached(Some(&cache), Availability::Available),
+            availability: crate::managers::shared::SharedAvailability::Available,
+            damaged_file: None,
+        };
+        let settings = Settings::from_parts(LocalSettings::default(), &shared);
+        assert_eq!(settings.transcript_removal, TranscriptRemovalSetting::Off);
+        assert!(
+            settings
+                .shared
+                .unknown_values
+                .iter()
+                .any(|v| v.key == "transcript_removal" && v.value == "\"soon\"")
+        );
+        assert_eq!(shared.transcript_removal_days(), None);
     }
 
     #[test]

@@ -77,7 +77,7 @@ pub const TITLE: &str = "title";
 /// stores it after the final call, and the title job sends it and deletes
 /// it. It is a row in the store, so it stays after Save removes the working
 /// folder.
-pub const TITLE_REQUEST: &str = "title-request";
+pub const TITLE_REQUEST: &str = session_core::jobs::TITLE_REQUEST;
 /// The fingerprint of the transcript and the notes that the cached calls
 /// were made from, a string. A run whose input has another fingerprint
 /// makes every call again.

@@ -46,8 +46,9 @@ Longhand keeps a title that the user or an agent set. Processing does not replac
 - For about one minute after the edit, Longhand shows the note as waiting for a sync. Then it accepts the edit.
 - Transcribe Again replaces `transcript.md` and `summary.md`, and Regenerate Summary replaces `summary.md`. Tell the user that these actions remove the edit.
 - Do not add a frontmatter to `summary.md`. Longhand does not show it or use it.
+- A note with `transcript.removed` has no `transcript.md`. Do not make one.
 
 ## Do not
 
-- Do not edit `longhand.json`, `recognition.jsonl` or the files in `audio/`.
+- Do not edit `longhand.json`, `recognition.jsonl`, `transcript.removed` or the files in `audio/`.
 - Do not add new files to a note folder, also not a backup copy.

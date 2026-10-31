@@ -697,6 +697,28 @@ pub fn audio_state<'a>(dir: &Path, audio: impl IntoIterator<Item = &'a str>) -> 
     state
 }
 
+/// The name of the marker that records the removal of a note's transcript
+/// (KTD1 of the transcript removal plan). It is in the home folder, beside
+/// `transcript.md`. The name has no leading dot, because the folder watcher
+/// skips such names. Its extension is not `.md` or `.json`, so no conflict
+/// copy rule matches it.
+pub const TRANSCRIPT_REMOVED_MARKER: &str = "transcript.removed";
+
+/// The content of each transcript marker. The content is fixed, so two
+/// computers that write the marker at the same time make the same file.
+/// A reader does not open the marker: a marker with any content counts.
+pub const TRANSCRIPT_REMOVED_TEXT: &str = "Longhand removed the transcript of this note.\n";
+
+/// Whether the home folder `home` has the transcript marker. The
+/// transcript is then removed, also when `transcript.md` is still on disk.
+/// This reads metadata only and opens no file. An error counts as no
+/// marker.
+pub fn transcript_removed(home: &Path) -> bool {
+    home.join(TRANSCRIPT_REMOVED_MARKER)
+        .try_exists()
+        .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------- transcript.md
 
 #[derive(Debug, Clone, PartialEq, Eq)]

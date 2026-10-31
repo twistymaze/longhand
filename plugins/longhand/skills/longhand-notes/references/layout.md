@@ -40,14 +40,17 @@
 |---|---|---|
 | `session.md` | A YAML frontmatter with `title` and `longhand_tags`. Other keys and text after the frontmatter are the user's. | The user and Longhand |
 | `notes.md` | The notes that the user typed. | The user and Longhand |
-| `transcript.md` | The transcript. | Longhand, then the user |
+| `transcript.md` | The transcript. A note whose transcript Longhand removed has no `transcript.md`. | Longhand, then the user |
 | `summary.md` | The summary. | Longhand, then the user |
 | `longhand.json` | Longhand's records: the layout number, the note id, the start time, the segments, the fingerprints, the result state, the summary data and, for an imported note, the source file. See [The layouts of `longhand.json`](#the-layouts-of-longhandjson). | Longhand only |
 | `recognition.jsonl` | The recognition data that Transcribe Again and Resume use. | Longhand only |
+| `transcript.removed` | The transcript marker: Longhand removed the transcript of the note. The note then has no `transcript.md` and no `recognition.jsonl`. | Longhand only |
 | `audio/` | The audio of each segment, and a `.removed` file for a segment whose audio Longhand removed. | Longhand only |
 | `.longhand-in-use-<run>` | An in-use marker: a computer records or processes the note now. | Longhand only |
 
 A note that has never recorded has only `session.md`, `notes.md` and `longhand.json`.
+
+When the setting `transcript_removal` is on, Longhand removes the transcript of an old note (see `settings.md`). The user can also remove the transcript of one note in Longhand. Longhand writes `transcript.removed`, and deletes `transcript.md`, `recognition.jsonl` and their conflict copies. The summary, the notes, the title and the tags stay. A note without `transcript.md` is not an error. Do not make a new `transcript.md` for it.
 
 A note can also have conflict copies from a sync service, for example `notes (1).md`. Longhand shows a notice for them. Do not merge or delete them unless the user asks.
 
