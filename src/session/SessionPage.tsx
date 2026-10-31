@@ -40,6 +40,7 @@ import { NotesTab } from "./NotesTab";
 import { ProcessingStatus, RegenerateStatus } from "./ProcessingStatus";
 import { PauseButton, RecordingBar, StopButton } from "./RecordingBar";
 import { REMOVED_REASON, useRemoveAudio } from "./RemoveAudio";
+import { SUMMARY_REMOVED_REASON, TRANSCRIPT_REMOVED_REASON, useRemoveTranscript } from "./RemoveTranscript";
 import { tabHtml, tabMarkdown } from "./copy";
 import { canDelete, type MenuItem, remoteReasons, remoteSentences, SessionMenu } from "./SessionMenu";
 import { SummaryTab } from "./SummaryTab";
@@ -247,6 +248,10 @@ export function SessionPage({
   // recorded time tells.
   const noAudio =
     phase === "saved" && (detail?.record ? detail.record.kind === "record" : entry?.duration_ms === 0);
+  // The note shows no mark for a removed transcript and no Transcript tab.
+  // The fact shows only as the reason of an action that needs the
+  // transcript (R14, R15).
+  const transcriptRemoved = phase === "saved" && detail?.transcript === "removed";
   // A recording has no summary yet, so its page has no Summary tab. A
   // hidden tab is never the shown one, even in the render before the phase
   // effect below moves the page.
@@ -254,7 +259,9 @@ export function SessionPage({
     ? tabs.filter((t) => t.value === "notes")
     : phase === "recording"
       ? tabs.filter((t) => t.value !== "summary")
-      : tabs;
+      : transcriptRemoved
+        ? tabs.filter((t) => t.value !== "transcript")
+        : tabs;
   const tab = visibleTabs.some((t) => t.value === chosen) ? chosen : "notes";
   const [doc, setDoc] = useState<SessionDocument | null>(null);
   const [staleDocument, setStaleDocument] = useState(false);
@@ -582,7 +589,7 @@ export function SessionPage({
 
   const again = useTranscribeAgain({
     noteId: id,
-    available: phase === "saved" && !heldForAudio && !summarizing && !removed,
+    available: phase === "saved" && !heldForAudio && !summarizing && !removed && !transcriptRemoved,
     onQueued: () => {
       setNotice(null);
       changed();
@@ -601,6 +608,24 @@ export function SessionPage({
       changed();
     },
   });
+
+  const transcriptRemoval = useRemoveTranscript({
+    noteId: id,
+    onRemoved: () => {
+      setNotice(null);
+      changed();
+      void loadDocument();
+    },
+    onFailed: (text) => {
+      setNotice({ tone: "negative", text });
+      changed();
+    },
+  });
+
+  // Regenerate Summary in the menu and on Summary are unavailable for the
+  // same reason.
+  const regenerateDisabled = summarizing || held || transcriptRemoved || remote !== null;
+  const regenerateReason = transcriptRemoved ? SUMMARY_REMOVED_REASON : held ? heldReason : (remoteReason ?? undefined);
 
   // The inputs and the running apps are read each time the menu opens,
   // because a microphone can be connected or removed, and an app can start
@@ -675,18 +700,20 @@ export function SessionPage({
   if (phase === "saved" && !noAudio) {
     items.push({
       label: "Regenerate Summary",
-      disabled: summarizing || held || remote !== null,
-      reason: held ? heldReason : (remoteReason ?? undefined),
+      disabled: regenerateDisabled,
+      reason: regenerateReason,
       onSelect: regenerate,
     });
     items.push({
       label: "Transcribe Again…",
-      disabled: summarizing || heldForAudio || removed || remote !== null,
-      reason: removed
-        ? REMOVED_REASON
-        : heldForAudio
-          ? heldReason
-          : (remoteReason ?? "Wait until the summary is ready."),
+      disabled: summarizing || heldForAudio || removed || transcriptRemoved || remote !== null,
+      reason: transcriptRemoved
+        ? TRANSCRIPT_REMOVED_REASON
+        : removed
+          ? REMOVED_REASON
+          : heldForAudio
+            ? heldReason
+            : (remoteReason ?? "Wait until the summary is ready."),
       onSelect: again.ask,
     });
   }
@@ -712,6 +739,25 @@ export function SessionPage({
             ? "Wait until the summary is ready."
             : (remoteReason ?? undefined),
       onSelect: removal.ask,
+    });
+  }
+  // A note whose transcript was removed has no Remove Transcript (R15,
+  // R17). The confirmation names the audio and a missing summary, so the
+  // action waits for the detail and the document.
+  if (phase === "saved" && !deleted && !noAudio && !transcriptRemoved) {
+    items.push({
+      label: "Remove Transcript…",
+      disabled: !detail || !doc || folderHeld || summarizing || remote !== null,
+      reason: folderHeld
+        ? heldReason
+        : summarizing
+          ? "Wait until the summary is ready."
+          : (remoteReason ?? undefined),
+      onSelect: () =>
+        transcriptRemoval.ask({
+          audio: detail?.audio !== "removed",
+          summary: doc?.summary != null && !doc.summary.stub,
+        }),
     });
   }
   // A note that another computer did not finish can go, after a
@@ -744,10 +790,10 @@ export function SessionPage({
   const regenerateControl = (
     // A disabled button gets no pointer events, so the reason is on the
     // element around it. The reason is the reason of the "…" menu item.
-    <span title={held ? heldReason : (remoteReason ?? undefined)} className="inline-flex">
+    <span title={regenerateReason} className="inline-flex">
       <Button
         prominent={!doc?.summary || doc.summary.stub || summaryKept}
-        disabled={summarizing || held || remote !== null}
+        disabled={regenerateDisabled}
         onClick={regenerate}
       >
         Regenerate Summary
@@ -1069,6 +1115,7 @@ export function SessionPage({
       {deletion.dialog}
       {again.dialog}
       {removal.dialog}
+      {transcriptRemoval.dialog}
     </div>
   );
 }
