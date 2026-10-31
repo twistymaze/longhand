@@ -1,6 +1,6 @@
 ---
 title: Remove the transcripts of old notes
-description: "A second setting, off by default, removes the transcript of a note after a delay that is never shorter than the audio delay; old notes keep only summary, notes, title and tags"
+description: "A second setting, off by default, removes the transcript of a note after a delay that is never shorter than the audio delay; the database keeps no transcript or summary text after processing; Transcribe Again transcribes again"
 area: library-and-sharing
 added: 2026-10-30
 source: "the user, in a brainstorm on 2026-10-30"
