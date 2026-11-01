@@ -3127,7 +3127,7 @@ dependencies = [
  "block2",
  "chrono",
  "diarize",
- "dirs 6.0.0",
+ "dirs 7.0.0",
  "dispatch2",
  "fern",
  "futures-util",

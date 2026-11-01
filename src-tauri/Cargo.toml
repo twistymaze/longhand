@@ -40,7 +40,7 @@ sha2 = "0.10"
 rfd = { version = "0.16", default-features = false, features = ["common-controls-v6"] }
 # The log file path for the alert after a build error (src/startup.rs).
 # tauri uses the same crate for its paths.
-dirs = "6"
+dirs = "7"
 
 audio = { path = "../crates/audio" }
 audio-cpal = { path = "../crates/audio-cpal" }
