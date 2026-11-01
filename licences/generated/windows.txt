@@ -1066,7 +1066,7 @@ DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------
 
 dpi 0.1.2
-tao 0.37.1
+tao 0.37.2
 
 Apache License
                            Version 2.0, January 2004
@@ -2395,8 +2395,6 @@ derive_more-impl 2.1.1
     Copyright (c) 2016 Jelte Fennema
 digest 0.10.7
     Copyright (c) 2017 Artyom Pavlov
-dirs 6.0.0
-    Copyright (c) 2018-2019 dirs-rs contributors
 dirs 7.0.0
     Copyright (c) 2018-2019 dirs-rs contributors
 dirs-sys 0.5.0
@@ -2710,7 +2708,7 @@ sha2 0.10.9
     Copyright (c) 2016 Artyom Pavlov
 simd-adler32 0.3.10
     Copyright (c) [2021] [Marvin Countryman]
-siphasher 1.0.3
+siphasher 1.0.4
 slab 0.4.12
     Copyright (c) 2019 Carl Lerche
 smallvec 1.16.4
@@ -2768,7 +2766,7 @@ tauri-plugin-window-state 2.5.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-runtime 2.12.2
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-runtime-wry 2.12.2
+tauri-runtime-wry 2.12.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-specta 2.0.0-rc.21
 tauri-specta-macros 2.0.0-rc.16
@@ -2843,7 +2841,7 @@ tray-icon 0.25.1
 try-lock 0.2.5
     Copyright (c) 2016 Alex Crichton
     Copyright (c) 2018-2023 Sean McArthur
-typed-path 0.12.4
+typed-path 0.13.0
 typeid 1.0.3
 typenum 1.20.1
     Copyright (c) 2014 Paho Lurie-Gregg
@@ -2892,6 +2890,7 @@ windows-numerics 0.3.1
 windows-registry 0.6.1
 windows-result 0.4.1
 windows-strings 0.5.1
+windows-sys 0.52.0
 windows-sys 0.59.0
 windows-sys 0.60.2
 windows-sys 0.61.2
@@ -2904,13 +2903,13 @@ windows_x86_64_msvc 0.53.1
 winnow 1.0.4
 winreg 0.55.0
     Copyright (c) 2015 Igor Shaula
-wry 0.57.0
+wry 0.57.1
     Copyright (c) 2020-2023 Ngo Iok Ui & Tauri Programme within The Commons Conservancy
 zerocopy 0.8.63
     Copyright 2023 The Fuchsia Authors
 zeroize 1.9.1
     Copyright (c) 2018-2026 The RustCrypto Project Developers
-zip 9.0.5
+zip 9.1.0
     Copyright (c) 2014 Mathijs van de Nes
 zmij 1.0.23
 

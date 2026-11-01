@@ -1066,7 +1066,7 @@ DEALINGS IN THE SOFTWARE.
 ------------------------------------------------------------------------
 
 dpi 0.1.2
-tao 0.37.1
+tao 0.37.2
 
 Apache License
                            Version 2.0, January 2004
@@ -2412,8 +2412,6 @@ derive_more-impl 2.1.1
     Copyright (c) 2016 Jelte Fennema
 digest 0.10.7
     Copyright (c) 2017 Artyom Pavlov
-dirs 6.0.0
-    Copyright (c) 2018-2019 dirs-rs contributors
 dirs 7.0.0
     Copyright (c) 2018-2019 dirs-rs contributors
 dirs-sys 0.5.0
@@ -2776,7 +2774,7 @@ sha2 0.10.9
     Copyright (c) 2016 Artyom Pavlov
 simd-adler32 0.3.10
     Copyright (c) [2021] [Marvin Countryman]
-siphasher 1.0.3
+siphasher 1.0.4
 slab 0.4.12
     Copyright (c) 2019 Carl Lerche
 smallvec 1.16.4
@@ -2840,7 +2838,7 @@ tauri-plugin-window-state 2.5.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-runtime 2.12.2
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-runtime-wry 2.12.2
+tauri-runtime-wry 2.12.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-specta 2.0.0-rc.21
 tauri-specta-macros 2.0.0-rc.16
@@ -2942,7 +2940,7 @@ web_atoms 0.2.6
 window-vibrancy 0.8.1
     Copyright (c) 2020-2022 Tauri Programme within The Commons Conservancy
 winnow 1.0.4
-wry 0.57.0
+wry 0.57.1
     Copyright (c) 2020-2023 Ngo Iok Ui & Tauri Programme within The Commons Conservancy
 xattr 1.6.1
     Copyright (c) 2015 Steven Allen
