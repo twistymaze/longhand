@@ -17,3 +17,4 @@ Tell the summary model to write the summary and the title in the main language o
 
 ## Notes / Current state
 - Upkeep review, 2026-10-19 (issue #47): transcribe.cpp 0.4.0 has a langid role that detects the spoken language. With `transcribe-cpp-update`, Longhand can use it to choose the summary language.
+- Upkeep review, 2026-10-31 (Handy 126bed73): Handy now detects the spoken language with the catalog's ECAPA langid GGUF on the CPU, limited to the user's spoken languages, and records the language of each transcription. It changed the detector's default quant from Q8_0 to F16. Longhand has transcribe-cpp 0.4.1, which supplies the langid role.

@@ -86,6 +86,12 @@ These come from the reference source review of 2026-10-15 (`docs/reference/refer
 
 **Smaller facts.** glib 0.18.5 in `Cargo.lock` is flagged by Dependabot, but it is Linux-only and comes from tauri's GTK, so Longhand cannot update it and does not ship it (anarlog e77fd81b). When a merge regenerates `Cargo.lock`, transitive pins can move without a reason; restore the lock and apply only the intended update (Shorthand 6b7543e). After a native dependency is removed, change the CI cache key: a stale rust-cache with ONNX Runtime files broke Handy's Windows ARM64 signing (5197faf).
 
+## Findings from the 2026-10-31 review
+
+**An Intel Mac build needs transcribe-cpp without Metal** (Handy 7bfb2e2c). On x86_64 macOS, ggml-metal compiles its shader library when the backend starts. On some AMD GPUs that compile does not end, so each model load stops. Handy turns off the `metal` feature for x86_64 macOS. `crates/asr/Cargo.toml` turns on `metal` for all of macOS. Longhand ships Apple silicon only, so it is not affected now. An Intel Mac build must set the feature by `target_arch`.
+
+**NeMo-Speech.cpp 0.3.0 adds SALM transcription** (6a625011). Nemotron 3.5 Transcribe uses a hybrid Mamba2 decoder through a patched llama.cpp. The fast path is CUDA only. CPU and Vulkan use plain llama.cpp, and the documents give no Metal path. A later commit (66d50d9) returns an empty transcript for audio with no voice, because noise made the decoder write text that nobody said. Longhand cannot use SALM on its Mac build now.
+
 ## Settings and secrets
 
 The two projects solve different halves of this and both halves are worth taking.
