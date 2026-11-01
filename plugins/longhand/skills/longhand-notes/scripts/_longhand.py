@@ -33,6 +33,8 @@ for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(errors="backslashreplace")
     except (AttributeError, ValueError):
+        # A replaced or closed stream cannot change its error handling.
+        # It keeps the error handling that it has.
         pass
 
 # ---------------------------------------------------------------- file names
@@ -868,6 +870,7 @@ def _front_matter_value(value):
             if isinstance(text, str):
                 return text
         except ValueError:
+            # A value in quotes that is not valid JSON is plain text.
             pass
     return value
 
