@@ -2864,7 +2864,7 @@ walkdir 2.5.0
     Copyright (c) 2015 Andrew Gallant
 want 0.3.2
     Copyright (c) 2018-2019 Sean McArthur
-wasapi 0.23.0
+wasapi 0.26.0
     Copyright (c) 2020 Henrik Enquist
 web-time 1.1.0
     Copyright (c) 2023 dAxpeDDa
@@ -2890,7 +2890,6 @@ windows-numerics 0.3.1
 windows-registry 0.6.1
 windows-result 0.4.1
 windows-strings 0.5.1
-windows-sys 0.52.0
 windows-sys 0.59.0
 windows-sys 0.60.2
 windows-sys 0.61.2
