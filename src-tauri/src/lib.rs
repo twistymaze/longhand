@@ -221,6 +221,27 @@ pub fn export_bindings(builder: &Builder<tauri::Wry>) {
             BINDINGS_PATH,
         )
         .expect("failed to export TypeScript bindings");
+    let bindings =
+        std::fs::read_to_string(BINDINGS_PATH).expect("failed to read TypeScript bindings");
+    let cleaned = without_unused_channel_import(&bindings);
+    if cleaned != bindings {
+        std::fs::write(BINDINGS_PATH, cleaned).expect("failed to write TypeScript bindings");
+    }
+}
+
+/// The import that tauri-specta always writes for channel arguments.
+const CHANNEL_IMPORT: &str = "\tChannel as TAURI_CHANNEL,\n";
+
+/// Remove the channel import when no command has a channel argument, so
+/// GitHub Code Quality does not report an unused import. `// @ts-nocheck`
+/// stops the type check from finding a missing import, so the import stays
+/// when any other line uses `TAURI_CHANNEL`.
+fn without_unused_channel_import(bindings: &str) -> String {
+    if bindings.contains(CHANNEL_IMPORT) && bindings.matches("TAURI_CHANNEL").count() == 1 {
+        bindings.replacen(CHANNEL_IMPORT, "", 1)
+    } else {
+        bindings.to_string()
+    }
 }
 
 /// Take the single-instance lock in the app's data directory before the
@@ -551,5 +572,27 @@ mod tests {
     #[test]
     fn export_bindings() {
         super::export_bindings(&super::specta_builder());
+    }
+
+    const GLOBALS: &str = "import {\n\tinvoke as TAURI_INVOKE,\n\tChannel as TAURI_CHANNEL,\n} from \"@tauri-apps/api/core\";\n";
+
+    #[test]
+    fn unused_channel_import_is_removed() {
+        assert_eq!(
+            super::without_unused_channel_import(GLOBALS),
+            "import {\n\tinvoke as TAURI_INVOKE,\n} from \"@tauri-apps/api/core\";\n"
+        );
+    }
+
+    #[test]
+    fn used_channel_import_is_kept() {
+        let bindings = format!("{GLOBALS}const onEvent = new TAURI_CHANNEL();\n");
+        assert_eq!(super::without_unused_channel_import(&bindings), bindings);
+    }
+
+    #[test]
+    fn bindings_without_channel_import_are_unchanged() {
+        let bindings = "import { invoke as TAURI_INVOKE } from \"@tauri-apps/api/core\";\n";
+        assert_eq!(super::without_unused_channel_import(bindings), bindings);
     }
 }
