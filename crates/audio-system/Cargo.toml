@@ -13,13 +13,13 @@ tokio = { version = "1", features = ["sync"] }
 tokio-stream = "0.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-cidre = { version = "0.15", default-features = false, features = ["av", "cm", "core_audio", "macos_15_0"] }
+cidre = { version = "0.29", default-features = false, features = ["av", "cm", "core_audio", "dispatch", "macos_15_0"] }
 libc = "0.2"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSBundle", "NSData", "NSDictionary", "NSEnumerator", "NSGeometry", "NSString", "NSURL"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSRunningApplication", "NSWorkspace"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-wasapi = "0.23.0"
+wasapi = "0.26.0"
 windows-core = "0.62"
 windows = { version = "0.62", features = [
     "Wdk_System_SystemServices",
