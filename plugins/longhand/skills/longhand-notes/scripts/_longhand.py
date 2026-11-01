@@ -33,8 +33,8 @@ for _stream in (sys.stdout, sys.stderr):
     try:
         _stream.reconfigure(errors="backslashreplace")
     except (AttributeError, ValueError):
-        # A replaced stream can have no reconfigure method. It keeps its
-        # own error handling.
+        # A replaced or closed stream cannot change its error handling.
+        # It keeps the error handling that it has.
         pass
 
 # ---------------------------------------------------------------- file names
