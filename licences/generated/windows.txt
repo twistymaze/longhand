@@ -1435,7 +1435,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ------------------------------------------------------------------------
 
-rustls-webpki 0.103.15
+rustls-webpki 0.103.16
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -2530,7 +2530,7 @@ libsqlite3-sys 0.38.2 (includes SQLite)
     Copyright (c) 2014 The rusqlite developers
 lock_api 0.4.14
     Copyright (c) 2016 The Rust Project Developers
-log 0.4.34
+log 0.4.35
     Copyright (c) 2014 The Rust Project Developers
 markup5ever 0.39.0
     Copyright (c) 2014 The html5ever Project Developers
@@ -2580,7 +2580,7 @@ num-traits 0.2.19
 once_cell 1.21.4
 opus 0.4.0
     Copyright (c) 2016 Tad Hardesty
-ordered-float 5.5.0
+ordered-float 5.5.1
     Copyright (c) 2015 Jonathan Reem
 ort 2.0.0-rc.15
     Copyright (c) 2020 Nicolas Bigaouette
@@ -2637,7 +2637,8 @@ raw-window-handle 0.6.2
     Copyright (c) 2019 Osspial
 rawpointer 0.2.1
     Copyright (c) 2015
-realfft 3.5.0
+realfft 3.5.1
+    Copyright (c) 2020 Henrik Enquist and RealFFT contributors
 ref-cast 1.0.27
 ref-cast-impl 1.0.27
 regex 1.13.1
@@ -2655,7 +2656,7 @@ rfd 0.16.0
 rig-core 0.44.0
     Copyright (c) 2024, Playgrounds Analytics Inc.
 rig-http 0.44.0
-rtrb 0.4.0
+rtrb 0.4.1
 rubato 0.16.2
     Copyright (c) 2020 Henrik Enquist
 rusqlite 0.40.2
@@ -2955,7 +2956,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ------------------------------------------------------------------------
 
-opusic-sys 0.7.5 (includes libopus)
+opusic-sys 0.7.6 (includes libopus)
     Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon
 
 Redistribution and use in source and binary forms, with or without
