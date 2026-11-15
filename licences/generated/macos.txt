@@ -1277,7 +1277,7 @@ dunce 1.0.5
 hound 3.5.1
 knf-rs-sys 0.3.2 (includes kaldi-native-fbank)
 ring 0.17.14
-rusqlite_migration 2.6.0
+rusqlite_migration 2.7.0
 ryu 1.0.23
 sync_wrapper 1.0.2
 
@@ -1389,7 +1389,7 @@ DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
 
-notify 8.2.0
+notify 8.2.2
 
 Creative Commons CC0 1.0 Universal
 
@@ -2333,16 +2333,14 @@ bit-set 0.8.0
     Copyright (c) 2023 The Rust Project Developers
 bit-vec 0.8.0
     Copyright (c) 2023 The Rust Project Developers
-bitflags 1.3.2
-    Copyright (c) 2014 The Rust Project Developers
 bitflags 2.13.2
     Copyright (c) 2014 The Rust Project Developers
 block-buffer 0.10.4
     Copyright (c) 2018-2019 The RustCrypto Project Developers
 block2 0.6.2
-brotli 9.0.0
+brotli 9.1.1
     Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
-brotli-decompressor 6.0.1
+brotli-decompressor 6.3.0
 byteorder 1.5.0
     Copyright (c) 2015 Andrew Gallant
 byteorder-lite 0.1.0
@@ -2376,7 +2374,7 @@ coreaudio-rs 0.14.2
     Copyright (c) 2015
 cpufeatures 0.2.17
     Copyright (c) 2020-2025 The RustCrypto Project Developers
-crc32fast 1.5.2
+crc32fast 1.5.4
     Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 crossbeam-channel 0.5.17
     Copyright (c) 2019 The Crossbeam Project Developers
@@ -2444,7 +2442,7 @@ file-id 0.2.3
     Copyright (c) 2023 Notify Contributors
 filetime 0.2.29
     Copyright (c) 2014 Alex Crichton
-flate2 1.1.10
+flate2 1.1.11
     Copyright (c) 2014-2026 Alex Crichton
 fnv 1.0.7
     Copyright (c) 2017 Contributors
@@ -2456,8 +2454,6 @@ foreign-types-shared 0.3.1
     Copyright (c) 2017 The foreign-types Developers
 form_urlencoded 1.2.2
     Copyright (c) 2013-2016 The rust-url developers
-fsevent-sys 4.1.0
-    Copyright (c) 2015 Pierre Baillet
 futures 0.3.34
     Copyright (c) 2016 Alex Crichton
     Copyright (c) 2017 The Tokio Authors
@@ -2525,7 +2521,7 @@ hyper-util 0.1.21
     Copyright (c) 2023-2025 Sean McArthur
 iana-time-zone 0.1.65
     Copyright (c) 2020 Andrew D. Straw
-ico 0.5.0
+ico 0.6.0
     Copyright (c) 2018 Matthew D. Steele
 ident_case 1.0.1
 idna 1.1.0
@@ -2560,7 +2556,7 @@ knf-rs-sys 0.3.2 (includes kaldi-native-fbank)
 lazy_static 1.5.1
 libc 0.2.191
     Copyright (c) The Rust Project Developers
-libsqlite3-sys 0.38.2 (includes SQLite)
+libsqlite3-sys 0.39.1 (includes SQLite)
     Copyright (c) 2014 The rusqlite developers
 lock_api 0.4.14
     Copyright (c) 2016 The Rust Project Developers
@@ -2574,7 +2570,7 @@ markup5ever 0.39.0
     Copyright (c) 2014 The html5ever Project Developers
 memchr 2.8.3
     Copyright (c) 2015 Andrew Gallant
-mime 0.3.17
+mime 0.3.18
     Copyright (c) 2014 Sean McArthur
 mime_guess 2.0.5
     Copyright (c) 2015 Austin Bonander
@@ -2605,7 +2601,7 @@ notify-debouncer-full 0.7.0
     Copyright (c) 2023 Notify Contributors
 notify-rust 4.18.2
     Copyright (c) 2017 Hendrik Sollich
-notify-types 2.1.0
+notify-types 2.2.0
     Copyright (c) 2023 Notify Contributors
 num-complex 0.4.6
     Copyright (c) 2014 The Rust Project Developers
@@ -2669,10 +2665,8 @@ phf_macros 0.13.1
 phf_shared 0.13.1
     Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
 pin-project-lite 0.2.17
-plist 1.10.1
+plist 1.10.3
     Copyright (c) 2015 Edward Barnard
-png 0.17.16
-    Copyright (c) 2015 nwin
 png 0.18.1
     Copyright (c) 2015 nwin
 powerfmt 0.2.1
@@ -2714,7 +2708,8 @@ regex-syntax 0.8.11
     Copyright (c) 2014 The Rust Project Developers
 reqwest 0.13.5
     Copyright (c) 2016-2026 Sean McArthur
-rfd 0.16.0
+rfd 0.17.2
+    Copyright (c) 2020 Bilal Elmoussaoui
     Copyright (c) 2022 Bartłomiej Maryńczak
 rig-core 0.44.0
     Copyright (c) 2024, Playgrounds Analytics Inc.
@@ -2722,12 +2717,12 @@ rig-http 0.44.0
 rtrb 0.4.1
 rubato 0.16.2
     Copyright (c) 2020 Henrik Enquist
-rusqlite 0.40.2
+rusqlite 0.41.1
     Copyright (c) 2014 The rusqlite developers
 rustc-hash 2.1.3
 rustfft 6.4.1
     Copyright (c) 2015 The RustFFT Developers
-rustix 1.1.5
+rustix 1.1.6
 rustls 0.23.46
 rustls-pki-types 1.15.1
 rustls-platform-verifier 0.7.1
@@ -2759,9 +2754,9 @@ serde_json 1.0.154
 serde_repr 0.1.21
 serde_spanned 1.1.3
     Copyright (c) Individual contributors
-serde_with 3.23.0
+serde_with 3.24.0
     Copyright (c) 2015
-serde_with_macros 3.23.0
+serde_with_macros 3.24.0
     Copyright (c) 2015
 serde_yaml 0.9.34+deprecated
 serialize-to-javascript 0.1.2
@@ -2807,15 +2802,15 @@ system-configuration-sys 0.6.0
     Copyright (c) 2024 Mullvad VPN AB
 tar 0.4.46
     Copyright (c) The tar-rs Project Contributors
-tauri 2.12.4
+tauri 2.12.5
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-codegen 2.7.3
+tauri-codegen 2.7.4
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-macros 2.7.3
+tauri-macros 2.7.4
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-nspanel 2.1.1
     Copyright (c) 2023 - Present Victor Aremu
-tauri-plugin-dialog 2.8.3
+tauri-plugin-dialog 2.8.4
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-fs 2.7.1
     Copyright (c) 2017 - Present Tauri Apps Contributors
@@ -2829,7 +2824,7 @@ tauri-plugin-notification 2.7.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-opener 2.7.2
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-plugin-single-instance 2.5.4
+tauri-plugin-single-instance 2.5.5
     Copyright (c) 2017 - Present The Tauri Programme in the Commons Conservancy
 tauri-plugin-store 2.5.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
@@ -2859,7 +2854,7 @@ time-core 0.1.9
     Copyright (c) Jacob Pratt et al.
 time-macros 0.2.32
     Copyright (c) Jacob Pratt et al.
-tokio 1.53.3
+tokio 1.54.1
     Copyright (c) Tokio Contributors
 tokio-macros 2.7.2
     Copyright (c) 2019 Yoshua Wuyts
@@ -2872,13 +2867,13 @@ tokio-stream 0.1.19
     Copyright (c) Tokio Contributors
 tokio-util 0.7.20
     Copyright (c) Tokio Contributors
-toml 1.1.8+spec-1.1.0
+toml 1.2.1+spec-1.1.0
     Copyright (c) Individual contributors
 toml_datetime 1.1.3+spec-1.1.0
     Copyright (c) Individual contributors
 toml_parser 1.1.5+spec-1.1.0
     Copyright (c) Individual contributors
-toml_writer 1.1.3+spec-1.1.0
+toml_writer 1.2.0+spec-1.1.0
     Copyright (c) Individual contributors
 tower 0.5.3
     Copyright (c) 2019 Tower Contributors
@@ -2905,7 +2900,7 @@ transcribe-cpp-sys 0.4.1 (includes ggml, miniz and code translated from Silero V
     Copyright 2013-2014 RAD Game Tools and Valve Software
 transpose 0.2.3
     Copyright (c) 2022 The transpose Developers
-trash 5.2.9
+trash 5.3.0
     Copyright 2019 Artúr Barnabás Kovács
 tray-icon 0.25.1
     Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy
@@ -2925,9 +2920,11 @@ url 2.5.8
     Copyright (c) 2013-2025 The rust-url developers
 urlpattern 0.6.0
     Copyright (c) 2021 the Deno authors
-utf8_iter 1.0.4
+utf8_iter 1.1.0
     Copyright Mozilla Foundation
-uuid 1.28.0
+utf_types 1.0.0
+    Copyright Mozilla Foundation
+uuid 1.29.1
     Copyright (c) 2014 The Rust Project Developers
     Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
 walkdir 2.5.0
@@ -2940,10 +2937,10 @@ web_atoms 0.2.6
     Copyright (c) 2014 The html5ever Project Developers
 window-vibrancy 0.8.1
     Copyright (c) 2020-2022 Tauri Programme within The Commons Conservancy
-winnow 1.0.4
+winnow 1.0.5
 wry 0.57.1
     Copyright (c) 2020-2023 Ngo Iok Ui & Tauri Programme within The Commons Conservancy
-xattr 1.6.1
+xattr 1.7.0
     Copyright (c) 2015 Steven Allen
 zerocopy 0.8.63
     Copyright 2023 The Fuchsia Authors
@@ -2994,7 +2991,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ------------------------------------------------------------------------
 
-opusic-sys 0.7.5 (includes libopus)
+opusic-sys 0.7.7 (includes libopus)
     Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon
 
 Redistribution and use in source and binary forms, with or without
@@ -3042,7 +3039,7 @@ https://datatracker.ietf.org/ipr/1526/
 alloc-no-stdlib 3.0.0
     Copyright (c) 2016 Dropbox, Inc. All rights reserved.
 alloc-stdlib 0.3.0
-brotli 9.0.0
+brotli 9.1.1
     Copyright (c) 2016 Dropbox, Inc. All rights reserved.
 sha1_smol 1.0.1
 subtle 2.6.1
@@ -3073,7 +3070,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ------------------------------------------------------------------------
 
-open 5.4.4
+open 5.4.5
     Copyright © `2015` `Sebastian Thiel`
 
 The MIT License (MIT)
@@ -3102,7 +3099,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 ------------------------------------------------------------------------
 
-libsqlite3-sys 0.38.2 (includes SQLite)
+libsqlite3-sys 0.39.1 (includes SQLite)
 
 The author disclaims copyright to this source code.  In place of
 ** a legal notice, here is a blessing:
@@ -3209,25 +3206,25 @@ authorization of the copyright holder.
 
 ------------------------------------------------------------------------
 
-icu_collections 2.3.0
+icu_collections 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-icu_locale_core 2.3.0
+icu_locale_core 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-icu_normalizer 2.3.0
+icu_normalizer 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-icu_normalizer_data 2.3.0
+icu_normalizer_data 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-icu_properties 2.3.0
+icu_properties 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-icu_properties_data 2.3.0
+icu_properties_data 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-icu_provider 2.3.1
+icu_provider 2.4.0
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
 litemap 0.8.3
@@ -3236,13 +3233,13 @@ litemap 0.8.3
 potential_utf 0.1.6
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-tinystr 0.8.4
+tinystr 0.8.5
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
 writeable 0.6.4
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-yoke 0.8.3
+yoke 0.8.4
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
 yoke-derive 0.8.4
@@ -3257,10 +3254,10 @@ zerofrom-derive 0.1.8
 zerotrie 0.2.5
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-zerovec 0.11.8
+zerovec 0.11.9
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
-zerovec-derive 0.11.6
+zerovec-derive 0.11.7
     COPYRIGHT AND PERMISSION NOTICE
     Copyright © 2020-2024 Unicode, Inc.
 
@@ -3582,7 +3579,7 @@ prosemirror-inputrules 1.5.1
 prosemirror-keymap 1.2.3
 prosemirror-markdown 1.13.9
 prosemirror-model 1.25.13
-prosemirror-schema-list 1.5.1
+prosemirror-schema-list 1.6.0
 prosemirror-state 1.4.4
 prosemirror-transform 1.12.1
 prosemirror-view 1.42.3
@@ -3596,7 +3593,7 @@ react-reconciler 0.33.0
 rope-sequence 1.3.4
 scheduler 0.27.0
     Copyright (c) Meta Platforms, Inc. and affiliates.
-tailwindcss 4.3.3 (generated base styles)
+tailwindcss 4.3.5 (generated base styles)
     Copyright (c) Tailwind Labs, Inc.
 tauri-plugin-macos-permissions-api 2.3.0
     Copyright (c) 2024 ayang

@@ -11,13 +11,13 @@
     },
     {
       "name": "tailwindcss",
-      "version": "4.3.3",
+      "version": "4.3.5",
       "npmPackage": "tailwindcss",
       "part": "interface",
       "note": "generated base styles",
       "platforms": ["macos", "windows"],
       "files": ["licences/sources/tailwindcss-LICENSE.txt"],
-      "source": "https://github.com/tailwindlabs/tailwindcss/blob/v4.3.3/LICENSE"
+      "source": "https://github.com/tailwindlabs/tailwindcss/blob/v4.3.5/LICENSE"
     },
     {
       "name": "ONNX Runtime",
