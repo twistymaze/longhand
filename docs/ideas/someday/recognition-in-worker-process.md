@@ -19,3 +19,4 @@ Longhand runs transcribe-cpp in the app process (`crates/asr/src/engine.rs`). A 
 - The NeMo helper (`native/nemo-helper`) already runs in its own process. Its supervision may be a model for this.
 - Live transcription streams audio, so the worker needs a streaming protocol, not only a file call.
 - Large effort.
+- Added 2026-11-15 (upkeep review, Handy GPU worker retry): a lost GPU device can also come back as a backend error, not a crash. Longhand maps it to `AsrError::Run` and keeps the same ggml-vulkan device, which ggml keeps in a process-wide cache, so after a driver reset on Windows each later note probably fails until a restart (inferred from the code, not tested). Handy now retries once in a new GPU worker and then uses the CPU. A smaller first step without a worker: on a backend error, run the failed job again on the CPU.

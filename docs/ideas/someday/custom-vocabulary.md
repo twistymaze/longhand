@@ -19,3 +19,6 @@ Names of people, products and vendors are the words that a summary needs most, a
 - Needs transcribe-cpp 0.4 (`transcribe-cpp-update`).
 - Of Longhand's catalog models, probably only Whisper takes a vocabulary (inferred, not checked).
 - Tags of the Person and Vendor scopes could seed the list.
+- Added 2026-11-15 (upkeep review, Handy vocabulary through transcribe-cpp): Handy passes the user's word list through the transcribe-cpp vocabulary API. A later fix (1e10e71, #2506) drops a transcript that is only the word list read back: Qwen3-ASR takes the words as a prompt and repeats them on a recording with no speech. Add the same guard for silent windows.
+- The Background (Settings, Summaries) already lists names, terms and common misspellings for each summary and title call. A design can take the names and terms from the Background, or keep one list for both, so that the user does not keep two lists.
+- transcribe-cpp 0.4.2 removes the glossary from the custom-word prompt. Check which catalog models and the NeMo helper accept a vocabulary before a plan.
