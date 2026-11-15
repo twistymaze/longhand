@@ -2757,7 +2757,7 @@ serde_derive_internals 0.29.1
 serde_derive_internals 0.30.0
 serde_json 1.0.154
 serde_repr 0.1.21
-serde_spanned 1.1.2
+serde_spanned 1.1.3
     Copyright (c) Individual contributors
 serde_with 3.23.0
     Copyright (c) 2015
@@ -2778,7 +2778,7 @@ simd-adler32 0.3.10
 siphasher 1.0.4
 slab 0.4.12
     Copyright (c) 2019 Carl Lerche
-smallvec 1.16.4
+smallvec 1.16.5
     Copyright (c) 2018 The Servo Project Developers
 socket2 0.6.5
     Copyright (c) 2014 Alex Crichton
@@ -2874,7 +2874,7 @@ tokio-util 0.7.20
     Copyright (c) Tokio Contributors
 toml 1.1.8+spec-1.1.0
     Copyright (c) Individual contributors
-toml_datetime 1.1.2+spec-1.1.0
+toml_datetime 1.1.3+spec-1.1.0
     Copyright (c) Individual contributors
 toml_parser 1.1.5+spec-1.1.0
     Copyright (c) Individual contributors
@@ -2994,7 +2994,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ------------------------------------------------------------------------
 
-opusic-sys 0.7.6 (includes libopus)
+opusic-sys 0.7.5 (includes libopus)
     Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic, Jean-Marc Valin, Timothy B. Terriberry, CSIRO, Gregory Maxwell, Mark Borgerding, Erik de Castro Lopo, Mozilla, Amazon
 
 Redistribution and use in source and binary forms, with or without
@@ -3581,7 +3581,7 @@ prosemirror-history 1.5.1
 prosemirror-inputrules 1.5.1
 prosemirror-keymap 1.2.3
 prosemirror-markdown 1.13.9
-prosemirror-model 1.25.12
+prosemirror-model 1.25.13
 prosemirror-schema-list 1.5.1
 prosemirror-state 1.4.4
 prosemirror-transform 1.12.1
