@@ -86,6 +86,28 @@ class RefreshTests(unittest.TestCase):
         tags = ["en-US", "en-GB", "es-US", "es-ES", "ar-AR", "nb-NO", "zh-CN", "de"]
         self.assertEqual(refresh.language_codes(tags), ["en", "es", "ar", "nb", "zh", "de"])
 
+    def test_entry_reduces_region_tags_and_keeps_card_licence(self):
+        self.handy.update(
+            id="nemotron-3.5-asr-streaming-0.6b",
+            repository="handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf",
+            license="other",
+            languages=["en-US", "en-GB", "es-ES", "ar-AR"],
+        )
+        self.checked_in["id"] = "nemotron-3.5-asr-streaming-0.6b-q80"
+        result = self.entry()
+        self.assertEqual(result["languages"], ["en", "es", "ar"])
+        self.assertEqual(result["description"], "3 languages, token-level timestamps, streaming.")
+        self.assertEqual(result["licence"]["name"], "OpenMDW-1.1")
+
+    def test_other_licence_id_becomes_nvidia_open_model_license(self):
+        self.handy.update(
+            id="nemotron-speech-streaming-en-0.6b",
+            repository="handy-computer/nemotron-speech-streaming-en-0.6b-gguf",
+            license="other",
+        )
+        self.checked_in["id"] = "nemotron-speech-streaming-en-0.6b-q80"
+        self.assertEqual(self.entry()["licence"]["name"], "NVIDIA Open Model License")
+
     def test_handy_without_timestamps_fails(self):
         self.handy["capabilities"]["timestamps"] = False
         with self.assertRaisesRegex(SystemExit, "timestamps"):

@@ -5,13 +5,14 @@
 """Make Longhand's recognition-model entries from Handy's model catalog (KTD1).
 
     uv run scripts/refresh-catalog.py [path/to/handy/catalog.json]
-    uv run scripts/refresh-catalog.py --languages whisper-large-v3-turbo
+    uv run scripts/refresh-catalog.py --languages nemotron-3.5-asr-streaming-0.6b
 
 The first form prints, as JSON, the four `transcribe-cpp` entries that
 `crates/models/catalog.json` takes from Handy, in Longhand's schema. Copy
 them into that file. The script does not write the Whisper entry: that entry
 keeps its Q5_K_M file, so existing installs do not download it again. The
-second form prints the language codes of one Handy model.
+second form prints the language codes of one Handy model. Do not copy it into
+the Whisper entry: that entry keeps the language order of Handy 8f9cf53.
 
 Handy's catalog is a copy of the `@handy-computer/models` package, schema 2.
 Each entry uses the package's default quant, pinned revision, file name, size
