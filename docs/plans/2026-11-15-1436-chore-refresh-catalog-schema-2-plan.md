@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** A maintainer can run `scripts/refresh-catalog.py` on Handy's current model catalog and get the four borrowed recognition entries of `crates/models/catalog.json` again, with no change to what users download.
 - **Means:** Rewrite the script to read Handy catalog schema 2. Longhand's checked-in catalog keeps the values that schema 2 does not supply.
-- **Authority:** The checked-in `crates/models/catalog.json` wins over Handy's catalog for timestamp levels, recommendation, speaker preferences and assessment scores. The script's own tables give picker names, base models and licence overrides.
+- **Authority:** The checked-in `crates/models/catalog.json` wins over Handy's catalog for timestamp levels, recommendation and speaker preferences. The script's own tables give picker names, base models and licence overrides.
 - **Stop conditions:** Stop and ask when the script output for one of the four entries is different from the checked-in entry (other than key order), or when Handy's pinned revision, Q8_0 file name, size or SHA-256 changed.
 - **Execution profile:** `ce-work` in a worktree from `origin/main`, one commit, one PR titled `chore(models): …` (no app release).
 - **Open blockers:** None.
@@ -45,7 +45,7 @@ The pinned revision, Q8_0 file name, size and SHA-256 of all four entries, and t
 
 - `crates/models/catalog.json` does not change.
 - The Whisper entry stays written by hand, as before.
-- No new assessment scores from the schema 2 `results` block. New scores change the ratings that the model picker shows, which is a product decision (filed as a `someday` idea).
+- Changed during review of the PR: the scores now come from the schema 2 `results` block (KTD6), so `crates/models/catalog.json` changes its five assessment blocks and the PR is a `fix`.
 - No change to app code.
 
 ---
@@ -59,8 +59,8 @@ The pinned revision, Q8_0 file name, size and SHA-256 of all four entries, and t
 - KTD3. **Language codes from tags.** Reduce each tag to its lower-case primary subtag and drop repeats, in Handy's order. Nemotron 3.5's 32 tags give the 28 codes in the checked-in entry.
 - KTD4. **Base model in the script.** Schema 2 has no `base_model`, so the script's model table gives each entry its picker name and base model (`nvidia/<id>`). The publisher comes from the base model's organization, as before.
 - KTD5. **Licence.** Keep the map from Handy's licence id and the overrides for each id. Add Parakeet Unified EN 0.6B → NVIDIA Open Model License (see Problem Frame).
-- KTD6. **Assessment carried from the checked-in catalog.** Schema 2 has no 0–100 scores. Handy's deleted generator made them from older benchmark data (speed = 100·(1 − e^(−rtf/8)), accuracy = 100·e^(−wer/15)). The same formula on schema 2 data (CPU real-time factor, English error) gives other values (83 and 77 for Parakeet Unified EN, in place of 79 and 90). So the script copies each entry's `assessment` block from the checked-in entry, as it does for `recommended` and `speaker_preferences`, and fails when the block is missing. The block keeps its source link to Handy `8f9cf53`.
-- KTD7. **No Handy commit check.** The script output gets no value from the Handy commit that it reads (the copied assessment block keeps its own link to commit `8f9cf53`), so the script drops the Git check of the source file and `--source-revision`. PROVENANCE records the revision.
+- KTD6. **Assessment from the schema 2 results** (changed in review; the first version copied the frozen scores). Handy's model list computes its scores at runtime with the old formulas on the package's results: speed = 100·(1 − e^(−rtf/8)) from the GPU real-time factor (CPU when there is no GPU result), accuracy = 100·e^(−error/15) from the FLEURS error for English (first language otherwise). The old scores mixed LibriSpeech test-clean and FLEURS results, so they could not be compared between models. The script uses Handy's formulas, writes a `benchmark_context`, and gives no score when a model has no result. `--assessment <id>` prints the Whisper entry's block.
+- KTD7. **Handy commit check kept.** The assessment links to the Handy commit that the script reads, so the script keeps the Git check of the source file and `--source-revision`.
 
 ### Risks
 
