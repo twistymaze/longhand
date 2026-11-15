@@ -22,7 +22,7 @@ execution: code
 
 ### Summary
 
-Longhand watches each recording for 30 minutes with no speech and for 6 hours of total recording time. Either one shows "Still recording?" with a 2-minute countdown, and if nobody answers, Longhand stops the note. At every Stop, Longhand removes long stretches with no speech and a low sound level before it prepares the audio, so the saved note holds the meeting and not the empty room.
+Longhand watches each recording for 30 minutes with no speech and for 6 hours of total recording time. Either one shows "Still recording?" with a 2-minute countdown, and if nobody answers, Longhand stops the note. At every Stop, unless the user turned the cut off, Longhand removes long stretches with no speech and a low sound level before it prepares the audio, so the saved note holds the meeting and not the empty room.
 
 ### Problem Frame
 
@@ -43,7 +43,7 @@ A warning alone does not solve this, because the user is not there to see it.
 - **No answer stops the note and cuts the silent end.** The user finds a finished note of normal length, not an open note. Governs R7, R12. (session-settled: user-directed — chosen over a stop that keeps all audio, and over a Pause that leaves the note open and not processed)
 - **Defaults are 30 minutes, 6 hours and 2 minutes.** A quiet stretch of 30 minutes in a real meeting is rare, and 6 hours covers a workshop day. Governs R2, R3, R5, R10. (session-settled: user-directed — chosen over 15 min / 4 h / 2 min and 60 min / 8 h / 5 min)
 - **A countdown always ends in a stop, also when people talk.** A time limit is the user's own setting, so the user wants the note to stop at that time. Governs R7. (session-settled: user-directed — chosen over speech that holds the stop until 2 minutes with no speech: the user set the limit and wants it kept)
-- **Cut long silence only when both channels are quiet and have no speech.** Each doubt keeps the audio, so an error keeps audio and never removes speech. A noisy room is not cut. Governs R12, R13. (session-settled: user-directed — chosen over a cut on no speech alone with a 30-day backup of the removed audio, and over keeping all audio and making Preparing faster: the user wants the cut to be reliable nearly every time)
+- **Cut long silence only when both channels are quiet and have no speech.** When the two signals disagree, the audio stays. Quiet speech that the speech check also misses can still be removed, and the quiet-speech test in Success Criteria checks for this. A noisy room is not cut. Governs R12, R13. (session-settled: user-directed — chosen over a cut on no speech alone with a 30-day backup of the removed audio, and over keeping all audio and making Preparing faster: the user wants the cut to be reliable nearly every time)
 - **The cut applies at every Stop, not only after an automatic stop.** The silent end of an automatic stop is removed by this cut, not by a separate rule. A note that the user stopped late, or that ran with both checks off, gets the same benefit. Governs R12, R14. (session-settled: user-approved — proposed in the scoping synthesis with the effect on noisy notes shown, and confirmed)
 - **The prompt plays no sound.** The recording surface must not draw a meeting's attention to the screen (U7's attention budget). Governs R5. (session-settled: user-approved — proposed in the scoping synthesis and confirmed)
 - **A notice on an automatic stop, no notice for a cut.** An automatic stop is not normal and is important to the user. A cut is normal behaviour, and the silence line in the transcript shows it. Governs R8, R16. (session-settled: user-approved — proposed in the scoping synthesis and confirmed)
@@ -55,17 +55,17 @@ A warning alone does not solve this, because the user is not there to see it.
 **Speech and silence during recording**
 
 - R1. During every recording, Longhand detects speech on the microphone channel and on the app audio channel, also when the live transcript is off.
-- R2. The silence check triggers after 30 minutes of recording in which no speech was detected on either channel. Sound that is not speech, such as a fan, air conditioning or traffic, counts as silence, and speech on either channel starts the 30 minutes again.
+- R2. The silence check triggers after 30 minutes of recording in which no speech was detected on either channel. Sound that is not speech, such as a fan, air conditioning or traffic, counts as silence. Only speech on either channel that is longer than a short minimum, which planning sets, starts the 30 minutes again.
 - R3. The time limit triggers after 6 hours of recording time.
-- R4. Paused time does not count for either check. After Continue, the silence check starts again from zero, and the time limit continues from the recording time before the pause.
+- R4. Paused time does not count for either check. After Continue, the silence check starts again from zero, and the time limit continues from the recording time before the pause. Pause during a prompt closes the prompt.
 
 **The prompt and the automatic stop**
 
-- R5. When a check triggers, the computer that records shows "Still recording?" with a 2-minute countdown and two choices, Keep Recording and Stop. The prompt shows on the recording widget, in the main window and as a system notification, and it plays no sound.
-- R6. Keep Recording closes the prompt and starts the check that triggered again. The silence check counts again from zero, and the time limit asks again after a further 6 hours of recording time.
+- R5. When a check triggers, the computer that records shows "Still recording?" with a 2-minute countdown and two choices, Keep Recording and Stop. The prompt shows on the recording widget, in the main window and as a system notification. It plays no sound, and in the main window it takes no keyboard focus and has no default button.
+- R6. Keep Recording closes the prompt and starts each check in the prompt again. The silence check counts again from zero, and the time limit asks again after a further 6 hours of recording time.
 - R7. Stop, or the end of the countdown with no answer, stops the note the same way as the user's Stop, and processing starts. Speech during the countdown does not hold the stop.
-- R8. A note that Longhand stopped shows a short notice on the note that says which check stopped it.
-- R9. When both checks trigger at the same time, Longhand shows one prompt.
+- R8. A note that Longhand stopped shows a short notice on the note that names each check in the prompt.
+- R9. There is only one prompt at a time. A check that triggers while a prompt is open joins that prompt and keeps its countdown, and an answer on any surface, or the end of the countdown, closes the prompt on every surface and removes the system notification.
 
 **Settings**
 
@@ -74,9 +74,9 @@ A warning alone does not solve this, because the user is not there to see it.
 
 **Long-silence cut**
 
-- R12. At every Stop, by the user or by Longhand, Longhand removes each stretch of at least 10 minutes in which every recorded channel has no speech and a low sound level.
+- R12. When the long-silence cut is on, at every Stop, by the user or by Longhand, Longhand removes each stretch at least as long as the cut time (10 minutes by default) in which every recorded channel has no speech and a low sound level. When the cut is off, the note keeps all its audio.
 - R13. 1 minute of audio stays between a removed stretch and the speech on each side of it.
-- R14. Longhand finds and removes the stretches before Preparing the audio, so Preparing and all later stages process only the audio that stays.
+- R14. Longhand finds and removes the stretches before Preparing the audio, so Preparing and all later stages process only the audio that stays. The live transcript and live speaker results of the kept audio stay valid after the cut, so a cut never causes a second recognition pass.
 - R15. The transcript shows each removed stretch as one silence line with the duration that was removed.
 - R16. Removed audio is deleted permanently. The saved audio holds only the audio that stays, and the note shows no notice for a cut.
 
@@ -121,8 +121,9 @@ A warning alone does not solve this, because the user is not there to see it.
 ### Success Criteria
 
 - A note left recording in a quiet room after a meeting ends as a finished note that is at most a few minutes longer than the meeting.
-- After the forgotten note in the Problem Frame, Preparing the audio took 13 min 17 s for 43.5 hours. With the cut, Preparing takes about as long as for a note of the kept length.
-- In test recordings with quiet or far speech, the cut removes no stretch that has speech in it.
+- For a long recording with little kept audio, the full time from Stop to the finished note, including the search for silence and the cut, is much shorter than the 17 minutes of the forgotten note in the Problem Frame.
+- In test recordings with quiet or far speech on either channel, the cut removes no stretch that has speech in it.
+- In test recordings of empty rooms with a fan, air conditioning or traffic, the silence check triggers within 30 minutes of the last real speech.
 
 ### Scope Boundaries
 
@@ -148,6 +149,10 @@ A warning alone does not solve this, because the user is not there to see it.
 - How the stretches are found before Preparing: from data that the recording collects, or from a fast pass over the chunks.
 - How transcript times and the timeline of manual notes relate to the original recording time after a cut.
 - How the prompt behaves when the recording widget is hidden, when system notifications are off, or when the computer sleeps during the countdown.
+- How the recording widget shows the prompt and the countdown within U7's attention budget, for example a countdown that changes with no motion.
+- Which values each time setting allows, for example a cut time that is longer than the two 1-minute margins.
+- How the cut treats a saved note that is resumed and stopped again: only the new audio, or also a silent stretch that crosses the Resume.
+- How the live-result proofs map onto the kept audio after a cut, so that R14 holds.
 
 ### Sources
 
