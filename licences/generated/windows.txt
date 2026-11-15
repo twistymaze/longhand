@@ -1435,7 +1435,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ------------------------------------------------------------------------
 
-rustls-webpki 0.103.15
+rustls-webpki 0.103.16
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -2530,7 +2530,7 @@ libsqlite3-sys 0.38.2 (includes SQLite)
     Copyright (c) 2014 The rusqlite developers
 lock_api 0.4.14
     Copyright (c) 2016 The Rust Project Developers
-log 0.4.34
+log 0.4.35
     Copyright (c) 2014 The Rust Project Developers
 markup5ever 0.39.0
     Copyright (c) 2014 The html5ever Project Developers
@@ -2580,7 +2580,7 @@ num-traits 0.2.19
 once_cell 1.21.4
 opus 0.4.0
     Copyright (c) 2016 Tad Hardesty
-ordered-float 5.5.0
+ordered-float 5.5.1
     Copyright (c) 2015 Jonathan Reem
 ort 2.0.0-rc.15
     Copyright (c) 2020 Nicolas Bigaouette
@@ -2637,7 +2637,8 @@ raw-window-handle 0.6.2
     Copyright (c) 2019 Osspial
 rawpointer 0.2.1
     Copyright (c) 2015
-realfft 3.5.0
+realfft 3.5.1
+    Copyright (c) 2020 Henrik Enquist and RealFFT contributors
 ref-cast 1.0.27
 ref-cast-impl 1.0.27
 regex 1.13.1
@@ -2655,7 +2656,7 @@ rfd 0.16.0
 rig-core 0.44.0
     Copyright (c) 2024, Playgrounds Analytics Inc.
 rig-http 0.44.0
-rtrb 0.4.0
+rtrb 0.4.1
 rubato 0.16.2
     Copyright (c) 2020 Henrik Enquist
 rusqlite 0.40.2
@@ -2690,7 +2691,7 @@ serde_derive_internals 0.29.1
 serde_derive_internals 0.30.0
 serde_json 1.0.154
 serde_repr 0.1.21
-serde_spanned 1.1.2
+serde_spanned 1.1.3
     Copyright (c) Individual contributors
 serde_with 3.23.0
     Copyright (c) 2015
@@ -2711,7 +2712,7 @@ simd-adler32 0.3.10
 siphasher 1.0.4
 slab 0.4.12
     Copyright (c) 2019 Carl Lerche
-smallvec 1.16.4
+smallvec 1.16.5
     Copyright (c) 2018 The Servo Project Developers
 socket2 0.6.5
     Copyright (c) 2014 Alex Crichton
@@ -2803,7 +2804,7 @@ tokio-util 0.7.20
     Copyright (c) Tokio Contributors
 toml 1.1.8+spec-1.1.0
     Copyright (c) Individual contributors
-toml_datetime 1.1.2+spec-1.1.0
+toml_datetime 1.1.3+spec-1.1.0
     Copyright (c) Individual contributors
 toml_parser 1.1.5+spec-1.1.0
     Copyright (c) Individual contributors
@@ -3542,7 +3543,7 @@ prosemirror-history 1.5.1
 prosemirror-inputrules 1.5.1
 prosemirror-keymap 1.2.3
 prosemirror-markdown 1.13.9
-prosemirror-model 1.25.12
+prosemirror-model 1.25.13
 prosemirror-schema-list 1.5.1
 prosemirror-state 1.4.4
 prosemirror-transform 1.12.1
