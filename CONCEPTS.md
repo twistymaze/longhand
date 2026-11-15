@@ -133,6 +133,15 @@ The few attempts that Longhand makes to reopen a lost microphone during a note, 
 A small window above all other windows that shows the open note's state, time and Pause, Continue and Stop while a note is recording, paused or interrupted, so the user does not forget a note that still records or is paused. It never takes the focus from the app in front and is hidden from screen capture where the system allows. A Settings switch sets whether each new note shows it; the user can hide or show it for the open note only, and that choice ends when the note stops.
 *Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)
 
+### Silence check
+A check during recording that triggers after a set time (30 minutes by default) in which no speech was detected on any channel. Sound that is not speech counts as silence. With the time limit, it shows "Still recording?" with a countdown; when nobody answers, Longhand stops the note. Paused time does not count. Planned in `docs/plans/2026-11-15-1059-feat-forgotten-recording-plan.md`.
+
+### Time limit
+A check during recording that triggers after a set recording time (6 hours by default), with the same prompt and countdown as the silence check. Paused time does not count.
+
+### Long-silence cut
+The removal, at Stop and before Preparing the audio, of each stretch of at least a set time (10 minutes by default) in which every channel has no speech and a low sound level. The transcript shows each removed stretch as one silence line. Removed audio is deleted.
+
 ### Import
 The step that makes a new note from an audio file that another device recorded, for example a phone. The user drops or chooses the file (a manual import), or the watched folder brings it in. A drop from an app that gives only a promise of a file, for example Voice Memos, is also a manual import: Longhand first asks that app to write the file into a local folder. An imported note is a normal note: it processes on the computer that imported it, and its audio becomes the normal audio of a note. A manual import always makes a new note, also for a file that was imported before.
 
