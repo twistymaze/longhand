@@ -22,7 +22,7 @@ const HOURS: u64 = 4;
 
 fn resident_bytes() -> u64 {
     let pid = sysinfo::get_current_pid().unwrap();
-    let mut system = sysinfo::System::new();
+    let mut system = sysinfo::System::new().unwrap();
     system.refresh_processes(sysinfo::ProcessesToUpdate::Some(&[pid]), true);
     system.process(pid).map(|p| p.memory()).unwrap_or(0)
 }

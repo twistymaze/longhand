@@ -267,7 +267,7 @@ mod tests {
     fn sysinfo_space(dir: &Path) -> u64 {
         let canonical = dir.canonicalize().unwrap();
         sysinfo::Disks::new_with_refreshed_list()
-            .list()
+            .unwrap()
             .iter()
             .filter(|disk| {
                 disk.mount_point()
