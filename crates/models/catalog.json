@@ -24,12 +24,12 @@
         "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-unified-en-0.6b (NVIDIA, NVIDIA Open Model License)."
       },
       "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 79,
-        "asr_accuracy_score": 90,
+        "source": "https://github.com/cjpais/Handy/blob/aca8985190c3ad7f361d8a80cb30f179513ed690/src-tauri/src/catalog/catalog.json",
+        "source_revision": "aca8985190c3ad7f361d8a80cb30f179513ed690",
+        "speed_score": 96,
+        "asr_accuracy_score": 77,
         "speaker_accuracy_score": null,
-        "benchmark_context": null
+        "benchmark_context": "Handy benchmarks: fleurs test error for en; real-time factor on ryzen-4750u (vulkan); Q8_0 files."
       },
       "speaker_preferences": {
         "after_stop": [
@@ -64,12 +64,12 @@
         "attribution": "GGUF conversion by handy-computer of nvidia/nemotron-speech-streaming-en-0.6b (NVIDIA, NVIDIA Open Model License)."
       },
       "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 80,
-        "asr_accuracy_score": 86,
+        "source": "https://github.com/cjpais/Handy/blob/aca8985190c3ad7f361d8a80cb30f179513ed690/src-tauri/src/catalog/catalog.json",
+        "source_revision": "aca8985190c3ad7f361d8a80cb30f179513ed690",
+        "speed_score": 97,
+        "asr_accuracy_score": 65,
         "speaker_accuracy_score": null,
-        "benchmark_context": null
+        "benchmark_context": "Handy benchmarks: fleurs test error for en; real-time factor on ryzen-4750u (vulkan); Q8_0 files."
       },
       "speaker_preferences": {
         "after_stop": [
@@ -131,12 +131,12 @@
         "attribution": "GGUF conversion by handy-computer of nvidia/nemotron-3.5-asr-streaming-0.6b (NVIDIA, OpenMDW-1.1)."
       },
       "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 84,
-        "asr_accuracy_score": 82,
+        "source": "https://github.com/cjpais/Handy/blob/aca8985190c3ad7f361d8a80cb30f179513ed690/src-tauri/src/catalog/catalog.json",
+        "source_revision": "aca8985190c3ad7f361d8a80cb30f179513ed690",
+        "speed_score": 88,
+        "asr_accuracy_score": 59,
         "speaker_accuracy_score": null,
-        "benchmark_context": null
+        "benchmark_context": "Handy benchmarks: fleurs test error for en; real-time factor on ryzen-4750u (vulkan); Q8_0 files."
       },
       "speaker_preferences": {
         "after_stop": [
@@ -195,12 +195,12 @@
         "attribution": "GGUF conversion by handy-computer of nvidia/parakeet-tdt-0.6b-v3 (NVIDIA, CC-BY-4.0)."
       },
       "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 79,
-        "asr_accuracy_score": 88,
+        "source": "https://github.com/cjpais/Handy/blob/aca8985190c3ad7f361d8a80cb30f179513ed690/src-tauri/src/catalog/catalog.json",
+        "source_revision": "aca8985190c3ad7f361d8a80cb30f179513ed690",
+        "speed_score": 96,
+        "asr_accuracy_score": 72,
         "speaker_accuracy_score": null,
-        "benchmark_context": null
+        "benchmark_context": "Handy benchmarks: fleurs test error for en; real-time factor on ryzen-4750u (vulkan); Q8_0 files."
       },
       "speaker_preferences": {
         "after_stop": [
@@ -334,12 +334,12 @@
         "attribution": "GGUF conversion by handy-computer of openai/whisper-large-v3-turbo (OpenAI, MIT)."
       },
       "assessment": {
-        "source": "https://github.com/cjpais/Handy/blob/8f9cf53cd1410cda26beea39ff802ac306e39585/src-tauri/src/catalog/catalog.json",
-        "source_revision": "8f9cf53cd1410cda26beea39ff802ac306e39585",
-        "speed_score": 35,
-        "asr_accuracy_score": 88,
+        "source": "https://github.com/cjpais/Handy/blob/aca8985190c3ad7f361d8a80cb30f179513ed690/src-tauri/src/catalog/catalog.json",
+        "source_revision": "aca8985190c3ad7f361d8a80cb30f179513ed690",
+        "speed_score": 32,
+        "asr_accuracy_score": 75,
         "speaker_accuracy_score": null,
-        "benchmark_context": null
+        "benchmark_context": "Handy benchmarks: fleurs test error for en; real-time factor on ryzen-4750u (vulkan); Q8_0 files."
       },
       "speaker_preferences": {
         "after_stop": [

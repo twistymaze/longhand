@@ -1,6 +1,5 @@
 """Check that artifact refresh reads Handy schema 2 and keeps Longhand's policy."""
 
-import copy
 import importlib.util
 import unittest
 from pathlib import Path
@@ -12,14 +11,15 @@ refresh = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(refresh)
 
 
-ASSESSMENT = {
-    "source": "https://github.com/cjpais/Handy/blob/" + "c" * 40 + "/src-tauri/src/catalog/catalog.json",
-    "source_revision": "c" * 40,
-    "speed_score": 79,
-    "asr_accuracy_score": 90,
-    "speaker_accuracy_score": None,
-    "benchmark_context": None,
+BENCHMARKS = {
+    "quant": "Q8_0",
+    "accuracy": {"dataset": "fleurs", "split": "test"},
+    "speed": {
+        "accelerated": {"machine": "ryzen-4750u", "backend": "vulkan"},
+        "cpu": {"machine": "ryzen-4750u", "backend": "cpu"},
+    },
 }
+SOURCE = "https://github.com/cjpais/Handy/blob/" + "c" * 40 + "/src-tauri/src/catalog/catalog.json"
 
 
 class RefreshTests(unittest.TestCase):
@@ -47,11 +47,17 @@ class RefreshTests(unittest.TestCase):
                 "after_stop": ["nemotron", "pyannote"],
                 "during_recording": ["nemotron"],
             },
-            "assessment": copy.deepcopy(ASSESSMENT),
+        }
+        self.results = {
+            "accuracy": {"de": {"error": 5.24}, "en": {"error": 3.99}},
+            "performance": {"accelerated": 25.28, "cpu": 13.955},
         }
 
+    def assessment(self, languages=("en",)):
+        return refresh.assessment(self.results, BENCHMARKS, list(languages), "c" * 40)
+
     def entry(self):
-        return refresh.entry(self.handy, [self.checked_in])
+        return refresh.entry(self.handy, [self.checked_in], self.assessment())
 
     def test_entry_combines_handy_artifact_and_checked_in_values(self):
         result = self.entry()
@@ -70,7 +76,7 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(result["timestamps"], "token")
         self.assertTrue(result["recommended"])
         self.assertEqual(result["speaker_preferences"], self.checked_in["speaker_preferences"])
-        self.assertEqual(result["assessment"], ASSESSMENT)
+        self.assertEqual(result["assessment"], self.assessment())
         self.assertEqual(result["description"], "English, token-level timestamps, streaming.")
 
     def test_parakeet_unified_keeps_the_model_card_licence(self):
@@ -133,10 +139,38 @@ class RefreshTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "repository"):
             self.entry()
 
-    def test_missing_assessment_fails(self):
-        del self.checked_in["assessment"]
-        with self.assertRaisesRegex(SystemExit, "assessment"):
-            self.entry()
+    def test_assessment_uses_accelerated_speed_and_english_error(self):
+        self.assertEqual(
+            self.assessment(),
+            {
+                "source": SOURCE,
+                "source_revision": "c" * 40,
+                "speed_score": 96,
+                "asr_accuracy_score": 77,
+                "speaker_accuracy_score": None,
+                "benchmark_context": "Handy benchmarks: fleurs test error for en; real-time factor on"
+                " ryzen-4750u (vulkan); Q8_0 files.",
+            },
+        )
+
+    def test_assessment_falls_back_to_cpu_speed(self):
+        del self.results["performance"]["accelerated"]
+        result = self.assessment()
+        self.assertEqual(result["speed_score"], 83)
+        self.assertIn("ryzen-4750u (cpu)", result["benchmark_context"])
+
+    def test_assessment_without_english_uses_the_first_language(self):
+        del self.results["accuracy"]["en"]
+        result = self.assessment(languages=["de", "fr"])
+        self.assertEqual(result["asr_accuracy_score"], 71)
+        self.assertIn("error for de", result["benchmark_context"])
+
+    def test_assessment_without_results_is_not_rated(self):
+        self.results = None
+        result = self.assessment()
+        self.assertIsNone(result["speed_score"])
+        self.assertIsNone(result["asr_accuracy_score"])
+        self.assertIsNone(result["benchmark_context"])
 
     def test_checked_in_entry_for_another_artifact_fails(self):
         self.checked_in["id"] = "parakeet-unified-en-0.6b-q5km"
