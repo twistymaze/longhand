@@ -87,6 +87,9 @@ export function NewTypeDialog({
       onKeyDown={(e) => {
         // Escape closes the dialog only, not the page around it.
         e.stopPropagation();
+        // An Escape that cancels a composition in the field does not close
+        // the dialog.
+        if (isImeComposing(e)) return;
         if (e.key === "Escape") {
           e.preventDefault();
           cancel();

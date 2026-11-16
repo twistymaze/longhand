@@ -32,10 +32,10 @@ describe("isImeComposing", () => {
 
 // The start of a keydown handler. An Enter check belongs to the nearest
 // handler start above it.
-const HANDLER_START = /onKeyDown(?:Capture)?=\{|["']keydown["']|handleKeyDown/g;
+const HANDLER_START = /onKeyDown(?:Capture)?=\{|["']keydown["']|handleKeyDown|\bKeyboardEvent\b/g;
 // A check of the Enter key. The ProseMirror keymap (`keys["Enter"]`) is not
 // matched: ProseMirror does not run its keymap during a composition.
-const ENTER_CHECK = /\bkey\s*[!=]==?\s*["']Enter["']|case\s+["']Enter["']/g;
+const ENTER_CHECK = /\b(?:key|code)\s*[!=]==?\s*["'](?:Numpad)?Enter["']|["']Enter["']\s*[!=]==?|case\s+["'](?:Numpad)?Enter["']/g;
 const GUARD = "isImeComposing(";
 
 function sourceFiles(dir: string): string[] {

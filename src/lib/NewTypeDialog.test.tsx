@@ -24,4 +24,16 @@ describe("NewTypeDialog", () => {
     fireEvent.keyDown(field, { key: "Enter", keyCode: 13 });
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith("面談", expect.anything()));
   });
+
+  test("the Escape that cancels a composition does not close the dialog", () => {
+    mockTauri({});
+    const onCancel = vi.fn(() => {});
+    render(<NewTypeDialog onCreated={() => {}} onCancel={onCancel} />);
+    const field = screen.getByRole("textbox", { name: "Type name" });
+    fireEvent.change(field, { target: { value: "面談" } });
+    imeKeyDown(field, "Escape");
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.keyDown(field, { key: "Escape", keyCode: 27 });
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
 });
