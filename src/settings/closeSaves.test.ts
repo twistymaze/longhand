@@ -1,19 +1,18 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import { type TauriMock, mockTauri } from "../test/tauri";
-import { registerCloseSave } from "./closeSaves";
+import { defaultCloseSaveLimit, registerCloseSave } from "./closeSaves";
 
 const called = (tauri: TauriMock, cmd: string) => tauri.calls.filter((c) => c.cmd === cmd).length;
 const logLines = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "log_from_webview").map((c) => `${c.args.level}: ${c.args.message}`);
-const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function until(check: () => boolean, ms = 1000) {
-  const end = Date.now() + ms;
-  while (!check()) {
-    if (Date.now() > end) throw new Error("the condition did not become true");
-    await pause(5);
-  }
+/// Runs the queued microtasks, but no timer. The IPC mock and the close
+/// steps use only microtasks, so each step that can complete is then
+/// complete, and the count of microtasks does not depend on the speed of
+/// the computer.
+async function settle() {
+  for (let i = 0; i < 100; i++) await Promise.resolve();
 }
 
 /// A flush that completes when the test calls `finish`.
@@ -36,6 +35,12 @@ const register = (...args: Parameters<typeof registerCloseSave>) => {
   return remove;
 };
 
+// All tests use the fake clock: no step waits for real time. The setup file
+// sets the real clock again after each test.
+beforeEach(() => {
+  vi.useFakeTimers();
+});
+
 afterEach(() => {
   for (const remove of removals.splice(0)) remove();
 });
@@ -54,15 +59,17 @@ describe("closeSaves", () => {
     register(a.flush);
     register(b.flush);
     // Let the close listener register.
-    await pause(10);
+    await settle();
 
     await tauri.emit("tauri://close-requested");
-    await until(() => a.calls() === 1 && b.calls() === 1);
+    await settle();
+    expect([a.calls(), b.calls()]).toEqual([1, 1]);
     a.finish();
-    await pause(20);
+    await settle();
     expect(called(tauri, "plugin:window|destroy")).toBe(0);
     b.finish();
-    await until(() => called(tauri, "plugin:window|destroy") === 1);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(1);
     expect(logLines(tauri)).toEqual(["info: close requested", "info: the save is complete", "info: destroy called"]);
   });
 
@@ -70,24 +77,46 @@ describe("closeSaves", () => {
     const tauri = setup();
     register(async () => true);
     register(async () => false);
-    await pause(10);
+    await settle();
     await tauri.emit("tauri://close-requested");
-    await until(() => called(tauri, "plugin:window|destroy") === 1);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(1);
     expect(logLines(tauri)[1]).toBe("error: the save failed; the window closes with text that is not saved");
   });
 
   test("the close waits at most the smallest registered limit", async () => {
     const tauri = setup();
     register(() => new Promise<boolean>(() => {}), 50);
-    register(async () => true);
-    await pause(10);
+    register(() => new Promise<boolean>(() => {}));
+    await settle();
     await tauri.emit("tauri://close-requested");
-    await until(() => called(tauri, "plugin:window|destroy") === 1);
+    await settle();
+    // The window stays open until the smallest limit ends.
+    vi.advanceTimersByTime(49);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(0);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(1);
     expect(logLines(tauri)).toEqual([
       "info: close requested",
       "warn: the save did not complete in 50 ms; the window closes",
       "info: destroy called",
     ]);
+  });
+
+  test("with the default limit, the close waits for the save until the limit ends", async () => {
+    const tauri = setup();
+    register(() => new Promise<boolean>(() => {}));
+    await settle();
+    await tauri.emit("tauri://close-requested");
+    await settle();
+    vi.advanceTimersByTime(defaultCloseSaveLimit - 1);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(0);
+    vi.advanceTimersByTime(1);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(1);
   });
 
   test("pagehide and beforeunload start each registered save", () => {
@@ -113,14 +142,17 @@ describe("closeSaves", () => {
   test("with no save registered, a close request reaches no listener", async () => {
     const tauri = setup();
     const remove = register(async () => true);
-    await pause(10);
+    await settle();
     remove();
-    await pause(10);
+    await settle();
     const warn = console.warn;
     console.warn = () => {};
     try {
       await tauri.emit("tauri://close-requested");
-      await pause(20);
+      await settle();
+      // Past all limits of the close steps.
+      vi.advanceTimersByTime(10 * defaultCloseSaveLimit);
+      await settle();
     } finally {
       console.warn = warn;
     }

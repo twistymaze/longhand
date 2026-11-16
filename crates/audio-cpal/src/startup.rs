@@ -116,24 +116,41 @@ mod tests {
 
     use super::*;
 
-    const LONG: Duration = Duration::from_secs(5);
+    /// A start limit that a start which reports at once never reaches. It
+    /// is a hang limit, not a speed limit.
+    const LONG: Duration = Duration::from_secs(60);
 
     fn never() -> bool {
         false
     }
 
     /// A start body that blocks until the test sends on the returned
-    /// sender, then reports `Ok(1)`.
-    fn blocked() -> (
-        mpsc::Sender<()>,
-        impl FnOnce(Starting<u32>) + Send + 'static,
-    ) {
+    /// sender, then reports `Ok(1)`. The body sends on the first returned
+    /// receiver when it starts, and on the second after its report, when
+    /// its permit is free.
+    struct Blocked<B> {
+        release: mpsc::Sender<()>,
+        entered: mpsc::Receiver<()>,
+        reported: mpsc::Receiver<()>,
+        body: B,
+    }
+
+    fn blocked() -> Blocked<impl FnOnce(Starting<u32>) + Send + 'static> {
         let (release, wait) = mpsc::channel::<()>();
+        let (enter, entered) = mpsc::channel::<()>();
+        let (report, reported) = mpsc::channel::<()>();
         let body = move |starting: Starting<u32>| {
+            let _ = enter.send(());
             let _ = wait.recv();
             starting.report(Ok(1));
+            let _ = report.send(());
         };
-        (release, body)
+        Blocked {
+            release,
+            entered,
+            reported,
+            body,
+        }
     }
 
     #[test]
@@ -141,38 +158,38 @@ mod tests {
         // AE1. The body stands for a device lookup or a stream build that
         // the driver does not return from.
         static FLAG: AtomicBool = AtomicBool::new(false);
-        let (release, body) = blocked();
+        let blocked = blocked();
         let started = Instant::now();
-        let result = start(&FLAG, Duration::from_millis(100), &never, body);
+        let result = start(&FLAG, Duration::from_millis(100), &never, blocked.body);
         let elapsed = started.elapsed();
         assert!(
             matches!(&result, Err(Error::MicStreamInitializationFailed(m)) if m.contains("did not start")),
             "{result:?}"
         );
         assert!(elapsed >= Duration::from_millis(100), "{elapsed:?}");
-        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
-        let _ = release.send(());
+        let _ = blocked.release.send(());
     }
 
     #[test]
     fn a_cancel_ends_the_wait_before_the_limit() {
         // AE1: a Stop during the wait.
+        // The cancel comes when the body has started. The result tells the
+        // cancel from the 60 s limit.
         static FLAG: AtomicBool = AtomicBool::new(false);
-        let (release, body) = blocked();
-        let started = Instant::now();
-        let cancelled = move || started.elapsed() >= Duration::from_millis(50);
-        let result = start(&FLAG, LONG, &cancelled, body);
+        let blocked = blocked();
+        let entered = blocked.entered;
+        let cancelled = move || entered.try_recv().is_ok();
+        let result = start(&FLAG, LONG, &cancelled, blocked.body);
         assert_eq!(result, Err(Error::MicStartCancelled));
-        assert!(started.elapsed() < Duration::from_secs(1));
-        let _ = release.send(());
+        let _ = blocked.release.send(());
     }
 
     #[test]
     fn a_second_start_fails_at_once_while_the_first_is_blocked() {
         // AE2.
         static FLAG: AtomicBool = AtomicBool::new(false);
-        let (release, body) = blocked();
-        let first = start(&FLAG, Duration::from_millis(50), &never, body);
+        let blocked = blocked();
+        let first = start(&FLAG, Duration::from_millis(50), &never, blocked.body);
         assert!(matches!(
             first,
             Err(Error::MicStreamInitializationFailed(_))
@@ -180,7 +197,6 @@ mod tests {
 
         let ran = Arc::new(AtomicBool::new(false));
         let second_ran = Arc::clone(&ran);
-        let started = Instant::now();
         let second = start(&FLAG, LONG, &never, move |starting: Starting<u32>| {
             second_ran.store(true, Ordering::SeqCst);
             starting.report(Ok(2));
@@ -189,22 +205,15 @@ mod tests {
             matches!(&second, Err(Error::MicStreamInitializationFailed(m)) if m.contains("earlier")),
             "{second:?}"
         );
-        assert!(started.elapsed() < Duration::from_millis(500));
         assert!(!ran.load(Ordering::SeqCst), "the second body never runs");
 
         // The blocked body returns: the late thread frees the permit, and a
         // new start succeeds.
-        release.send(()).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(2);
-        let third = loop {
-            let attempt = start(&FLAG, LONG, &never, |starting: Starting<u32>| {
-                starting.report(Ok(3))
-            });
-            if attempt.is_ok() || Instant::now() > deadline {
-                break attempt;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        blocked.release.send(()).unwrap();
+        blocked.reported.recv_timeout(LONG).unwrap();
+        let third = start(&FLAG, LONG, &never, |starting: Starting<u32>| {
+            starting.report(Ok(3))
+        });
         assert_eq!(third, Ok(3));
     }
 

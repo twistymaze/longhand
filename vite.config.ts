@@ -65,5 +65,10 @@ export default defineConfig(async () => ({
     include: ["src/**/*.test.{ts,tsx}"],
     environment: "node",
     setupFiles: ["./src/test/setup.ts"],
+    // A limit only stops a test that hangs. A loaded CI runner can make a
+    // passing test many times slower, so the limit must not be near the
+    // usual run time (the default is 5 s).
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
   },
 }));

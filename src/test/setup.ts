@@ -29,6 +29,21 @@ if (!("getTargetRanges" in InputEvent.prototype)) {
 
 // Import after the DOM exists: Testing Library reads `document` when it loads.
 const { cleanup, prettyDOM } = await import("@testing-library/react");
+// The configuration object of the DOM library: the React library gives only
+// a copy.
+const { getConfig } = await import("@testing-library/dom");
+
+// The limit of `waitFor` and `findBy`. With real timers, the limit only stops
+// a test that hangs: a loaded CI runner can make a page render take many
+// seconds, and the default limit of 1 s then fails a test that is correct.
+// With fake timers, `waitFor` moves the fake clock itself (see the `jest`
+// object above), so a long limit would let a wait pass after a component
+// timer that the test must not reach. Thus fake timers keep the default.
+Object.defineProperty(getConfig(), "asyncUtilTimeout", {
+  configurable: true,
+  enumerable: true,
+  get: () => (vi.isFakeTimers() ? 1000 : 30_000),
+});
 const { clearMocks } = await import("@tauri-apps/api/mocks");
 
 // A failed expect prints the value it received. For a happy-dom node, the

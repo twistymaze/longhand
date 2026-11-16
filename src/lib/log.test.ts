@@ -19,7 +19,6 @@ test("console errors, uncaught errors and unhandled rejections go to the app log
     const rejection = new Event("unhandledrejection") as Event & { reason: unknown };
     rejection.reason = "no answer";
     window.dispatchEvent(rejection);
-    await new Promise((r) => setTimeout(r, 10));
   } finally {
     console.error = original;
   }

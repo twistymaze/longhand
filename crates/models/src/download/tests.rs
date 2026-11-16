@@ -4,7 +4,7 @@ use std::fs;
 use std::fs::File;
 use std::io::Write;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -505,22 +505,21 @@ async fn http_cancel_while_awaiting_headers() {
     // not after the stall timeout, and certainly not never.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    // The server cancels the download when it has read the request, so
+    // the client waits for the headers when the cancel comes. If the cancel
+    // did not stop the wait, the stall limit would end the download with an
+    // error.
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
     tokio::spawn(async move {
         let (mut sock, _) = listener.accept().await.unwrap();
         let _ = read_request_head(&mut sock).await;
+        trigger.cancel();
         tokio::time::sleep(Duration::from_secs(600)).await;
     });
     let dir = TempDir::new().unwrap();
     let partial = dir.path().join("m.partial");
 
-    let cancel = CancellationToken::new();
-    let trigger = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        trigger.cancel();
-    });
-
-    let started = Instant::now();
     let out = run_download(
         &format!("http://{}/file", addr),
         &partial,
@@ -532,10 +531,6 @@ async fn http_cancel_while_awaiting_headers() {
     .unwrap();
 
     assert!(matches!(out, Outcome::Cancelled));
-    assert!(
-        started.elapsed() < Duration::from_secs(30),
-        "cancel must not wait out the stall timeout"
-    );
 }
 
 #[tokio::test]
@@ -553,10 +548,15 @@ async fn http_cancel_during_stalled_body_keeps_partial() {
     let dir = TempDir::new().unwrap();
     let partial = dir.path().join("m.partial");
 
+    // Cancel when the partial holds the 3 bytes that the server sent. If
+    // they never arrive, the stall limit ends the download with an error.
     let cancel = CancellationToken::new();
     let trigger = cancel.clone();
+    let written = partial.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        while fs::metadata(&written).map_or(0, |m| m.len()) < 3 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
         trigger.cancel();
     });
 
@@ -580,10 +580,13 @@ async fn http_cancel_during_stalled_body_keeps_partial() {
 
 // ── Longhand additions ────────────────────────────────────────────────────
 
-fn quick() -> Limits {
+/// A stall limit short enough that the stall test does not wait a minute.
+/// The limit also applies while the client waits for the headers, so it
+/// must stay much longer than a loopback reply.
+fn stalls_soon() -> Limits {
     Limits {
-        connect: Duration::from_secs(5),
-        stall: Duration::from_millis(300),
+        connect: Duration::from_secs(60),
+        stall: Duration::from_secs(5),
     }
 }
 
@@ -614,7 +617,7 @@ async fn stalled_body_keeps_partial_and_a_retry_resumes_from_it() {
         &partial,
         Some(full.len() as u64),
         Some(&sha_hex(full)),
-        quick(),
+        stalls_soon(),
         &CancellationToken::new(),
         &|_| {},
     )
@@ -638,7 +641,7 @@ async fn stalled_body_keeps_partial_and_a_retry_resumes_from_it() {
         &partial,
         Some(full.len() as u64),
         Some(&sha_hex(full)),
-        quick(),
+        Limits::default(),
         &CancellationToken::new(),
         &|_| {},
     )
@@ -689,7 +692,7 @@ async fn ensure_model_moves_verified_bytes_into_place() {
     let out = ensure_model(
         dir.path(),
         &model,
-        quick(),
+        Limits::default(),
         &CancellationToken::new(),
         &|_| {},
     )
@@ -714,7 +717,7 @@ async fn ensure_model_rejects_a_hash_mismatch_and_leaves_nothing() {
     let err = ensure_model(
         dir.path(),
         &model,
-        quick(),
+        Limits::default(),
         &CancellationToken::new(),
         &|_| {},
     )

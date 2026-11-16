@@ -495,9 +495,7 @@ describe("the checks", () => {
     await user.clear(field("Address"));
     await user.type(field("Address"), "http://studio.local:11434");
     await act(() => b.mock.emit("tauri://close-requested"));
-    await waitFor(() => expect(b.mock.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true), {
-      timeout: 3000,
-    });
+    await waitFor(() => expect(b.mock.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
     expect(b.argsOf("set_provider_address")).toEqual([{ provider: "ollama", address: "http://studio.local:11434" }]);
     const logs = b.mock.calls.filter((c) => c.cmd === "log_from_webview").map((c) => c.args.message);
     expect(logs).toContain("the save is complete");

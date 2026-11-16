@@ -87,6 +87,27 @@ pub fn retry_starts_over(store: &SharedStore, note_id: &str) -> Result<bool, Sta
 
 const POLL: Duration = Duration::from_secs(2);
 const HEARTBEAT: Duration = Duration::from_secs(10);
+
+/// The periods of the runner. The app uses [`Intervals::default`]. A test
+/// can set other periods, so that it does not wait for real time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Intervals {
+    /// The longest time that the processing loop waits for a wake before
+    /// it looks at the queue again.
+    pub poll: Duration,
+    /// The period of the heartbeat of a claim (KTD5).
+    pub heartbeat: Duration,
+}
+
+impl Default for Intervals {
+    fn default() -> Self {
+        Self {
+            poll: POLL,
+            heartbeat: HEARTBEAT,
+        }
+    }
+}
+
 const SUSPENDED_POLL: Duration = Duration::from_millis(250);
 
 /// Where recognition engines come from.
@@ -398,6 +419,7 @@ pub struct Runner {
     power: power::ProcessingPower,
     /// The saved notes whose title job waits for its turn (KTD13).
     titles: Mutex<VecDeque<String>>,
+    intervals: Intervals,
 }
 
 fn now() -> DateTime<FixedOffset> {
@@ -481,6 +503,16 @@ impl Runner {
 
     /// Use the supplied owner for processing assertions.
     pub fn with_power(env: Environment, power: power::ProcessingPower) -> Arc<Self> {
+        Self::with_intervals(env, power, Intervals::default())
+    }
+
+    /// Use the supplied owner for processing assertions and the supplied
+    /// periods.
+    pub fn with_intervals(
+        env: Environment,
+        power: power::ProcessingPower,
+        intervals: Intervals,
+    ) -> Arc<Self> {
         let owner = format!(
             "{}-{}",
             std::process::id(),
@@ -502,6 +534,7 @@ impl Runner {
             claims: Claims::default(),
             power,
             titles: Mutex::default(),
+            intervals,
         })
     }
 
@@ -1174,7 +1207,7 @@ impl Runner {
             self.spawn_titles();
             tokio::select! {
                 _ = self.wake.notified() => {}
-                _ = tokio::time::sleep(POLL) => {}
+                _ = tokio::time::sleep(self.intervals.poll) => {}
                 _ = self.shutdown.cancelled() => return,
             }
         }
@@ -2330,9 +2363,10 @@ impl<'a> NoteTask<'a> {
     fn start(runner: &'a Runner, id: &str) -> Self {
         let store = Arc::clone(&runner.env.store);
         let (beat_id, owner) = (id.to_string(), runner.owner.clone());
+        let period = runner.intervals.heartbeat;
         let heartbeat = tokio::spawn(async move {
             loop {
-                tokio::time::sleep(HEARTBEAT).await;
+                tokio::time::sleep(period).await;
                 if let Err(e) = lock(&store).heartbeat(&beat_id, &owner, now()) {
                     log::warn!("heartbeat for {beat_id} failed: {e}");
                 }

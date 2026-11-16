@@ -151,12 +151,30 @@ async function setText(box: HTMLElement, text: string, user = userEvent.setup())
   if (text === "") await user.keyboard("{Backspace}");
   else await user.paste(text);
 }
-const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
 /// Moves the fake clock, then lets a queued save run.
 const advance = (ms: number) =>
   act(async () => {
     vi.advanceTimersByTime(ms);
   });
+/// Lets the queued promise steps run. The mocked IPC answers on microtasks
+/// only, so a command that a step starts is in `calls` after this. The clock
+/// does not move.
+const settle = () => act(async () => {});
+/// Sets the fake clock for this test and gives a user with no delay between
+/// keys: the test moves the clock itself. The setup file sets the real clock
+/// again after each test.
+function fakeClock() {
+  vi.useFakeTimers();
+  return userEvent.setup({ delay: null });
+}
+/// The time from the last change to the save in the component, in
+/// milliseconds.
+const saveDelay = 1000;
+/// Waits until the window close listener is registered.
+async function closeListener(tauri: TauriMock) {
+  await waitFor(() => expect(tauri.listened).toContain("tauri://close-requested"));
+  await settle();
+}
 const titleCalls = (tauri: TauriMock) =>
   tauri.calls.filter((c) => c.cmd === "set_summary_prompt_title_text").map((c) => c.args);
 
@@ -244,25 +262,28 @@ describe("SummaryPrompts", () => {
   });
 
   test("blur saves the text at once", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Short note");
+    await setText(textArea(), "Short note", user);
     fireEvent.blur(textArea());
-    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]), { timeout: 500 });
+    // The clock does not move, so the save timer does not start the save.
+    await settle();
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]);
   });
 
   test("selecting another prompt saves the text first and asks nothing", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Changed");
+    await setText(textArea(), "Changed", user);
     await user.click(row("Topic summary"));
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    await waitFor(() => expect(textArea().textContent).toBe("Topic text"));
-    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]), { timeout: 500 });
+    await settle();
+    expect(textArea().textContent).toBe("Topic text");
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]);
 
     await user.click(row("Team sync"));
     await waitFor(() => expect(textArea().textContent).toBe("Changed"));
@@ -277,7 +298,7 @@ describe("SummaryPrompts", () => {
     await setText(textArea(), "   ");
     expect(screen.getByText("A prompt can’t be empty.")).toBeTruthy();
     fireEvent.blur(textArea());
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle();
     expect(textCalls(tauri)).toEqual([]);
     expect(textArea().textContent).toBe("   ");
 
@@ -316,7 +337,7 @@ describe("SummaryPrompts", () => {
     await setText(textArea(), "Changed");
     await user.click(row("Topic summary"));
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await settle();
     expect(textArea().textContent).toBe("Topic text");
     expect(screen.queryByText("The prompt text cannot be saved.")).toBeNull();
 
@@ -345,7 +366,7 @@ describe("SummaryPrompts", () => {
     await user.click(screen.getByRole("button", { name: "New Prompt" }));
     expect(await screen.findByText("The prompt text cannot be saved.")).toBeTruthy();
     await user.click(button("Duplicate"));
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await settle();
     expect(tauri.calls.some((c) => c.cmd === "create_summary_prompt")).toBe(false);
     expect(tauri.calls.some((c) => c.cmd === "duplicate_summary_prompt")).toBe(false);
     expect(row("Team sync").getAttribute("aria-checked")).toBe("true");
@@ -353,23 +374,25 @@ describe("SummaryPrompts", () => {
   });
 
   test("pagehide saves the text before the timer", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Short note");
+    await setText(textArea(), "Short note", user);
     act(() => void window.dispatchEvent(new Event("pagehide")));
-    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]), { timeout: 500 });
+    await settle();
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]);
   });
 
   test("beforeunload saves the text before the timer", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Short note");
+    await setText(textArea(), "Short note", user);
     act(() => void window.dispatchEvent(new Event("beforeunload")));
-    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]), { timeout: 500 });
+    await settle();
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Short note" }]);
   });
 
   test("a window close waits for the save, then closes the window and asks nothing", async () => {
@@ -383,17 +406,16 @@ describe("SummaryPrompts", () => {
       },
       "plugin:window|destroy": () => null,
     });
+    // The close limit runs on the fake clock, so it cannot end the wait.
+    const user = fakeClock();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Changed");
-    // The mock handles `plugin:event|listen` itself, so the call is not in
-    // `calls`. Let the listener register.
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await setText(textArea(), "Changed", user);
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
-    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]));
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await settle();
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]);
     expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
     expect(screen.queryByRole("alertdialog")).toBeNull();
 
@@ -412,7 +434,7 @@ describe("SummaryPrompts", () => {
     const user = userEvent.setup();
     await selectCustom(user);
     await setText(textArea(), "Changed");
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
@@ -432,16 +454,21 @@ describe("SummaryPrompts", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
+    // The close limit of 50 ms runs on the fake clock.
+    const user = fakeClock();
     renderPrompts(50);
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Changed");
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await setText(textArea(), "Changed", user);
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
-    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
+    await settle();
+    expect(textCalls(tauri)).toHaveLength(1);
+    await advance(49);
     expect(called(tauri, "plugin:window|destroy")).toBe(0);
-    await waitFor(() => expect(called(tauri, "plugin:window|destroy")).toBe(1));
+    await advance(1);
+    await settle();
+    expect(called(tauri, "plugin:window|destroy")).toBe(1);
     expect(logLines(tauri)).toEqual([
       "info: close requested",
       "warn: the save did not complete in 50 ms; the window closes",
@@ -459,7 +486,7 @@ describe("SummaryPrompts", () => {
     const tauri = backend({ "plugin:window|destroy": () => null, log_from_webview: () => null });
     renderPrompts();
     await screen.findByRole("radio", { name: /^Team sync/ });
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
     await waitFor(() => expect(called(tauri, "plugin:window|destroy")).toBe(1));
@@ -473,7 +500,7 @@ describe("SummaryPrompts", () => {
     console.warn = (...args: unknown[]) => void warnings.push(args);
     try {
       await tauri.emit("tauri://close-requested");
-      await act(() => new Promise((r) => setTimeout(r, 20)));
+      await settle();
     } finally {
       console.warn = warn;
     }
@@ -491,7 +518,7 @@ describe("SummaryPrompts", () => {
     });
     renderPrompts();
     await screen.findByRole("radio", { name: /^Team sync/ });
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
     await waitFor(() => expect(called(tauri, "close_settings_window")).toBe(1));
@@ -518,6 +545,8 @@ describe("SummaryPrompts", () => {
       "plugin:window|destroy": () => null,
       log_from_webview: () => null,
     });
+    // The close limit runs on the fake clock, so it cannot end the wait.
+    const user = fakeClock();
     mockWindows("settings");
     render(
       <>
@@ -525,18 +554,18 @@ describe("SummaryPrompts", () => {
         <SummaryPrompts onSettings={() => {}} />
       </>,
     );
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Changed");
+    await setText(textArea(), "Changed", user);
     await user.click(screen.getByRole("textbox", { name: "Background" }));
     await user.keyboard("Erv");
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
-    await waitFor(() => expect(called(tauri, "set_background")).toBe(1));
-    await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]));
+    await settle();
+    expect(called(tauri, "set_background")).toBe(1);
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]);
     await act(async () => finishBackground());
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await settle();
     expect(called(tauri, "plugin:window|destroy")).toBe(0);
     await act(async () => finishPrompt());
     await waitFor(() => expect(called(tauri, "plugin:window|destroy")).toBe(1));
@@ -549,7 +578,7 @@ describe("SummaryPrompts", () => {
     const tauri = backend({ "plugin:window|destroy": () => null });
     renderPrompts();
     await screen.findByRole("radio", { name: /^Team sync/ });
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await closeListener(tauri);
 
     await tauri.emit("tauri://close-requested");
     await waitFor(() => expect(called(tauri, "plugin:window|destroy")).toBe(1));
@@ -579,7 +608,7 @@ describe("SummaryPrompts", () => {
     fireEvent.blur(textArea());
     await user.click(button("Delete"));
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    await settle();
     expect(textCalls(tauri)).toHaveLength(1);
     expect(tauri.calls.some((c) => c.cmd === "delete_summary_prompt")).toBe(false);
 
@@ -619,7 +648,7 @@ describe("SummaryPrompts", () => {
     fireEvent.blur(textArea());
     await setText(textArea(), "First, then second");
     fireEvent.blur(textArea());
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle();
     // The second save waits for the first.
     expect(textCalls(tauri)).toHaveLength(1);
 
@@ -635,7 +664,7 @@ describe("SummaryPrompts", () => {
     let finish: () => void = () => {};
     const saved = new Promise<void>((r) => (finish = r));
     let text = "Sync text";
-    backend({
+    const tauri = backend({
       set_summary_prompt_text: async (args) => {
         await saved;
         text = args.text as string;
@@ -652,15 +681,19 @@ describe("SummaryPrompts", () => {
         title_text_limit: 1000,
       }),
     });
+    // The save timer runs on the fake clock, so only the blurs start saves.
+    const user = fakeClock();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "Short note");
+    await setText(textArea(), "Short note", user);
     fireEvent.blur(textArea());
-    await setText(textArea(), "Short note, longer");
+    await setText(textArea(), "Short note, longer", user);
+    const reads = called(tauri, "summary_prompts");
     await act(async () => finish());
     await waitFor(() => expect(text).toBe("Short note"));
-    await act(() => new Promise((r) => setTimeout(r, 10)));
+    // Wait for the list read after the save, and its render.
+    await waitFor(() => expect(called(tauri, "summary_prompts")).toBe(reads + 1));
+    await settle();
     expect(textArea().textContent).toBe("Short note, longer");
 
     fireEvent.blur(textArea());
@@ -810,7 +843,7 @@ describe("SummaryPrompts", () => {
     await setText(textArea(), "a".repeat(4001));
     expect(screen.getByText("4,001 / 4,000").className).toContain("text-negative");
     fireEvent.blur(textArea());
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle();
     expect(textCalls(tauri)).toEqual([]);
     expect(textArea().textContent).toHaveLength(4001);
 
@@ -850,7 +883,7 @@ describe("SummaryPrompts", () => {
     expect((button("Delete") as HTMLButtonElement).disabled).toBe(false);
     expect((button("Make default Team sync") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.blur(textArea());
-    await pause(50);
+    await settle();
     expect(textCalls(tauri)).toEqual([]);
     await setText(textArea(), "a".repeat(4000));
     expect(screen.queryByText(/is over the limit/)).toBeNull();
@@ -928,27 +961,30 @@ describe("SummaryPrompts", () => {
   });
 
   test("typing in the title field saves the title text with the title command only", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
     expect(titleArea().textContent).toBe("Sync title");
     expect(screen.getByText("10 / 1,000")).toBeTruthy();
-    await setText(titleArea(), "Type: topics");
-    await waitFor(() => expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "Type: topics" }]), { timeout: 3000 });
+    await setText(titleArea(), "Type: topics", user);
+    await advance(saveDelay);
+    await settle();
+    expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "Type: topics" }]);
     expect(textCalls(tauri)).toEqual([]);
     expect(titleArea().textContent).toBe("Type: topics");
     expect(textArea().textContent).toBe("Sync text");
   });
 
   test("an empty title field saves and shows no error", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(titleArea(), "");
+    await setText(titleArea(), "", user);
     fireEvent.blur(titleArea());
-    await waitFor(() => expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "" }]), { timeout: 500 });
+    await settle();
+    expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "" }]);
     expect(screen.queryByText("A prompt can’t be empty.")).toBeNull();
     expect(screen.getByText("0 / 1,000").className).not.toContain("text-negative");
   });
@@ -961,7 +997,7 @@ describe("SummaryPrompts", () => {
     await setText(titleArea(), "a".repeat(1001));
     expect(screen.getByText("1,001 / 1,000").className).toContain("text-negative");
     fireEvent.blur(titleArea());
-    await act(() => new Promise((r) => setTimeout(r, 50)));
+    await settle();
     expect(titleCalls(tauri)).toEqual([]);
 
     await setText(titleArea(), "a".repeat(1000));
@@ -993,35 +1029,33 @@ describe("SummaryPrompts", () => {
   });
 
   test("an edit in one field does not drop the waiting save of the other field", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(titleArea(), "New title text");
-    await setText(textArea(), "New summary text");
-    await waitFor(
-      () => {
-        expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "New title text" }]);
-        expect(textCalls(tauri)).toEqual([{ id: "c1", text: "New summary text" }]);
-      },
-      { timeout: 3000 },
-    );
+    await setText(titleArea(), "New title text", user);
+    await setText(textArea(), "New summary text", user);
+    await advance(saveDelay);
+    await settle();
+    expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "New title text" }]);
+    expect(textCalls(tauri)).toEqual([{ id: "c1", text: "New summary text" }]);
   });
 
   test("a change of prompt drops a title text over the limit and saves a valid one", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(titleArea(), "a".repeat(1001));
+    await setText(titleArea(), "a".repeat(1001), user);
     await user.click(row("Topic summary"));
     await user.click(row("Team sync"));
     await waitFor(() => expect(titleArea().textContent).toBe("Sync title"));
     expect(titleCalls(tauri)).toEqual([]);
 
-    await setText(titleArea(), "Changed title");
+    await setText(titleArea(), "Changed title", user);
     await user.click(row("Topic summary"));
-    await waitFor(() => expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "Changed title" }]), { timeout: 500 });
+    await settle();
+    expect(titleCalls(tauri)).toEqual([{ id: "c1", text: "Changed title" }]);
   });
 
   test("a built-in prompt shows its formatted text in a read-only editor with no toolbar (AE6)", async () => {
@@ -1046,7 +1080,7 @@ describe("SummaryPrompts", () => {
     expect(screen.queryByRole("toolbar", { name: "Format selection" })).toBeNull();
     await user.keyboard("x");
     act(() => void fireEvent.blur(textArea()));
-    await pause(20);
+    await settle();
     expect(textArea().textContent).not.toContain("x");
     expect(textCalls(tauri)).toEqual([]);
   });
@@ -1076,7 +1110,7 @@ describe("SummaryPrompts", () => {
     await setText(titleArea(), "Changed title");
     await user.click(row("Topic summary"));
     await waitFor(() => expect(titleCalls(tauri)).toHaveLength(1));
-    await pause(10);
+    await settle();
     expect(titleArea().textContent).toBe("Built-in title text");
 
     await user.click(row("Team sync"));
@@ -1108,14 +1142,19 @@ describe("SummaryPrompts", () => {
   });
 
   test("an own save does not remount the editor, and the focus stays in the field", async () => {
+    const user = fakeClock();
     const tauri = backend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
     const before = textArea();
-    await setText(before, "Short note");
-    await waitFor(() => expect(textCalls(tauri)).toHaveLength(1), { timeout: 3000 });
-    await pause(20);
+    const reads = called(tauri, "summary_prompts");
+    await setText(before, "Short note", user);
+    await advance(saveDelay);
+    await settle();
+    expect(textCalls(tauri)).toHaveLength(1);
+    // The save reads the list again. Wait for that read and its render.
+    await waitFor(() => expect(called(tauri, "summary_prompts")).toBe(reads + 1));
+    await settle();
     expect(textArea()).toBe(before);
     expect(document.activeElement).toBe(before);
     expect(textArea().textContent).toBe("Short note");
@@ -1145,15 +1184,17 @@ test("a pane change in the Settings window saves the prompt text and asks nothin
     model_statuses: () => [],
     speaker_models_status: () => ({ ids: [], size_bytes: 0, state: { state: "present" } }),
   });
+  const user = fakeClock();
   render(<SettingsWindow />);
-  const user = userEvent.setup();
   await user.click(await screen.findByRole("tab", { name: "Summaries" }));
   await selectCustom(user);
-  await setText(textArea(), "Changed");
+  await setText(textArea(), "Changed", user);
   await user.click(screen.getByRole("tab", { name: "Transcription" }));
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(screen.getByRole("tab", { name: "Transcription" }).getAttribute("aria-selected")).toBe("true");
-  await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]), { timeout: 500 });
+  // The clock does not move, so the save timer does not start the save.
+  await settle();
+  expect(textCalls(tauri)).toEqual([{ id: "c1", text: "Changed" }]);
 });
 
 describe("shared prompts", () => {
@@ -1210,18 +1251,19 @@ describe("shared prompts", () => {
   });
 
   test("a change from another computer to a prompt with unsaved text keeps the text and offers Reload", async () => {
+    const user = fakeClock();
     const { tauri, remote } = sharedBackend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "My unsaved text");
+    await setText(textArea(), "My unsaved text", user);
     await remote({ text: "Text from the other computer" });
     expect(await screen.findByText("The prompt text changed on another computer.")).toBeTruthy();
     expect(textArea().textContent).toBe("My unsaved text");
-    // The unsaved text does not replace the text of the other computer.
-    await new Promise((r) => setTimeout(r, 1200));
+    // The unsaved text does not replace the text of the other computer:
+    // not after the save delay, and not on a blur.
+    await advance(saveDelay);
     fireEvent.blur(textArea());
-    await new Promise((r) => setTimeout(r, 20));
+    await settle();
     expect(textCalls(tauri)).toEqual([]);
     await user.click(button("Reload"));
     expect(textArea().textContent).toBe("Text from the other computer");
@@ -1230,18 +1272,18 @@ describe("shared prompts", () => {
   });
 
   test("text typed after the change from another computer is not saved until Keep My Text", async () => {
+    const user = fakeClock();
     const { tauri, remote } = sharedBackend();
     renderPrompts();
-    const user = userEvent.setup();
     await selectCustom(user);
-    await setText(textArea(), "My unsaved text");
+    await setText(textArea(), "My unsaved text", user);
     await remote({ text: "Text from the other computer" });
     expect(await screen.findByText("The prompt text changed on another computer.")).toBeTruthy();
-    await setText(textArea(), "My unsaved text and more");
+    await setText(textArea(), "My unsaved text and more", user);
     expect(screen.getByText("The prompt text changed on another computer.")).toBeTruthy();
-    await new Promise((r) => setTimeout(r, 1200));
+    await advance(saveDelay);
     fireEvent.blur(textArea());
-    await new Promise((r) => setTimeout(r, 20));
+    await settle();
     expect(textCalls(tauri)).toEqual([]);
     await user.click(button("Keep My Text"));
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "My unsaved text and more" }]));
@@ -1269,8 +1311,11 @@ describe("shared prompts", () => {
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toHaveLength(1));
     await setText(textArea(), "First and more");
+    // Wait for the list read that the event starts, and its render.
+    const reads = called(tauri, "summary_prompts");
     await act(() => tauri.emit("settings-changed", { settings: baseSettings }));
-    await new Promise((r) => setTimeout(r, 50));
+    await waitFor(() => expect(called(tauri, "summary_prompts")).toBe(reads + 1));
+    await settle();
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
     expect(textArea().textContent).toBe("First and more");
   });
@@ -1291,7 +1336,7 @@ describe("shared prompts", () => {
     fireEvent.blur(textArea());
     await waitFor(() => expect(textCalls(tauri)).toEqual([{ id: "c1", text: "New summary text" }]));
     fireEvent.blur(titleArea());
-    await new Promise((r) => setTimeout(r, 20));
+    await settle();
     expect(titleCalls(tauri)).toEqual([]);
     expect(screen.getByText("The title instructions changed on another computer.")).toBeTruthy();
 
@@ -1500,12 +1545,15 @@ describe("own saves of prompts", () => {
   });
 
   test("a save that fails because another computer deleted the prompt shows no error", async () => {
+    const user = fakeClock();
     const b = heldBackend();
     renderPrompts();
-    await selectCustom(userEvent.setup());
+    await selectCustom(user);
     const release = b.holdSaves();
-    await setText(textArea(), "Mine");
-    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(1), { timeout: 1500 });
+    await setText(textArea(), "Mine", user);
+    await advance(saveDelay);
+    await settle();
+    expect(textCalls(b.tauri)).toHaveLength(1);
     await b.remoteDelete();
     expect(await screen.findByText(deletedNotice)).toBeTruthy();
     await release();
@@ -1516,17 +1564,20 @@ describe("own saves of prompts", () => {
   });
 
   // Types into the editor that has the focus, after the pasted text.
-  const typeAtEnd = (text: string) => userEvent.setup().keyboard(text);
+  const typeAtEnd = (text: string, user = userEvent.setup()) => user.keyboard(text);
 
   test("text typed while the list is read again after a save is saved", async () => {
+    const user = fakeClock();
     const b = heldBackend();
     renderPrompts();
-    await selectCustom(userEvent.setup());
-    await setText(textArea(), "T1");
+    await selectCustom(user);
+    await setText(textArea(), "T1", user);
     b.reads.holdNext = true;
-    await waitFor(() => expect(textCalls(b.tauri)).toEqual([{ id: "c1", text: "T1" }]), { timeout: 1500 });
+    await advance(saveDelay);
+    await settle();
+    expect(textCalls(b.tauri)).toEqual([{ id: "c1", text: "T1" }]);
     await waitFor(() => expect(b.saves.done).toBe(1));
-    await typeAtEnd("x");
+    await typeAtEnd("x", user);
     await b.releaseRead();
     await waitFor(() => expect(b.reads.done).toBeGreaterThanOrEqual(2));
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
@@ -1540,13 +1591,18 @@ describe("own saves of prompts", () => {
   });
 
   test("a change on another computer back to a text that this window saved before shows the text", async () => {
+    const user = fakeClock();
     const b = heldBackend();
     renderPrompts();
-    await selectCustom(userEvent.setup());
-    await setText(textArea(), "A");
-    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(1), { timeout: 1500 });
-    await setText(textArea(), "AB");
-    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(2), { timeout: 1500 });
+    await selectCustom(user);
+    await setText(textArea(), "A", user);
+    await advance(saveDelay);
+    await settle();
+    expect(textCalls(b.tauri)).toHaveLength(1);
+    await setText(textArea(), "AB", user);
+    await advance(saveDelay);
+    await settle();
+    expect(textCalls(b.tauri)).toHaveLength(2);
     // The read after the second save is done.
     await waitFor(() => expect(b.reads.done).toBe(3));
     await b.remote("A");
@@ -1568,14 +1624,17 @@ describe("own saves of prompts", () => {
   });
 
   test("a window close after a pane change waits for a save that was queued behind a running save", async () => {
+    const user = fakeClock();
     const b = heldBackend();
     mockWindows("settings");
     const { unmount } = render(<SummaryPrompts onSettings={() => {}} />);
-    await selectCustom(userEvent.setup());
+    await selectCustom(user);
     const release = b.holdSaves();
-    await setText(textArea(), "A");
-    await waitFor(() => expect(textCalls(b.tauri)).toHaveLength(1), { timeout: 1500 });
-    await typeAtEnd("B");
+    await setText(textArea(), "A", user);
+    await advance(saveDelay);
+    await settle();
+    expect(textCalls(b.tauri)).toHaveLength(1);
+    await typeAtEnd("B", user);
     act(() => void fireEvent.blur(textArea()));
     unmount();
     await b.tauri.emit("tauri://close-requested");
@@ -1603,12 +1662,14 @@ describe("own saves of prompts", () => {
   });
 
   test("after a failed save, a change on another computer and Reload, Duplicate and New Prompt run", async () => {
+    const user = fakeClock();
     const b = heldBackend();
     renderPrompts();
-    await selectCustom(userEvent.setup());
+    await selectCustom(user);
     b.state.fail = true;
-    await setText(textArea(), "Mine");
-    expect(await screen.findByText("The prompt file could not be written.", {}, { timeout: 1500 })).toBeTruthy();
+    await setText(textArea(), "Mine", user);
+    await advance(saveDelay);
+    expect(await screen.findByText("The prompt file could not be written.")).toBeTruthy();
     await b.remote("Theirs");
     expect(await screen.findByText("The prompt text changed on another computer.")).toBeTruthy();
     await act(async () => void fireEvent.click(button("Reload")));

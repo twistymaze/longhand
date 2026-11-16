@@ -4,7 +4,7 @@ mod common;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{Reply, completion, serve};
 use summarize::client::{Label, Message, RequestKind};
@@ -59,10 +59,11 @@ async fn a_redirect_is_a_typed_failure_and_nothing_reaches_its_target() {
 async fn a_request_waits_for_the_endpoint_to_come_back_after_a_network_failure() {
     // A Mac that wakes from sleep can have no network for some seconds. The
     // request tries again after each wait, and the endpoint answers later.
+    // The retry waits add up to a hang limit of 60 s.
     let (socket, port) = common::closed_socket();
     let client = Client::new(endpoint(&format!("http://127.0.0.1:{port}/v1"), None))
         .unwrap()
-        .with_retry_waits(vec![Duration::from_millis(50); 40]);
+        .with_retry_waits(vec![Duration::from_millis(50); 1_200]);
     tokio::spawn(async move {
         // Until then, each connection is refused.
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -348,18 +349,18 @@ async fn a_rate_limited_request_with_a_long_retry_after_is_not_sent_again() {
 #[tokio::test]
 async fn an_endpoint_that_never_answers_hits_the_deadline() {
     let mock = serve(HashMap::from([("/v1/chat/completions", Reply::Hang)])).await;
+    // Only the response deadline is short, so only it can fire.
     let quick = Limits {
-        connect: Duration::from_secs(1),
+        connect: Duration::from_secs(60),
         response: Duration::from_millis(300),
-        idle: Duration::from_millis(300),
-        total: Duration::from_secs(1),
+        idle: Duration::from_secs(60),
+        total: Duration::from_secs(60),
         max_bytes: 1 << 20,
     };
     // Retry waits are set: a deadline must not send the request again (R8).
     let client = Client::with_limits(endpoint(&mock.base, None), quick, quick)
         .unwrap()
         .with_retry_waits(vec![Duration::from_millis(10); 3]);
-    let started = Instant::now();
     let err = client
         .complete(&label(), &hello(), 100, None)
         .await
@@ -368,7 +369,6 @@ async fn an_endpoint_that_never_answers_hits_the_deadline() {
         matches!(err, SummarizeError::Deadline("response")),
         "{err:?}"
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(mock.seen.lock().unwrap().len(), 1);
 }
 
@@ -397,26 +397,25 @@ fn scaled(limits: Limits, minute: Duration) -> Limits {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reply_slower_than_the_old_limit_arrives_within_the_new_limit() {
-    // One minute is 100 ms. The old limits (response 10 min, total 15 min)
-    // become 1 s and 1.5 s. The new limits become 3 s and 3.2 s. The
-    // endpoint answers after 1.5 s, which is 15 minutes.
-    let minute = Duration::from_millis(100);
+    // One minute is 500 ms. The old limits (response 10 min, total 15 min)
+    // become 5 s and 7.5 s. The new limits become 15 s and 16 s. The
+    // endpoint holds each reply until the test opens the gate.
+    let minute = Duration::from_millis(500);
+    let gate = common::Gate::default();
     let mock = serve(HashMap::from([(
         "/v1/chat/completions",
-        Reply::Later(Duration::from_millis(1500), 200, completion("slow")),
+        Reply::Gated(gate.clone(), Box::new(Reply::Json(200, completion("slow")))),
     )]))
     .await;
-    let old = Limits {
-        response: Duration::from_secs(600),
-        total: Duration::from_secs(900),
-        ..Limits::completion()
-    };
-    let client = Client::with_limits(
-        endpoint(&mock.base, None),
-        scaled(old, minute),
-        Limits::probe(),
-    )
-    .unwrap();
+    let old = scaled(
+        Limits {
+            response: Duration::from_secs(600),
+            total: Duration::from_secs(900),
+            ..Limits::completion()
+        },
+        minute,
+    );
+    let client = Client::with_limits(endpoint(&mock.base, None), old, Limits::probe()).unwrap();
     let err = client
         .complete(&label(), &hello(), 100, None)
         .await
@@ -432,10 +431,13 @@ async fn a_reply_slower_than_the_old_limit_arrives_within_the_new_limit() {
         Limits::probe(),
     )
     .unwrap();
-    let reply = client
-        .complete(&label(), &hello(), 100, None)
-        .await
-        .unwrap();
+    let request = tokio::spawn(async move { client.complete(&label(), &hello(), 100, None).await });
+    // The reply comes after the old response limit, counted from the time
+    // that the endpoint read the request. The new limit is 10 s longer.
+    mock.requests(2).await;
+    tokio::time::sleep(old.response).await;
+    gate.open();
+    let reply = request.await.unwrap().unwrap();
     assert_eq!(reply.text, "slow");
 }
 

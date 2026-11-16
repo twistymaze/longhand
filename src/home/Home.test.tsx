@@ -275,8 +275,9 @@ describe("Home", () => {
     expect(within(preview).getByText("3")).toBeTruthy();
     expect(onOpen).not.toHaveBeenCalled();
     await user.unhover(row("Budget review"));
-    // Pointer movement does not clear the selection.
-    await act(() => new Promise((done) => setTimeout(done, 300)));
+    // Pointer movement does not clear the selection. Home has no hover
+    // timer, so a flush of the effects and IPC calls is sufficient.
+    await act(async () => {});
     expect(screen.getByRole("region", { name: "Preview" })).toBeTruthy();
   });
 

@@ -342,7 +342,7 @@ describe("TypeAndTags", () => {
     const one = (name: string): NoteTypeList => ({ types: [{ name, valid: true, shared: true, notes: 0, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" }], default_type: null });
     await act(async () => reads[1](one("New")));
     await act(async () => reads[0](one("Old")));
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await act(async () => {});
     // The click reads the list again; that read stays open here.
     await user.click(typeButton());
     const menu = await screen.findByRole("menu");
@@ -377,7 +377,7 @@ describe("TypeAndTags", () => {
     await act(async () =>
       finish({ ...typeList, types: [...typeList.types, { name: "Customer Call", valid: true, shared: true, notes: 0, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" }] }),
     );
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await act(async () => {});
     expect(tauri.calls.some((c) => c.cmd === "set_note_type")).toBe(false);
     expect(onChanged).not.toHaveBeenCalled();
     expect(typeButton().textContent).toContain("General");

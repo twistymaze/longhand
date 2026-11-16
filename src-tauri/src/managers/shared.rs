@@ -2111,7 +2111,10 @@ mod tests {
             });
             started_rx.recv().unwrap();
             scope.spawn(move || read_tx.send(manager.snapshot()).unwrap());
-            let during = read_rx.recv_timeout(std::time::Duration::from_secs(5));
+            // The change waits until the test releases it, so a snapshot
+            // that waits for the change never arrives. The limit only
+            // stops the test from a hang.
+            let during = read_rx.recv_timeout(std::time::Duration::from_secs(60));
             finish_tx.send(()).unwrap();
             change.join().unwrap().unwrap();
             assert_eq!(

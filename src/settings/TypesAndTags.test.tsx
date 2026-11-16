@@ -511,7 +511,8 @@ const typesNamed = (...names: string[]): NoteTypeList => ({
   types: names.map((name) => entry(name, 0)),
   default_type: null,
 });
-const settle = () => act(() => new Promise((r) => setTimeout(r, 20)));
+// The IPC mock answers on microtasks: one act flush lets a read that ended apply.
+const settle = () => act(async () => {});
 
 describe("TypesAndTags reads", () => {
   test("a read that ends after a newer read does not replace the newer list", async () => {

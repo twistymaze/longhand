@@ -822,7 +822,7 @@ mod tests {
         assert_eq!(starts.load(Ordering::SeqCst), 1);
         assert!(tap.get().is_some());
         received
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(60))
             .unwrap()
             .unwrap();
         assert_eq!(

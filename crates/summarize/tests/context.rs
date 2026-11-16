@@ -200,11 +200,12 @@ async fn a_first_probe_that_hits_its_deadline_is_an_error_not_the_default() {
     // A slow network or a busy server gives no answer in time. That tells
     // nothing about the context, so the run must not keep the default.
     let mock = serve(HashMap::from([("/v1/model/info", Reply::Hang)])).await;
+    // Only the response deadline is short, so only it can fire.
     let quick = Limits {
-        connect: Duration::from_secs(1),
+        connect: Duration::from_secs(60),
         response: Duration::from_millis(300),
-        idle: Duration::from_millis(300),
-        total: Duration::from_secs(1),
+        idle: Duration::from_secs(60),
+        total: Duration::from_secs(60),
         max_bytes: 1 << 20,
     };
     let client = Client::with_limits(

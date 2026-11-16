@@ -123,6 +123,20 @@ const recordingCapture = (id: string, over: Partial<Capture> = {}) =>
     ...over,
   });
 
+/// Moves the fake clock, then lets the IPC calls that the timers start complete.
+const advance = (ms: number) =>
+  act(async () => {
+    vi.advanceTimersByTime(ms);
+  });
+
+/// A time on the day of `started`. With this time fixed, the test and the
+/// page name the same day, also when the test runs across midnight.
+const today = new Date(2026, 8, 24, 16, 0);
+function fixToday() {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(today);
+}
+
 function sessionsOf(entries: SessionEntry[]): Sessions {
   return { entries, stages: {}, starts: {}, live: {}, speakers: {}, version: {}, synced: {}, removed: {}, refresh: vi.fn(async () => {}) };
 }
@@ -438,11 +452,12 @@ describe("SessionPage", () => {
   // Covers AE9.
   test("a title typed during the recording renames the session", async () => {
     const e = entry("rec", { state: "capturing" });
+    fixToday();
     const tauri = mockPage(e, {}, { rename_session: () => ({ kind: "later" }) });
     const sessions = sessionsOf([e]);
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions });
     const title = screen.getByRole("textbox", { name: "Title" });
-    expect(title.getAttribute("placeholder")).toBe(sessionTitle(started));
+    expect(title.getAttribute("placeholder")).toBe(sessionTitle(started, today));
     const user = userEvent.setup();
     await user.click(title);
     await user.keyboard("Budget review{Enter}");
@@ -456,6 +471,7 @@ describe("SessionPage", () => {
   // Covers R35.
   test("an empty title clears the title, and the start time shows", async () => {
     const e = entry("s", { title: "Old title" });
+    fixToday();
     const tauri = mockPage(e, {}, { rename_session: () => ({ kind: "moved", path: "/x/y" }) });
     const view = renderPage({ id: "s", sessions: sessionsOf([e]) });
     const title = screen.getByRole("textbox", { name: "Title" }) as HTMLInputElement;
@@ -469,7 +485,7 @@ describe("SessionPage", () => {
     ]);
     view.rerenderWith(captureOf(), sessionsOf([{ ...e, title: null }]));
     expect(title.value).toBe("");
-    expect(title.getAttribute("placeholder")).toBe(sessionTitle(started));
+    expect(title.getAttribute("placeholder")).toBe(sessionTitle(started, today));
   });
 
   test("Escape in the title field keeps the old title", async () => {
@@ -751,25 +767,31 @@ describe("SessionPage", () => {
 
   test("Stop is unavailable for the first second, then stops the recording", async () => {
     const e = entry("rec", { state: "capturing" });
+    vi.useFakeTimers();
     const tauri = mockPage(e, {}, { stop_recording: () => "rec" });
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
     const stop = screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement;
     expect(stop.disabled).toBe(true);
-    await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
-    await userEvent.setup().click(stop);
+    await advance(999);
+    expect(stop.disabled).toBe(true);
+    await advance(1);
+    expect(stop.disabled).toBe(false);
+    await userEvent.setup({ delay: null }).click(stop);
     expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true);
   });
 
   test("a Stop that cancels a microphone open and names no note shows no message", async () => {
     const e = entry("rec", { state: "capturing" });
     const cancelled: StopOutcome = { kind: "cancelled" };
+    vi.useFakeTimers();
     const tauri = mockPage(e, {}, { stop_recording: () => cancelled });
     renderPage({ id: "rec", capture: recordingCapture("rec"), sessions: sessionsOf([e]) });
     const stop = screen.getByRole("button", { name: "Stop" }) as HTMLButtonElement;
-    await waitFor(() => expect(stop.disabled).toBe(false), { timeout: 2000 });
+    await advance(1000);
+    expect(stop.disabled).toBe(false);
     const messages = () => screen.queryAllByRole("status").map((m) => m.textContent);
     const before = messages();
-    await userEvent.setup().click(stop);
+    await userEvent.setup({ delay: null }).click(stop);
     await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(true));
     await waitFor(() => expect(stop.disabled).toBe(false));
     expect(screen.queryByRole("alert")).toBeNull();
@@ -902,12 +924,16 @@ describe("SessionPage", () => {
       mockPage(e, { ...running, speakers: progress("a", 40, true) });
       const page = renderPage({ id: "p", sessions: sessionsOf([e]) });
       await screen.findByText("40%");
+      // The timer of the new percent starts on the fake clock.
+      vi.useFakeTimers();
       await act(async () => page.rerenderWith(captureOf(), { ...sessionsOf([e]), speakers: { p: progress("a", 62, true) } }));
       expect(screen.getByText("62%")).toBeTruthy();
       expect(meter().getAttribute("aria-valuetext")).toBe("62%");
       expect(meter().className).not.toContain("progress-active");
-      // A percent that does not change for a while shows activity too (R4).
-      await act(async () => new Promise((resolve) => setTimeout(resolve, 3100)));
+      // A percent that does not change for 3 seconds shows activity too (R4).
+      await advance(2999);
+      expect(meter().getAttribute("aria-valuetext")).toBe("62%");
+      await advance(1);
       expect(meter().getAttribute("aria-valuetext")).toBe("62%, still working");
       expect(meter().className).toContain("progress-active");
     });
@@ -1108,8 +1134,11 @@ describe("SessionPage", () => {
       session_detail: () => detail(e),
       session_document: () => doc,
     });
+    // "Copied" goes after 1.5 seconds on the fake clock, so a slow machine
+    // cannot remove it before the check.
+    vi.useFakeTimers();
     renderPage({ id: "s", sessions: sessionsOf([e]) });
-    const user = userEvent.setup();
+    const user = userEvent.setup({ delay: null });
     // After setup, which puts its own clipboard in place.
     class FakeClipboardItem {
       constructor(readonly items: Record<string, Blob>) {}
@@ -1125,12 +1154,18 @@ describe("SessionPage", () => {
     await screen.findByText("We agreed the budget.");
     await user.click(tab("Transcript"));
     await user.click(screen.getByRole("button", { name: "Copy" }));
-    await waitFor(() => expect(written).toHaveLength(1));
+    // The clipboard write and the state change after it use only microtasks.
+    await advance(0);
+    expect(written).toHaveLength(1);
     expect(written[0]).toEqual({
       "text/html": "<h1>Transcript</h1>\n<ul>\n<li>[00:00:00] Speaker 1: Hello.</li>\n</ul>\n",
       "text/plain": "# Transcript\n\n- [00:00:00] Speaker 1: Hello.\n",
     });
     expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    await advance(1499);
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+    await advance(1);
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     await user.click(tab("My Notes"));
     await screen.findByRole("textbox", { name: "My Notes" });
     await user.click(screen.getByRole("button", { name: /^Cop/ }));
@@ -1298,6 +1333,7 @@ describe("SessionPage", () => {
       const e = entry("s");
       let running = true;
       let current = doc;
+      vi.useFakeTimers();
       mockTauri({
         load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
         session_detail: () => detail(e, { endpoint, regenerating: running }),
@@ -1306,13 +1342,18 @@ describe("SessionPage", () => {
         list_tags: () => [],
       });
       renderPage({ id: "s", sessions: sessionsOf([e]) });
-      expect(await screen.findByText("Summarizing")).toBeTruthy();
+      await advance(0);
+      expect(screen.getByText("Summarizing")).toBeTruthy();
       expect(screen.queryByText("We agreed the budget.")).toBeNull();
       expect(screen.queryByRole("button", { name: "Regenerate Summary" })).toBeNull();
 
+      // The page reads the detail again each second.
       running = false;
       current = newDoc;
-      expect(await screen.findByText("The launch moves to May 12.", {}, { timeout: 3000 })).toBeTruthy();
+      await advance(999);
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+      await advance(1);
+      expect(screen.getByText("The launch moves to May 12.")).toBeTruthy();
       expect(screen.queryByText("Summarizing")).toBeNull();
     });
 
@@ -1321,9 +1362,11 @@ describe("SessionPage", () => {
       let running = true;
       let current = doc;
       let reads = 0;
+      vi.useFakeTimers();
       mockTauri({
         load_session_notes: () => ({ markdown: "", fingerprint: "f0" }),
-        // Each read after the first takes longer than the poll interval.
+        // Each read after the first takes 1.3 seconds on the fake clock,
+        // longer than the poll interval of 1 second.
         session_detail: async () => {
           const now = running;
           if (reads++ > 0) await new Promise((r) => setTimeout(r, 1300));
@@ -1334,11 +1377,20 @@ describe("SessionPage", () => {
         list_tags: () => [],
       });
       renderPage({ id: "s", sessions: sessionsOf([e]) });
-      expect(await screen.findByText("Summarizing")).toBeTruthy();
+      await advance(0);
+      expect(screen.getByText("Summarizing")).toBeTruthy();
       running = false;
       current = newDoc;
-      expect(await screen.findByText("The launch moves to May 12.", {}, { timeout: 6000 })).toBeTruthy();
-    }, 10000);
+      // The second read starts at 1 s and ends at 2.3 s. A poll that starts
+      // a new read before the last one ends would make this result old.
+      await advance(1000);
+      expect(reads).toBe(2);
+      await advance(1299);
+      expect(screen.getByText("Summarizing")).toBeTruthy();
+      await advance(1);
+      expect(screen.getByText("The launch moves to May 12.")).toBeTruthy();
+      expect(reads).toBe(2);
+    });
 
     test("when it completes, the new summary shows", async () => {
       const { succeed } = await start();

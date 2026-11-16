@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use std::io::Write;
@@ -368,25 +369,28 @@ fn write_minute(w: &mut ChunkedWriter, rate: u32) -> Result<(), RecorderError> {
 fn a_slow_chunk_sync_neither_blocks_the_writer_nor_publishes_early() {
     let dir = tempfile::tempdir().unwrap();
     let rate = 16_000;
-    // The sync is held until the test lets it go, up to a bound that fails
-    // the test loudly if the writer waited on it.
-    static RELEASED: AtomicBool = AtomicBool::new(false);
-    const HELD: Duration = Duration::from_secs(10);
+    // The sync is held until the test lets it go. If the writer waited on the
+    // sync, the hang limit lets the sync go, the chunk is published before the
+    // check below, and the test fails.
+    static RELEASED: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+    const HANG_LIMIT: Duration = Duration::from_secs(60);
     let mut w = writer(dir.path(), 0, 0, rate).with_sync(|_| {
-        let started = std::time::Instant::now();
-        while !RELEASED.load(Ordering::SeqCst) && started.elapsed() < HELD {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let (released, signal) = &RELEASED;
+        let held = released.lock().unwrap();
+        drop(
+            signal
+                .wait_timeout_while(held, HANG_LIMIT, |released| !*released)
+                .unwrap(),
+        );
         Ok(())
     });
-    let started = std::time::Instant::now();
     write_minute(&mut w, rate).unwrap();
-    assert!(started.elapsed() < HELD / 2, "{:?}", started.elapsed());
     assert!(
         list_chunks(dir.path()).unwrap().is_empty(),
         "published before it was synced"
     );
-    RELEASED.store(true, Ordering::SeqCst);
+    *RELEASED.0.lock().unwrap() = true;
+    RELEASED.1.notify_all();
     w.write(&[0.1; 320]).unwrap();
     w.finish().unwrap();
     let chunks = list_chunks(dir.path()).unwrap();
@@ -448,20 +452,23 @@ async fn a_slow_frame_consumer_never_blocks_the_recorder() {
     let seconds = 130;
     let mock = MockAudio::tone(440.0, rate, Duration::from_secs(seconds));
     let stream = mock.open_mic_capture(None, rate, 960).unwrap();
-    // A live worker that takes 5 ms for each frame, behind a bounded
-    // channel that the callback never waits on.
+    // A live worker that receives nothing until the segment ends, behind a
+    // bounded channel that the callback never waits on. The channel fills
+    // with the first 250 frames and the callback drops all later frames.
+    // If the callback waited on the channel, the segment could not end; the
+    // hang limit then opens the gate, and the drop count is wrong.
     let (tx, rx) = std::sync::mpsc::sync_channel::<u64>(250);
+    let (open, gate) = std::sync::mpsc::channel::<()>();
     let received = Arc::new(AtomicU64::new(0));
     let counted = Arc::clone(&received);
     let worker = std::thread::spawn(move || {
+        let _ = gate.recv_timeout(Duration::from_secs(60));
         while rx.recv().is_ok() {
-            std::thread::sleep(Duration::from_millis(5));
             counted.fetch_add(1, Ordering::SeqCst);
         }
     });
     let dropped = Arc::new(AtomicU64::new(0));
     let drops = Arc::clone(&dropped);
-    let started = std::time::Instant::now();
     let outcome = recorder::run_segment_with(
         stream,
         writer(dir.path(), 0, 0, rate),
@@ -474,18 +481,13 @@ async fn a_slow_frame_consumer_never_blocks_the_recorder() {
         },
     )
     .await;
-    let elapsed = started.elapsed();
-    // 6,500 frames at 5 ms each would take more than 30 s.
-    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    open.send(()).unwrap();
     assert_eq!(outcome.span.unwrap().end_ms, seconds * 1_000);
     let chunks = list_chunks(dir.path()).unwrap();
     assert_eq!(chunks.last().unwrap().end_ms, seconds * 1_000);
-    assert!(dropped.load(Ordering::SeqCst) > 0, "the channel filled");
+    assert_eq!(dropped.load(Ordering::SeqCst), seconds * 50 - 250);
     worker.join().unwrap();
-    assert_eq!(
-        received.load(Ordering::SeqCst) + dropped.load(Ordering::SeqCst),
-        seconds * 50
-    );
+    assert_eq!(received.load(Ordering::SeqCst), 250);
 }
 
 // ------------------------------------------------------------ stereo (U6)
