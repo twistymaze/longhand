@@ -1,5 +1,5 @@
-import { describe, expect, test, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, test, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import { useState } from "react";
@@ -80,7 +80,7 @@ function setup(settings: Partial<Settings> = {}, over: Record<string, CommandHan
     current = { ...current, background: text };
     act(() => setShown((s) => ({ ...s, background: text })));
   };
-  return { tauri, remote, unmount, user: userEvent.setup() };
+  return { tauri, remote, unmount, user: userEvent.setup({ delay: null }) };
 }
 
 /// A `set_background` handler whose saves wait until the test lets them go.
@@ -101,14 +101,29 @@ function heldSaves() {
 
 const box = () => screen.getByRole("textbox", { name: "Background" });
 const saves = (tauri: TauriMock) => tauri.calls.filter((c) => c.cmd === "set_background").map((c) => c.args.text);
-const pause = (ms: number) => act(() => new Promise<void>((r) => setTimeout(r, ms)));
-/// Moves the fake clock, then lets a queued save run.
-const advance = (ms: number) =>
+const destroyed = (tauri: TauriMock) => tauri.calls.some((c) => c.cmd === "plugin:window|destroy");
+/// Runs the queued microtasks, but no timer. The IPC mock and the save chain
+/// use only microtasks, so a save that started is then complete, and the
+/// count of microtasks does not depend on the speed of the computer.
+const settle = () =>
   act(async () => {
+    for (let i = 0; i < 100; i++) await Promise.resolve();
+  });
+/// Moves the fake clock, then lets a queued save run.
+const advance = async (ms: number) => {
+  await act(async () => {
     vi.advanceTimersByTime(ms);
   });
+  await settle();
+};
 
 describe("Background", () => {
+  // All tests use the fake clock: no step waits for real time. The setup
+  // file sets the real clock again after each test.
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
   test("shows the saved text, the hint and the count, and does not take the focus", () => {
     setup({ background: "I am Erv." });
     expect(box().textContent).toBe("I am Erv.");
@@ -119,25 +134,18 @@ describe("Background", () => {
   });
 
   test("typing saves once, one second after the last change", async () => {
-    vi.useFakeTimers();
-    try {
-      const { tauri } = setup();
-      // No delay between keys: the test moves the clock itself.
-      const user = userEvent.setup({ delay: null });
-      await user.click(box());
-      await user.keyboard("Er");
-      // A change before the delay ends starts the delay again.
-      await advance(800);
-      await user.keyboard("v");
-      await advance(950);
-      expect(saves(tauri)).toEqual([]);
-      await advance(50);
-      expect(saves(tauri)).toEqual(["Erv"]);
-      await advance(2000);
-      expect(saves(tauri)).toEqual(["Erv"]);
-    } finally {
-      vi.useRealTimers();
-    }
+    const { tauri, user } = setup();
+    await user.click(box());
+    await user.keyboard("Er");
+    // A change before the delay ends starts the delay again.
+    await advance(800);
+    await user.keyboard("v");
+    await advance(950);
+    expect(saves(tauri)).toEqual([]);
+    await advance(50);
+    expect(saves(tauri)).toEqual(["Erv"]);
+    await advance(2000);
+    expect(saves(tauri)).toEqual(["Erv"]);
   });
 
   test("leaving the field saves at once", async () => {
@@ -145,7 +153,9 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("Erv");
     act(() => void fireEvent.blur(box()));
-    await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]), { timeout: 300 });
+    // The clock does not move: the save starts with no timer.
+    await settle();
+    expect(saves(tauri)).toEqual(["Erv"]);
   });
 
   test("an own save does not remount the editor, and the focus stays in the field", async () => {
@@ -153,8 +163,8 @@ describe("Background", () => {
     const before = box();
     await user.click(before);
     await user.keyboard("Erv");
-    await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]), { timeout: 1500 });
-    await pause(20);
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["Erv"]);
     expect(box()).toBe(before);
     expect(document.activeElement).toBe(before);
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
@@ -168,7 +178,8 @@ describe("Background", () => {
     expect(count.className).toContain("text-negative");
     expect((box().closest("[data-markdown-field]") as HTMLElement).className).toContain("border-negative");
     act(() => void fireEvent.blur(box()));
-    await pause(1200);
+    // Past the save delay: no timer saves the text either.
+    await advance(1200);
     expect(saves(tauri)).toEqual([]);
   });
 
@@ -183,7 +194,8 @@ describe("Background", () => {
     // Select all, then delete the selection.
     await user.keyboard("{Control>}a{/Control}{Backspace}");
     act(() => void fireEvent.blur(box()));
-    await waitFor(() => expect(saves(tauri)).toEqual([""]), { timeout: 300 });
+    await settle();
+    expect(saves(tauri)).toEqual([""]);
   });
 
   test("a save error shows under the field and keeps the text", async () => {
@@ -195,7 +207,8 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("Erv");
     act(() => void fireEvent.blur(box()));
-    expect(await screen.findByText("The storage folder is not available.")).toBeTruthy();
+    await settle();
+    expect(screen.getByText("The storage folder is not available.")).toBeTruthy();
     expect(box().textContent).toBe("Erv");
   });
 
@@ -209,7 +222,7 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("x");
     act(() => void fireEvent.blur(box()));
-    await pause(20);
+    await advance(1200);
     expect(saves(tauri)).toEqual([]);
   });
 
@@ -232,7 +245,8 @@ describe("Background", () => {
   test("a change from another computer with no draft shows the new text", async () => {
     const { remote } = setup({ background: "Old text" });
     remote("Text from the other computer");
-    await waitFor(() => expect(box().textContent).toBe("Text from the other computer"));
+    await settle();
+    expect(box().textContent).toBe("Text from the other computer");
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
   });
 
@@ -242,14 +256,16 @@ describe("Background", () => {
     await user.click(before);
     await user.keyboard("My ");
     remote("Text from the other computer");
-    expect(await screen.findByText("The Background changed on another computer.")).toBeTruthy();
+    await settle();
+    expect(screen.getByText("The Background changed on another computer.")).toBeTruthy();
     expect(box()).toBe(before);
     expect(box().textContent).toBe("My Old");
     expect(document.activeElement).toBe(before);
-    // The draft does not replace the text of the other computer.
-    await pause(1200);
+    // The draft does not replace the text of the other computer: not after
+    // the save delay, and not on blur.
+    await advance(1200);
     act(() => void fireEvent.blur(box()));
-    await pause(20);
+    await settle();
     expect(saves(tauri)).toEqual([]);
   });
 
@@ -258,9 +274,12 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("My ");
     remote("Text from the other computer");
-    await user.click(await screen.findByRole("button", { name: "Reload" }));
-    await waitFor(() => expect(box().textContent).toBe("Text from the other computer"));
+    await settle();
+    await user.click(screen.getByRole("button", { name: "Reload" }));
+    await settle();
+    expect(box().textContent).toBe("Text from the other computer");
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
+    await advance(1200);
     expect(saves(tauri)).toEqual([]);
   });
 
@@ -269,9 +288,11 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("My ");
     remote("Text from the other computer");
-    await user.click(await screen.findByRole("button", { name: "Keep My Text" }));
-    await waitFor(() => expect(saves(tauri)).toEqual(["My Old"]));
-    await waitFor(() => expect(screen.queryByText(/changed on another computer/)).toBeNull());
+    await settle();
+    await user.click(screen.getByRole("button", { name: "Keep My Text" }));
+    await settle();
+    expect(saves(tauri)).toEqual(["My Old"]);
+    expect(screen.queryByText(/changed on another computer/)).toBeNull();
     expect(box().textContent).toBe("My Old");
   });
 
@@ -291,11 +312,12 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("Erv");
     await tauri.emit("tauri://close-requested");
-    await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]));
-    await pause(20);
-    expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
+    await settle();
+    expect(saves(tauri)).toEqual(["Erv"]);
+    expect(destroyed(tauri)).toBe(false);
     await act(async () => finish());
-    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+    await settle();
+    expect(destroyed(tauri)).toBe(true);
   });
 
   test("a window close during the save that a pane change started waits for that save", async () => {
@@ -312,12 +334,14 @@ describe("Background", () => {
     await user.click(box());
     await user.keyboard("Erv");
     unmount();
-    await waitFor(() => expect(saves(tauri)).toEqual(["Erv"]));
+    await settle();
+    expect(saves(tauri)).toEqual(["Erv"]);
     await tauri.emit("tauri://close-requested");
-    await pause(20);
-    expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(false);
+    await settle();
+    expect(destroyed(tauri)).toBe(false);
     await act(async () => finish());
-    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+    await settle();
+    expect(destroyed(tauri)).toBe(true);
   });
 
   test("text typed during a save is saved when the save result comes before the settings read", async () => {
@@ -325,16 +349,18 @@ describe("Background", () => {
     const { tauri, remote, user } = setup({}, { set_background: h.handler }, true);
     await user.click(box());
     await user.keyboard("A");
-    await waitFor(() => expect(saves(tauri)).toEqual(["A"]), { timeout: 1500 });
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["A"]);
     await user.keyboard("B");
     await h.release();
-    await waitFor(() => expect(h.state.done).toBe(1));
-    await act(async () => {});
+    await settle();
+    expect(h.state.done).toBe(1);
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
     act(() => void fireEvent.blur(box()));
-    await waitFor(() => expect(saves(tauri)).toEqual(["A", "AB"]));
+    await settle();
+    expect(saves(tauri)).toEqual(["A", "AB"]);
     // The settings read then shows the own saves, with no notice.
-    await waitFor(() => expect(h.state.done).toBe(2));
+    expect(h.state.done).toBe(2);
     remote(h.saved());
     expect(screen.queryByText(/changed on another computer/)).toBeNull();
     expect(box().textContent).toBe("AB");
@@ -344,25 +370,31 @@ describe("Background", () => {
     const { tauri, remote, user } = setup();
     await user.click(box());
     await user.keyboard("Alice");
-    await waitFor(() => expect(saves(tauri)).toEqual(["Alice"]), { timeout: 1500 });
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["Alice"]);
     await user.keyboard(" Smith");
-    await waitFor(() => expect(saves(tauri)).toEqual(["Alice", "Alice Smith"]), { timeout: 1500 });
-    await waitFor(() => expect(screen.getByText("11 / 4,000")).toBeTruthy());
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["Alice", "Alice Smith"]);
+    expect(screen.getByText("11 / 4,000")).toBeTruthy();
     remote("Alice");
-    await waitFor(() => expect(box().textContent).toBe("Alice"));
+    await settle();
+    expect(box().textContent).toBe("Alice");
   });
 
   test("a change on another computer back to a text that this window saved before shows the notice over a draft", async () => {
     const { tauri, remote, user } = setup();
     await user.click(box());
     await user.keyboard("Alice");
-    await waitFor(() => expect(saves(tauri)).toEqual(["Alice"]), { timeout: 1500 });
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["Alice"]);
     await user.keyboard(" Smith");
-    await waitFor(() => expect(saves(tauri)).toEqual(["Alice", "Alice Smith"]), { timeout: 1500 });
-    await waitFor(() => expect(screen.getByText("11 / 4,000")).toBeTruthy());
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["Alice", "Alice Smith"]);
+    expect(screen.getByText("11 / 4,000")).toBeTruthy();
     await user.keyboard("!");
     remote("Alice");
-    await waitFor(() => expect(screen.getByText("The Background changed on another computer.")).toBeTruthy());
+    await settle();
+    expect(screen.getByText("The Background changed on another computer.")).toBeTruthy();
     expect(box().textContent).toBe("Alice Smith!");
   });
 
@@ -375,14 +407,18 @@ describe("Background", () => {
     });
     await user.click(box());
     await user.keyboard("A");
-    await waitFor(() => expect(saves(tauri)).toEqual(["A"]), { timeout: 1500 });
+    await advance(1000);
+    expect(saves(tauri)).toEqual(["A"]);
     await user.keyboard("B");
     // The blur queues the save of "AB" behind the running save.
     act(() => void fireEvent.blur(box()));
     unmount();
     await tauri.emit("tauri://close-requested");
+    await settle();
+    expect(destroyed(tauri)).toBe(false);
     await h.release();
-    await waitFor(() => expect(tauri.calls.some((c) => c.cmd === "plugin:window|destroy")).toBe(true));
+    await settle();
+    expect(destroyed(tauri)).toBe(true);
     expect(saves(tauri)).toEqual(["A", "AB"]);
   });
 });

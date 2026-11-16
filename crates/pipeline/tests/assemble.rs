@@ -855,8 +855,14 @@ mod stereo {
             .delete_checkpoint("s", Stage::Assemble, &checkpoint::echo_key(0))
             .unwrap();
         let processing = a.dir.join(proc_file(&a.segment.audio_file));
-        let before = std::fs::metadata(&processing).unwrap().modified().unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // An old time, so a new write gives a different time at any speed.
+        let before = std::time::UNIX_EPOCH + std::time::Duration::from_secs(86_400);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&processing)
+            .unwrap()
+            .set_modified(before)
+            .unwrap();
         assemble::run(
             &a.store,
             "s",

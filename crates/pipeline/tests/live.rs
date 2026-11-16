@@ -394,11 +394,26 @@ fn live_word_times_match_the_assembled_file_before_and_after_a_dropped_second() 
 fn a_full_channel_drops_the_frame_and_never_waits() {
     let (tap, frames) = live::channel(2);
     let pcm: Arc<[f32]> = Arc::from(vec![0.0f32; 960]);
-    let started = Instant::now();
-    assert!(tap.offer(0, &pcm));
-    assert!(tap.offer(960, &pcm));
-    assert!(!tap.offer(1_920, &pcm), "the third frame is dropped");
-    assert!(started.elapsed() < Duration::from_millis(100));
+    // The offers run on a thread. An offer that waits for space blocks that
+    // thread, because nothing reads the channel, and the hang limit fails.
+    let (done, offered) = mpsc::channel();
+    let offers = {
+        let pcm = Arc::clone(&pcm);
+        std::thread::spawn(move || {
+            let results = [
+                tap.offer(0, &pcm),
+                tap.offer(960, &pcm),
+                tap.offer(1_920, &pcm),
+            ];
+            done.send(results).unwrap();
+            tap
+        })
+    };
+    let results = offered
+        .recv_timeout(HANG_LIMIT)
+        .expect("an offer to a full channel waits");
+    assert_eq!(results, [true, true, false], "the third frame is dropped");
+    let tap = offers.join().unwrap();
     assert_eq!(frames.recv().unwrap().index, 0);
     assert!(tap.offer(2_880, &pcm));
     drop(frames);
@@ -695,8 +710,11 @@ fn live_rows_have_their_own_keys_and_never_count_as_windows() {
     assert!(live::segment_rows(&r.store, ID, 2).unwrap().is_empty());
 }
 
+/// A limit that only stops a test that hangs. A correct run never comes near it.
+const HANG_LIMIT: Duration = Duration::from_secs(60);
+
 fn wait_until(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG_LIMIT;
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting: {what}");
         std::thread::sleep(Duration::from_millis(10));
@@ -735,7 +753,11 @@ fn processing_stays_suspended_after_stop_until_the_last_part_is_saved() {
     // Stop: the frames end, and capture keeps the segment.
     drop(tap);
     worker.end(LiveEnd::Keep);
-    std::thread::sleep(Duration::from_millis(200));
+    // The worker takes the gate when it starts the last finish, and then
+    // waits on it.
+    wait_until("the last finish starts", || {
+        r.script.finish_gate.lock().unwrap().is_none()
+    });
     assert!(workers.busy(), "the last part is not saved yet");
     assert!(r.rows().is_empty());
     assert_eq!(woken.load(Ordering::SeqCst), 0);
@@ -1355,24 +1377,16 @@ fn durable_input_emits_live_text_before_the_first_chunk_closes() {
         )
         .unwrap();
     writer.write(&clicks(16_000, 1_000, &[100])).unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
-    while r.seen.texts.load(Ordering::SeqCst) == 0 && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let early_text = r.seen.texts.load(Ordering::SeqCst);
+    wait_until(
+        "live text from flushed .part audio while capture continues",
+        || r.seen.texts.load(Ordering::SeqCst) > 0,
+    );
     assert!(recorder::list_chunks(dir.path()).unwrap().is_empty());
     writer.finish().unwrap();
     drop(tap);
     worker.end(LiveEnd::Keep);
-    let until = Instant::now() + Duration::from_secs(5);
-    while workers.busy() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the worker ends", || !workers.busy());
     workers.shutdown();
-    assert!(
-        early_text > 0,
-        "the worker must read flushed .part audio while capture continues"
-    );
 }
 
 #[test]
@@ -1398,10 +1412,7 @@ fn offline_asr_starts_speaker_work_without_loading_the_text_model() {
         .unwrap();
     drop(tap);
     worker.end(LiveEnd::Keep);
-    let until = Instant::now() + Duration::from_secs(5);
-    while workers.busy() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the worker ends", || !workers.busy());
     workers.shutdown();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(r.script.loads.lock().unwrap().is_empty());
@@ -1551,10 +1562,7 @@ fn live_text_loads_the_snapshot_artifact_not_a_catalog_alias() {
         .unwrap();
     drop(tap);
     worker.end(LiveEnd::Keep);
-    let until = Instant::now() + Duration::from_secs(5);
-    while workers.busy() && Instant::now() < until {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    wait_until("the worker ends", || !workers.busy());
     workers.shutdown();
     assert_eq!(exact_calls.load(Ordering::SeqCst), 1);
     assert!(r.script.loads.lock().unwrap().is_empty());

@@ -694,6 +694,19 @@ fn a_flag_update_after_the_save_began_writes_nothing() {
     assert!(!path.join(marker_name(RUN)).exists());
 }
 
+/// Wait until the job of `id` reports why it waits. The limit only stops a
+/// test that hangs.
+fn wait_for_problem(homes: &EarlyHomes, id: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    while homes.problem(id).is_none() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the job of {id} does not report why it waits"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn a_job_cancelled_while_it_retries_makes_no_folder_later() {
     let dest = tempfile::tempdir().unwrap();
@@ -709,19 +722,13 @@ fn a_job_cancelled_while_it_retries_makes_no_folder_later() {
     )
     .with_retry(Duration::from_millis(20));
     homes.start("cancel-n");
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while homes.problem("cancel-n").is_none() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(
-        homes.problem("cancel-n").is_some(),
-        "the job reports why it waits"
-    );
+    wait_for_problem(&homes, "cancel-n");
 
     homes.cancel("cancel-n");
     std::fs::create_dir(&storage).unwrap();
+    // The cancel returned after the job ended, so the wake cannot start a
+    // write.
     homes.wake();
-    std::thread::sleep(Duration::from_millis(100));
 
     assert!(names(&storage).is_empty());
     assert_eq!(home(&store, "cancel-n"), None);
@@ -743,7 +750,8 @@ fn a_job_retries_until_the_storage_folder_is_back_and_reports_the_placed_folder(
     )
     .with_retry(Duration::from_millis(20));
     homes.start("retry-s");
-    std::thread::sleep(Duration::from_millis(60));
+    // The first write fails and the job waits to try again.
+    wait_for_problem(&homes, "retry-s");
 
     std::fs::create_dir(&storage).unwrap();
     homes.wake();

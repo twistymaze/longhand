@@ -17,7 +17,7 @@ use models::recognition::{ExecutionSpec, ProcessingMode, RecognitionConfig, Spea
 use pipeline::join::TRANSCRIPT_FILE;
 use pipeline::progress::{SpeakerProgress, SpeakerWork};
 use pipeline::reprocess::{Readiness, Refusal};
-use pipeline::runner::{Outcome, Wait};
+use pipeline::runner::{Intervals, Outcome, Wait};
 use pipeline::summarize::SummaryStep;
 use pipeline::transcribe::{self, WindowPlan};
 use pipeline::{
@@ -513,6 +513,16 @@ struct Rig {
 }
 
 fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) -> Rig {
+    rig_with_intervals(store, root, script, Intervals::default())
+}
+
+/// A rig whose runner uses the periods `intervals`.
+fn rig_with_intervals(
+    store: SharedStore,
+    root: tempfile::TempDir,
+    script: Arc<Script>,
+    intervals: Intervals,
+) -> Rig {
     let dest_dir = tempfile::tempdir().unwrap();
     let dest = dest_dir.path().to_path_buf();
     *script.destination.lock().unwrap() = Some(dest.clone());
@@ -522,55 +532,59 @@ fn rig_with(store: SharedStore, root: tempfile::TempDir, script: Arc<Script>) ->
     let capturing = Arc::clone(&script);
     let recording = Arc::clone(&script);
     let saved = Arc::clone(&store);
-    let runner = Runner::new(Environment {
-        store: Arc::clone(&store),
-        working_root: path.clone(),
-        engines: Box::new(Provider(Arc::clone(&script))),
-        suspended: Box::new(move || capturing.capturing.load(Ordering::SeqCst)),
-        events: Box::new(move |e| {
-            if let RunnerEvent::StageStarted {
-                note_id,
-                stage: Stage::Diarize,
-            } = &e
-            {
-                let progress = pipeline::progress::speakers(&saved, note_id).unwrap();
-                recording
-                    .saved_at_start
-                    .lock()
-                    .unwrap()
-                    .push(progress.map(|p| p.attempt));
-            }
-            if let RunnerEvent::StageStarted {
-                note_id,
-                stage: Stage::Save,
-            } = &e
-            {
-                *recording.generation_at_save.lock().unwrap() = saved
-                    .lock()
-                    .unwrap()
-                    .checkpoint_value(
-                        note_id,
-                        Stage::Transcribe,
-                        session_core::recognition::GENERATION_KEY,
-                    )
-                    .unwrap()
-                    .map(|value| serde_json::from_str(&value).unwrap());
-                let store = saved.lock().unwrap();
-                let mut rows = Vec::new();
-                for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
-                    for (key, payload) in store.checkpoints(note_id, stage).unwrap() {
-                        rows.push((stage, key, payload));
-                    }
+    let runner = Runner::with_intervals(
+        Environment {
+            store: Arc::clone(&store),
+            working_root: path.clone(),
+            engines: Box::new(Provider(Arc::clone(&script))),
+            suspended: Box::new(move || capturing.capturing.load(Ordering::SeqCst)),
+            events: Box::new(move |e| {
+                if let RunnerEvent::StageStarted {
+                    note_id,
+                    stage: Stage::Diarize,
+                } = &e
+                {
+                    let progress = pipeline::progress::speakers(&saved, note_id).unwrap();
+                    recording
+                        .saved_at_start
+                        .lock()
+                        .unwrap()
+                        .push(progress.map(|p| p.attempt));
                 }
-                recording
-                    .rows_at_save
-                    .lock()
-                    .unwrap()
-                    .insert(note_id.clone(), rows);
-            }
-            sink.lock().unwrap().push(e)
-        }),
-    });
+                if let RunnerEvent::StageStarted {
+                    note_id,
+                    stage: Stage::Save,
+                } = &e
+                {
+                    *recording.generation_at_save.lock().unwrap() = saved
+                        .lock()
+                        .unwrap()
+                        .checkpoint_value(
+                            note_id,
+                            Stage::Transcribe,
+                            session_core::recognition::GENERATION_KEY,
+                        )
+                        .unwrap()
+                        .map(|value| serde_json::from_str(&value).unwrap());
+                    let store = saved.lock().unwrap();
+                    let mut rows = Vec::new();
+                    for stage in [Stage::Assemble, Stage::Transcribe, Stage::Diarize] {
+                        for (key, payload) in store.checkpoints(note_id, stage).unwrap() {
+                            rows.push((stage, key, payload));
+                        }
+                    }
+                    recording
+                        .rows_at_save
+                        .lock()
+                        .unwrap()
+                        .insert(note_id.clone(), rows);
+                }
+                sink.lock().unwrap().push(e)
+            }),
+        },
+        power::ProcessingPower::default(),
+        intervals,
+    );
     Rig {
         runner,
         store,
@@ -2520,7 +2534,7 @@ async fn a_rejection_for_length_stops_the_summary_and_asks_for_the_context_limit
 #[tokio::test(flavor = "multi_thread")]
 async fn a_resume_during_summarization_discards_it_and_keeps_the_transcription() {
     let r = rig().await;
-    let _mock = summaries_from(&r, http::Reply::Hang, None).await;
+    let mock = summaries_from(&r, http::Reply::Hang, None).await;
     queue_session(
         &r.store,
         &r.root,
@@ -2529,41 +2543,28 @@ async fn a_resume_during_summarization_discards_it_and_keeps_the_transcription()
         Some("m"),
         &[(16_000, conversation())],
     );
-    let store = Arc::clone(&r.store);
-    let events = Arc::clone(&r.events);
-    tokio::spawn(async move {
-        loop {
-            let summarizing = events.lock().unwrap().iter().any(|e| {
-                matches!(
-                    e,
-                    RunnerEvent::StageStarted {
-                        stage: Stage::Summarize,
-                        ..
-                    }
-                )
-            });
-            if summarizing {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-        store
-            .lock()
-            .unwrap()
-            .apply(
-                "s",
-                &session_core::Event::UserResume {
-                    audio_intact: true,
-                    space_ok: true,
-                },
-            )
-            .unwrap();
-    });
-    let started = std::time::Instant::now();
-    let (_, outcome) = r.runner.run_next().await.unwrap();
+    let runner = Arc::clone(&r.runner);
+    let run = tokio::spawn(async move { runner.run_next().await });
+    // The resume comes while the summary request waits for its reply.
+    until_called(&mock).await;
+    r.store
+        .lock()
+        .unwrap()
+        .apply(
+            "s",
+            &session_core::Event::UserResume {
+                audio_intact: true,
+                space_ok: true,
+            },
+        )
+        .unwrap();
+    // The reply never comes, so only the resume ends the summary.
+    let (_, outcome) = tokio::time::timeout(std::time::Duration::from_secs(60), run)
+        .await
+        .expect("the resume stops the summary")
+        .unwrap()
+        .unwrap();
     assert_eq!(outcome, Outcome::Cancelled);
-    assert!(started.elapsed() < std::time::Duration::from_secs(20));
     assert_eq!(state(&r.store, "s"), SessionState::Capturing);
     let kept = r.store.lock().unwrap();
     assert!(kept.checkpoints("s", Stage::Summarize).unwrap().is_empty());
@@ -6035,7 +6036,8 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
     let r = rig().await;
     let (socket, port) = http::closed_socket();
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
-        retry_waits: vec![std::time::Duration::from_millis(50); 100],
+        // The tries go on for 60 s, much longer than the endpoint is closed.
+        retry_waits: vec![std::time::Duration::from_millis(50); 1_200],
         ..endpoint(&format!("http://127.0.0.1:{port}/v1"))
     }));
     let events = Arc::clone(&r.events);
@@ -9166,7 +9168,7 @@ async fn processing_power_releases_during_capture_and_a_regeneration_keeps_it_du
     *script.capture_after.lock().unwrap() = Some((1, Arc::clone(&capturing)));
     let job = Arc::clone(&runner);
     let task = tokio::spawn(async move { job.run_next().await });
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(std::time::Duration::from_secs(60), async {
         while !capturing.load(Ordering::SeqCst) || held.load(Ordering::SeqCst) != 0 {
             tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
@@ -10626,6 +10628,10 @@ async fn deleting_the_note_while_its_title_job_waits_for_the_summary_queue_cance
     until_called(&mock).await;
     let runner = Arc::clone(&r.runner);
     let titles = tokio::spawn(async move { runner.run_titles().await });
+    // Usually the title job waits for its turn before the delete. A title
+    // job has no wait mark, so the test cannot wait for that. A delete
+    // before the job starts gives the same result: the job is skipped and
+    // sends no request.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let claims = r.runner.claims().clone();
@@ -11231,7 +11237,18 @@ async fn a_quit_stops_a_note_in_each_queue_and_the_next_launch_runs_both() {
 /// claimed again until a wake or the poll (KTD3).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_note_that_waits_for_a_model_is_claimed_again_only_after_a_wake() {
-    let r = rig().await;
+    // The poll is longer than the test, so only the wake can make the loop
+    // claim the note again.
+    let r = rig_with_intervals(
+        store(),
+        tempfile::tempdir().unwrap(),
+        Arc::default(),
+        Intervals {
+            poll: std::time::Duration::from_secs(3_600),
+            ..Intervals::default()
+        },
+    );
+    with_summaries(&r.script).await;
     r.script.weights_missing.store(true, Ordering::SeqCst);
     queue_session(
         &r.store,
@@ -11251,9 +11268,7 @@ async fn a_note_that_waits_for_a_model_is_claimed_again_only_after_a_wake() {
     };
     let run = tokio::spawn(Arc::clone(&r.runner).run());
     until("the note waits for its model", || waits() == 1).await;
-    // The poll is 2 s: in 1 s, the loop does not claim the note again.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    assert_eq!(waits(), 1);
+    until("the note task ends", || !r.runner.is_working()).await;
     assert!(matches!(state(&r.store, "s"), SessionState::Queued { .. }));
 
     r.script.weights_missing.store(false, Ordering::SeqCst);
@@ -11262,6 +11277,13 @@ async fn a_note_that_waits_for_a_model_is_claimed_again_only_after_a_wake() {
         event_at(&r, saved_event("s")).is_some()
     })
     .await;
+    // A claim before the wake gives a second `Waiting` event, because the
+    // model was not on disk until the wake.
+    assert_eq!(
+        waits(),
+        1,
+        "the loop claimed the note again before the wake"
+    );
     r.runner.shutdown();
     run.await.unwrap();
 }
@@ -11344,11 +11366,51 @@ async fn a_note_whose_save_has_begun_saves_while_another_note_has_the_local_perm
     assert!(saved_folder(&r, "s").exists());
 }
 
+/// True when another instance does not take a claim of the store in the
+/// file `path` at `now`. The check runs on a copy of the file, because a
+/// claim that it takes changes the store.
+fn claims_fresh_in_copy(
+    store: &SharedStore,
+    path: &std::path::Path,
+    now: chrono::DateTime<chrono::FixedOffset>,
+) -> bool {
+    let copy_dir = tempfile::tempdir().unwrap();
+    let copy = copy_dir.path().join("jobs.sqlite");
+    {
+        // The store lock stops each write during the copy. The checkpoint
+        // moves the WAL into the file.
+        let held = store.lock().unwrap();
+        assert!(held.checkpoint_wal().unwrap());
+        std::fs::copy(path, &copy).unwrap();
+    }
+    session_core::Store::open(&copy)
+        .unwrap()
+        .reclaim_at_launch(
+            "another instance",
+            session_core::jobs::Liveness::Unknown { now },
+        )
+        .unwrap()
+        .is_empty()
+}
+
 /// A note that waits for its turn keeps a fresh heartbeat, so another
 /// instance does not take its claim (KTD5).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_note_that_waits_for_its_turn_keeps_its_claim() {
-    let r = rig().await;
+    // A store in a file, so that the test can read a copy of it. The
+    // heartbeat is short, so that the test does not wait for real time.
+    let files = tempfile::tempdir().unwrap();
+    let path = files.path().join("jobs.sqlite");
+    let shared: SharedStore = Arc::new(Mutex::new(session_core::Store::open(&path).unwrap()));
+    let r = rig_with_intervals(
+        Arc::clone(&shared),
+        tempfile::tempdir().unwrap(),
+        Arc::default(),
+        Intervals {
+            heartbeat: std::time::Duration::from_millis(20),
+            ..Intervals::default()
+        },
+    );
     let (mock, gate) = gated_summaries(&r).await;
     queue_session(
         &r.store,
@@ -11369,10 +11431,22 @@ async fn a_note_that_waits_for_its_turn_keeps_its_claim() {
     let run = tokio::spawn(Arc::clone(&r.runner).run());
     until_called(&mock).await;
     until("B waits for its turn", || r.runner.waits_to_summarize("b")).await;
-    // More than one heartbeat after the claims. Without a heartbeat, the
-    // claims are more than 30 s old 15 s from now.
-    tokio::time::sleep(std::time::Duration::from_secs(16)).await;
-    let later = chrono::Local::now().fixed_offset() + chrono::Duration::seconds(15);
+    // Make the heartbeats of the two claims very old. Only a new heartbeat
+    // makes the claims fresh at `later`: a heartbeat time before `since`
+    // is more than `CLAIM_STALE_AFTER` before `later`.
+    let since = {
+        let store = r.store.lock().unwrap();
+        let old = chrono::Local::now().fixed_offset() - chrono::Duration::days(1);
+        for id in ["a", "b"] {
+            store.heartbeat(id, r.runner.owner(), old).unwrap();
+        }
+        chrono::Local::now().fixed_offset()
+    };
+    let later = since + session_core::jobs::CLAIM_STALE_AFTER;
+    until("the claims have a heartbeat", || {
+        claims_fresh_in_copy(&r.store, &path, later)
+    })
+    .await;
     let other = rig_with(
         Arc::clone(&r.store),
         tempfile::tempdir().unwrap(),

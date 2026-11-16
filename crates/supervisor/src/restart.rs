@@ -91,12 +91,19 @@ impl RestartTracker {
 mod tests {
     use super::*;
 
+    // The tests move an injected clock, so no test sleeps and no test
+    // depends on the speed of the machine.
+
     fn budget(max_restarts: u32, max_window_ms: u64) -> RestartBudget {
         RestartBudget {
             max_restarts,
             max_window: Duration::from_millis(max_window_ms),
             reset_after: None,
         }
+    }
+
+    fn ms(n: u64) -> Duration {
+        Duration::from_millis(n)
     }
 
     #[test]
@@ -107,86 +114,92 @@ mod tests {
 
     #[test]
     fn record_restart_increments_within_budget() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let b = budget(3, 10_000);
-        assert!(tracker.record_restart(&b));
-        assert!(tracker.record_restart(&b));
-        assert!(tracker.record_restart(&b));
+        assert!(tracker.record_restart_at(&b, t0));
+        assert!(tracker.record_restart_at(&b, t0 + ms(5_000)));
+        assert!(tracker.record_restart_at(&b, t0 + ms(10_000)));
         assert_eq!(tracker.count(), 3);
     }
 
     #[test]
     fn record_restart_exceeds_budget() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let b = budget(2, 10_000);
-        assert!(tracker.record_restart(&b));
-        assert!(tracker.record_restart(&b));
-        assert!(!tracker.record_restart(&b));
+        assert!(tracker.record_restart_at(&b, t0));
+        assert!(tracker.record_restart_at(&b, t0));
+        assert!(!tracker.record_restart_at(&b, t0));
     }
 
     #[test]
     fn record_restart_at_exact_boundary() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let b = budget(1, 10_000);
-        assert!(tracker.record_restart(&b));
-        assert!(!tracker.record_restart(&b));
+        assert!(tracker.record_restart_at(&b, t0));
+        assert!(!tracker.record_restart_at(&b, t0 + ms(10_000)));
     }
 
     #[test]
     fn window_expiry_resets_counter() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let b = budget(1, 50);
-        assert!(tracker.record_restart(&b));
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(tracker.record_restart(&b));
+        assert!(tracker.record_restart_at(&b, t0));
+        assert!(tracker.record_restart_at(&b, t0 + ms(100)));
     }
 
     #[test]
     fn maybe_reset_clears_after_quiet_period() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let mut b = budget(3, 10_000);
-        b.reset_after = Some(Duration::from_millis(50));
+        b.reset_after = Some(ms(50));
 
-        tracker.record_restart(&b);
-        tracker.record_restart(&b);
+        tracker.record_restart_at(&b, t0);
+        tracker.record_restart_at(&b, t0);
         assert_eq!(tracker.count(), 2);
 
-        std::thread::sleep(Duration::from_millis(100));
-        tracker.maybe_reset(&b);
+        tracker.maybe_reset_at(&b, t0 + ms(100));
         assert_eq!(tracker.count(), 0);
     }
 
     #[test]
     fn maybe_reset_noop_before_threshold() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let mut b = budget(3, 10_000);
         b.reset_after = Some(Duration::from_secs(60));
 
-        tracker.record_restart(&b);
-        tracker.record_restart(&b);
-        tracker.maybe_reset(&b);
+        tracker.record_restart_at(&b, t0);
+        tracker.record_restart_at(&b, t0);
+        tracker.maybe_reset_at(&b, t0 + Duration::from_secs(60));
         assert_eq!(tracker.count(), 2);
     }
 
     #[test]
     fn maybe_reset_noop_when_none() {
-        let mut tracker = RestartTracker::new();
+        let t0 = Instant::now();
+        let mut tracker = RestartTracker::new_at(t0);
         let b = budget(3, 10_000);
 
-        tracker.record_restart(&b);
-        tracker.maybe_reset(&b);
+        tracker.record_restart_at(&b, t0);
+        tracker.maybe_reset_at(&b, t0 + Duration::from_secs(3_600));
         assert_eq!(tracker.count(), 1);
     }
 
     #[test]
     fn consecutive_failures_stay_bounded_until_capture_is_healthy() {
-        let mut tracker = RestartTracker::new();
+        // The window started one second ago and is 1 ms long, so a count
+        // that used the window would start again at each restart.
+        let past = Instant::now().checked_sub(Duration::from_secs(1)).unwrap();
+        let mut tracker = RestartTracker::new_at(past);
         let b = budget(3, 1);
         for _ in 0..3 {
-            std::thread::sleep(Duration::from_millis(3));
             assert!(tracker.record_consecutive_restart(&b));
         }
-        std::thread::sleep(Duration::from_millis(3));
         assert!(!tracker.record_consecutive_restart(&b));
         tracker.reset();
         assert!(tracker.record_consecutive_restart(&b));

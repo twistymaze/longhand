@@ -1063,12 +1063,16 @@ mod tests {
     /// Longer than the stability window.
     const LATER: Duration = Duration::from_secs(31);
 
+    /// A read with no progress for this time is a read failure. The limit
+    /// is long, so that a slow machine does not make a read fail.
+    const NO_PROGRESS_LIMIT: Duration = Duration::from_secs(60);
+
     fn fast() -> Timing {
         Timing {
             debounce: Duration::from_millis(100),
             full_scan_every: Duration::from_secs(3600),
             stable_for: Duration::from_secs(30),
-            stall_after: Duration::from_millis(50),
+            stall_after: NO_PROGRESS_LIMIT,
         }
     }
 
@@ -1533,9 +1537,15 @@ mod tests {
             audio_import::hash_file_counted(path, read)
         });
         let mut worker = fake.worker_with(&f, VERSION, Some(hash));
+        // The first read never makes progress, so a short limit always
+        // ends it. The limit is a minimum time, not a speed limit.
+        worker.timing.stall_after = Duration::from_millis(50);
         let at = settle(&mut worker, Instant::now());
         assert!(fake.imports().is_empty());
         assert!(fake.statuses().is_empty(), "no message");
+        // The second read is a real read: a long limit, so that a slow
+        // machine does not make it fail.
+        worker.timing.stall_after = NO_PROGRESS_LIMIT;
         worker.scan(at + LATER);
         assert_eq!(fake.imports(), vec![memo]);
         let _ = release.send(());

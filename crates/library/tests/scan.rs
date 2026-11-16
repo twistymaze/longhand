@@ -539,14 +539,15 @@ fn fifo(path: &Path) {
 }
 
 /// Run `f` on another thread and fail when it does not finish in time, so
-/// a read that blocks fails the test instead of stalling it.
+/// a read that blocks fails the test instead of stalling it. The limit only
+/// stops a test that hangs: it is much longer than each read time limit.
 #[cfg(unix)]
 fn within<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(f());
     });
-    rx.recv_timeout(Duration::from_secs(5))
+    rx.recv_timeout(Duration::from_secs(60))
         .expect("the scan blocked on a read")
 }
 
@@ -560,7 +561,9 @@ fn a_session_md_read_that_blocks_times_out_as_unreadable() {
     // does not download does.
     fifo(&dir.join("session.md"));
     let path = root.path().to_path_buf();
-    // A short limit, so the read times out before `within` fails the test.
+    // A short limit keeps the test fast. Only the FIFO is read with this
+    // limit: the folder has no other file. A FIFO with no writer never gives
+    // data, so the read times out at any speed.
     let options = ScanOptions {
         read_timeout: Duration::from_millis(300),
         ..ScanOptions::default()

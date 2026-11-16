@@ -215,17 +215,20 @@ async fn a_body_over_the_byte_cap_is_a_server_error() {
 #[tokio::test]
 async fn a_server_that_never_answers_is_unreachable_within_the_deadline() {
     let mock = serve(HashMap::from([("/v1/models", Reply::Hang)])).await;
+    // Only the response deadline is short, so only it can fire.
     let quick = Limits {
-        connect: Duration::from_secs(1),
+        connect: Duration::from_secs(60),
         response: Duration::from_millis(300),
-        idle: Duration::from_millis(300),
-        total: Duration::from_secs(1),
+        idle: Duration::from_secs(60),
+        total: Duration::from_secs(60),
         max_bytes: 1 << 20,
     };
     let client = Client::with_limits(endpoint(&mock.base, None), quick, quick).unwrap();
     let started = Instant::now();
     assert_eq!(list_models(&client).await, ModelList::Unreachable);
-    assert!(started.elapsed() < Duration::from_secs(2));
+    // A hang limit below the 60 s deadlines: only the response deadline
+    // can end the request this soon.
+    assert!(started.elapsed() < Duration::from_secs(30));
 }
 
 #[tokio::test]

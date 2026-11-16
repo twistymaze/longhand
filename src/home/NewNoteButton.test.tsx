@@ -245,7 +245,7 @@ describe("NewNoteButton: note types (R24)", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     await act(async () => finish({ types: [...types, { name: "Campaign", valid: true, shared: true, notes: 0, general: false, prompt_choice: null, prompt_name: null, summary_prompt_id: "topic-summary" }], default_type: null }));
-    await act(() => new Promise((r) => setTimeout(r, 20)));
+    await act(async () => {});
     expect(onStart).not.toHaveBeenCalled();
   });
 });

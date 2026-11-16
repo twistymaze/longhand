@@ -2106,13 +2106,13 @@ fn a_refresh_sets_the_removed_flag_from_the_folder() {
     deliver_marker(&folder, AUDIO);
     let refreshed = {
         let mut s = a.store.lock().unwrap();
-        refresh::refresh(&mut s, "n1", &folder, Duration::from_secs(2)).unwrap()
+        refresh::refresh(&mut s, "n1", &folder, options().read_timeout).unwrap()
     };
     assert!(refreshed.changed);
     assert_eq!(a.removed_audio("n1"), [AUDIO]);
     let again = {
         let mut s = a.store.lock().unwrap();
-        refresh::refresh(&mut s, "n1", &folder, Duration::from_secs(2)).unwrap()
+        refresh::refresh(&mut s, "n1", &folder, options().read_timeout).unwrap()
     };
     assert_eq!(again, Refresh::default());
 }
@@ -2856,7 +2856,7 @@ fn a_transcript_marker_before_the_delete_does_not_wait_and_a_writes_nothing() {
     // back.
     let refreshed = {
         let mut s = a.store.lock().unwrap();
-        refresh::refresh(&mut s, "n1", &folder, Duration::from_secs(2)).unwrap()
+        refresh::refresh(&mut s, "n1", &folder, options().read_timeout).unwrap()
     };
     assert_eq!(refreshed, Refresh::default());
     a.assert_transcript_cleared("n1");

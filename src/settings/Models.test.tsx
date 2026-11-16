@@ -736,7 +736,7 @@ test("this computer's own choice does not read the choices again", async () => {
   rerender(
     <TestModels models={models} live={{}} settings={choosing(sent)} actions={{ cancel: () => {}, refresh: async () => {} }} />,
   );
-  await new Promise((r) => setTimeout(r, 20));
+  await act(async () => {});
   expect(tauri.calls.filter((c) => c.cmd === "resolve_recognition").length).toBe(resolves);
   expect(screen.getByRole("radio", { name: "Whisper" }).getAttribute("aria-checked")).toBe("true");
 });

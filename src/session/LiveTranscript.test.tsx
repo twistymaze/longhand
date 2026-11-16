@@ -57,9 +57,16 @@ const snapshot = (revision: number, rows: ReturnType<typeof turn>[], epoch = 0) 
   ];
 };
 
+/// Send recognition events, then run the animation frame that the view
+/// asked for, so that the events show.
 async function send(tauri: ReturnType<typeof mockTauri>, events: unknown[]) {
-  for (const event of events) await act(() => tauri.emit("live-recognition-event", event));
-  await act(() => new Promise((done) => setTimeout(done, 120)));
+  const schedule = controlledRecognitionSchedule();
+  try {
+    for (const event of events) await act(() => tauri.emit("live-recognition-event", event));
+    await act(async () => schedule.frame());
+  } finally {
+    schedule.restore();
+  }
 }
 
 const headings = () => screen.queryAllByRole("heading").map((h) => h.textContent);
@@ -737,11 +744,18 @@ describe("speaker rows (U6)", () => {
     await act(() => tauri.emit("live-transcript-event", openText("Hello there", " how are")));
     expect(headings()).toEqual(["Speaker 1"]);
     // The text event applies the queued speaker events in the same update.
-    await act(() => {
-      for (const event of snapshot(2, [turn(0, 2500, "g:0:0:1")])) tauri.emit("live-recognition-event", event);
-      tauri.emit("live-transcript-event", openText("Hello there how", " is it"));
-    });
-    await act(() => new Promise((done) => setTimeout(done, 120)));
+    const schedule = controlledRecognitionSchedule();
+    try {
+      await act(() => {
+        for (const event of snapshot(2, [turn(0, 2500, "g:0:0:1")])) tauri.emit("live-recognition-event", event);
+        tauri.emit("live-transcript-event", openText("Hello there how", " is it"));
+      });
+      // Let the events arrive, then run the frame and the fallback timer.
+      await act(async () => {});
+      await act(async () => { schedule.frame(); schedule.timer(); });
+    } finally {
+      schedule.restore();
+    }
     expect(paragraphs()).toEqual(["Hello there how is it"]);
     expect(screen.queryByText("Speaker labels updated.")).toBeNull();
   });

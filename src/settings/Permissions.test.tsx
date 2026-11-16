@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "vitest";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness } from "../bindings";
 import { mockTauri } from "../test/tauri";
@@ -12,6 +12,12 @@ function setUserAgent(value: string) {
 }
 
 afterEach(() => setUserAgent(realAgent));
+
+/// Moves the fake clock, then lets the IPC calls that it starts complete.
+const advance = (ms: number) =>
+  act(async () => {
+    vi.advanceTimersByTime(ms);
+  });
 
 function renderMicrophone(authorized: boolean, handlers: Record<string, (args: Record<string, unknown>) => unknown> = {}) {
   const tauri = mockTauri(handlers);
@@ -53,9 +59,16 @@ describe("the microphone access row", () => {
         return checks >= 2;
       },
     });
-    await userEvent.setup().click(within(row()).getByRole("button", { name: "Allow…" }));
-    expect(await within(row()).findByRole("button", { name: "Waiting…" })).toBeTruthy();
-    await waitFor(() => expect(refreshed()).toBe(1), { timeout: 3000 });
+    vi.useFakeTimers();
+    await userEvent.setup({ delay: null }).click(within(row()).getByRole("button", { name: "Allow…" }));
+    await advance(0);
+    // The first check says no: the row checks again 500 ms later.
+    expect(within(row()).getByRole("button", { name: "Waiting…" })).toBeTruthy();
+    expect(checks).toBe(1);
+    await advance(499);
+    expect(refreshed()).toBe(0);
+    await advance(1);
+    expect(refreshed()).toBe(1);
     expect(tauri.calls.filter((c) => c.cmd === "plugin:macos-permissions|request_microphone_permission")).toHaveLength(1);
     expect(checks).toBe(2);
   });
@@ -117,8 +130,19 @@ describe("the App audio access row", () => {
         return checks < 2 ? "not_asked" : "allowed";
       },
     });
-    await userEvent.setup().click(within(row()).getByRole("button", { name: "Allow…" }));
-    await waitFor(() => expect(refreshed()).toBe(1), { timeout: 3000 });
+    vi.useFakeTimers();
+    await userEvent.setup({ delay: null }).click(within(row()).getByRole("button", { name: "Allow…" }));
+    await advance(0);
+    // The request says "not asked": the row checks again each 500 ms.
+    expect(within(row()).getByRole("button", { name: "Waiting…" })).toBeTruthy();
+    expect(checks).toBe(0);
+    await advance(500);
+    expect(checks).toBe(1);
+    expect(refreshed()).toBe(0);
+    await advance(499);
+    expect(refreshed()).toBe(0);
+    await advance(1);
+    expect(refreshed()).toBe(1);
     expect(tauri.calls.filter((c) => c.cmd === "request_system_audio_permission")).toHaveLength(1);
     expect(checks).toBe(2);
   });
