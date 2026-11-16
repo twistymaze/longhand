@@ -35,7 +35,18 @@ beforeEach(() => {
   clock = 100_000;
   clockSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
 });
-afterEach(() => clockSpy?.mockRestore());
+afterEach(() => {
+  clockSpy?.mockRestore();
+  vi.useRealTimers();
+});
+
+/// Make `setTimeout` a fake timer, so that a test lets the idle time pass
+/// with `vi.advanceTimersByTimeAsync` and does not wait for the tab's retry
+/// timer. The fake clock also moves with real time, so `userEvent` and
+/// `findBy` queries still work.
+function fakeRetryTimer() {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+}
 
 describe("NotesTab", () => {
   test("an error that reads the notes shows on the tab", async () => {
@@ -137,6 +148,7 @@ describe("NotesTab", () => {
 
   // Covers KTD10.
   test("a synced change does not replace a local edit that still waits", async () => {
+    fakeRetryTimer();
     let file = notes("Old notes", "f0");
     const save = deferred<unknown>();
     mockTauri({
@@ -159,13 +171,14 @@ describe("NotesTab", () => {
     // After 2 seconds with no input, the synced notes show.
     await act(async () => {
       clock += RELOAD_AFTER_INPUT_MS;
-      await new Promise((r) => setTimeout(r, RELOAD_AFTER_INPUT_MS + 50));
+      await vi.advanceTimersByTimeAsync(RELOAD_AFTER_INPUT_MS + 50);
     });
     expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
   });
 
   // Covers AE8, KTD10.
   test("a save that conflicts names the draft, and the editor then shows the file", async () => {
+    fakeRetryTimer();
     let file = notes("Old notes", "f0");
     const conflicts: string[] = [];
     mockTauri({
@@ -184,12 +197,13 @@ describe("NotesTab", () => {
     // The editor loads the file when the user has stopped typing.
     await act(async () => {
       clock += RELOAD_AFTER_INPUT_MS;
-      await new Promise((r) => setTimeout(r, RELOAD_AFTER_INPUT_MS + 50));
+      await vi.advanceTimersByTimeAsync(RELOAD_AFTER_INPUT_MS + 50);
     });
     expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
   });
 
   test("a later edit after a conflict makes one more draft, not one for each save", async () => {
+    fakeRetryTimer();
     let file = notes("Old notes", "f0");
     const conflicts: string[] = [];
     let drafts = 0;
@@ -218,7 +232,7 @@ describe("NotesTab", () => {
     // editor shows the file.
     await act(async () => {
       clock += RELOAD_AFTER_INPUT_MS;
-      await new Promise((r) => setTimeout(r, RELOAD_AFTER_INPUT_MS + 50));
+      await vi.advanceTimersByTimeAsync(RELOAD_AFTER_INPUT_MS + 50);
     });
     expect(await screen.findByText("Notes from the other computer")).toBeTruthy();
     expect(saves(tauri)).toEqual([
