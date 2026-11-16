@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { commands, type ZoomAction } from "../bindings";
+import { isImeComposing } from "./keyboard";
 
 export function zoomAction(event: KeyboardEvent, isMac: boolean): ZoomAction | null {
-  if (event.isComposing || event.altKey || event.getModifierState("AltGraph")) return null;
+  if (isImeComposing(event) || event.altKey || event.getModifierState("AltGraph")) return null;
   if (isMac ? !event.metaKey || event.ctrlKey : !event.ctrlKey || event.metaKey) return null;
   if (event.shiftKey && event.key !== "+" && event.key !== "=") return null;
   if (event.key === "+" || event.key === "=") return "increase";

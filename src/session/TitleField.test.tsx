@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { clearMocks } from "@tauri-apps/api/mocks";
 
+import { imeKeyDown } from "../test/keys";
 import { mockTauri } from "../test/tauri";
 import { TitleField } from "./TitleField";
 
@@ -63,5 +64,20 @@ describe("TitleField", () => {
     await act(async () => {});
     expect(renames()).toEqual([]);
     expect(field().value).toBe("Old");
+  });
+
+  test("the Enter or Escape that ends an input method composition does not save or put the title back", async () => {
+    const { field, renames } = setup("Old");
+    act(() => field().focus());
+    fireEvent.change(field(), { target: { value: "会議" } });
+    imeKeyDown(field(), "Enter");
+    fireEvent.keyDown(field(), { key: "Escape", isComposing: true });
+    await act(async () => {});
+    expect(document.activeElement).toBe(field());
+    expect(field().value).toBe("会議");
+    expect(renames()).toEqual([]);
+
+    fireEvent.keyDown(field(), { key: "Enter", keyCode: 13 });
+    await waitFor(() => expect(renames()).toEqual([{ noteId: "s1", title: "会議" }]));
   });
 });

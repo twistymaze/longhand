@@ -4,6 +4,7 @@
 import { formatPosition } from "../lib/timeline";
 import { ChevronIcon, WaveformIcon } from "../settings/icons";
 import { NoteLabels } from "./NoteLabels";
+import { isImeComposing } from "../lib/keyboard";
 
 export type RecordingNow = {
   noteId: string;
@@ -39,6 +40,7 @@ export function RecordingRow({ recording, selected, onSelect, onOpen }: { record
       onClick={(e) => { e.currentTarget.focus(); onSelect(); }}
       onDoubleClick={() => onOpen(recording.noteId)}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") { e.preventDefault(); onOpen(recording.noteId); }
       }}
       className={`${selected ? "bg-accent/15 ring-1 ring-accent" : "bg-group"} flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left shadow-[0_0_0_0.5px_var(--separator),0_1px_3px_rgb(0_0_0/0.06)] hover:bg-row-hover active:bg-fill-pressed outline-offset-1 focus-visible:outline-2 focus-visible:outline-accent`}

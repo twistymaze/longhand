@@ -16,6 +16,7 @@ import { type CSSProperties, type FormEvent, useEffect, useId, useRef, useState 
 import { commands, type ImportResult, type NewNoteType, type NoteTypeList, type Result } from "../bindings";
 import { NoteEditor } from "../editor/NoteEditor";
 import { GENERAL, TagLabel, tagKey, withGeneral } from "../lib/Labels";
+import { isImeComposing } from "../lib/keyboard";
 import { TagPicker } from "../lib/TagPicker";
 // The last part of a path, on macOS and on Windows. A file path does not
 // end with a separator, so the last part is the file name.
@@ -37,7 +38,8 @@ const inEditor = (target: EventTarget | null) =>
   target instanceof Element && target.closest(".prosemirror-editor") !== null;
 
 /// Cmd+Return, or Ctrl+Return on Windows: import.
-const isSubmitKey = (e: KeyboardEvent) => e.key === "Enter" && (e.metaKey || e.ctrlKey);
+const isSubmitKey = (e: KeyboardEvent) =>
+  !isImeComposing(e) && e.key === "Enter" && (e.metaKey || e.ctrlKey);
 
 /// Whether the cursor of the editor is in a task, where Cmd+Return checks
 /// the task.
@@ -123,7 +125,7 @@ export function ImportSheet({
       else if (isSubmitKey(e)) editorUsesKey = slashMenuOpen || selectionInTask();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
+      if (isImeComposing(e)) return;
       if (inEditor(e.target) ? editorUsesKey : e.defaultPrevented) return;
       if (e.key === "Escape") {
         e.preventDefault();

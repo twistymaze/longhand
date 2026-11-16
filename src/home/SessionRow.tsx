@@ -12,6 +12,7 @@ import { MoreIcon } from "../settings/icons";
 import { Status } from "../settings/ui";
 import { speakerCount } from "./group";
 import { NoteLabels } from "./NoteLabels";
+import { isImeComposing } from "../lib/keyboard";
 
 function TitleField({
   initial,
@@ -42,6 +43,7 @@ function TitleField({
       onDoubleClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         e.stopPropagation();
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") finish(true, e.currentTarget.value);
         if (e.key === "Escape") finish(false, "");
       }}
@@ -135,6 +137,7 @@ export function SessionRow({
         setMenuOpen(true);
       }}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           onOpen();

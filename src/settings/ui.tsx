@@ -14,6 +14,7 @@ import {
 } from "react";
 import { ConfirmDialog } from "../lib/ConfirmDialog";
 import { registerCloseSave } from "./closeSaves";
+import { isImeComposing } from "../lib/keyboard";
 
 export function Pane({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -412,6 +413,7 @@ export function NameField({
         if (!applying.current) onCancel(false);
       }}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           void apply();
@@ -543,6 +545,7 @@ export function CommitField({
       onChange={(e) => setDraft(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") commit();
         if (e.key === "Escape") setDraft(value);
       }}

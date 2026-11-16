@@ -16,6 +16,7 @@ import type { TagEntry } from "../bindings";
 import { TagLabel, tagKey, tagName } from "../lib/Labels";
 import { CheckIcon, ChevronIcon } from "../settings/icons";
 import { menuOrder } from "./filter";
+import { isImeComposing } from "../lib/keyboard";
 
 export function TagFilterMenu({
   tags,
@@ -174,6 +175,7 @@ export function TagFilterMenu({
               }}
               onBlur={() => close(false)}
               onKeyDown={(e) => {
+                if (isImeComposing(e)) return;
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                   e.preventDefault();
                   move(e.key === "ArrowDown" ? 1 : -1);

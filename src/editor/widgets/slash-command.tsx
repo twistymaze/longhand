@@ -40,6 +40,7 @@ import {
 } from "../icons";
 import { taskListWith } from "../note/keymap";
 import { schema } from "../note/schema";
+import { isImeComposing } from "../../lib/keyboard";
 
 // The `/` menu: type `/` at a line start or after a space to change the block.
 // See PROVENANCE.md.
@@ -314,6 +315,8 @@ export function SlashCommandMenu() {
 
   useEditorEventListener("keydown", (_view, event) => {
     if (!active || items.length === 0) return false;
+    // This listener runs before the composition check of ProseMirror.
+    if (isImeComposing(event)) return false;
 
     if (event.key === "Escape") {
       event.preventDefault();

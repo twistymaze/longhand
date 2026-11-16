@@ -15,6 +15,7 @@ import {
 } from "../bindings";
 import { ModelPicker } from "./ModelPicker";
 import { Button, CommitField, ErrorText, Group, Pane, Row, Status, type Tone, fieldClass } from "./ui";
+import { isImeComposing } from "../lib/keyboard";
 
 const isMac = () => navigator.userAgent.includes("Mac");
 const keyStore = () => (isMac() ? "Keychain" : "the credential store");
@@ -175,6 +176,7 @@ function Credential({
           placeholder={status?.kind === "present" ? "Replace…" : "Paste key"}
           onChange={(e) => setSecret(e.target.value)}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             if (e.key === "Enter" && secret) void save();
           }}
         />

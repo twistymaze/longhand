@@ -1,10 +1,11 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
 import { useState } from "react";
 import { type TauriMock, mockTauri } from "../test/tauri";
-import { type CommitHow, CommitField } from "./ui";
+import { imeKeyDown } from "../test/keys";
+import { type CommitHow, CommitField, NameField } from "./ui";
 
 /// The commits that the field sent, and a way to make them wait or fail.
 function commits() {
@@ -137,5 +138,31 @@ describe("CommitField", () => {
       ]),
     );
     await waitFor(() => expect(field().value).toBe("ABC"));
+  });
+});
+
+describe("Enter during an input method composition", () => {
+  test("the CommitField does not commit the Enter that ends a composition", async () => {
+    const { c, user } = setup();
+    await user.type(field(), "名");
+    imeKeyDown(field(), "Enter");
+    await act(async () => {});
+    expect(c.calls).toEqual([]);
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(c.calls).toEqual([{ text: "A名", how: "user" }]));
+  });
+
+  test("the NameField does not apply or cancel for a key that ends a composition", async () => {
+    const onApply = vi.fn(async (_v: string) => true);
+    const onCancel = vi.fn((_byKey: boolean) => {});
+    render(<NameField value="" label="Type name" onApply={onApply} onCancel={onCancel} />);
+    const input = screen.getByRole("textbox", { name: "Type name" });
+    fireEvent.change(input, { target: { value: "会議" } });
+    imeKeyDown(input, "Enter");
+    imeKeyDown(input, "Escape");
+    expect(onApply).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 13 });
+    await waitFor(() => expect(onApply.mock.calls).toEqual([["会議"]]));
   });
 });

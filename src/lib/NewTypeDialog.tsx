@@ -9,6 +9,7 @@ import { commands, type NoteTypeList } from "../bindings";
 import { sentence } from "../processing/describe";
 import { fieldClass } from "../settings/ui";
 import { sameType } from "./Labels";
+import { isImeComposing } from "./keyboard";
 
 export function NewTypeDialog({
   onCreated,
@@ -107,6 +108,7 @@ export function NewTypeDialog({
           setError(null);
         }}
         onKeyDown={(e) => {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") {
             e.preventDefault();
             void create();

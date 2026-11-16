@@ -19,6 +19,7 @@ import type {
 } from "../bindings";
 import { tagKey, tagName } from "../lib/Labels";
 import { sessionTitle } from "../processing/describe";
+import { imeKeyDown } from "../test/keys";
 import { type CommandHandler, mockTauri } from "../test/tauri";
 import { Home, type RecordingNow } from "./Home";
 import { useSessions } from "../session/useSessions";
@@ -623,6 +624,33 @@ describe("Home", () => {
       tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args),
     ).toEqual([{ noteId: "s", title: "Budget review" }]);
     expect(onChanged).toHaveBeenCalled();
+  });
+
+  test("Rename does not commit or cancel for a key that ends an input method composition", async () => {
+    const tauri = mockTauri({
+      session_document: () => document("Text."),
+      session_detail: () => detail(entry("s"), null),
+      rename_session: () => ({ kind: "moved", path: "/x/会議" }),
+    });
+    renderHome({ entries: [entry("s", { title: "Old title" })] });
+    const user = userEvent.setup();
+
+    await user.click(
+      within(row("Old title")).getByRole("button", { name: "Actions" }),
+    );
+    await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.keyboard("会議");
+    imeKeyDown(screen.getByRole("textbox", { name: "Title" }), "Enter");
+    imeKeyDown(screen.getByRole("textbox", { name: "Title" }), "Escape");
+    await act(async () => {});
+    expect(tauri.calls.some((c) => c.cmd === "rename_session")).toBe(false);
+
+    await user.keyboard("{Enter}");
+    await act(async () => {});
+    expect(
+      tauri.calls.filter((c) => c.cmd === "rename_session").map((c) => c.args),
+    ).toEqual([{ noteId: "s", title: "会議" }]);
   });
 
   // Covers R35.
