@@ -7,10 +7,10 @@ publish.workspace = true
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Exact pin: each rusqlite_migration release accepts one rusqlite minor
 # version. Update both together and read the migration changes first.
-rusqlite_migration = "=2.6.0"
+rusqlite_migration = "=2.7.0"
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
