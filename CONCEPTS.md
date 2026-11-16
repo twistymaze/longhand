@@ -142,6 +142,10 @@ A check during recording that triggers after a set recording time (6 hours by de
 ### Long-silence cut
 The removal, at Stop and before Preparing the audio, of each stretch of at least a set time (10 minutes by default) in which every channel has no speech and a low sound level. The transcript shows each removed stretch as one silence line. Removed audio is deleted.
 
+### Still-recording prompt
+The question "Still recording?" that the silence check or the time limit shows on the recording computer, with Keep Recording, Stop and a countdown. It shows on the recording widget when the widget shows, in the main window and as a system notification. When the countdown ends with no answer, Longhand stops the note and the note shows which check stopped it.
+*Avoid:* alert (an alert is for a failed capture)
+
 ### Import
 The step that makes a new note from an audio file that another device recorded, for example a phone. The user drops or chooses the file (a manual import), or the watched folder brings it in. A drop from an app that gives only a promise of a file, for example Voice Memos, is also a manual import: Longhand first asks that app to write the file into a local folder. An imported note is a normal note: it processes on the computer that imported it, and its audio becomes the normal audio of a note. A manual import always makes a new note, also for a file that was imported before.
 
