@@ -12,8 +12,8 @@ use std::time::{Duration, SystemTime};
 use chrono::{DateTime, FixedOffset, TimeDelta};
 use pipeline::SharedStore;
 use pipeline::in_use::{
-    CLOCK_MARGIN, FRESH_FOR, InUseKeeper, in_use, is_marker_name, marker_fresh, marker_name,
-    remove_marker, write_marker,
+    CLOCK_MARGIN, FRESH_FOR, InUseKeeper, REFRESH_EVERY, in_use, is_marker_name, marker_fresh,
+    marker_name, remove_marker, write_marker,
 };
 use pipeline::remove_audio::{Eligibility, EligibilityInputs, eligibility};
 use session_core::folder::{SessionDoc, fingerprint};
@@ -654,7 +654,13 @@ fn the_keeper_thread_writes_at_once_when_woken_and_stops() {
     keeper.start().unwrap();
     open(&note);
     keeper.wake();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // Each phase waits for the marker change that the wake causes. The
+    // limit only stops a test that hangs: it is long, so a slow runner does
+    // not fail the test, and shorter than REFRESH_EVERY, so a lost wake
+    // still fails it (the periodic refresh comes too late).
+    const HANG_LIMIT: Duration = Duration::from_secs(60);
+    const { assert!(HANG_LIMIT.as_secs() < REFRESH_EVERY.as_secs()) };
+    let deadline = std::time::Instant::now() + HANG_LIMIT;
     while markers(&note.home).is_empty() {
         assert!(
             std::time::Instant::now() < deadline,
@@ -674,6 +680,7 @@ fn the_keeper_thread_writes_at_once_when_woken_and_stops() {
         )
         .unwrap();
     keeper.wake();
+    let deadline = std::time::Instant::now() + HANG_LIMIT;
     while !markers(&note.home).is_empty() {
         assert!(
             std::time::Instant::now() < deadline,
