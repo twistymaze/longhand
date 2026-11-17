@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { commands, events, type Prompt } from "../bindings";
+import { count } from "../processing/describe";
 import { Button } from "../settings/ui";
 
 /// The time to `deadlineMs` as `m:ss`, rounded up to the next whole
@@ -17,8 +18,6 @@ export function formatCountdown(deadlineMs: number, nowMs: number): string {
   const seconds = Math.max(0, Math.ceil((deadlineMs - nowMs) / 1000));
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
-
-const count = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
 
 /// Each check in the prompt, as one sentence for each check.
 export function promptReason(prompt: Prompt): string {

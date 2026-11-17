@@ -1,5 +1,4 @@
 //! Cut detection (KTD3, KTD4, KTD16, KTD17 of the forgotten-recording plan).
-
 //!
 //! The current recording is a list of whole chunks in time order. A Pause
 //! divides it into blocks. A stretch is a run of removable chunks in one
@@ -124,8 +123,8 @@ fn units(current: &[&SegmentInput], words: &[WordSpan]) -> Vec<Unit> {
 /// Whether the cut can remove each chunk of one segment (KTD17).
 fn removable_chunks(chunks: &[ChunkInput], words: &[WordSpan]) -> Vec<bool> {
     // The speech test runs over the cells of the whole segment, so speech
-    // across a chunk end counts in both chunks.
-    // A speech cell is a voiced cell in a window that holds speech.
+    // across a chunk end counts in both chunks. A speech cell is a voiced
+    // cell in a window that holds speech.
     let mut speech = vec![false; chunks.len()];
     let mut channels = [ChannelSpeech::default(), ChannelSpeech::default()];
     for (position, chunk) in chunks.iter().enumerate() {
@@ -184,7 +183,7 @@ impl ChannelSpeech {
 fn complete(chunk: &ChunkInput) -> bool {
     !chunk.cells.is_empty()
         && chunk.cells.iter().all(|cell| {
-            cell.is_some_and(|cell: Cell| {
+            cell.is_some_and(|cell| {
                 cell.channels()
                     .all(|c| !(c.is_voiced() && c.level_dbfs() > QUIET_LEVEL_DBFS))
             })

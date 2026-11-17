@@ -37,6 +37,25 @@ pub enum StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+/// The recording checks and the long-silence cut of one recording (KTD14
+/// of the forgotten-recording plan). Start, a Resume of a saved note and
+/// Record into a note each read the shared settings once and store this
+/// snapshot with the note. The checks and the cut read only the snapshot,
+/// so a change of the settings applies to the next recording (R11). `None`
+/// is a check or a cut that is off.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingGuards {
+    /// The minutes with no speech before the silence check triggers (R2).
+    pub silence_check_minutes: Option<u32>,
+    /// The hours of recording time before the time limit triggers (R3).
+    pub time_limit_hours: Option<u32>,
+    /// The shortest stretch of silence, in minutes, that the cut removes
+    /// (R12).
+    pub cut_minutes: Option<u32>,
+    /// The minutes of the countdown of the "Still recording?" prompt (R5).
+    pub countdown_minutes: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub id: String,
@@ -1616,12 +1635,7 @@ impl Store {
     /// long-silence cut (KTD19 of the forgotten-recording plan).
     pub fn mark_cut_checked(&self, id: &str, indices: &[u32]) -> Result<()> {
         self.require(id)?;
-        self.conn.execute(
-            "UPDATE segments SET cut_checked = 1
-             WHERE note_id = ?1 AND idx IN (SELECT value FROM json_each(?2))",
-            params![id, serde_json::to_string(indices)?],
-        )?;
-        Ok(())
+        mark_checked(&self.conn, id, indices)
     }
 
     /// Write the store changes of a long-silence cut in one transaction
@@ -1641,11 +1655,7 @@ impl Store {
         for segment in &cut.segments {
             insert_segment(&tx, id, segment)?;
         }
-        tx.execute(
-            "UPDATE segments SET cut_checked = 1
-             WHERE note_id = ?1 AND idx IN (SELECT value FROM json_each(?2))",
-            params![id, serde_json::to_string(&cut.checked)?],
-        )?;
+        mark_checked(&tx, id, &cut.checked)?;
         for (stage, key, payload) in &cut.checkpoints {
             match payload {
                 Some(payload) => put_checkpoint_in(&tx, id, *stage, key, payload)?,
@@ -1673,6 +1683,18 @@ impl Store {
             )
             .optional()?
             .ok_or_else(|| StoreError::NoSuchSession(id.into()))
+    }
+
+    /// The recording settings snapshot of the note `id`, parsed. `None`
+    /// for a note with no snapshot, and for a snapshot that does not parse:
+    /// the log then gets a warning.
+    pub fn read_recording_guards(&self, id: &str) -> Result<Option<RecordingGuards>> {
+        let Some(text) = self.recording_guards(id)? else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_str(&text)
+            .inspect_err(|e| log::warn!("the recording checks of {id} do not parse: {e}"))
+            .ok())
     }
 
     /// Write the recording settings snapshot of the note `id` (KTD14 of
@@ -2576,6 +2598,17 @@ fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
 /// Write `segment`. A segment that the row already has keeps its removed
 /// flag: only the scan, the refresh and the adopt set it. It also keeps its
 /// cut mark: only the cut sets it.
+/// Mark the segments `indices` of the note `id` as checked by the
+/// long-silence cut (KTD19 of the forgotten-recording plan).
+fn mark_checked(conn: &Connection, id: &str, indices: &[u32]) -> Result<()> {
+    conn.execute(
+        "UPDATE segments SET cut_checked = 1
+         WHERE note_id = ?1 AND idx IN (SELECT value FROM json_each(?2))",
+        params![id, serde_json::to_string(indices)?],
+    )?;
+    Ok(())
+}
+
 fn insert_segment(conn: &Connection, note_id: &str, segment: &Segment) -> Result<()> {
     conn.execute(
         "INSERT INTO segments

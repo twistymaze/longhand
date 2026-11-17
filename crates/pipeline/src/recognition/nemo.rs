@@ -31,8 +31,15 @@ struct StoredEpoch {
 fn epoch_prefix(scope: &SpeakerScope) -> String {
     format!("{NATIVE_FINAL_PREFIX}{:020}/", scope.epoch)
 }
+/// The start of the key of each epoch record.
+pub(crate) const EPOCH_KEY_PREFIX: &str = "recognition-epoch-";
 fn epoch_key(start: u64) -> String {
-    format!("recognition-epoch-{start:020}")
+    format!("{EPOCH_KEY_PREFIX}{start:020}")
+}
+/// The sample in the key `key` of an epoch record. `None` for a key that is
+/// not the key of an epoch record.
+pub(crate) fn epoch_start(key: &str) -> Option<u64> {
+    key.strip_prefix(EPOCH_KEY_PREFIX)?.parse().ok()
 }
 /// The epoch windows of `range` on the epoch grid that starts at `origin`:
 /// the grid start of each epoch and the samples of `range` inside it.
@@ -1136,7 +1143,7 @@ impl LiveNative {
             &self.output.store,
             &self.output.session,
             stage,
-            &format!("recognition-epoch-{:020}", range.start),
+            &epoch_key(range.start),
             &record,
         )?;
         Ok(())

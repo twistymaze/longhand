@@ -233,7 +233,7 @@ mod tests {
         for (segment, start, end) in [(0u32, 0u64, 60_000u64), (1, 60_000, 120_000)] {
             std::fs::write(
                 dir.path()
-                    .join(format!("{segment}-1700-{start}-{end}-{start}.wav")),
+                    .join(recorder::chunk_file_name(segment, 1700, start, end, start)),
                 b"",
             )
             .unwrap();

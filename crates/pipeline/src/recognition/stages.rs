@@ -715,7 +715,7 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
     crate::verify::prepare_retry(store, id)?;
     let guard = lock(store);
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
-        if key.starts_with("recognition-epoch-") {
+        if key.starts_with(super::nemo::EPOCH_KEY_PREFIX) {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
         }
     }

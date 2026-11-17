@@ -128,27 +128,27 @@ struct SpeechTrack {
 
 impl SpeechTrack {
     fn push(&mut self, samples: &[f32]) {
-        let Self {
-            builder,
-            cells,
-            on_cell,
-        } = self;
-        builder.push(samples, &mut |cell| {
-            on_cell(&cell);
-            cells.push(cell);
-        });
+        let (builder, mut keep) = self.parts();
+        builder.push(samples, &mut keep);
     }
 
     fn finish(&mut self) {
+        let (builder, mut keep) = self.parts();
+        builder.finish(&mut keep);
+    }
+
+    /// The builder, and the function that gives each new cell to
+    /// `on_cell` and keeps it in `cells`.
+    fn parts(&mut self) -> (&mut CellBuilder, impl FnMut(Cell) + '_) {
         let Self {
             builder,
             cells,
             on_cell,
         } = self;
-        builder.finish(&mut |cell| {
+        (builder, move |cell| {
             on_cell(&cell);
             cells.push(cell);
-        });
+        })
     }
 }
 
@@ -343,13 +343,12 @@ impl ChunkedWriter {
         let file = chunk.close()?;
         let end_ms = self.start_ms + self.ms(self.chunk_samples);
         let partial = self.partial_path();
-        let closed = self.args.dir.join(format!(
-            "{}-{}-{}-{}-{}.wav",
+        let closed = self.args.dir.join(chunk_file_name(
             self.args.segment,
             self.args.capture_started_at,
             self.start_ms,
             end_ms,
-            self.audio_start_ms
+            self.audio_start_ms,
         ));
         // The cells of the chunk, for its sidecar.
         let sidecar = self
@@ -504,6 +503,18 @@ pub fn chunk_segment_of(file_name: &str) -> Option<u32> {
         .strip_suffix(".wav")
         .or_else(|| file_name.strip_suffix(".part"))?;
     stem.split('-').next()?.parse().ok()
+}
+
+/// The file name of a closed chunk:
+/// `{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav`.
+pub fn chunk_file_name(
+    segment: u32,
+    capture_started_at: u64,
+    start_ms: u64,
+    end_ms: u64,
+    audio_start_ms: u64,
+) -> String {
+    format!("{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav")
 }
 
 /// Remove every chunk of `segment`, closed or open, and its speech sidecars

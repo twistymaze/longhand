@@ -6,7 +6,7 @@
 
 import { useRef, useState } from "react";
 import { type CheckTimeSetting, commands, type Result, type Settings } from "../bindings";
-import { sentence } from "../processing/describe";
+import { plural, sentence } from "../processing/describe";
 import { readOnlyReason } from "./shared";
 import { type CommitHow, CommitField, ErrorText, Group, Row, Switch } from "./ui";
 
@@ -27,7 +27,6 @@ export function parseTime(text: string, range: Range): number | null {
   return time >= range.min && time <= range.max ? time : null;
 }
 
-const unitText = (time: number, unit: Range["unit"]) => (time === 1 ? unit : `${unit}s`);
 const rangeError = (range: Range) => `Enter a number of ${range.unit}s from ${range.min} to ${range.max}.`;
 
 /// One time field with its unit. It commits through `save`, and shows a
@@ -42,7 +41,7 @@ function TimeRow({
   range,
   disabled,
   save,
-  latestOn,
+  latestOn = () => true,
 }: {
   label: string;
   fieldLabel: string;
@@ -52,8 +51,9 @@ function TimeRow({
   disabled: boolean;
   save: (time: number, how: CommitHow) => Promise<boolean>;
   /// False when the setting of the last render is off. An unattended
-  /// commit then does not turn the setting on again.
-  latestOn: () => boolean;
+  /// commit then does not turn the setting on again. Without it, the
+  /// setting is always on.
+  latestOn?: () => boolean;
 }) {
   const [error, setError] = useState<string | null>(null);
   // A new key shows the saved value in the field again after a refused
@@ -92,11 +92,42 @@ function TimeRow({
           disabled={disabled}
           onCommit={commit}
         />
-        <span className="text-label-secondary">{unitText(time, range.unit)}</span>
+        <span className="text-label-secondary">{plural(time, range.unit)}</span>
       </Row>
       {error && <ErrorText>{error}</ErrorText>}
     </>
   );
+}
+
+/// The save of one setting, with its busy state and its error text. `save`
+/// calls `call`. On success, it clears the error, calls `onSaved` and then
+/// `onSettings`. On an error, it shows the error only for a user commit.
+function useSave(onSettings: (s: Settings) => void) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const save = async (
+    call: () => Promise<Result<Settings, string>>,
+    how: CommitHow,
+    onSaved?: () => void,
+  ): Promise<boolean> => {
+    setBusy(true);
+    try {
+      const result = await call();
+      if (result.status === "error") {
+        if (how === "user") setError(sentence(result.error));
+        return false;
+      }
+      setError(null);
+      onSaved?.();
+      onSettings(result.data);
+      return true;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return { error, busy, save };
 }
 
 /// A check or the cut: a switch, and while it is on, its time. The switch
@@ -129,26 +160,11 @@ function CheckTime({
   latest.current = setting;
   const [lastTime, setLastTime] = useState(on ? setting.time : fallback);
   const time = on ? setting.time : lastTime;
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { error, busy, save } = useSave(onSettings);
   const disabled = readOnly || busy;
 
-  const change = async (next: CheckTimeSetting, how: CommitHow = "user"): Promise<boolean> => {
-    setBusy(true);
-    try {
-      const result = await set(next);
-      if (result.status === "error") {
-        if (how === "user") setError(sentence(result.error));
-        return false;
-      }
-      setError(null);
-      setLastTime(next.kind === "after" ? next.time : time);
-      onSettings(result.data);
-      return true;
-    } finally {
-      setBusy(false);
-    }
-  };
+  const change = (next: CheckTimeSetting, how: CommitHow = "user"): Promise<boolean> =>
+    save(() => set(next), how, () => setLastTime(next.kind === "after" ? next.time : time));
 
   return (
     <>
@@ -186,24 +202,7 @@ function Countdown({
   readOnly: boolean;
   onSettings: (s: Settings) => void;
 }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const save = async (minutes: number, how: CommitHow): Promise<boolean> => {
-    setBusy(true);
-    try {
-      const result = await commands.setStopCountdownMinutes(minutes);
-      if (result.status === "error") {
-        if (how === "user") setError(sentence(result.error));
-        return false;
-      }
-      setError(null);
-      onSettings(result.data);
-      return true;
-    } finally {
-      setBusy(false);
-    }
-  };
+  const { error, busy, save } = useSave(onSettings);
 
   return (
     <>
@@ -214,8 +213,7 @@ function Countdown({
         time={settings.stop_countdown_minutes}
         range={COUNTDOWN_RANGE}
         disabled={readOnly || busy}
-        save={save}
-        latestOn={() => true}
+        save={(minutes, how) => save(() => commands.setStopCountdownMinutes(minutes), how)}
       />
       {error && <ErrorText>{error}</ErrorText>}
     </>

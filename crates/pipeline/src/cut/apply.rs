@@ -38,13 +38,11 @@ use session_core::{Segment, Stage};
 use super::{ChunkSpan, CutPlan, CutSettings, PlannedSegment, detect, read_input};
 use crate::live::archive::{self, Archive, ArchiveReader, SourceProof};
 use crate::live::{self, LiveRow, features};
+use crate::recognition::nemo::{EPOCH_KEY_PREFIX, epoch_start};
 use crate::{Control, RECOVERY_DIR, SharedStore, StageError, checkpoint, lock};
 
 /// The Assemble checkpoint that holds the cut plan of the note.
 pub const PLAN_KEY: &str = "cut-plan";
-
-/// The samples of one live speaker feature window at 16 kHz.
-const FEATURE_WINDOW: usize = 160_000;
 
 /// The Assemble checkpoint that holds the offset of the original segment
 /// of a part that starts after it. Assemble uses it to give the part the
@@ -76,14 +74,6 @@ struct Stored {
     feature_files: Vec<PathBuf>,
 }
 
-/// The fields of the recording settings snapshot that the cut reads.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct Guards {
-    silence_check_minutes: Option<u32>,
-    cut_minutes: Option<u32>,
-}
-
 /// True when the note has a cut that is not done.
 pub fn unfinished(store: &SharedStore, id: &str) -> Result<bool, StageError> {
     Ok(stored(store, id)?.is_some_and(|stored| stored.step != Step::Done))
@@ -110,14 +100,22 @@ pub fn run(
     let Some(settings) = settings(store, id)? else {
         return Ok(());
     };
-    let recovery = session_dir.join(RECOVERY_DIR);
-    // A crash while capturing leaves a `.part` open; close it from its length.
-    recorder::recover_partial_chunks(&recovery)?;
     let segments = lock(store).segments(id)?;
     let Some(start) = recording_start(session_dir, &segments)? else {
         return Ok(());
     };
     let checked = lock(store).cut_checked(id)?;
+    // An earlier cut checked the current recording: `detect` gives no plan.
+    // Assemble closes the `.part` files that this skips.
+    if segments
+        .iter()
+        .any(|s| s.offset_ms >= start && checked.contains(&s.index))
+    {
+        return Ok(());
+    }
+    let recovery = session_dir.join(RECOVERY_DIR);
+    // A crash while capturing leaves a `.part` open; close it from its length.
+    recorder::recover_partial_chunks(&recovery)?;
     let live_rows = live::rows(store, id)?;
     let input = read_input(&recovery, &segments, &checked, &live_rows, start, settings)?;
     let Some(plan) = detect(&input) else {
@@ -170,17 +168,10 @@ fn crash_after(step: u8) -> Result<(), StageError> {
 fn settings(store: &SharedStore, id: &str) -> Result<Option<CutSettings>, StageError> {
     let (guards, auto_stop) = {
         let guard = lock(store);
-        (guard.recording_guards(id)?, guard.auto_stop(id)?)
+        (guard.read_recording_guards(id)?, guard.auto_stop(id)?)
     };
     let Some(guards) = guards else {
         return Ok(None);
-    };
-    let guards: Guards = match serde_json::from_str(&guards) {
-        Ok(guards) => guards,
-        Err(e) => {
-            log::warn!("{id}: the recording settings snapshot does not read: {e}");
-            return Ok(None);
-        }
     };
     if guards.cut_minutes.is_none() {
         return Ok(None);
@@ -270,7 +261,7 @@ fn store_changes(
         .into_iter()
         .flat_map(|(stage, rows)| {
             rows.iter()
-                .filter(|(key, _)| key.starts_with("recognition-epoch-"))
+                .filter(|(key, _)| key.starts_with(EPOCH_KEY_PREFIX))
                 .map(move |(key, payload)| Row {
                     stage,
                     key: key.clone(),
@@ -293,7 +284,8 @@ fn store_changes(
             format!("live-snapshot-{s:08}"),
             format!("live-failure-{s:08}"),
         ];
-        let diarize_prefixes = [features::key(s), format!("live-feature-{s:08}-")];
+        let window_prefix = format!("live-feature-{s:08}-");
+        let diarize_prefixes = [features::key(s), window_prefix.clone()];
         for (key, _) in &transcribe {
             if owned(key, &transcribe_prefixes) {
                 deletes.push((Stage::Transcribe, key.clone()));
@@ -393,7 +385,7 @@ fn store_changes(
             .iter()
             .filter_map(|(key, payload)| {
                 let window = key
-                    .strip_prefix(&format!("live-feature-{s:08}-"))?
+                    .strip_prefix(window_prefix.as_str())?
                     .parse::<usize>()
                     .ok()?;
                 Some((window, payload))
@@ -454,7 +446,7 @@ fn store_changes(
                 });
                 for (window, payload) in windows.iter().filter(|(w, _)| *w >= first) {
                     let at = grid_start + ((window - first) * step) as i64;
-                    let len = FEATURE_WINDOW.min(total.saturating_sub(window * step));
+                    let len = features::WINDOW.min(total.saturating_sub(window * step));
                     if at >= 0 && at as usize + len <= length {
                         kept.insert(*window);
                         puts.push(Row {
@@ -615,10 +607,7 @@ fn part_proofs(
             .iter()
             .all(|row| (segment.offset_ms + row.end_ms) * 16 <= covered_end);
     for epoch in epochs {
-        let at = epoch
-            .key
-            .strip_prefix("recognition-epoch-")
-            .and_then(|s| s.parse::<u64>().ok());
+        let at = epoch_start(&epoch.key);
         if at.is_some_and(|at| at >= start && at < end) {
             let record: serde_json::Value = serde_json::from_str(&epoch.payload)?;
             verified &= record["range"]["end"]
@@ -658,7 +647,14 @@ fn rename_parts(recovery: &Path, plan: &CutPlan) -> Result<(), StageError> {
                 continue;
             };
             if chunk.segment == span.segment {
-                std::fs::rename(&chunk.path, recovery.join(chunk_name(index, chunk)))?;
+                let name = recorder::chunk_file_name(
+                    index,
+                    chunk.capture_started_at,
+                    chunk.start_ms,
+                    chunk.end_ms,
+                    chunk.audio_start_ms,
+                );
+                std::fs::rename(&chunk.path, recovery.join(name))?;
             }
             let sidecar = recorder::speech::sidecar_path(
                 recovery,
@@ -682,14 +678,6 @@ fn rename_parts(recovery: &Path, plan: &CutPlan) -> Result<(), StageError> {
     Ok(())
 }
 
-/// The name that the chunk writer gives `chunk` as a chunk of `segment`.
-fn chunk_name(segment: u32, chunk: &recorder::ChunkInfo) -> String {
-    format!(
-        "{segment}-{}-{}-{}-{}.wav",
-        chunk.capture_started_at, chunk.start_ms, chunk.end_ms, chunk.audio_start_ms
-    )
-}
-
 /// Delete the chunks of `removed` and their sidecars. Only a plain file
 /// with the exact name that the chunk writer gives is deleted
 /// (`docs/solutions/security-issues/audio-removal-trusted-synced-file-names-before-delete.md`).
@@ -708,8 +696,16 @@ fn delete_removed(recovery: &Path, removed: &[ChunkSpan]) -> Result<(), StageErr
         for chunk in chunks.iter().filter(|c| {
             c.segment == span.segment && c.start_ms == span.start_ms && c.end_ms == span.end_ms
         }) {
+            // The name that the chunk writer gives the chunk.
+            let written = recorder::chunk_file_name(
+                chunk.segment,
+                chunk.capture_started_at,
+                chunk.start_ms,
+                chunk.end_ms,
+                chunk.audio_start_ms,
+            );
             let name = chunk.path.file_name().map(|n| n.to_string_lossy());
-            if name.as_deref() != Some(chunk_name(chunk.segment, chunk).as_str()) {
+            if name.as_deref() != Some(written.as_str()) {
                 log::warn!(
                     "{} is not a name that Longhand writes; the cut does not delete it",
                     chunk.path.display()
@@ -937,7 +933,14 @@ mod tests {
             .into_iter()
             .find(|c| c.start_ms == 8 * MIN)
             .unwrap();
-        std::fs::rename(&chunk.path, recovery.join(chunk_name(1, &chunk))).unwrap();
+        let name = recorder::chunk_file_name(
+            1,
+            chunk.capture_started_at,
+            chunk.start_ms,
+            chunk.end_ms,
+            chunk.audio_start_ms,
+        );
+        std::fs::rename(&chunk.path, recovery.join(name)).unwrap();
         run(&store, ID, dir.path(), &Unattended).unwrap();
         assert_eq!(state(&store, dir.path()), expected);
     }

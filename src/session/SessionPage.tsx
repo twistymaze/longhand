@@ -31,7 +31,7 @@ import { copySelection, copyText } from "../lib/clipboard";
 import { sameType } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
-import { formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
+import { count, formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
 import { useRunningApps } from "../settings/Recording";
 import { Button } from "../settings/ui";
@@ -200,8 +200,8 @@ function offerFor(
 /// with its time from the note record.
 function autoStopLine({ silence_check_minutes: minutes, time_limit_hours: hours }: AutoStopView): string {
   const checks = [
-    minutes !== null ? `${minutes} ${minutes === 1 ? "minute" : "minutes"} with no speech` : null,
-    hours !== null ? `${hours} ${hours === 1 ? "hour" : "hours"} of recording` : null,
+    minutes !== null ? `${count(minutes, "minute")} with no speech` : null,
+    hours !== null ? `${count(hours, "hour")} of recording` : null,
   ].filter((check) => check !== null);
   return `Longhand stopped this note after ${checks.join(" and ")}.`;
 }

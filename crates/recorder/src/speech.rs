@@ -25,8 +25,9 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
-use rubato::{FftFixedIn, Resampler};
+use audio::resampler::FrameResampler;
 use vad::{EarshotVad, VAD_SAMPLE_RATE, VoiceActivityDetector};
 
 use crate::chunks::{CHUNK_SECONDS, ChunkInfo};
@@ -56,10 +57,8 @@ const SIDECAR_EXTENSION: &str = "speech";
 const TEMPORARY_SUFFIX: &str = ".speech.tmp";
 /// The level byte of a cell with only digital silence.
 const SILENT_LEVEL: u8 = u8::MAX;
-/// Native samples in one resampler block.
-const RESAMPLER_BLOCK: usize = 1024;
-/// The 16 kHz samples of one Earshot frame (KTD1).
-const EARSHOT_FRAME_SAMPLES: usize = 256;
+/// The time of one Earshot frame: 256 samples at 16 kHz (KTD1).
+const EARSHOT_FRAME: Duration = Duration::from_millis(16);
 
 /// One channel of a cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,72 +141,31 @@ pub trait VoiceDetector: Send {
 /// delay moves a verdict by some tens of milliseconds, which is small
 /// against a cell.
 pub struct EarshotDetector {
-    resampler: Option<FftFixedIn<f32>>,
-    input: Vec<f32>,
-    frame: Vec<f32>,
+    resampler: FrameResampler,
     vad: EarshotVad,
 }
 
 impl EarshotDetector {
     pub fn new(sample_rate: u32) -> Self {
-        let resampler = (sample_rate != VAD_SAMPLE_RATE).then(|| {
-            FftFixedIn::<f32>::new(
+        Self {
+            resampler: FrameResampler::new(
                 sample_rate as usize,
                 VAD_SAMPLE_RATE as usize,
-                RESAMPLER_BLOCK,
-                1,
-                1,
-            )
-            .expect("the resampler accepts any pair of positive rates")
-        });
-        Self {
-            resampler,
-            input: Vec::with_capacity(RESAMPLER_BLOCK),
-            frame: Vec::with_capacity(EARSHOT_FRAME_SAMPLES),
+                EARSHOT_FRAME,
+            ),
             vad: EarshotVad::new(EARSHOT_THRESHOLD).expect("the threshold is in range"),
-        }
-    }
-
-    /// Give 16 kHz samples to Earshot.
-    fn detect(
-        frame: &mut Vec<f32>,
-        vad: &mut EarshotVad,
-        mut samples: &[f32],
-        verdict: &mut dyn FnMut(bool),
-    ) {
-        let size = EARSHOT_FRAME_SAMPLES;
-        while !samples.is_empty() {
-            let take = (size - frame.len()).min(samples.len());
-            frame.extend_from_slice(&samples[..take]);
-            samples = &samples[take..];
-            if frame.len() == size {
-                // A frame that Earshot refuses (a sample that is not
-                // finite) is not voiced.
-                verdict(vad.is_voice(frame).unwrap_or(false));
-                frame.clear();
-            }
         }
     }
 }
 
 impl VoiceDetector for EarshotDetector {
-    fn push(&mut self, mut samples: &[f32], verdict: &mut dyn FnMut(bool)) {
-        let Some(resampler) = self.resampler.as_mut() else {
-            Self::detect(&mut self.frame, &mut self.vad, samples, verdict);
-            return;
-        };
-        while !samples.is_empty() {
-            let take = (RESAMPLER_BLOCK - self.input.len()).min(samples.len());
-            self.input.extend_from_slice(&samples[..take]);
-            samples = &samples[take..];
-            if self.input.len() == RESAMPLER_BLOCK {
-                match resampler.process(&[&self.input[..]], None) {
-                    Ok(out) => Self::detect(&mut self.frame, &mut self.vad, &out[0], verdict),
-                    Err(e) => log::warn!("the speech detector could not resample: {e}"),
-                }
-                self.input.clear();
-            }
-        }
+    fn push(&mut self, samples: &[f32], verdict: &mut dyn FnMut(bool)) {
+        let vad = &mut self.vad;
+        self.resampler.push(samples, |frame| {
+            // A frame that Earshot refuses (a sample that is not finite) is
+            // not voiced.
+            verdict(vad.is_voice(frame).unwrap_or(false));
+        });
     }
 }
 

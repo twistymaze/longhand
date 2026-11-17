@@ -5,14 +5,15 @@
 //! [`GuardFlow`] makes all the decisions. It has no I/O and gets the UTC
 //! time from its caller, so the tests need no waits. [`GuardManager`] keeps
 //! the flow and the meter of the note that records, applies the actions of
-//! the flow, and runs the `longhand-guard` thread. The thread ticks once a
-//! second. The deadline of a prompt is UTC wall clock, because a monotonic
+//! the flow, and runs the `longhand-guard` thread. While the flow watches a
+//! recording, the thread ticks once a second. Else it waits for the next
+//! recording, because a tick then does nothing. The deadline of a prompt is UTC wall clock, because a monotonic
 //! timer does not advance while the computer sleeps.
 //!
 //! Lock order: the capture lock, then the guard lock. The guard lock is
 //! never held while the capture lock or the store lock is taken.
 
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
@@ -365,6 +366,8 @@ struct GuardState {
 /// (KTD5).
 pub struct GuardManager {
     state: Mutex<GuardState>,
+    /// Notified when the flow starts to watch a recording.
+    watched: Condvar,
     notice: Box<dyn PromptNotice>,
 }
 
@@ -381,6 +384,7 @@ impl GuardManager {
                 flow: GuardFlow::default(),
                 meter: None,
             }),
+            watched: Condvar::new(),
             notice,
         }
     }
@@ -417,7 +421,20 @@ impl GuardManager {
         let mut state = self.state();
         state.meter = Some(meter);
         let actions = state.flow.start(note_id, guards);
-        Self::applied(&state, actions)
+        let actions = Self::applied(&state, actions);
+        self.watched.notify_all();
+        actions
+    }
+
+    /// Wait until the flow watches a recording. A flow with no watch has no
+    /// prompt, so a tick then does nothing.
+    fn wait_for_watch(&self) {
+        let state = self.state();
+        drop(
+            self.watched
+                .wait_while(state, |state| state.flow.watch.is_none())
+                .unwrap_or_else(|e| e.into_inner()),
+        );
     }
 
     pub fn pause(&self) -> Vec<Action> {
@@ -461,7 +478,9 @@ impl GuardManager {
     }
 
     pub fn wake(&self, now: DateTime<Utc>) -> Vec<Action> {
-        self.state().flow.wake(now)
+        let actions = self.state().flow.wake(now);
+        self.watched.notify_all();
+        actions
     }
 
     pub fn stop_pending(&self, note_id: &str, generation: u64) -> bool {
@@ -543,13 +562,15 @@ impl GuardManager {
         }
     }
 
-    /// Start the `longhand-guard` thread, which ticks once a second.
+    /// Start the `longhand-guard` thread, which ticks once a second while
+    /// the flow watches a recording.
     pub fn start_thread(self: &Arc<Self>, app: AppHandle, capture: Arc<CaptureManager>) {
         let guard = Arc::clone(self);
         let spawned = std::thread::Builder::new()
             .name("longhand-guard".into())
             .spawn(move || {
                 loop {
+                    guard.wait_for_watch();
                     std::thread::sleep(TICK);
                     let actions = guard.tick(Utc::now());
                     if let Some(stop) = guard.publish(&app, actions) {
@@ -1002,5 +1023,21 @@ mod tests {
         assert_eq!(meter.silence_ms(), 0);
         assert_eq!(meter.run_ms(), 30 * MIN);
         assert!(guard.tick(at(30 * 60 + 1)).is_empty());
+    }
+
+    // The guard thread waits while no recording is watched, and a start
+    // ends the wait. The test waits for the end of the wait, not for a
+    // time.
+    #[test]
+    fn a_start_ends_the_wait_of_the_guard_thread() {
+        let guard = Arc::new(GuardManager::default());
+        let waiter = {
+            let guard = Arc::clone(&guard);
+            std::thread::spawn(move || guard.wait_for_watch())
+        };
+        guard.start("n", Some(defaults()), Arc::new(GuardMeter::default()));
+        waiter.join().unwrap();
+        // A watched flow does not wait.
+        guard.wait_for_watch();
     }
 }

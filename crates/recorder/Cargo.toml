@@ -9,8 +9,6 @@ publish.workspace = true
 audio = { path = "../audio" }
 futures-util = "0.3"
 log.workspace = true
-# The resampler of the speech detector (KTD1 of the forgotten-recording plan).
-rubato = "0.16"
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "sync"] }
 tokio-util = "0.7"

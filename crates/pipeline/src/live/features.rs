@@ -10,7 +10,8 @@ use std::{
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
-const WINDOW: usize = 160_000;
+/// The samples of one live speaker feature window at 16 kHz.
+pub(crate) const WINDOW: usize = 160_000;
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct Window {
     digest: String,

@@ -280,22 +280,8 @@ pub fn validate_stop_countdown(minutes: u32) -> Result<(), String> {
 }
 
 /// The recording checks and the long-silence cut of one recording (KTD14).
-/// Start, a Resume of a saved note and Record into a note each read the
-/// shared settings once and store this snapshot with the note. The checks
-/// and the cut read only the snapshot, so a change of the settings applies
-/// to the next recording (R11). `None` is a check or a cut that is off.
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RecordingGuards {
-    /// The minutes with no speech before the silence check triggers (R2).
-    pub silence_check_minutes: Option<u32>,
-    /// The hours of recording time before the time limit triggers (R3).
-    pub time_limit_hours: Option<u32>,
-    /// The shortest stretch of silence, in minutes, that the cut removes
-    /// (R12).
-    pub cut_minutes: Option<u32>,
-    /// The minutes of the countdown of the "Still recording?" prompt (R5).
-    pub countdown_minutes: u32,
-}
+/// The note store holds this snapshot.
+pub use session_core::RecordingGuards;
 
 /// The usual microphone (R1, KTD1): cpal's stable device ID, with the device
 /// name as its label, so Settings can name a microphone that is not

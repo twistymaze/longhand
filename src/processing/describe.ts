@@ -58,6 +58,16 @@ export function stoppedAt(stage: string | null): string {
 
 /// A backend message as a sentence: they start in lower case so they can
 /// follow a colon in a log.
+/// The unit for `n`, with an "s" when `n` is not 1: "minute", "hours".
+export function plural(n: number, unit: string): string {
+  return n === 1 ? unit : `${unit}s`;
+}
+
+/// `n` and its unit: "1 minute", "5 hours".
+export function count(n: number, unit: string): string {
+  return `${n} ${plural(n, unit)}`;
+}
+
 export function sentence(message: string): string {
   const text = message.trim();
   return text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".");

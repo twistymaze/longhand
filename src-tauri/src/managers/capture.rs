@@ -1365,19 +1365,21 @@ fn begin_recording(
     Ok(())
 }
 
+/// [`begin_recording`], with an error only in the log: the recording does
+/// not stop for it.
+fn begin_recording_or_log(store: &Store, id: &str, guards: Option<&RecordingGuards>) {
+    if let Err(e) = begin_recording(store, id, guards) {
+        log::error!("could not store the recording checks of {id}: {e}");
+    }
+}
+
 /// The settings snapshot of the note `id` (KTD14). A note with no snapshot,
 /// or with a snapshot that does not parse, gets no checks.
 fn stored_guards(store: &Store, id: &str) -> Option<RecordingGuards> {
-    let text = match store.recording_guards(id) {
-        Ok(text) => text?,
-        Err(e) => {
-            log::warn!("could not read the recording checks of {id}: {e}");
-            return None;
-        }
-    };
-    serde_json::from_str(&text)
-        .inspect_err(|e| log::warn!("the recording checks of {id} do not parse: {e}"))
-        .ok()
+    store
+        .read_recording_guards(id)
+        .inspect_err(|e| log::warn!("could not read the recording checks of {id}: {e}"))
+        .ok()?
 }
 
 /// The open note in the store: Capturing, else Interrupted.
@@ -2485,9 +2487,7 @@ impl CaptureManager {
                 log::error!("could not store the app set of {id}: {e}");
             }
             // The checks and the cut read only this snapshot (KTD14).
-            if let Err(e) = begin_recording(&store, &id, Some(&settings.recording_guards())) {
-                log::error!("could not store the recording checks of {id}: {e}");
-            }
+            begin_recording_or_log(&store, &id, Some(&settings.recording_guards()));
             stopped
         };
         // The folder is written on the thread of its job: the recording
@@ -2886,9 +2886,7 @@ impl CaptureManager {
             // of now. An interrupted note keeps its snapshot (KTD14).
             if matches!(state, SessionState::Capturing) {
                 let guards = completed.then(|| settings::get_settings(app).recording_guards());
-                if let Err(e) = begin_recording(&store, id, guards.as_ref()) {
-                    log::error!("could not store the recording checks of {id}: {e}");
-                }
+                begin_recording_or_log(&store, id, guards.as_ref());
             }
             // The old segments of a saved note are listed for their copy
             // into the working location (KTD8 of the audio removal plan).
@@ -2954,9 +2952,7 @@ impl CaptureManager {
             // the title and notes that another computer wrote.
             pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
             record_in_store(&mut store, id, &claims, &recognition, &capture, &apps)?;
-            if let Err(e) = begin_recording(&store, id, Some(&settings.recording_guards())) {
-                log::error!("could not store the recording checks of {id}: {e}");
-            }
+            begin_recording_or_log(&store, id, Some(&settings.recording_guards()));
         }
         // This run's in-use marker, then the flag "recording not saved"
         // (KTD4). Neither write holds up the recording.
