@@ -11,6 +11,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::managers::capture::{CaptureError, CaptureManager, RecordingStatus, StopOutcome};
 use crate::managers::destination;
+use crate::managers::guard::GuardManager;
 use crate::managers::processing::ProcessingManager;
 use crate::managers::settings::{self, ListedApp, MicrophoneChoice, SpeakerCountSetting};
 use crate::managers::shared::{NoteTypeList, SharedSettingsManager};
@@ -120,6 +121,55 @@ pub async fn stop_recording(
         manager
             .stop_session(&app)
             .inspect(|outcome| log::info!("stopped: {outcome:?}"))
+            .map_err(|e| e.to_string())
+    })
+    .await?;
+    processing.wake();
+    Ok(outcome)
+}
+
+/// Keep Recording in the prompt `generation` (R6, R9): the prompt closes on
+/// each surface, and each check in it starts again. An answer to a prompt
+/// that is already closed does nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn keep_recording(
+    app: AppHandle,
+    guard: State<'_, Arc<GuardManager>>,
+    generation: u64,
+) -> Result<(), String> {
+    let guard = Arc::clone(&guard);
+    blocking(move || {
+        let checks = guard.keep(generation);
+        guard.publish(&app, checks);
+        Ok(())
+    })
+    .await
+}
+
+/// Stop in the prompt `generation` (R7, R9): the note stops as the user's
+/// Stop does, with no stop reason. `None` when the prompt is already
+/// closed: the note does not stop.
+#[tauri::command]
+#[specta::specta]
+pub async fn stop_from_prompt(
+    app: AppHandle,
+    manager: State<'_, Arc<CaptureManager>>,
+    processing: State<'_, Arc<ProcessingManager>>,
+    guard: State<'_, Arc<GuardManager>>,
+    generation: u64,
+) -> Result<Option<StopOutcome>, String> {
+    let manager = Arc::clone(&manager);
+    let guard = Arc::clone(&guard);
+    let outcome = blocking(move || {
+        let Some(checks) = guard.answer_stop(generation) else {
+            return Ok(None);
+        };
+        guard.publish(&app, checks);
+        manager
+            .stop_session(&app)
+            .inspect(|outcome| log::info!("stopped from the prompt: {outcome:?}"))
+            .map(Some)
             .map_err(|e| e.to_string())
     })
     .await?;

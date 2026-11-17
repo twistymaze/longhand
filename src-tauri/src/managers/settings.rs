@@ -1279,10 +1279,6 @@ impl Settings {
 
     /// The snapshot of the recording checks and the cut that a new
     /// recording stores (KTD14).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "a later unit stores the snapshot at Start")
-    )]
     pub fn recording_guards(&self) -> RecordingGuards {
         RecordingGuards {
             silence_check_minutes: self.silence_check_minutes.time(),

@@ -16,7 +16,7 @@ use library::scan::{READ_TIMEOUT, Read, read_note_files, read_timed};
 pub use session_core::folder::AudioState;
 use session_core::folder::{self, ResultFlag, SessionDoc, Summary, SummaryMeta};
 use session_core::note_folder::{Layout, NoteFiles, SESSION_FILE};
-use session_core::note_record::{ImportSource, NOTE_RECORD_FILE, NoteRecord};
+use session_core::note_record::{AutoStop, ImportSource, NOTE_RECORD_FILE, NoteRecord};
 use session_core::{Event, Segment, SessionRecord, SessionState, Stage, Store, TitleSource};
 pub use session_save::publication::OLD_LAYOUT;
 use session_save::publication::{Outcome, Publication, WriteSet};
@@ -733,6 +733,7 @@ fn stage_publication(
         &session_doc(&record, segments, working)?,
         summary_meta(&guard, note_id, segments)?,
         guard.import_source(note_id)?,
+        guard.auto_stop(note_id)?,
     );
     let publication = Publication::new(&home, staged, WriteSet::Result)?;
     publication.record(working)?;
@@ -935,28 +936,33 @@ fn render(
         SESSION_FILE,
         &note_files::new_session_md(doc.title.as_deref(), &doc.tags),
     )?;
-    let (summary, import) = {
+    let (summary, import, auto_stop) = {
         let guard = lock(store);
         (
             summary_meta(&guard, note_id, segments)?,
             guard.import_source(note_id)?,
+            guard.auto_stop(note_id)?,
         )
     };
-    let staged = with_summary(&doc, summary, import);
+    let staged = with_summary(&doc, summary, import, auto_stop);
     write_working(working, NOTE_RECORD_FILE, &staged.render())?;
     Ok(())
 }
 
-/// The records of `doc` with the summary data `summary`, and the source
-/// file `import` of an imported note (R11, KTD10).
+/// The records of `doc` with the summary data `summary`, the source file
+/// `import` of an imported note (R11, KTD10), and the stop reason
+/// `auto_stop` of a note that Longhand stopped (R8 of the
+/// forgotten-recording plan).
 fn with_summary(
     doc: &SessionDoc,
     summary: Option<SummaryMeta>,
     import: Option<ImportSource>,
+    auto_stop: Option<AutoStop>,
 ) -> NoteRecord {
     NoteRecord {
         summary,
         import,
+        auto_stop,
         ..NoteRecord::from_doc(doc)
     }
 }
@@ -1591,6 +1597,7 @@ fn summarize_again(
                 &session_doc(&record, &segments, &local)?,
                 Some(summary.meta.clone()),
                 guard.import_source(note_id)?,
+                None,
             );
             // The summary is made from the transcript that the folder
             // holds. `transcript.md` and `recognition.jsonl` are not
@@ -1599,6 +1606,10 @@ fn summarize_again(
             staged.recognition_snapshot = previous.recognition_snapshot;
             staged.recognition_artifact = previous.recognition_artifact;
             staged.recognition_audio = previous.recognition_audio;
+            // A new summary does not change how the recording stopped: the
+            // stop reason stays as the folder has it, also when another
+            // computer stopped the note (R8).
+            staged.auto_stop = previous.auto_stop;
             Ok(Publication::new(&path, staged, WriteSet::Summary)?)
         })();
         // A failure before the record changes nothing in the note folder

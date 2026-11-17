@@ -20,6 +20,7 @@ const idle: RecordingStatus = {
   microphone_fallback: false,
   note_apps: [],
   app_audio: null,
+  prompt: null,
   microphone_choice: null,
   paused: false,
   recorded_ms: 0,

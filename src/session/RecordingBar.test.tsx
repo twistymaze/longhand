@@ -69,6 +69,7 @@ describe("the app audio warnings", () => {
     microphone_choice: null,
     note_apps: [{ id: "us.zoom.xos", name: "zoom.us", path: "/Applications/zoom.us.app" }],
     app_audio: "recording",
+    prompt: null,
   };
   function showStatus(over: Partial<RecordingStatus>) {
     const tauri = mockTauri({ open_system_audio_settings: () => null });

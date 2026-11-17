@@ -451,6 +451,25 @@ fn the_recording_settings_snapshot_is_on_the_note_row() {
 }
 
 #[test]
+fn the_store_holds_the_stop_reason_until_it_is_removed() {
+    // R8, KTD8: the reason waits in the store for the save.
+    use session_core::note_record::AutoStop;
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.auto_stop("s1").unwrap(), None);
+
+    let reason = AutoStop {
+        silence_check_minutes: Some(30),
+        time_limit_hours: None,
+    };
+    store.set_auto_stop("s1", Some(&reason)).unwrap();
+    assert_eq!(store.auto_stop("s1").unwrap(), Some(reason));
+
+    store.set_auto_stop("s1", None).unwrap();
+    assert_eq!(store.auto_stop("s1").unwrap(), None);
+}
+
+#[test]
 fn the_shortcut_queues_the_open_session_and_starts_a_new_one() {
     let mut store = Store::open_in_memory().unwrap();
     store.create_session("s1", t(0), None).unwrap();

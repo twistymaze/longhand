@@ -1093,6 +1093,36 @@ async fn a_finished_session_has_its_transcript_on_disk() {
     assert!(!speaker_progress(&r).is_empty());
 }
 
+// Covers R8 (KTD8 of the forgotten-recording plan): the save writes the
+// stop reason into `longhand.json`, so it syncs with the note.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_save_writes_the_stop_reason_of_an_automatic_stop() {
+    let r = rig().await;
+    queue_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, speech())],
+    );
+    let reason = session_core::note_record::AutoStop {
+        silence_check_minutes: Some(30),
+        time_limit_hours: Some(6),
+    };
+    r.store
+        .lock()
+        .unwrap()
+        .set_auto_stop("s", Some(&reason))
+        .unwrap();
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+    assert_eq!(outcome, Outcome::Finished);
+    let record = session_core::note_folder::NoteFiles::read(&saved_folder(&r, "s"))
+        .unwrap()
+        .record;
+    assert_eq!(record.auto_stop, Some(reason));
+}
+
 #[tokio::test]
 async fn a_claimed_note_registers_a_closed_chunk_that_has_no_row_and_assembles_it() {
     // KTD3 of plan A: the store write of segment 1 failed, its chunks stay.

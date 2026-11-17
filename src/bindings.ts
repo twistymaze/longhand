@@ -1058,6 +1058,32 @@ async continueRecording() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Keep Recording in the prompt `generation` (R6, R9): the prompt closes on
+ * each surface, and each check in it starts again. An answer to a prompt
+ * that is already closed does nothing.
+ */
+async keepRecording(generation: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("keep_recording", { generation }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop in the prompt `generation` (R7, R9): the note stops as the user's
+ * Stop does, with no stop reason. `None` when the prompt is already
+ * closed: the note does not stop.
+ */
+async stopFromPrompt(generation: number) : Promise<Result<StopOutcome | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_from_prompt", { generation }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Record more into a note with audio, or resume an interrupted note.
  * Refused with the reason that the note page shows (R12, R21, R23) while
  * another computer uses the note or did not finish its recording.
@@ -1641,6 +1667,7 @@ moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 promisedFiles: PromisedFiles,
 recordingChanged: RecordingChanged,
+recordingPrompt: RecordingPrompt,
 settingsChanged: SettingsChanged,
 settingsPaneRequested: SettingsPaneRequested,
 shortcutFailed: ShortcutFailed,
@@ -1666,6 +1693,7 @@ moveProgress: "move-progress",
 processingUpdate: "processing-update",
 promisedFiles: "promised-files",
 recordingChanged: "recording-changed",
+recordingPrompt: "recording-prompt",
 settingsChanged: "settings-changed",
 settingsPaneRequested: "settings-pane-requested",
 shortcutFailed: "shortcut-failed",
@@ -2564,6 +2592,34 @@ export type PromisedFiles =
  */
 { kind: "received"; paths: string[]; failed: number }
 /**
+ * The prompt "Still recording?" of the note that records (R5, R9). It
+ * holds each check that triggered, with the time of the check in the
+ * settings snapshot of the recording.
+ */
+export type Prompt = { note_id: string; 
+/**
+ * A new number for each prompt. An answer with another number does
+ * nothing.
+ */
+generation: number; 
+/**
+ * The minutes of the silence check, when the silence check is in the
+ * prompt.
+ */
+silence_check_minutes: number | null; 
+/**
+ * The hours of the time limit, when the time limit is in the prompt.
+ */
+time_limit_hours: number | null; 
+/**
+ * The end of the countdown, in milliseconds since the Unix epoch (UTC).
+ */
+deadline_ms: number; 
+/**
+ * The length of the countdown.
+ */
+countdown_minutes: number }
+/**
  * One AI provider. Each provider has a default address, except Custom,
  * whose address the user enters. The serialized name of each provider is
  * [`Provider::name`]: the settings, the Keychain account and the saved
@@ -2770,6 +2826,12 @@ note_id: string | null;
  * note. A pause, a device switch or a restart gives `false`.
  */
 opened: boolean }
+/**
+ * The prompt opened, changed or closed (R5, R9). `prompt` is `None` when
+ * the prompt `generation` closed. A surface ignores an event of a
+ * generation that is older than the prompt that it shows.
+ */
+export type RecordingPrompt = { generation: number; prompt: Prompt | null }
 export type RecordingStatus = { 
 /**
  * The open session: recording, or interrupted and resumable.
@@ -2840,7 +2902,11 @@ note_apps: ListedApp[];
  * The app audio state of the segment that records (R16). `None` when
  * no segment records or the note's app set is empty.
  */
-app_audio: AppAudioState | null }
+app_audio: AppAudioState | null; 
+/**
+ * The open prompt "Still recording?" of the note (R5, R9).
+ */
+prompt: Prompt | null }
 /**
  * Work on a note on another computer (KTD5). Record, Resume, Transcribe
  * Again, Regenerate Summary, Remove Audio and Delete wait for it (R21),

@@ -133,6 +133,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::stop_recording,
             commands::capture::pause_recording,
             commands::capture::continue_recording,
+            commands::capture::keep_recording,
+            commands::capture::stop_from_prompt,
             commands::capture::resume_recording,
             commands::capture::record_note,
             commands::capture::recording_status,
@@ -193,6 +195,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureEnded,
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
+            managers::guard::RecordingPrompt,
             managers::processing::ProcessingUpdate,
             managers::processing::MoveProgress,
             managers::processing::MovePaused,
@@ -368,6 +371,11 @@ fn setup_app(
     }
     let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
     app.manage(std::sync::Arc::clone(&alerts));
+    // The silence check and the time limit of the note that records
+    // (KTD5 of the forgotten-recording plan). Managed before anything
+    // records; its thread starts once processing is managed.
+    let guard = std::sync::Arc::new(managers::guard::GuardManager::default());
+    app.manage(std::sync::Arc::clone(&guard));
     // Sleep closes the segment on the notifying thread, before the
     // machine stops; the wake's restart runs off it (U13).
     let sleeping = std::sync::Arc::clone(&capture);
@@ -401,6 +409,7 @@ fn setup_app(
     processing.start();
     let working = std::sync::Arc::clone(&processing);
     app.manage(processing);
+    guard.start_thread(handle.clone(), std::sync::Arc::clone(&capture));
     // Busy means that a note records or processes (KTD7).
     let recording = std::sync::Arc::clone(&capture);
     let updates = managers::updates::UpdateManager::new(&handle, move || {

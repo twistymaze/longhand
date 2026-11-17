@@ -12,7 +12,7 @@ use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::folder::{PendingType, SessionDoc, SpeakerCount};
-use crate::note_record::ImportSource;
+use crate::note_record::{AutoStop, ImportSource};
 use crate::recognition;
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
@@ -820,6 +820,25 @@ impl Store {
             params![id, key],
         )?;
         Ok(())
+    }
+
+    /// The checks in the prompt when Longhand stopped the note `id` (R8,
+    /// KTD8 of the forgotten-recording plan). `None` for a note that the
+    /// user stopped. The save writes it into `longhand.json`.
+    pub fn auto_stop(&self, id: &str) -> Result<Option<AutoStop>> {
+        Ok(self
+            .result_state(id, AUTO_STOP)?
+            .map(serde_json::from_value)
+            .transpose()?)
+    }
+
+    /// Write the stop reason of the note `id`. `None` removes it: a new
+    /// recording of the note has no stop reason yet.
+    pub fn set_auto_stop(&self, id: &str, reason: Option<&AutoStop>) -> Result<()> {
+        match reason {
+            Some(reason) => self.set_result_state(id, AUTO_STOP, &serde_json::to_value(reason)?),
+            None => self.clear_result_state(id, AUTO_STOP),
+        }
     }
 
     pub fn promote_result_snapshot(
@@ -3209,6 +3228,10 @@ where
         }),
     }
 }
+
+/// The `result_state` key that holds the stop reason of a note that
+/// Longhand stopped ([`Store::auto_stop`]).
+pub const AUTO_STOP: &str = "auto-stop";
 
 /// The `result_state` key that marks a note that existed before its
 /// recording: Record started the recording in a note with no audio. A
