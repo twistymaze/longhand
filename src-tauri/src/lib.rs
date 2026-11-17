@@ -6,6 +6,7 @@ mod interface_zoom;
 mod managers;
 #[cfg(target_os = "macos")]
 mod menu;
+mod notify_prompt;
 mod relaunch;
 mod shortcut;
 mod startup;
@@ -374,7 +375,11 @@ fn setup_app(
     // The silence check and the time limit of the note that records
     // (KTD5 of the forgotten-recording plan). Managed before anything
     // records; its thread starts once processing is managed.
-    let guard = std::sync::Arc::new(managers::guard::GuardManager::default());
+    // A prompt notification that a crash or a quit left goes first (KTD10).
+    notify_prompt::remove_leftover(&handle);
+    let guard = std::sync::Arc::new(managers::guard::GuardManager::new(Box::new(
+        notify_prompt::NativeNotice::new(handle.clone()),
+    )));
     app.manage(std::sync::Arc::clone(&guard));
     // Sleep closes the segment on the notifying thread, before the
     // machine stops; the wake's restart runs off it (U13).

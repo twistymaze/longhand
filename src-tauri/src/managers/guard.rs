@@ -336,8 +336,9 @@ impl GuardFlow {
     }
 }
 
-/// The system notification of the prompt (R5, R9). U5 gives the native
-/// notification. It has no buttons and plays no sound.
+/// The system notification of the prompt (R5, R9). The app uses
+/// [`crate::notify_prompt::NativeNotice`]. It has no buttons and plays no
+/// sound.
 pub trait PromptNotice: Send + Sync {
     /// Show the notification of `prompt`, or change it for a check that
     /// joined.
