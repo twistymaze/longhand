@@ -45,6 +45,8 @@ fn segment(
         audio_file: format!("audio/{index}.wav"),
         channels: 1,
         ends_in_pause,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
 }
 fn row_at(start_ms: u64, text: &str) -> RecognitionSegment {

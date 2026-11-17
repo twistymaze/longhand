@@ -5,6 +5,7 @@
   "check_updates_automatically": true,
   "default_speaker_count": null,
   "live_transcript": true,
+  "long_silence_cut_minutes": 10,
   "new_note_records": true,
   "note_type_prompts": {
     "Meetings": "8b2e4f60-7a13-4d9c-b5e2-1c0d9f3a6e21"
@@ -13,9 +14,12 @@
     "Meetings"
   ],
   "recognition_language": null,
+  "recording_time_limit_hours": 6,
   "schema_version": 1,
   "show_recording_widget": true,
+  "silence_check_minutes": 30,
   "speaker_processing_mode": "after_stop",
   "speaker_source": "pyannote",
+  "stop_countdown_minutes": 2,
   "transcript_removal": "off"
 }

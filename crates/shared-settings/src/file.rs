@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::io;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
@@ -47,6 +48,32 @@ pub const KEY_DEFAULT_NOTE_TYPE: &str = "default_note_type";
 pub const KEY_NOTE_TYPE_PROMPTS: &str = "note_type_prompts";
 pub const KEY_SHOW_RECORDING_WIDGET: &str = "show_recording_widget";
 pub const KEY_NEW_NOTE_RECORDS: &str = "new_note_records";
+pub const KEY_SILENCE_CHECK_MINUTES: &str = "silence_check_minutes";
+pub const KEY_RECORDING_TIME_LIMIT_HOURS: &str = "recording_time_limit_hours";
+pub const KEY_LONG_SILENCE_CUT_MINUTES: &str = "long_silence_cut_minutes";
+pub const KEY_STOP_COUNTDOWN_MINUTES: &str = "stop_countdown_minutes";
+
+/// The silence check of a new storage folder: on, after 30 minutes with no
+/// speech (R2, R10).
+pub const DEFAULT_SILENCE_CHECK_MINUTES: u32 = 30;
+/// The minutes that the silence check can hold (R10).
+pub const SILENCE_CHECK_MINUTES_RANGE: RangeInclusive<u32> = 5..=240;
+/// The time limit of a new storage folder: on, after 6 hours of recording
+/// time (R3, R10).
+pub const DEFAULT_RECORDING_TIME_LIMIT_HOURS: u32 = 6;
+/// The hours that the time limit can hold (R10).
+pub const RECORDING_TIME_LIMIT_HOURS_RANGE: RangeInclusive<u32> = 1..=24;
+/// The long-silence cut of a new storage folder: on, for stretches of 10
+/// minutes or more (R12, R10).
+pub const DEFAULT_LONG_SILENCE_CUT_MINUTES: u32 = 10;
+/// The minutes that the long-silence cut can hold (R10).
+pub const LONG_SILENCE_CUT_MINUTES_RANGE: RangeInclusive<u32> = 5..=240;
+/// The countdown of the "Still recording?" prompt of a new storage folder
+/// (R5, R10).
+pub const DEFAULT_STOP_COUNTDOWN_MINUTES: u32 = 2;
+/// The minutes that the countdown can hold. The countdown has no off state
+/// (R10).
+pub const STOP_COUNTDOWN_MINUTES_RANGE: RangeInclusive<u32> = 1..=10;
 
 /// The delay of a new storage folder: the audio of a saved note goes 30
 /// days after the note last recorded (R2).
@@ -178,8 +205,9 @@ impl TranscriptRemoval {
     }
 }
 
-/// The JSON form of [`AudioRemoval`] and [`TranscriptRemoval`]: an
-/// integer, or a word.
+/// The JSON form of [`AudioRemoval`], [`TranscriptRemoval`] and
+/// [`CheckTime`]: an integer, or a word. For a [`CheckTime`], the integer
+/// is minutes or hours, not days.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum RemovalJson {
@@ -239,6 +267,52 @@ impl From<TranscriptRemoval> for RemovalJson {
     }
 }
 
+/// The time of a recording check or of the long-silence cut (R10, KTD13):
+/// the silence check, the time limit and the cut.
+///
+/// The file form is the same as for [`AudioRemoval`]: the string `"off"`,
+/// or a JSON integer. The key gives the unit, minutes or hours, and the
+/// range: see [`SILENCE_CHECK_MINUTES_RANGE`],
+/// [`RECORDING_TIME_LIMIT_HOURS_RANGE`] and
+/// [`LONG_SILENCE_CUT_MINUTES_RANGE`]. Every other value parses as
+/// [`Field::Unknown`], and the app uses the default for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RemovalJson", into = "RemovalJson")]
+pub enum CheckTime {
+    Off,
+    /// The check or the cut uses this many whole minutes or hours.
+    After(u32),
+}
+
+impl CheckTime {
+    /// The time, or `None` when the setting is off.
+    pub fn time(self) -> Option<u32> {
+        match self {
+            CheckTime::Off => None,
+            CheckTime::After(time) => Some(time),
+        }
+    }
+
+    /// Whether the value is off or a time in `range`.
+    pub fn valid_in(self, range: &RangeInclusive<u32>) -> bool {
+        self.time().is_none_or(|time| range.contains(&time))
+    }
+}
+
+impl TryFrom<RemovalJson> for CheckTime {
+    type Error = String;
+
+    fn try_from(json: RemovalJson) -> Result<Self, Self::Error> {
+        Ok(json.days()?.map_or(CheckTime::Off, CheckTime::After))
+    }
+}
+
+impl From<CheckTime> for RemovalJson {
+    fn from(time: CheckTime) -> Self {
+        RemovalJson::from_days(time.time())
+    }
+}
+
 /// The typed view of the shared settings file (R12, R18). The custom
 /// prompts are files of their own (see [`crate::prompts`]).
 #[derive(Debug, Clone, PartialEq)]
@@ -284,6 +358,18 @@ pub struct SharedFields {
     /// Whether New Note and the recording shortcut start a note that
     /// records. An absent field is on.
     pub new_note_records: Field<bool>,
+    /// The silence check: the minutes with no speech before the "Still
+    /// recording?" prompt (R2). An absent field is the default, 30 minutes.
+    pub silence_check_minutes: Field<CheckTime>,
+    /// The time limit: the hours of recording time before the prompt (R3).
+    /// An absent field is the default, 6 hours.
+    pub recording_time_limit_hours: Field<CheckTime>,
+    /// The long-silence cut: the shortest stretch of silence that a Stop
+    /// removes (R12). An absent field is the default, 10 minutes.
+    pub long_silence_cut_minutes: Field<CheckTime>,
+    /// The countdown of the prompt in minutes (R5). An absent field is the
+    /// default, 2 minutes.
+    pub stop_countdown_minutes: Field<u32>,
 }
 
 impl SharedFields {
@@ -316,6 +402,22 @@ impl SharedFields {
             note_type_prompts: parse(raw, KEY_NOTE_TYPE_PROMPTS, |_| true),
             show_recording_widget: parse(raw, KEY_SHOW_RECORDING_WIDGET, |_| true),
             new_note_records: parse(raw, KEY_NEW_NOTE_RECORDS, |_| true),
+            silence_check_minutes: parse(raw, KEY_SILENCE_CHECK_MINUTES, |time: &CheckTime| {
+                time.valid_in(&SILENCE_CHECK_MINUTES_RANGE)
+            }),
+            recording_time_limit_hours: parse(
+                raw,
+                KEY_RECORDING_TIME_LIMIT_HOURS,
+                |time: &CheckTime| time.valid_in(&RECORDING_TIME_LIMIT_HOURS_RANGE),
+            ),
+            long_silence_cut_minutes: parse(
+                raw,
+                KEY_LONG_SILENCE_CUT_MINUTES,
+                |time: &CheckTime| time.valid_in(&LONG_SILENCE_CUT_MINUTES_RANGE),
+            ),
+            stop_countdown_minutes: parse(raw, KEY_STOP_COUNTDOWN_MINUTES, |minutes: &u32| {
+                STOP_COUNTDOWN_MINUTES_RANGE.contains(minutes)
+            }),
         }
     }
 
@@ -374,6 +476,22 @@ impl SharedFields {
                 unknown(&self.show_recording_widget),
             ),
             (KEY_NEW_NOTE_RECORDS, unknown(&self.new_note_records)),
+            (
+                KEY_SILENCE_CHECK_MINUTES,
+                unknown(&self.silence_check_minutes),
+            ),
+            (
+                KEY_RECORDING_TIME_LIMIT_HOURS,
+                unknown(&self.recording_time_limit_hours),
+            ),
+            (
+                KEY_LONG_SILENCE_CUT_MINUTES,
+                unknown(&self.long_silence_cut_minutes),
+            ),
+            (
+                KEY_STOP_COUNTDOWN_MINUTES,
+                unknown(&self.stop_countdown_minutes),
+            ),
         ]
         .into_iter()
         .filter_map(|(key, value)| Some((key, value?)))
@@ -427,6 +545,10 @@ pub enum SharedValue {
     NoteTypePrompts(BTreeMap<String, String>),
     ShowRecordingWidget(bool),
     NewNoteRecords(bool),
+    SilenceCheckMinutes(CheckTime),
+    RecordingTimeLimitHours(CheckTime),
+    LongSilenceCutMinutes(CheckTime),
+    StopCountdownMinutes(u32),
 }
 
 impl SharedValue {
@@ -448,6 +570,10 @@ impl SharedValue {
             SharedValue::NoteTypePrompts(_) => KEY_NOTE_TYPE_PROMPTS,
             SharedValue::ShowRecordingWidget(_) => KEY_SHOW_RECORDING_WIDGET,
             SharedValue::NewNoteRecords(_) => KEY_NEW_NOTE_RECORDS,
+            SharedValue::SilenceCheckMinutes(_) => KEY_SILENCE_CHECK_MINUTES,
+            SharedValue::RecordingTimeLimitHours(_) => KEY_RECORDING_TIME_LIMIT_HOURS,
+            SharedValue::LongSilenceCutMinutes(_) => KEY_LONG_SILENCE_CUT_MINUTES,
+            SharedValue::StopCountdownMinutes(_) => KEY_STOP_COUNTDOWN_MINUTES,
         }
     }
 
@@ -469,6 +595,10 @@ impl SharedValue {
             SharedValue::NoteTypePrompts(map) => serde_json::to_value(map),
             SharedValue::ShowRecordingWidget(on) => serde_json::to_value(on),
             SharedValue::NewNoteRecords(on) => serde_json::to_value(on),
+            SharedValue::SilenceCheckMinutes(time)
+            | SharedValue::RecordingTimeLimitHours(time)
+            | SharedValue::LongSilenceCutMinutes(time) => serde_json::to_value(time),
+            SharedValue::StopCountdownMinutes(minutes) => serde_json::to_value(minutes),
         };
         value.expect("a shared setting serializes")
     }
@@ -740,6 +870,10 @@ pub fn default_settings() -> Map<String, Value> {
         SharedValue::TranscriptRemoval(TranscriptRemoval::default()),
         SharedValue::ShowRecordingWidget(true),
         SharedValue::NewNoteRecords(true),
+        SharedValue::SilenceCheckMinutes(CheckTime::After(DEFAULT_SILENCE_CHECK_MINUTES)),
+        SharedValue::RecordingTimeLimitHours(CheckTime::After(DEFAULT_RECORDING_TIME_LIMIT_HOURS)),
+        SharedValue::LongSilenceCutMinutes(CheckTime::After(DEFAULT_LONG_SILENCE_CUT_MINUTES)),
+        SharedValue::StopCountdownMinutes(DEFAULT_STOP_COUNTDOWN_MINUTES),
     ];
     apply_patch(&Map::new(), &defaults)
 }

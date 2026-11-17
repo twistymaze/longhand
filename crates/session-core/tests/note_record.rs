@@ -5,7 +5,7 @@ use session_core::folder::{
     FolderError, PendingType, ResultFlag, SegmentRecord, SummaryMeta, fingerprint,
 };
 use session_core::note_record::{
-    ImportSource, LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, note_id_of,
+    AutoStop, ImportSource, LAYOUT, NOTE_RECORD_FILE, NoteRecord, NoteRecordRead, note_id_of,
     valid_audio_name,
 };
 use session_core::recognition::ArtifactReference;
@@ -57,6 +57,8 @@ fn full_record() -> NoteRecord {
                 audio: "audio/segment-01.opus".into(),
                 channels: 2,
                 ends_in_pause: true,
+                cut_before_ms: 0,
+                cut_after_ms: 0,
             },
             SegmentRecord {
                 index: 1,
@@ -67,6 +69,8 @@ fn full_record() -> NoteRecord {
                 audio: "audio/segment-02.opus".into(),
                 channels: 1,
                 ends_in_pause: false,
+                cut_before_ms: 180_000,
+                cut_after_ms: 600_000,
             },
         ],
         summary: Some(SummaryMeta::Complete {
@@ -78,6 +82,10 @@ fn full_record() -> NoteRecord {
         import: Some(ImportSource {
             source_name: "Team sync.m4a".into(),
             sha256: Some(fingerprint(b"source")),
+        }),
+        auto_stop: Some(AutoStop {
+            silence_check_minutes: Some(30),
+            time_limit_hours: Some(6),
         }),
     }
 }
@@ -117,6 +125,7 @@ fn a_record_with_every_field_round_trips_and_two_writes_give_the_same_bytes() {
         top,
         [
             "asr_model",
+            "auto_stop",
             "found_speakers",
             "import",
             "layout",
@@ -367,4 +376,38 @@ fn a_record_with_no_import_field_reads_with_no_import_and_keeps_its_bytes() {
     let record = NoteRecord::parse(text).unwrap().current().unwrap();
     assert_eq!(record.import, None);
     assert_eq!(record.render(), text);
+}
+
+#[test]
+fn a_record_with_no_stop_reason_or_cut_fields_reads_with_none_and_keeps_its_bytes() {
+    // KTD8, KTD21: an older build writes no `auto_stop` and no cut fields.
+    let text = "{\n  \"layout\": 2,\n  \"note_id\": \"01j8z\",\n  \"segments\": [\n    {\n      \"audio\": \"audio/segment-01.opus\",\n      \"duration_ms\": 60000,\n      \"index\": 0,\n      \"offset_ms\": 0,\n      \"wall_end\": \"2026-09-22T09:01:00-05:00\",\n      \"wall_start\": \"2026-09-22T09:00:00-05:00\"\n    }\n  ],\n  \"started\": \"2026-09-22T09:00:00-05:00\"\n}\n";
+    let record = NoteRecord::parse(text).unwrap().current().unwrap();
+    assert_eq!(record.auto_stop, None);
+    assert_eq!(record.segments[0].cut_before_ms, 0);
+    assert_eq!(record.segments[0].cut_after_ms, 0);
+    assert_eq!(record.render(), text);
+}
+
+#[test]
+fn a_record_writes_the_stop_reason_and_the_cut_fields_that_are_set() {
+    let text = full_record().render();
+    assert!(text.contains("\"cut_before_ms\": 180000"), "{text}");
+    assert!(text.contains("\"cut_after_ms\": 600000"), "{text}");
+    assert_eq!(text.matches("cut_before_ms").count(), 1, "{text}");
+    assert!(text.contains("\"silence_check_minutes\": 30"), "{text}");
+    assert!(text.contains("\"time_limit_hours\": 6"), "{text}");
+
+    // A stop reason for one check writes no field for the other.
+    let mut record = full_record();
+    record.auto_stop = Some(AutoStop {
+        silence_check_minutes: None,
+        time_limit_hours: Some(6),
+    });
+    let text = record.render();
+    assert!(!text.contains("silence_check_minutes"), "{text}");
+    assert_eq!(
+        NoteRecord::parse(&text).unwrap(),
+        NoteRecordRead::Current(Box::new(record))
+    );
 }

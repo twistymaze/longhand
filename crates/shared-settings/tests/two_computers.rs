@@ -9,7 +9,7 @@ use serde_json::json;
 use shared_settings::background::save_background;
 use shared_settings::cache::read_cache;
 use shared_settings::file::{
-    AudioRemoval, Field, SharedValue, TranscriptRemoval, apply_patch, default_settings,
+    AudioRemoval, CheckTime, Field, SharedValue, TranscriptRemoval, apply_patch, default_settings,
     save_settings, settings_path,
 };
 use shared_settings::join::{JoinKind, Joined, join_folder};
@@ -332,6 +332,45 @@ fn a_change_of_audio_removal_on_a_applies_on_b() {
     let on_b = b.refresh(folder.path());
     assert_eq!(on_b.fields.audio_removal, Field::Known(AudioRemoval::Off));
     assert_eq!(on_b.audio_removal_days(), None);
+}
+
+#[test]
+fn a_change_of_the_recording_checks_on_a_shows_the_same_values_on_b() {
+    // R11: the recording checks are shared settings.
+    let folder = tempfile::tempdir().unwrap();
+    let (a, b) = (computer(), computer());
+    a.join(folder.path(), JoinKind::ChangeOfFolder);
+    b.join(folder.path(), JoinKind::SameFolder);
+    let on_b = b.refresh(folder.path());
+    assert_eq!(
+        on_b.fields.silence_check_minutes,
+        Field::Known(CheckTime::After(30))
+    );
+    assert_eq!(on_b.fields.stop_countdown_minutes, Field::Known(2));
+
+    a.save(
+        folder.path(),
+        &[
+            SharedValue::SilenceCheckMinutes(CheckTime::After(45)),
+            SharedValue::RecordingTimeLimitHours(CheckTime::Off),
+            SharedValue::LongSilenceCutMinutes(CheckTime::After(20)),
+            SharedValue::StopCountdownMinutes(5),
+        ],
+    );
+    let on_b = b.refresh(folder.path());
+    assert_eq!(
+        on_b.fields.silence_check_minutes,
+        Field::Known(CheckTime::After(45))
+    );
+    assert_eq!(
+        on_b.fields.recording_time_limit_hours,
+        Field::Known(CheckTime::Off)
+    );
+    assert_eq!(
+        on_b.fields.long_silence_cut_minutes,
+        Field::Known(CheckTime::After(20))
+    );
+    assert_eq!(on_b.fields.stop_countdown_minutes, Field::Known(5));
 }
 
 #[test]

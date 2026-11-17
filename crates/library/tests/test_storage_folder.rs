@@ -150,6 +150,8 @@ fn segment(dir: &Path, started: DateTime<FixedOffset>, audio_present: bool) -> S
         audio,
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
 }
 

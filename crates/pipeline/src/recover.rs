@@ -264,6 +264,8 @@ pub fn register_chunks(
             audio_file: segment_audio_file(index),
             channels,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         };
         let store = lock(store);
         store.put_segment(id, &segment)?;

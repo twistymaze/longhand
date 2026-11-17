@@ -44,6 +44,8 @@ fn segments() -> Vec<Segment> {
         audio_file: AUDIO.into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }]
 }
 

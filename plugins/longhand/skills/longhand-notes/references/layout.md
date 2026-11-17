@@ -56,12 +56,14 @@ A note can also have conflict copies from a sync service, for example `notes (1)
 
 ## The layouts of `longhand.json`
 
-The `layout` key of `longhand.json` tells which keys the file has. The scripts know two layouts. The two layouts have the same keys, except the key of the note id and the `import` key.
+The `layout` key of `longhand.json` tells which keys the file has. The scripts know two layouts. The two layouts have the same keys, except the key of the note id, the `import` key and the `auto_stop` key.
 
-| Layout | Key of the note id | `import` key | Written by |
-|---|---|---|---|
-| 1 | `session_id` | No | Older Longhand versions |
-| 2 | `note_id` | Optional | Current Longhand versions |
+| Layout | Key of the note id | `import` key | `auto_stop` key | Written by |
+|---|---|---|---|---|
+| 1 | `session_id` | No | No | Older Longhand versions |
+| 2 | `note_id` | Optional | Optional | Current Longhand versions |
+
+A note that Longhand stopped by itself has the `auto_stop` key: the checks that made Longhand stop it, as `silence_check_minutes` (the minutes with no speech) and `time_limit_hours` (the hours of recording time). Each of the two is optional. A note that the user stopped does not have the key.
 
 An imported note has the `import` key: the audio file that Longhand imported, as `source_name` (the file name) and `sha256` (the SHA-256 of the file). The key is optional. A note that Longhand recorded does not have it. An older Longhand version removes the key when it writes the records of the note, so a note can lose it. To find which files Longhand imported, do not use this key. Read the import record (see [The `.longhand` folder](#the-longhand-folder)).
 

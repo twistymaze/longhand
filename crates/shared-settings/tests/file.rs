@@ -8,7 +8,7 @@ use std::path::Path;
 use models::recognition::{ProcessingMode, SpeakerCount, SpeakerSource};
 use serde_json::{Value, json};
 use shared_settings::file::{
-    AUDIO_REMOVAL_MAX_DAYS, AudioRemoval, DEFAULT_AUDIO_REMOVAL_DAYS, Field, FileRead,
+    AUDIO_REMOVAL_MAX_DAYS, AudioRemoval, CheckTime, DEFAULT_AUDIO_REMOVAL_DAYS, Field, FileRead,
     KEY_TRANSCRIPT_REMOVAL, SCHEMA_VERSION, SETTINGS_FILE, SaveError, SharedValue,
     TranscriptRemoval, Unavailable, read_settings, save_settings,
 };
@@ -1232,4 +1232,152 @@ fn a_settings_link_outside_the_folder_leaves_the_background_and_the_prompts_writ
     assert!(view.background_writable());
     assert!(view.prompts.iter().any(|p| p.id == kept.id));
     assert!(view.prompts.iter().all(|p| p.id != gone.id));
+}
+
+// The recording checks, the long-silence cut and the stop countdown (U1 of
+// the forgotten-recording plan: R10, R11, KTD13).
+
+/// The three settings that are off or a whole number of minutes or hours,
+/// each with its key, its lowest value and its highest value.
+const CHECK_KEYS: [(&str, u32, u32); 3] = [
+    ("silence_check_minutes", 5, 240),
+    ("recording_time_limit_hours", 1, 24),
+    ("long_silence_cut_minutes", 5, 240),
+];
+
+/// The parsed field of the check setting `key` in `fields`.
+fn check_field(fields: &shared_settings::file::SharedFields, key: &str) -> Field<CheckTime> {
+    match key {
+        "silence_check_minutes" => fields.silence_check_minutes.clone(),
+        "recording_time_limit_hours" => fields.recording_time_limit_hours.clone(),
+        "long_silence_cut_minutes" => fields.long_silence_cut_minutes.clone(),
+        other => panic!("no check setting {other}"),
+    }
+}
+
+#[test]
+fn a_file_with_no_recording_check_keys_has_them_absent() {
+    let root = folder();
+    write_raw(root.path(), &full());
+    let fields = parsed(root.path()).fields;
+    for (key, _, _) in CHECK_KEYS {
+        assert_eq!(check_field(&fields, key), Field::Absent, "{key}");
+    }
+    assert_eq!(fields.stop_countdown_minutes, Field::Absent);
+}
+
+#[test]
+fn off_and_each_end_of_the_range_read_as_known() {
+    let root = folder();
+    for (key, low, high) in CHECK_KEYS {
+        write_raw(root.path(), &json!({ key: "off" }));
+        let fields = parsed(root.path()).fields;
+        assert_eq!(check_field(&fields, key), Field::Known(CheckTime::Off));
+        for end in [low, high] {
+            write_raw(root.path(), &json!({ key: end }));
+            let fields = parsed(root.path()).fields;
+            assert_eq!(
+                check_field(&fields, key),
+                Field::Known(CheckTime::After(end)),
+                "{key} {end}"
+            );
+        }
+    }
+    for end in [1, 10] {
+        write_raw(root.path(), &json!({"stop_countdown_minutes": end}));
+        assert_eq!(
+            parsed(root.path()).fields.stop_countdown_minutes,
+            Field::Known(end)
+        );
+    }
+}
+
+#[test]
+fn a_recording_check_value_outside_the_range_or_of_another_form_is_unknown() {
+    let root = folder();
+    for (key, low, high) in CHECK_KEYS {
+        for value in [
+            json!(low - 1),
+            json!(high + 1),
+            json!(-5),
+            json!(30.5),
+            json!("30"),
+            json!("never"),
+            json!(true),
+            json!(null),
+            json!({"minutes": 30}),
+        ] {
+            write_raw(root.path(), &json!({ key: value }));
+            let fields = parsed(root.path()).fields;
+            assert_eq!(
+                check_field(&fields, key),
+                Field::Unknown(value.clone()),
+                "{key} {value}"
+            );
+            assert!(
+                fields
+                    .unknown_values()
+                    .iter()
+                    .any(|(k, v)| *k == key && **v == value),
+                "{key} {value} is not in the unknown values"
+            );
+        }
+    }
+    for value in [
+        json!(0),
+        json!(11),
+        json!("off"),
+        json!(2.5),
+        json!("2"),
+        json!(false),
+    ] {
+        write_raw(root.path(), &json!({"stop_countdown_minutes": value}));
+        assert_eq!(
+            parsed(root.path()).fields.stop_countdown_minutes,
+            Field::Unknown(value.clone()),
+            "{value}"
+        );
+    }
+}
+
+#[test]
+fn a_save_of_one_recording_check_keeps_the_other_fields_and_unknown_fields() {
+    let root = folder();
+    let mut value = full();
+    value["future_field"] = json!({"nested": true});
+    value["silence_check_minutes"] = json!(45);
+    value["recording_time_limit_hours"] = json!("off");
+    value["long_silence_cut_minutes"] = json!("soon");
+    value["stop_countdown_minutes"] = json!(3);
+    write_raw(root.path(), &value);
+    save_settings(
+        root.path(),
+        &[SharedValue::RecordingTimeLimitHours(CheckTime::After(8))],
+    )
+    .unwrap();
+    let mut expected = value;
+    expected["recording_time_limit_hours"] = json!(8);
+    assert_eq!(on_disk(root.path()), expected);
+    save_settings(
+        root.path(),
+        &[
+            SharedValue::SilenceCheckMinutes(CheckTime::Off),
+            SharedValue::LongSilenceCutMinutes(CheckTime::After(240)),
+            SharedValue::StopCountdownMinutes(10),
+        ],
+    )
+    .unwrap();
+    expected["silence_check_minutes"] = json!("off");
+    expected["long_silence_cut_minutes"] = json!(240);
+    expected["stop_countdown_minutes"] = json!(10);
+    assert_eq!(on_disk(root.path()), expected);
+}
+
+#[test]
+fn the_defaults_write_the_recording_checks_on_with_their_times() {
+    let defaults = shared_settings::file::default_settings();
+    assert_eq!(defaults["silence_check_minutes"], json!(30));
+    assert_eq!(defaults["recording_time_limit_hours"], json!(6));
+    assert_eq!(defaults["long_silence_cut_minutes"], json!(10));
+    assert_eq!(defaults["stop_countdown_minutes"], json!(2));
 }

@@ -87,11 +87,15 @@ pub(super) fn read(
 /// True when the saved segments are the same audio as the note's first
 /// segments. The pause flag does not count: a resume clears it on the last
 /// saved segment, and the audio does not change (KTD4 of the pause plan).
+/// The cut fields do not count: they only make the silence lines (KTD21 of
+/// the forgotten-recording plan).
 fn same_segments(saved: &[Segment], note: &[Segment]) -> bool {
     saved.len() == note.len()
         && saved.iter().zip(note).all(|(a, b)| {
             Segment {
                 ends_in_pause: b.ends_in_pause,
+                cut_before_ms: b.cut_before_ms,
+                cut_after_ms: b.cut_after_ms,
                 ..a.clone()
             } == *b
         })
@@ -345,6 +349,8 @@ mod tests {
                     audio_file: format!("audio/{index}.opus"),
                     channels: 1,
                     ends_in_pause: false,
+                    cut_before_ms: 0,
+                    cut_after_ms: 0,
                 })
                 .collect::<Vec<_>>();
             for segment in &segments {
@@ -580,6 +586,41 @@ mod tests {
                 "publication accepted changed {filename}"
             );
         }
+    }
+
+    #[test]
+    fn same_segments_ignores_the_cut_fields_and_not_the_audio() {
+        // KTD21: the cut fields only make the silence lines.
+        let at = chrono::DateTime::parse_from_rfc3339("2026-09-22T10:00:00-05:00").unwrap();
+        let saved = Segment {
+            index: 0,
+            offset_ms: 0,
+            duration_ms: 60_000,
+            wall_start: at,
+            wall_end: at + chrono::Duration::minutes(1),
+            audio_file: "audio/segment-01.opus".into(),
+            channels: 1,
+            ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
+        };
+        let cut = Segment {
+            cut_before_ms: 120_000,
+            cut_after_ms: 600_000,
+            ..saved.clone()
+        };
+        assert!(same_segments(
+            std::slice::from_ref(&saved),
+            std::slice::from_ref(&cut)
+        ));
+        let shorter = Segment {
+            duration_ms: 30_000,
+            ..cut.clone()
+        };
+        assert!(!same_segments(
+            std::slice::from_ref(&saved),
+            std::slice::from_ref(&shorter)
+        ));
     }
 
     #[test]

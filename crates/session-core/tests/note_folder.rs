@@ -135,6 +135,8 @@ fn old_session_md(audio: &str) -> String {
         audio_file: audio.into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     };
     SessionDoc::new("01j8z", None, &[segment]).unwrap().render()
 }

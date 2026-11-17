@@ -2754,6 +2754,8 @@ mod tests {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         };
         let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
         let summary = "# Summary\n\nHello.\n";
@@ -2959,6 +2961,8 @@ mod tests {
             audio_file: format!("audio/segment-0{}.opus", index + 1),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         };
         {
             let mut s = store.lock().unwrap();

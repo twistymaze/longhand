@@ -23,6 +23,8 @@ fn session_md_round_trips_the_timeline() {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         },
         Segment {
             index: 1,
@@ -33,6 +35,8 @@ fn session_md_round_trips_the_timeline() {
             audio_file: "audio/segment-02.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         },
     ];
     let doc = SessionDoc::new(
@@ -65,6 +69,8 @@ fn session_md_names_a_pause_between_segments() {
         audio_file: format!("audio/segment-0{}.opus", index + 1),
         channels: 1,
         ends_in_pause,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     };
     let segments = vec![segment(0, 0, true), segment(1, 120_000, false)];
     let text = SessionDoc::new("01J8Z", None, &segments).unwrap().render();
@@ -166,6 +172,8 @@ fn session_md_round_trips_with_a_title() {
         audio_file: "audio/segment-01.opus".into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }];
     let mut doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
     assert_eq!(doc.title, None);
@@ -279,6 +287,8 @@ fn one_segment(channels: u16) -> Vec<Segment> {
         audio_file: "audio/segment-01.opus".into(),
         channels,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }]
 }
 
@@ -360,6 +370,8 @@ fn a_stereo_segment_keeps_two_channels_and_gives_stereo_from() {
         audio_file: "audio/segment-02.opus".into(),
         channels: 2,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     });
     let doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
     let parsed = SessionDoc::parse(&doc.render()).unwrap();
@@ -662,6 +674,8 @@ fn a_paused_segment_round_trips_through_session_md() {
         audio_file: "audio/segment-02.opus".into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     });
     let doc = SessionDoc::new("01J8Z", None, &segments).unwrap();
     let text = doc.render();

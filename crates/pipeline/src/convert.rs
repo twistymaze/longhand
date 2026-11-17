@@ -402,6 +402,8 @@ mod tests {
                 audio: "a.wav".into(),
                 channels: 2,
                 ends_in_pause: true,
+                cut_before_ms: 0,
+                cut_after_ms: 0,
             }],
         };
         let keys = frontmatter_keys(&doc.render());

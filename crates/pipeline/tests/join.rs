@@ -23,6 +23,8 @@ fn segment(index: u32, offset_ms: u64, duration_ms: u64) -> Segment {
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
 }
 
@@ -141,6 +143,8 @@ fn times_move_to_session_positions_and_segments_are_separated_by_a_gap() {
 fn paused(index: u32, offset_ms: u64, duration_ms: u64) -> Segment {
     Segment {
         ends_in_pause: true,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
         ..segment(index, offset_ms, duration_ms)
     }
 }

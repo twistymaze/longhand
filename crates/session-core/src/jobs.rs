@@ -5,6 +5,7 @@
 //! machine and persists the result together with its queue side effects in
 //! one transaction.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use chrono::{DateTime, FixedOffset};
@@ -1546,7 +1547,7 @@ impl Store {
     pub fn segments(&self, note_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self.conn.prepare(
             "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
-               ends_in_pause
+               ends_in_pause, cut_before_ms, cut_after_ms
              FROM segments WHERE note_id = ?1 ORDER BY offset_ms",
         )?;
         let rows = stmt.query_map([note_id], |r| {
@@ -1559,11 +1560,13 @@ impl Store {
                 r.get::<_, String>(5)?,
                 r.get::<_, u16>(6)?,
                 r.get::<_, bool>(7)?,
+                (r.get::<_, i64>(8)?, r.get::<_, i64>(9)?),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (index, offset, duration, start, end, audio_file, channels, ends_in_pause) = row?;
+            let (index, offset, duration, start, end, audio_file, channels, ends_in_pause, cut) =
+                row?;
             out.push(Segment {
                 index,
                 offset_ms: offset as u64,
@@ -1573,9 +1576,57 @@ impl Store {
                 audio_file,
                 channels,
                 ends_in_pause,
+                cut_before_ms: cut.0 as u64,
+                cut_after_ms: cut.1 as u64,
             });
         }
         Ok(out)
+    }
+
+    /// The indices of the note's segments that the long-silence cut checked
+    /// (KTD19 of the forgotten-recording plan).
+    pub fn cut_checked(&self, note_id: &str) -> Result<BTreeSet<u32>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT idx FROM segments WHERE note_id = ?1 AND cut_checked = 1")?;
+        let rows = stmt.query_map([note_id], |r| r.get::<_, u32>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Mark the segments `indices` of the note `id` as checked by the
+    /// long-silence cut (KTD19 of the forgotten-recording plan).
+    pub fn mark_cut_checked(&self, id: &str, indices: &[u32]) -> Result<()> {
+        self.require(id)?;
+        self.conn.execute(
+            "UPDATE segments SET cut_checked = 1
+             WHERE note_id = ?1 AND idx IN (SELECT value FROM json_each(?2))",
+            params![id, serde_json::to_string(indices)?],
+        )?;
+        Ok(())
+    }
+
+    /// The recording settings snapshot of the note `id` (KTD14 of the
+    /// forgotten-recording plan), as the JSON text that the recording
+    /// wrote. `None` for a note with no snapshot.
+    pub fn recording_guards(&self, id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT recording_guards FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.into()))
+    }
+
+    /// Write the recording settings snapshot of the note `id` (KTD14 of
+    /// the forgotten-recording plan). `None` removes it.
+    pub fn set_recording_guards(&self, id: &str, guards: Option<&str>) -> Result<()> {
+        self.update_one(
+            id,
+            "UPDATE sessions SET recording_guards = ?2 WHERE id = ?1",
+            guards,
+        )
     }
 
     /// Mark the note's last kept segment as the end of a pause (KTD4 of the
@@ -2452,18 +2503,20 @@ fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
 }
 
 /// Write `segment`. A segment that the row already has keeps its removed
-/// flag: only the scan, the refresh and the adopt set it.
+/// flag: only the scan, the refresh and the adopt set it. It also keeps its
+/// cut mark: only the cut sets it.
 fn insert_segment(conn: &Connection, note_id: &str, segment: &Segment) -> Result<()> {
     conn.execute(
         "INSERT INTO segments
          (note_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
-          ends_in_pause)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+          ends_in_pause, cut_before_ms, cut_after_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT (note_id, idx) DO UPDATE SET
            offset_ms = excluded.offset_ms, duration_ms = excluded.duration_ms,
            wall_start = excluded.wall_start, wall_end = excluded.wall_end,
            audio_file = excluded.audio_file, channels = excluded.channels,
-           ends_in_pause = excluded.ends_in_pause",
+           ends_in_pause = excluded.ends_in_pause,
+           cut_before_ms = excluded.cut_before_ms, cut_after_ms = excluded.cut_after_ms",
         params![
             note_id,
             segment.index,
@@ -2474,6 +2527,8 @@ fn insert_segment(conn: &Connection, note_id: &str, segment: &Segment) -> Result
             segment.audio_file,
             segment.channels,
             segment.ends_in_pause,
+            segment.cut_before_ms as i64,
+            segment.cut_after_ms as i64,
         ],
     )?;
     Ok(())

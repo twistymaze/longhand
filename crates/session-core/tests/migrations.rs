@@ -1196,6 +1196,43 @@ fn migration_twenty_five_keeps_the_summary_cache_of_a_waiting_title_request() {
 }
 
 #[test]
+fn migration_twenty_six_gives_existing_notes_no_snapshot_and_segments_no_cut() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("longhand.db");
+    {
+        let mut conn = Connection::open(&path).unwrap();
+        session_core::schema::migrations()
+            .to_version(&mut conn, 25)
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, created_at, state) VALUES ('s1', ?1, ?2)",
+            params!["2026-09-22T10:00:00-05:00", r#"{"state":"saved"}"#],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO segments
+             (note_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file,
+              channels, ends_in_pause)
+             VALUES ('s1', 0, 0, 60000, '2026-09-22T10:00:00-05:00',
+                     '2026-09-22T10:01:00-05:00', 'audio/segment-01.opus', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let store = Store::open(&path).unwrap();
+    assert_eq!(user_version(&path), 26);
+    let segments = store.segments("s1").unwrap();
+    assert_eq!(segments.len(), 1);
+    assert!(segments[0].ends_in_pause);
+    assert_eq!(
+        (segments[0].cut_before_ms, segments[0].cut_after_ms),
+        (0, 0)
+    );
+    assert!(store.cut_checked("s1").unwrap().is_empty());
+    assert_eq!(store.recording_guards("s1").unwrap(), None);
+}
+
+#[test]
 fn after_migration_twenty_five_no_file_holds_the_transcript_of_a_saved_note() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("longhand.db");

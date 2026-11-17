@@ -20,6 +20,10 @@ The shared settings are the settings that every computer with the same storage f
 | `note_type_prompts` | An object: type name to prompt id | The prompt of each note type. "General" is the key for General. A type with no key uses the default prompt. |
 | `show_recording_widget` | `true` or `false` | A new note shows the recording widget. |
 | `new_note_records` | `true` or `false` | New Note and the recording shortcut start a note that records. With `false`, they start a note with no audio. |
+| `silence_check_minutes` | `"off"`, or whole minutes from 5 to 240 | When a recording has no speech for that many minutes, Longhand asks "Still recording?" and stops the note when nobody answers. |
+| `recording_time_limit_hours` | `"off"`, or whole hours from 1 to 24 | When a recording runs for that many hours, Longhand asks "Still recording?" and stops the note when nobody answers. |
+| `stop_countdown_minutes` | Whole minutes from 1 to 10 | How long the "Still recording?" question waits for an answer before Longhand stops the note. |
+| `long_silence_cut_minutes` | `"off"`, or whole minutes from 5 to 240 | At each Stop, Longhand permanently deletes each stretch of silence at least that long from the audio. |
 | `check_updates_automatically` | `true` or `false` | Longhand checks for updates automatically. |
 | `audio_removal` | `"off"`, or whole days from 1 to 3650 | Longhand removes the audio of a saved note that many days after the note last recorded. |
 | `transcript_removal` | `"off"`, or whole days from 1 to 3650 | Longhand removes the transcript of a saved note that many days after the note last recorded. The summary, the notes, the title and the tags stay. Off when the key is not in the file. |
@@ -31,6 +35,8 @@ The shared settings are the settings that every computer with the same storage f
 | `asr_model` | A model id | The transcription model. Change it in Longhand Settings: this skill cannot check the list of models. |
 
 `transcript_removal` and `audio_removal` work together. Longhand uses the longer of the two delays for the transcript, and removes no transcript when `audio_removal` is `"off"`. Longhand Settings keeps the transcript delay at least as long as the audio delay. When you change one of the two, keep this order: set `transcript_removal` to `"off"` when you set `audio_removal` to `"off"`, and do not make `transcript_removal` shorter than `audio_removal`. Removal deletes the transcript permanently. Before you turn it on or make it shorter, tell the user that Longhand then deletes the transcripts of old notes on each computer.
+
+A change to `silence_check_minutes`, `recording_time_limit_hours`, `stop_countdown_minutes` or `long_silence_cut_minutes` applies to the next recording, not to a recording that runs now.
 
 A change to a recognition setting (`asr_model`, `live_transcript`, `speaker_source`, `speaker_processing_mode`, `default_speaker_count`, `recognition_language`) can make each computer download models.
 

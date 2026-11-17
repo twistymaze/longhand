@@ -324,6 +324,58 @@ async setShowRecordingWidget(enabled: boolean) : Promise<Result<Settings, string
 }
 },
 /**
+ * Set the silence check, or turn it off (R2, R10). The value goes into
+ * the shared settings file and applies to the next recording (R11). A
+ * time outside the range is refused and changes nothing.
+ */
+async setSilenceCheckMinutes(check: CheckTimeSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_silence_check_minutes", { check }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the time limit of a recording, or turn it off (R3, R10). The value
+ * goes into the shared settings file and applies to the next recording
+ * (R11). A time outside the range is refused and changes nothing.
+ */
+async setRecordingTimeLimitHours(limit: CheckTimeSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_recording_time_limit_hours", { limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the long-silence cut, or turn it off (R12, R10). The value goes
+ * into the shared settings file and applies to the next recording (R11).
+ * A time outside the range is refused and changes nothing.
+ */
+async setLongSilenceCutMinutes(cut: CheckTimeSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_long_silence_cut_minutes", { cut }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the countdown of the "Still recording?" prompt (R5, R10). The value
+ * goes into the shared settings file and applies to the next recording
+ * (R11). A time outside the range is refused and changes nothing.
+ */
+async setStopCountdownMinutes(minutes: number) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_stop_countdown_minutes", { minutes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app checks for updates by itself (R10). The next
  * scheduled check reads the new value.
  */
@@ -1807,6 +1859,17 @@ id: string;
  */
 time: number }
 /**
+ * A shared setting: the time of a recording check or of the long-silence
+ * cut (R10, KTD13). The file form is [`CheckTime`]; this is the form of
+ * the Settings window. The setting gives the unit, minutes or hours, and
+ * the range.
+ */
+export type CheckTimeSetting = { kind: "off" } | 
+/**
+ * The check or the cut uses this many whole minutes or hours.
+ */
+{ kind: "after"; time: number }
+/**
  * A choice in the update window. A close of the window is `Close`.
  */
 export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close"
@@ -3133,6 +3196,29 @@ audio_removal: AudioRemovalSetting;
  * read-only (KTD7).
  */
 transcript_removal: TranscriptRemovalSetting; 
+/**
+ * A shared setting. The silence check: the minutes with no speech
+ * before the "Still recording?" prompt (R2, R10). On by default, with
+ * 30 minutes. A change applies to the next recording (R11): see
+ * [`RecordingGuards`].
+ */
+silence_check_minutes: CheckTimeSetting; 
+/**
+ * A shared setting. The time limit: the hours of recording time before
+ * the prompt (R3, R10). On by default, with 6 hours.
+ */
+recording_time_limit_hours: CheckTimeSetting; 
+/**
+ * A shared setting. The long-silence cut: the shortest stretch of
+ * silence, in minutes, that a Stop removes (R12, R10). On by default,
+ * with 10 minutes.
+ */
+long_silence_cut_minutes: CheckTimeSetting; 
+/**
+ * A shared setting. The countdown of the prompt in minutes (R5, R10).
+ * 2 minutes by default. It has no off state.
+ */
+stop_countdown_minutes: number; 
 /**
  * A shared setting. The custom summary prompts, in the order that
  * Settings shows them (KTD6).

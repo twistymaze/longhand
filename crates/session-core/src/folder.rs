@@ -221,6 +221,15 @@ pub struct SegmentRecord {
     /// pause plan).
     #[serde(default, skip_serializing_if = "is_false")]
     pub ends_in_pause: bool,
+    /// The removed audio before the segment start (KTD21 of the
+    /// forgotten-recording plan). 0 writes no field, so a record with no
+    /// cut stays as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cut_before_ms: u64,
+    /// The removed audio after the segment end (KTD21 of the
+    /// forgotten-recording plan). 0 writes no field.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cut_after_ms: u64,
 }
 
 fn is_mono(channels: &u16) -> bool {
@@ -229,6 +238,10 @@ fn is_mono(channels: &u16) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl From<&Segment> for SegmentRecord {
@@ -242,6 +255,8 @@ impl From<&Segment> for SegmentRecord {
             audio: s.audio_file.clone(),
             channels: s.channels,
             ends_in_pause: s.ends_in_pause,
+            cut_before_ms: s.cut_before_ms,
+            cut_after_ms: s.cut_after_ms,
         }
     }
 }
@@ -257,6 +272,8 @@ impl From<&SegmentRecord> for Segment {
             audio_file: r.audio.clone(),
             channels: r.channels,
             ends_in_pause: r.ends_in_pause,
+            cut_before_ms: r.cut_before_ms,
+            cut_after_ms: r.cut_after_ms,
         }
     }
 }

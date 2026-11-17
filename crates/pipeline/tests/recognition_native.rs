@@ -537,6 +537,8 @@ fn paced_durable_capture_runs_native_recognition_before_stop() {
         audio_file: "audio/segment-01.opus".into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     };
     store.lock().unwrap().put_segment("live", &segment).unwrap();
     pipeline::assemble::run(
@@ -774,6 +776,8 @@ fn live_pyannote_features_are_reused_by_final_clustering() {
         audio_file: "audio/segment-01.opus".into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     };
     store
         .lock()
