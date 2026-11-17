@@ -495,6 +495,8 @@ fn a_part_computes_again_only_the_feature_windows_at_its_edges() {
     assert_eq!(windows, 87 + 88);
 }
 
+// A symlink on Windows needs a privilege that the CI runner does not have.
+#[cfg(unix)]
 #[test]
 fn the_cut_does_not_delete_a_symlink_or_a_file_with_another_name() {
     let note = note(KINDS);
