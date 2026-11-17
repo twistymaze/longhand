@@ -640,3 +640,156 @@ fn the_paragraph_rule_gives_the_paragraphs_of_the_shared_fixture() {
         assert_eq!(turns_of(&t.lines), expected, "{name}");
     }
 }
+
+/// A segment with `cut_before_ms` and `cut_after_ms` (KTD21 of the
+/// forgotten-recording plan).
+fn cut(segment: Segment, cut_before_ms: u64, cut_after_ms: u64) -> Segment {
+    Segment {
+        cut_before_ms,
+        cut_after_ms,
+        ..segment
+    }
+}
+
+fn said(position_ms: u64, text: &str) -> TranscriptLine {
+    TranscriptLine::Turn {
+        position_ms,
+        speaker: Some(1),
+        text: text.into(),
+    }
+}
+
+fn silence(duration_ms: u64) -> TranscriptLine {
+    TranscriptLine::Silence { duration_ms }
+}
+
+// Covers R15 and AE3: a cut between two parts gives one silence line with
+// the removed duration. The kept margins next to the cut, which are longer
+// than SILENCE_MARK_MS, get no line of their own. Turn times after the cut
+// keep the original recording time.
+#[test]
+fn a_cut_between_two_parts_gives_one_silence_line_with_the_removed_time() {
+    let segments = [
+        cut(segment(0, 0, 180_000), 0, 1_920_000),
+        segment(1, 2_100_000, 180_000),
+    ];
+    let windows = [
+        window(0, 1_000, &[(0, 2_000, "before")]),
+        window(1, 170_000, &[(0, 2_000, "after")]),
+    ];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 180_000, 1), turn(1, 0, 180_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        t.lines,
+        vec![
+            said(1_000, "before"),
+            silence(1_920_000),
+            said(2_270_000, "after")
+        ]
+    );
+}
+
+// Covers R15 and AE1: a trailing cut gives one final silence line.
+#[test]
+fn a_trailing_cut_gives_one_final_silence_line() {
+    let segments = [cut(segment(0, 0, 180_000), 0, 1_800_000)];
+    let windows = [window(0, 1_000, &[(0, 2_000, "the end")])];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 180_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(t.lines, vec![said(1_000, "the end"), silence(1_800_000)]);
+}
+
+// Covers R15: a leading cut gives a first silence line.
+#[test]
+fn a_leading_cut_gives_a_first_silence_line() {
+    let segments = [cut(segment(0, 600_000, 180_000), 600_000, 0)];
+    let windows = [window(0, 170_000, &[(0, 2_000, "hello")])];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 180_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(t.lines, vec![silence(600_000), said(770_000, "hello")]);
+}
+
+// Covers R15 and AE9: a recording with no speech keeps its first minute,
+// and the transcript shows one silence line for the rest.
+#[test]
+fn a_recording_with_no_speech_shows_one_silence_line_for_the_cut() {
+    let segments = [cut(segment(0, 0, 60_000), 0, 10_740_000)];
+    let t = build(&segments, &[], &Speakers::Turns(vec![]));
+    assert_eq!(t.lines, vec![silence(10_740_000)]);
+}
+
+// Covers R15 and KTD21: a trailing cut before a Resume gives the silence
+// line, then a gap line for the rest of the distance.
+#[test]
+fn a_trailing_cut_before_a_resume_gives_silence_then_gap() {
+    let segments = [
+        cut(segment(0, 0, 180_000), 0, 600_000),
+        segment(1, 900_000, 60_000),
+    ];
+    let windows = [
+        window(0, 1_000, &[(0, 2_000, "one")]),
+        window(1, 1_000, &[(0, 2_000, "two")]),
+    ];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 180_000, 1), turn(1, 0, 60_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        markers_of(&t.lines),
+        vec![
+            silence(600_000),
+            TranscriptLine::Gap {
+                duration_ms: 120_000
+            }
+        ]
+    );
+}
+
+// Covers R15 and KTD21: a cut before a Pause gives the silence line, then
+// the pause line for the paused time.
+#[test]
+fn a_cut_before_a_pause_gives_silence_then_pause() {
+    let segments = [
+        cut(paused(0, 0, 180_000), 0, 600_000),
+        segment(1, 1_080_000, 60_000),
+    ];
+    let windows = [
+        window(0, 1_000, &[(0, 2_000, "one")]),
+        window(1, 1_000, &[(0, 2_000, "two")]),
+    ];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 180_000, 1), turn(1, 0, 60_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        markers_of(&t.lines),
+        vec![
+            silence(600_000),
+            TranscriptLine::Pause {
+                duration_ms: 300_000
+            }
+        ]
+    );
+}
+
+// Covers KTD21: a Resume after a recording whose start was cut gives the
+// gap line for the time with no recording, then the silence line of the
+// removed start.
+#[test]
+fn a_leading_cut_after_a_resume_gives_gap_then_silence() {
+    let segments = [
+        segment(0, 0, 60_000),
+        cut(segment(1, 900_000, 60_000), 600_000, 0),
+    ];
+    let windows = [
+        window(0, 1_000, &[(0, 2_000, "one")]),
+        window(1, 1_000, &[(0, 2_000, "two")]),
+    ];
+    let speakers = Speakers::Turns(vec![turn(0, 0, 60_000, 1), turn(1, 0, 60_000, 1)]);
+    let t = build(&segments, &windows, &speakers);
+    assert_eq!(
+        markers_of(&t.lines),
+        vec![
+            TranscriptLine::Gap {
+                duration_ms: 240_000
+            },
+            silence(600_000)
+        ]
+    );
+}

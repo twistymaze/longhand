@@ -80,6 +80,45 @@ fn session_md_names_a_pause_between_segments() {
     );
 }
 
+// Covers R15 and KTD21: session.md names the removed audio of each cut,
+// and a pause or gap line only for the rest of the distance.
+#[test]
+fn session_md_names_the_silence_that_a_cut_removed() {
+    let segment = |index: u32, offset_ms: u64, cut_before_ms: u64, cut_after_ms: u64| Segment {
+        index,
+        offset_ms,
+        duration_ms: 60_000,
+        wall_start: wall(0),
+        wall_end: wall(1),
+        audio_file: format!("audio/segment-0{}.opus", index + 1),
+        channels: 1,
+        ends_in_pause: false,
+        cut_before_ms,
+        cut_after_ms,
+    };
+    let segments = vec![
+        // A leading cut of 5 minutes.
+        segment(0, 300_000, 300_000, 600_000),
+        // A cut of 10 minutes between parts, with no rest.
+        segment(1, 960_000, 0, 600_000),
+        // A cut of 10 minutes, then a Stop and a Resume 2 minutes later.
+        segment(2, 1_740_000, 0, 1_200_000),
+    ];
+    let text = SessionDoc::new("01J8Z", None, &segments).unwrap().render();
+    for line in [
+        "Silence of 00:05:00 removed before segment 1.",
+        "Silence of 00:10:00 removed after segment 1.",
+        "Silence of 00:10:00 removed after segment 2.",
+        "Gap of 00:02:00 between segments 2 and 3.",
+        "Silence of 00:20:00 removed after segment 3.",
+    ] {
+        assert!(text.contains(line), "{line}\n{text}");
+    }
+    assert!(!text.contains("between segments 1 and 2"), "{text}");
+    let parsed = SessionDoc::parse(&text).unwrap();
+    assert_eq!(parsed.timeline_segments(), segments);
+}
+
 #[test]
 fn transcript_md_round_trips() {
     let transcript = Transcript {

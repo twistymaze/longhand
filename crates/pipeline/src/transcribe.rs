@@ -646,27 +646,50 @@ pub fn seed_from_transcript(
     }
     segments.sort_by_key(|s| s.offset_ms);
     // (start, text, silence after the turn) of each turn, by segment.
-    let mut turns: BTreeMap<u32, Vec<(u64, String, Option<u64>)>> = BTreeMap::new();
+    type Turns = BTreeMap<u32, Vec<(u64, String, Option<u64>)>>;
+    let mut turns: Turns = BTreeMap::new();
     // The segment of the last turn after the last pause or gap line. A
     // silence line after it is the silence after that turn.
     let mut last: Option<u32> = None;
+    // The silence lines after the last turn, not yet given to it. A
+    // segment with removed audio after it ends with the silence line of
+    // the cut, which is not silence inside the segment (KTD21 of the
+    // forgotten-recording plan). So the silence goes to the turn only when
+    // a turn of the same segment follows, or when the segment has no cut
+    // after it.
+    let mut pending_ms: u64 = 0;
+    let cut_after = |index: u32| {
+        segments
+            .iter()
+            .find(|s| s.index == index)
+            .is_some_and(|s| s.cut_after_ms > 0)
+    };
+    let give_silence =
+        |turns: &mut Turns, last: Option<u32>, pending_ms: &mut u64, same_segment: bool| {
+            let duration_ms = std::mem::take(pending_ms);
+            let Some(index) = last else { return };
+            if duration_ms == 0 || (!same_segment && cut_after(index)) {
+                return;
+            }
+            if let Some((_, _, silence)) = turns.get_mut(&index).and_then(|own| own.last_mut()) {
+                *silence = Some(silence.unwrap_or(0) + duration_ms);
+            }
+        };
     for line in transcript.lines {
         let (position_ms, text) = match line {
             TranscriptLine::Turn {
                 position_ms, text, ..
             } => (position_ms, text),
             TranscriptLine::Silence { duration_ms } => {
-                if let Some((_, _, silence)) = last
-                    .and_then(|index| turns.get_mut(&index))
-                    .and_then(|own| own.last_mut())
-                {
-                    *silence = Some(silence.unwrap_or(0) + duration_ms);
+                if last.is_some() {
+                    pending_ms += duration_ms;
                 }
                 continue;
             }
             // A silence after a pause or a gap line is at the start of the
             // next segment. The join measures it from the segment start.
             TranscriptLine::Pause { .. } | TranscriptLine::Gap { .. } => {
+                give_silence(&mut turns, last, &mut pending_ms, false);
                 last = None;
                 continue;
             }
@@ -678,6 +701,12 @@ pub fn seed_from_transcript(
             .rev()
             .find(|s| s.offset_ms <= position_ms)
             .unwrap_or(&segments[0]);
+        give_silence(
+            &mut turns,
+            last,
+            &mut pending_ms,
+            last == Some(segment.index),
+        );
         let at = position_ms
             .saturating_sub(segment.offset_ms)
             .min(segment.duration_ms);
@@ -687,6 +716,7 @@ pub fn seed_from_transcript(
             .push((at, text, None));
         last = Some(segment.index);
     }
+    give_silence(&mut turns, last, &mut pending_ms, false);
     for segment in &segments {
         let own = turns.remove(&segment.index).unwrap_or_default();
         // A piece ends where the old transcript shows its end:
@@ -950,6 +980,75 @@ mod tests {
         .unwrap();
         assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
         assert_eq!(seeded_pieces(&store), vec![(1_000, 57_999)]);
+    }
+
+    /// A store with the note "n" and two parts of 3 minutes with a cut of
+    /// 32 minutes between them, and a cut of 20 minutes after the second
+    /// part (KTD21 of the forgotten-recording plan).
+    fn store_with_cut_parts() -> Store {
+        let started = DateTime::parse_from_rfc3339("2026-09-25T09:00:00-05:00").unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("n", started, None).unwrap();
+        for (index, offset_ms, cut_after_ms) in [(0, 0, 1_920_000), (1, 2_100_000, 1_200_000)] {
+            store
+                .put_segment(
+                    "n",
+                    &Segment {
+                        index,
+                        offset_ms,
+                        duration_ms: 180_000,
+                        wall_start: started + TimeDelta::milliseconds(offset_ms as i64),
+                        wall_end: started + TimeDelta::milliseconds(offset_ms as i64 + 180_000),
+                        audio_file: format!("audio/segment-0{}.opus", index + 1),
+                        channels: 1,
+                        ends_in_pause: false,
+                        cut_before_ms: 0,
+                        cut_after_ms,
+                    },
+                )
+                .unwrap();
+        }
+        store
+    }
+
+    /// The (start, end) of each seeded piece of segment `index`.
+    fn seeded_pieces_of(store: &Store, index: u32) -> Vec<(u64, u64)> {
+        let key = crate::checkpoint::window_key(index, 0);
+        let (_, payload) = store
+            .checkpoints("n", Stage::Transcribe)
+            .unwrap()
+            .into_iter()
+            .find(|(k, _)| *k == key)
+            .unwrap();
+        let window: super::WindowResult = serde_json::from_str(&payload).unwrap();
+        window
+            .segments
+            .iter()
+            .map(|s| (s.start_ms, s.end_ms))
+            .collect()
+    }
+
+    // Covers KTD21: the silence line of a cut is removed audio after the
+    // segment, not silence inside it. It does not shorten the last piece
+    // of the part before the cut. A silence line between two turns of one
+    // part still ends the piece before it.
+    #[test]
+    fn a_silence_line_of_a_cut_does_not_shorten_the_piece_before_it() {
+        let store = store_with_cut_parts();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(
+            folder.path().join("transcript.md"),
+            "# Transcript\n\n- [00:00:01] Speaker 1: A.\n\n--- silence 00:01:10 ---\n\n\
+             - [00:01:20] Speaker 1: B.\n\n--- silence 00:32:00 ---\n\n\
+             - [00:36:10] Speaker 1: C.\n\n--- silence 00:20:00 ---\n",
+        )
+        .unwrap();
+        assert!(seed_from_transcript(&store, "n", folder.path()).unwrap());
+        assert_eq!(
+            seeded_pieces_of(&store, 0),
+            vec![(1_000, 10_000), (80_000, 177_999)]
+        );
+        assert_eq!(seeded_pieces_of(&store, 1), vec![(70_000, 177_999)]);
     }
 
     // A turn at the segment end gives a piece that ends at the segment end,

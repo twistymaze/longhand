@@ -1590,16 +1590,30 @@ fn summary_of(files: &NoteFiles, text: Option<&str>) -> Option<Summary> {
 
 /// Transcript lines, each gap placed at the end of the segment before it
 /// and given the wall-clock start of the segment after it. Gap and pause
-/// lines pair with the segment pairs in order.
+/// lines pair in order with the segment pairs that have such a line. Next
+/// to a cut, the gap starts after the audio removed from the end of the
+/// segment before it, and ends before the audio removed from the start of
+/// the segment after it (KTD21 of the forgotten-recording plan).
 fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
-    let mut ordered: Vec<_> = doc.segments.iter().collect();
+    let mut ordered: Vec<session_core::Segment> = doc
+        .segments
+        .iter()
+        .map(session_core::Segment::from)
+        .collect();
     ordered.sort_by_key(|s| s.offset_ms);
-    let mut gaps = ordered.windows(2).map(|pair| {
-        (
-            pair[0].offset_ms + pair[0].duration_ms,
-            pair[1].wall_start.to_rfc3339(),
-        )
-    });
+    let pairs: Vec<(u64, String)> = ordered
+        .windows(2)
+        .filter(|pair| session_core::folder::rest_between(&pair[0], &pair[1]).is_some())
+        .map(|pair| {
+            let wall_start =
+                pair[1].wall_start - chrono::TimeDelta::milliseconds(pair[1].cut_before_ms as i64);
+            (
+                pair[0].end_ms() + pair[0].cut_after_ms,
+                wall_start.to_rfc3339(),
+            )
+        })
+        .collect();
+    let mut gaps = pairs.into_iter();
     transcript
         .lines
         .into_iter()
@@ -2733,6 +2747,73 @@ mod tests {
                 duration_ms: 4_500_000,
                 wall_start: Some(w),
             } if w == "2026-09-22T16:00:00+00:00"
+        ));
+    }
+
+    // Covers KTD21 of the forgotten-recording plan: a cut between two parts
+    // has no gap line, so a later gap line pairs with the segment pair
+    // after the cut. A gap after a removed end starts where the removed
+    // audio ends, and a gap before a removed start ends where the removed
+    // audio starts.
+    #[test]
+    fn a_gap_after_a_cut_gets_the_wall_clock_of_its_own_segment_pair() {
+        let segment = |index: u32, start: &str, offset_ms: u64, cut: &str| {
+            format!(
+                "- index: {index}\n  wall_start: 2026-09-22T{start}:00+00:00\n  wall_end: 2026-09-22T{start}:00+00:00\n  offset_ms: {offset_ms}\n  duration_ms: 600000\n  audio: audio/segment-0{}.opus\n{cut}",
+                index + 1
+            )
+        };
+        let text = format!(
+            "---\nsession_id: s\nstarted: 2026-09-22T14:00:00+00:00\nsegments:\n{}{}{}{}---\n",
+            // Parts of one recording with a 20-minute cut between them.
+            segment(0, "14:00", 0, "  cut_after_ms: 1200000\n"),
+            // A 10-minute cut at the end, then a Resume 1 hour later.
+            segment(1, "14:30", 1_800_000, "  cut_after_ms: 600000\n"),
+            // A 5-minute cut at the start of the resumed recording.
+            segment(2, "15:55", 6_600_000, "  cut_before_ms: 300000\n"),
+            segment(3, "17:00", 10_000_000, ""),
+        );
+        let doc = SessionDoc::parse(&text).unwrap();
+        let turn = |position_ms: u64| TranscriptLine::Turn {
+            position_ms,
+            speaker: None,
+            text: "a".into(),
+        };
+        let silence = |duration_ms: u64| TranscriptLine::Silence { duration_ms };
+        let transcript = Transcript {
+            has_speakers: false,
+            lines: vec![
+                turn(1_000),
+                silence(1_200_000),
+                turn(1_801_000),
+                silence(600_000),
+                TranscriptLine::Gap {
+                    duration_ms: 3_300_000,
+                },
+                silence(300_000),
+                turn(6_601_000),
+                TranscriptLine::Gap {
+                    duration_ms: 2_800_000,
+                },
+                turn(10_001_000),
+            ],
+        };
+        let lines = doc_lines(&doc, transcript);
+        assert!(matches!(
+            &lines[4],
+            DocLine::Gap {
+                at_ms: 3_000_000,
+                duration_ms: 3_300_000,
+                wall_start: Some(w),
+            } if w == "2026-09-22T15:50:00+00:00"
+        ));
+        assert!(matches!(
+            &lines[7],
+            DocLine::Gap {
+                at_ms: 7_200_000,
+                duration_ms: 2_800_000,
+                wall_start: Some(w),
+            } if w == "2026-09-22T17:00:00+00:00"
         ));
     }
 
