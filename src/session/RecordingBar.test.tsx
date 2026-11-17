@@ -25,6 +25,7 @@ const capture: Capture = {
   levels: [],
   recordedMs: 0,
   lostReason: null,
+  prompt: null,
   refresh: async () => {},
 };
 

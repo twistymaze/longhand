@@ -16,12 +16,19 @@
 // each control, and when the recording changes (KTD10). Nothing in the pill
 // moves except the meter, so the pill draws little attention from the
 // participants.
+//
+// While the "Still recording?" prompt is open, a row above the pill shows
+// the question, the countdown, Keep Recording and Stop (R5, KTD11). The
+// widget thread makes the window taller for the row, and the pill stays
+// where it is. The row has no motion: the countdown is text that changes
+// once a second, like the time.
 
 import { type MouseEvent, type PointerEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { commands, events, type RecordingStatus } from "../bindings";
+import { commands, events, type Prompt, type RecordingStatus } from "../bindings";
 import { LevelBars } from "../session/LevelBars";
 import { formatPosition } from "../lib/timeline";
+import { answerPrompt, useCountdown, usePrompt } from "../recording/StillRecording";
 
 type Mode = "recording" | "paused" | "interrupted";
 
@@ -39,7 +46,7 @@ const isMac = navigator.userAgent.includes("Mac");
 
 /// The controls of the pill. `data-control` on each button holds its name,
 /// so the hover does not depend on the label text.
-type Control = "pause" | "continue" | "stop" | "hide";
+type Control = "pause" | "continue" | "stop" | "hide" | "keep" | "answer-stop";
 
 /// The control at a point of the page, or null.
 function controlAt(x: number, y: number): Control | null {
@@ -62,22 +69,25 @@ export function RecordingWidget() {
   const [hovered, setHovered] = useState<Control | null>(null);
   // The press on the pill body: where it started, and whether it dragged.
   const press = useRef<{ x: number; y: number; dragged: boolean } | null>(null);
+  const { prompt, read: readPrompt } = usePrompt();
 
   // Reads of the status can overlap (an event and a control's own read). Only
   // the newest read sets the state, so an older status never replaces it.
   const reads = useRef(0);
   const refresh = useCallback(async () => {
     const read = ++reads.current;
+    const applyPrompt = readPrompt();
     const result = await commands.recordingStatus();
     if (read !== reads.current || result.status !== "ok") return;
     setStatus(result.data);
+    applyPrompt(result.data.prompt);
     // While a segment records, the status does not hold that segment, so
     // the ticks give the time. In the other modes no tick arrives.
     if (result.data.paused || result.data.interruption || !result.data.recording) {
       setRecordedMs(result.data.recorded_ms);
       setLevels([]);
     }
-  }, []);
+  }, [readPrompt]);
 
   useEffect(() => {
     void refresh();
@@ -134,7 +144,16 @@ export function RecordingWidget() {
   };
 
   return (
-    <div className="fixed inset-0 flex items-end justify-center pb-1 select-none">
+    <div className="fixed inset-0 flex flex-col items-center justify-end gap-2 pb-1 select-none">
+      {prompt && (
+        <div onPointerDown={pressStart} onPointerMove={pressMove} onClick={click}>
+          <PromptRow
+            prompt={prompt}
+            hovered={hovered}
+            onAnswer={(answer) => control(() => answerPrompt(answer, prompt.generation))}
+          />
+        </div>
+      )}
       <div
         onPointerDown={pressStart}
         onPointerMove={pressMove}
@@ -186,6 +205,47 @@ export function RecordingWidget() {
             </svg>
           </button>
         </span>
+      </div>
+    </div>
+  );
+}
+
+/// The "Still recording?" row above the pill (R5, KTD11). The row (84
+/// points), the gap and the pill fit in the 152-point window that the
+/// widget thread sets while the prompt shows. Neither answer is the
+/// default: both buttons have the same look.
+function PromptRow({
+  prompt,
+  hovered,
+  onAnswer,
+}: {
+  prompt: Prompt;
+  hovered: Control | null;
+  onAnswer: (answer: "keep" | "stop") => (event: MouseEvent) => void;
+}) {
+  const countdown = useCountdown(prompt.deadline_ms);
+  const answer = (control: Control, label: string, choice: "keep" | "stop") => (
+    <button
+      type="button"
+      data-control={control}
+      data-hover={hovered === control}
+      onClick={onAnswer(choice)}
+      className={`h-7 flex-1 rounded-full bg-fill text-[13px] font-medium text-label active:bg-fill-pressed ${
+        isMac ? "data-[hover=true]:bg-fill-pressed" : "hover:bg-fill-pressed"
+      }`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <div className="flex w-[272px] cursor-default flex-col gap-2.5 rounded-[18px] border border-control-border bg-group p-3 text-label shadow-[0_1px_3px_rgb(0_0_0/0.12)]">
+      <div className="flex h-5 items-baseline justify-between">
+        <span className="text-[14px] font-medium">Still recording?</span>
+        <span className="text-[14px] text-label-secondary tabular-nums">{countdown}</span>
+      </div>
+      <div className="flex gap-2">
+        {answer("keep", "Keep Recording", "keep")}
+        {answer("answer-stop", "Stop", "stop")}
       </div>
     </div>
   );

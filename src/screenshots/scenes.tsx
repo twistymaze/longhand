@@ -292,6 +292,7 @@ function recording(): Scene {
     levels,
     recordedMs: 18 * 60_000 + 24_000,
     lostReason: null,
+    prompt: null,
     refresh: async () => {},
   };
   return {
@@ -343,7 +344,7 @@ const teamDocument = () =>
 
 function summary(): Scene {
   const e = teamMeeting;
-  const capture: Capture = { status: idle, input: "idle", levels: [], recordedMs: 0, lostReason: null, refresh: async () => {} };
+  const capture: Capture = { status: idle, input: "idle", levels: [], recordedMs: 0, lostReason: null, prompt: null, refresh: async () => {} };
   return {
     handlers: {
       ...common(recordingNotes),

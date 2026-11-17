@@ -1,6 +1,6 @@
-import { expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import type { RecordingStatus } from "../bindings";
+import type { Prompt, RecordingStatus } from "../bindings";
 import { mockTauri } from "../test/tauri";
 import { useCapture } from "./useCapture";
 
@@ -130,4 +130,99 @@ test("recording starts and status polls do not check sound output; capture error
     interval.mockRestore();
     clear.mockRestore();
   }
+});
+
+describe("the Still recording? prompt (R5, R9)", () => {
+  const prompt = (generation: number): Prompt => ({
+    note_id: "rec",
+    generation,
+    silence_check_minutes: 30,
+    time_limit_hours: null,
+    deadline_ms: Date.UTC(2026, 10, 16, 15, 32),
+    countdown_minutes: 2,
+  });
+  const recording: RecordingStatus = { ...idle, recording: true, note_id: "rec", state: "capturing" };
+
+  test("comes from the status of a window that opens during the prompt", async () => {
+    mockTauri({ recording_status: () => ({ ...recording, prompt: prompt(3) }) });
+    const hook = renderHook(() => useCapture());
+    await act(async () => {});
+    expect(hook.result.current.prompt?.generation).toBe(3);
+    hook.unmount();
+  });
+
+  test("comes from the event, and a close event or captureEnded removes it", async () => {
+    const tauri = mockTauri({ recording_status: () => recording });
+    const hook = renderHook(() => useCapture());
+    await act(async () => {});
+    expect(hook.result.current.prompt).toBeNull();
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 1, prompt: prompt(1) }); });
+    expect(hook.result.current.prompt?.generation).toBe(1);
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 1, prompt: null }); });
+    expect(hook.result.current.prompt).toBeNull();
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 2, prompt: prompt(2) }); });
+    expect(hook.result.current.prompt?.generation).toBe(2);
+    await act(async () => { await tauri.emit("capture-ended", { note_id: "rec", reason: "Microphone disconnected" }); });
+    expect(hook.result.current.prompt).toBeNull();
+    hook.unmount();
+  });
+
+  test("a late event of an older generation changes nothing", async () => {
+    const tauri = mockTauri({ recording_status: () => recording });
+    const hook = renderHook(() => useCapture());
+    await act(async () => {});
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 5, prompt: prompt(5) }); });
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 4, prompt: null }); });
+    expect(hook.result.current.prompt?.generation).toBe(5);
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 5, prompt: null }); });
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 4, prompt: prompt(4) }); });
+    expect(hook.result.current.prompt).toBeNull();
+    hook.unmount();
+  });
+
+  // A status read that starts before the close event and ends after it
+  // holds the old prompt. The event is newer, so the prompt stays closed.
+  test("a status read that overlaps a close event does not open the prompt again", async () => {
+    const open: RecordingStatus = { ...recording, prompt: prompt(2) };
+    let gate: Promise<void> | null = null;
+    let release = () => {};
+    const tauri = mockTauri({
+      recording_status: async () => {
+        if (gate) await gate;
+        return open;
+      },
+    });
+    const hook = renderHook(() => useCapture());
+    await act(async () => {});
+    expect(hook.result.current.prompt?.generation).toBe(2);
+    gate = new Promise((resolve) => { release = resolve; });
+    let read: Promise<void> = Promise.resolve();
+    act(() => { read = hook.result.current.refresh(); });
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 2, prompt: null }); });
+    await act(async () => { release(); await read; });
+    expect(hook.result.current.prompt).toBeNull();
+    hook.unmount();
+  });
+
+  // A status read that starts before the prompt shows ends after the show
+  // event with no prompt. The event is newer, so the prompt stays open.
+  test("a status read that overlaps a show event does not close the prompt", async () => {
+    let gate: Promise<void> | null = null;
+    let release = () => {};
+    const tauri = mockTauri({
+      recording_status: async () => {
+        if (gate) await gate;
+        return recording;
+      },
+    });
+    const hook = renderHook(() => useCapture());
+    await act(async () => {});
+    gate = new Promise((resolve) => { release = resolve; });
+    let read: Promise<void> = Promise.resolve();
+    act(() => { read = hook.result.current.refresh(); });
+    await act(async () => { await tauri.emit("recording-prompt", { generation: 1, prompt: prompt(1) }); });
+    await act(async () => { release(); await read; });
+    expect(hook.result.current.prompt?.generation).toBe(1);
+    hook.unmount();
+  });
 });

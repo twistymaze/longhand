@@ -17,6 +17,22 @@ pub const WIDGET_WINDOW: &str = "widget";
 const WIDTH: f64 = 288.0;
 const HEIGHT: f64 = 64.0;
 
+/// The window height in logical points while the "Still recording?" prompt
+/// shows (KTD11). The page draws the prompt row above the pill. The window
+/// grows up, so the pill stays where it is.
+const PROMPT_HEIGHT: f64 = 152.0;
+
+/// The window height for the prompt state (KTD11).
+pub fn window_height(prompting: bool) -> f64 {
+    if prompting { PROMPT_HEIGHT } else { HEIGHT }
+}
+
+/// The window height when the pill shows, or `None` when it is hidden. A
+/// prompt makes a shown pill taller, and never shows a hidden pill (R5).
+pub fn shown_height(entry: Option<&Entry>, prompting: bool) -> Option<f64> {
+    entry.filter(|e| e.shown).map(|_| window_height(prompting))
+}
+
 /// The space between the window and the bottom of the work area, in logical
 /// points (R3). The work area ends above the Dock or the taskbar.
 const BOTTOM_OFFSET: f64 = 12.0;
@@ -160,6 +176,15 @@ pub fn start(app: &AppHandle) {
         return;
     }
     request(app, Request::Sync);
+    // A prompt that opens or closes changes the window height (KTD11). The
+    // 1-second sync would also do it, but the page shows the prompt at the
+    // event, so the window follows at once.
+    let prompt_app = app.clone();
+    tauri::Listener::listen_any(
+        app,
+        <crate::managers::guard::RecordingPrompt as tauri_specta::Event>::NAME,
+        move |_| request(&prompt_app, Request::Sync),
+    );
 }
 
 /// The widget thread: one sync for each request, and one each second while
@@ -205,8 +230,8 @@ fn sync(
     else {
         return entry;
     };
-    let open = match capture.status(app) {
-        Ok(status) => status.note_id,
+    let (open, prompting) = match capture.status(app) {
+        Ok(status) => (status.note_id, status.prompt.is_some()),
         Err(e) => {
             log::warn!("the recording widget could not read the recording status: {e}");
             return entry;
@@ -215,10 +240,12 @@ fn sync(
     let switch = crate::managers::settings::get_settings(app).show_recording_widget;
     let mut entry = step(open.as_deref(), entry, switch, request);
 
-    let show = entry.as_ref().is_some_and(|e| e.shown);
-    if show {
+    let height = shown_height(entry.as_ref(), prompting);
+    let show = height.is_some();
+    if let Some(height) = height {
         let remembered = entry.as_ref().and_then(|e| e.display);
-        let display = on_main_thread(app, move |app| place_and_show(app, remembered)).flatten();
+        let display =
+            on_main_thread(app, move |app| place_and_show(app, remembered, height)).flatten();
         if let Some(e) = entry.as_mut() {
             e.display = display.or(e.display);
         }
@@ -313,10 +340,10 @@ pub fn choose_screen(
 /// because tao converts a physical position with the scale of the display
 /// the window is on now (KTD7).
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn logical_origin(screen: &Screen) -> (f64, f64) {
+pub fn logical_origin(screen: &Screen, height: f64) -> (f64, f64) {
     let s = screen.scale;
     let x = f64::from(screen.key.x) / s + (f64::from(screen.key.width) / s - WIDTH) / 2.0;
-    let y = f64::from(screen.work_bottom) / s - HEIGHT - BOTTOM_OFFSET;
+    let y = f64::from(screen.work_bottom) / s - height - BOTTOM_OFFSET;
     (x, y)
 }
 
@@ -326,11 +353,11 @@ pub fn logical_origin(screen: &Screen) -> (f64, f64) {
 /// window grows with it. The offset under the window uses the display scale
 /// only, so the bottom edge does not move.
 #[cfg_attr(not(windows), allow(dead_code))]
-pub fn physical_bounds(screen: &Screen, text_scale: f64) -> (i32, i32, i32, i32) {
+pub fn physical_bounds(screen: &Screen, text_scale: f64, height: f64) -> (i32, i32, i32, i32) {
     let s = screen.scale;
     let content = s * text_scale;
     let width = (WIDTH * content).round() as i32;
-    let height = (HEIGHT * content).round() as i32;
+    let height = (height * content).round() as i32;
     let x = screen.key.x + (screen.key.width as i32 - width) / 2;
     let y = screen.work_bottom - height - (BOTTOM_OFFSET * s).round() as i32;
     (x, y, width, height)
@@ -356,12 +383,11 @@ fn windows_text_scale_factor() -> f64 {
 }
 
 /// The window origin on a display in physical pixels, when the pill is at
-/// its default place. A position that the user dragged the pill to is
-/// compared with this.
-pub fn default_position(screen: &Screen) -> (i32, i32) {
+/// its default place with the window height `height` in logical points.
+pub fn default_position(screen: &Screen, height: f64) -> (i32, i32) {
     #[cfg(not(windows))]
     {
-        let (x, y) = logical_origin(screen);
+        let (x, y) = logical_origin(screen, height);
         (
             (x * screen.scale).round() as i32,
             (y * screen.scale).round() as i32,
@@ -369,19 +395,58 @@ pub fn default_position(screen: &Screen) -> (i32, i32) {
     }
     #[cfg(windows)]
     {
-        let (x, y, _, _) = physical_bounds(screen, windows_text_scale_factor());
+        let (x, y, _, _) = physical_bounds(screen, windows_text_scale_factor(), height);
         (x, y)
     }
 }
 
-/// A place that the user dragged the pill to: the display and the window
-/// origin in physical pixels. It applies to later notes until Longhand
-/// quits, while that display is there.
+/// The window height in physical pixels on `screen` for the height
+/// `height` in logical points.
+pub fn height_px(screen: &Screen, height: f64) -> i32 {
+    #[cfg(not(windows))]
+    {
+        (height * screen.scale).round() as i32
+    }
+    #[cfg(windows)]
+    {
+        physical_bounds(screen, windows_text_scale_factor(), height).3
+    }
+}
+
+/// The bottom edge of the window in physical pixels when the pill is at its
+/// default place. It is the same for each window height. A position that
+/// the user dragged the pill to is compared with this.
+fn default_bottom(screen: &Screen) -> (i32, i32) {
+    let (x, y) = default_position(screen, HEIGHT);
+    (x, y + height_px(screen, HEIGHT))
+}
+
+/// The window origin y in physical pixels that keeps a window of
+/// `height_px` on `screen`: the top edge does not go above the display, and
+/// the bottom edge does not go below it.
+pub fn fit_y(screen: &Screen, y: i32, height_px: i32) -> i32 {
+    let top = screen.key.y;
+    let lowest = (top + screen.key.height as i32 - height_px).max(top);
+    y.clamp(top, lowest)
+}
+
+/// The window origin y after a resize from `old_px` to `new_px`: the bottom
+/// edge stays, so the pill does not move, and the window stays on the
+/// display (KTD11).
+pub fn resized_y(screen: &Screen, y: i32, old_px: i32, new_px: i32) -> i32 {
+    fit_y(screen, y + old_px - new_px, new_px)
+}
+
+/// A place that the user dragged the pill to: the display, the window
+/// origin x and the bottom edge of the window, in physical pixels. The
+/// bottom edge is kept, because the window height changes with the prompt.
+/// It applies to later notes until Longhand quits, while that display is
+/// there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Moved {
     pub display: DisplayKey,
     pub x: i32,
-    pub y: i32,
+    pub bottom: i32,
 }
 
 /// The place that the user dragged the pill to, kept while Longhand runs.
@@ -402,7 +467,9 @@ pub enum Placement {
 /// Decide where the pill goes (R3, R5). A visible pill stays where it is
 /// while its display is there. A pill that shows, or whose display is gone,
 /// goes to the place that the user dragged it to if that display is there,
-/// else to the bottom centre of the chosen display.
+/// else to the bottom centre of the chosen display. `height` is the window
+/// height in logical points: the window goes up from the bottom edge, and
+/// stays on the display.
 pub fn placement(
     screens: &[Screen],
     visible_on: Option<DisplayKey>,
@@ -410,6 +477,7 @@ pub fn placement(
     under_pointer: Option<DisplayKey>,
     primary: Option<DisplayKey>,
     moved: Option<Moved>,
+    height: f64,
 ) -> Option<Placement> {
     if let Some(key) = visible_on
         && screens.iter().any(|s| s.key == key)
@@ -419,26 +487,30 @@ pub fn placement(
     let preferred = remembered.or(moved.map(|m| m.display));
     let screen = choose_screen(screens, preferred, under_pointer, primary)?;
     let (x, y) = match moved {
-        Some(m) if m.display == screen.key => (m.x, m.y),
-        _ => default_position(&screen),
+        Some(m) if m.display == screen.key => {
+            let px = height_px(&screen, height);
+            (m.x, fit_y(&screen, m.bottom - px, px))
+        }
+        _ => default_position(&screen, height),
     };
     Some(Placement::At { screen, x, y })
 }
 
-/// The place to keep when the pill hides at `(x, y)` on `screen`: `None`
-/// when the pill is at its default place, so a later note uses the
-/// default place of its display.
-pub fn moved_place(screen: &Screen, x: i32, y: i32) -> Option<Moved> {
-    let (dx, dy) = default_position(screen);
+/// The place to keep when the pill hides with its window at `(x, y)` and
+/// `height_px` high on `screen`: `None` when the pill is at its default
+/// place, so a later note uses the default place of its display.
+pub fn moved_place(screen: &Screen, x: i32, y: i32, height_px: i32) -> Option<Moved> {
+    let bottom = y + height_px;
+    let (dx, dbottom) = default_bottom(screen);
     // A small difference comes from rounding, not from a drag.
     let slack = (2.0 * screen.scale).ceil() as i32;
-    if (x - dx).abs() <= slack && (y - dy).abs() <= slack {
+    if (x - dx).abs() <= slack && (bottom - dbottom).abs() <= slack {
         return None;
     }
     Some(Moved {
         display: screen.key,
         x,
-        y,
+        bottom,
     })
 }
 
@@ -465,6 +537,13 @@ fn pointer_and_primary(app: &AppHandle) -> (Option<DisplayKey>, Option<DisplayKe
     (under_pointer, primary)
 }
 
+/// The window height of the panel in logical points, as `f64` bits. The
+/// main thread sets it at each resize, and the tracking area reads it to
+/// give the pointer position from the top of the page.
+#[cfg(target_os = "macos")]
+static PANEL_HEIGHT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(HEIGHT.to_bits());
+
 /// The macOS panel: its class, its event handler and its build.
 /// `panel_event!` requires a return type on each event, also `()`.
 #[cfg(target_os = "macos")]
@@ -474,7 +553,7 @@ mod panel {
     use tauri_nspanel::{CollectionBehavior, PanelBuilder, PanelLevel, StyleMask};
     use tauri_specta::Event as _;
 
-    use super::{HEIGHT, WIDGET_WINDOW, WIDTH, WidgetPointer};
+    use super::{HEIGHT, PANEL_HEIGHT, WIDGET_WINDOW, WIDTH, WidgetPointer};
 
     /// Build the hidden panel, with a tracking area that sends
     /// `WidgetPointer` on pointer enter and exit (KTD6).
@@ -535,13 +614,15 @@ mod panel {
 
     /// The pointer position in page pixels. AppKit counts from the bottom
     /// left of the window, and the page from the top left. The page has no
-    /// interface zoom, so one page pixel is one point.
+    /// interface zoom, so one page pixel is one point. The window height
+    /// changes with the prompt (KTD11).
     fn pointer(event: &tauri_nspanel::objc2_app_kit::NSEvent, inside: bool) -> WidgetPointer {
         let location = event.locationInWindow();
+        let height = f64::from_bits(PANEL_HEIGHT.load(std::sync::atomic::Ordering::Relaxed));
         WidgetPointer {
             inside,
             x: location.x,
-            y: HEIGHT - location.y,
+            y: height - location.y,
         }
     }
 
@@ -616,8 +697,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
 /// Place the pill on its display and show it. Returns the display, which
 /// the entry remembers (R5). Call on the main thread; the window never goes
 /// through `window::front`, which would take the focus and show the Dock
-/// icon (KTD9).
-pub fn place_and_show(app: &AppHandle, remembered: Option<DisplayKey>) -> Option<DisplayKey> {
+/// icon (KTD9). `height` is the window height in logical points: it grows
+/// while the prompt shows, and the bottom edge stays (KTD11).
+pub fn place_and_show(
+    app: &AppHandle,
+    remembered: Option<DisplayKey>,
+    height: f64,
+) -> Option<DisplayKey> {
     let window = app.get_webview_window(WIDGET_WINDOW)?;
     let all = screens(app);
     let visible_on = if window.is_visible().unwrap_or(false) {
@@ -639,14 +725,47 @@ pub fn place_and_show(app: &AppHandle, remembered: Option<DisplayKey>) -> Option
     let moved = app
         .try_state::<MovedPlace>()
         .and_then(|m| *m.0.lock().unwrap_or_else(|e| e.into_inner()));
-    let (screen, x, y) =
-        match placement(&all, visible_on, remembered, under_pointer, primary, moved)? {
-            Placement::Keep(key) => return Some(key),
-            Placement::At { screen, x, y } => (screen, x, y),
-        };
+    let (screen, x, y) = match placement(
+        &all,
+        visible_on,
+        remembered,
+        under_pointer,
+        primary,
+        moved,
+        height,
+    )? {
+        Placement::Keep(key) => {
+            // A visible pill stays where it is. Only a change of the
+            // prompt changes the window: it grows or shrinks at the top.
+            let screen = all.iter().find(|s| s.key == key).copied()?;
+            let (Ok(position), Ok(size)) = (window.outer_position(), window.outer_size()) else {
+                return Some(key);
+            };
+            let old_px = size.height as i32;
+            let new_px = height_px(&screen, height);
+            if old_px == new_px {
+                return Some(key);
+            }
+            (
+                screen,
+                position.x,
+                resized_y(&screen, position.y, old_px, new_px),
+            )
+        }
+        Placement::At { screen, x, y } => (screen, x, y),
+    };
 
     #[cfg(not(windows))]
     {
+        let size = tauri::LogicalSize {
+            width: WIDTH,
+            height,
+        };
+        if let Err(e) = window.set_size(tauri::Size::Logical(size)) {
+            log::error!("failed to size the recording widget: {e}");
+        }
+        #[cfg(target_os = "macos")]
+        PANEL_HEIGHT.store(height.to_bits(), std::sync::atomic::Ordering::Relaxed);
         // Logical points of the target display (KTD7).
         let position = tauri::LogicalPosition {
             x: f64::from(x) / screen.scale,
@@ -671,7 +790,7 @@ pub fn place_and_show(app: &AppHandle, remembered: Option<DisplayKey>) -> Option
         }
         // After the show: a move across displays makes tao reflow the window
         // for the new DPI, so the bounds and the topmost order are set last.
-        place_windows(&window, &screen, x, y);
+        place_windows(&window, &screen, x, y, height);
     }
 
     Some(screen.key)
@@ -679,10 +798,10 @@ pub fn place_and_show(app: &AppHandle, remembered: Option<DisplayKey>) -> Option
 
 /// Set the bounds and keep the window topmost without activating it (KTD4).
 #[cfg(windows)]
-fn place_windows(window: &tauri::WebviewWindow, screen: &Screen, x: i32, y: i32) {
+fn place_windows(window: &tauri::WebviewWindow, screen: &Screen, x: i32, y: i32, height: f64) {
     use windows::Win32::UI::WindowsAndMessaging::{HWND_TOPMOST, SWP_NOACTIVATE, SetWindowPos};
 
-    let (_, _, width, height) = physical_bounds(screen, windows_text_scale_factor());
+    let (_, _, width, height) = physical_bounds(screen, windows_text_scale_factor(), height);
     let Ok(hwnd) = window.hwnd() else {
         log::error!("failed to get the recording widget window handle");
         return;
@@ -717,12 +836,13 @@ pub fn hide(app: &AppHandle) -> Option<DisplayKey> {
         .ok()
         .flatten()
         .map(|m| Screen::of(&m));
-    if let (Ok(position), Some(screen), Some(kept)) = (
+    if let (Ok(position), Ok(size), Some(screen), Some(kept)) = (
         window.outer_position(),
+        window.outer_size(),
         screen,
         app.try_state::<MovedPlace>(),
     ) {
-        let place = moved_place(&screen, position.x, position.y);
+        let place = moved_place(&screen, position.x, position.y, size.height as i32);
         *kept.0.lock().unwrap_or_else(|e| e.into_inner()) = place;
     }
     if let Err(e) = window.hide() {
@@ -978,8 +1098,14 @@ mod tests {
     #[test]
     fn the_logical_origin_is_the_bottom_centre_of_the_work_area() {
         // 1512 x 982 points; the work area ends at 947 points.
-        assert_eq!(logical_origin(&LAPTOP), (612.0, 947.0 - 64.0 - 12.0));
-        assert_eq!(logical_origin(&EXTERNAL), (3024.0 + 816.0, 1032.0 - 76.0));
+        assert_eq!(
+            logical_origin(&LAPTOP, HEIGHT),
+            (612.0, 947.0 - 64.0 - 12.0)
+        );
+        assert_eq!(
+            logical_origin(&EXTERNAL, HEIGHT),
+            (3024.0 + 816.0, 1032.0 - 76.0)
+        );
     }
 
     // The 1-second sync must not move a pill that the user dragged.
@@ -992,14 +1118,23 @@ mod tests {
             None,
             None,
             None,
+            HEIGHT,
         );
         assert_eq!(placed, Some(Placement::Keep(EXTERNAL.key)));
     }
 
     #[test]
     fn a_visible_pill_whose_display_is_gone_goes_to_the_default_place() {
-        let placed = placement(&[LAPTOP], Some(EXTERNAL.key), None, None, None, None);
-        let (x, y) = default_position(&LAPTOP);
+        let placed = placement(
+            &[LAPTOP],
+            Some(EXTERNAL.key),
+            None,
+            None,
+            None,
+            None,
+            HEIGHT,
+        );
+        let (x, y) = default_position(&LAPTOP, HEIGHT);
         assert_eq!(
             placed,
             Some(Placement::At {
@@ -1019,7 +1154,7 @@ mod tests {
         let moved = Moved {
             display: EXTERNAL.key,
             x: 3100,
-            y: 40,
+            bottom: 40 + 64,
         };
         let same = placement(
             &[LAPTOP, EXTERNAL],
@@ -1028,6 +1163,7 @@ mod tests {
             None,
             None,
             Some(moved),
+            HEIGHT,
         );
         assert_eq!(
             same,
@@ -1044,8 +1180,9 @@ mod tests {
             None,
             None,
             Some(moved),
+            HEIGHT,
         );
-        let (x, y) = default_position(&LAPTOP);
+        let (x, y) = default_position(&LAPTOP, HEIGHT);
         assert_eq!(
             other,
             Some(Placement::At {
@@ -1061,7 +1198,7 @@ mod tests {
         let moved = Moved {
             display: EXTERNAL.key,
             x: 3100,
-            y: 40,
+            bottom: 40 + 64,
         };
         let placed = placement(
             &[LAPTOP, EXTERNAL],
@@ -1070,6 +1207,7 @@ mod tests {
             Some(LAPTOP.key),
             None,
             Some(moved),
+            HEIGHT,
         );
         assert_eq!(
             placed,
@@ -1086,10 +1224,10 @@ mod tests {
         let moved = Moved {
             display: EXTERNAL.key,
             x: 3100,
-            y: 40,
+            bottom: 40 + 64,
         };
-        let placed = placement(&[LAPTOP], None, None, None, None, Some(moved));
-        let (x, y) = default_position(&LAPTOP);
+        let placed = placement(&[LAPTOP], None, None, None, None, Some(moved), HEIGHT);
+        let (x, y) = default_position(&LAPTOP, HEIGHT);
         assert_eq!(
             placed,
             Some(Placement::At {
@@ -1102,14 +1240,14 @@ mod tests {
 
     #[test]
     fn a_pill_at_its_default_place_keeps_no_dragged_place() {
-        let (x, y) = default_position(&LAPTOP);
-        assert_eq!(moved_place(&LAPTOP, x + 1, y - 2), None);
+        let (x, y) = default_position(&LAPTOP, HEIGHT);
+        assert_eq!(moved_place(&LAPTOP, x + 1, y - 2, 128), None);
         assert_eq!(
-            moved_place(&LAPTOP, x + 200, y),
+            moved_place(&LAPTOP, x + 200, y, 128),
             Some(Moved {
                 display: LAPTOP.key,
                 x: x + 200,
-                y
+                bottom: y + 128
             })
         );
     }
@@ -1117,25 +1255,25 @@ mod tests {
     #[test]
     fn the_physical_bounds_are_the_bottom_centre_of_the_work_area() {
         assert_eq!(
-            physical_bounds(&EXTERNAL, 1.0),
+            physical_bounds(&EXTERNAL, 1.0, HEIGHT),
             (3024 + 816, 1032 - 76, 288, 64)
         );
         assert_eq!(
-            physical_bounds(&LAPTOP, 1.0),
+            physical_bounds(&LAPTOP, 1.0, HEIGHT),
             (1224, 1894 - 128 - 24, 576, 128)
         );
     }
 
     #[test]
     fn a_text_scale_grows_the_window_and_keeps_its_bottom_edge() {
-        let (_, y, _, height) = physical_bounds(&EXTERNAL, 1.0);
+        let (_, y, _, height) = physical_bounds(&EXTERNAL, 1.0, HEIGHT);
         let bottom = y + height;
-        let (x, y, width, height) = physical_bounds(&EXTERNAL, 1.5);
+        let (x, y, width, height) = physical_bounds(&EXTERNAL, 1.5, HEIGHT);
         assert_eq!((x, y, width, height), (3024 + 744, 924, 432, 96));
         assert_eq!(y + height, bottom);
         // The offset under the window grows with the display scale only.
         assert_eq!(
-            physical_bounds(&LAPTOP, 1.25),
+            physical_bounds(&LAPTOP, 1.25, HEIGHT),
             (1152, 1894 - 160 - 24, 720, 160)
         );
     }
@@ -1154,7 +1292,148 @@ mod tests {
     // the target display.
     #[test]
     fn a_move_between_scales_uses_the_target_scale() {
-        let (x, _) = logical_origin(&EXTERNAL);
+        let (x, _) = logical_origin(&EXTERNAL, HEIGHT);
         assert_eq!(x, 3024.0 + (1920.0 - 288.0) / 2.0);
+    }
+
+    // Covers R5 and KTD11: a prompt never shows a pill that the user hid.
+    #[test]
+    fn a_prompt_keeps_a_hidden_pill_hidden() {
+        let started = step(Some("a"), None, true, Request::Sync);
+        let hidden = step(Some("a"), started, true, Request::Hide("a".into()));
+        let prompted = step(Some("a"), hidden, true, Request::Sync);
+        assert_eq!(shown(&prompted), Some(false));
+        assert_eq!(shown_height(prompted.as_ref(), true), None);
+        let off = step(Some("b"), None, false, Request::Sync);
+        assert_eq!(shown_height(off.as_ref(), true), None);
+        assert_eq!(shown_height(None, true), None);
+    }
+
+    // KTD11: the window grows only while the prompt shows.
+    #[test]
+    fn a_shown_pill_grows_only_while_the_prompt_shows() {
+        let started = step(Some("a"), None, true, Request::Sync);
+        assert_eq!(shown_height(started.as_ref(), false), Some(64.0));
+        assert_eq!(shown_height(started.as_ref(), true), Some(152.0));
+    }
+
+    // The default place of the taller window keeps the bottom edge of the
+    // pill, so the pill does not move when the prompt shows.
+    #[test]
+    fn the_default_place_of_the_prompt_keeps_the_bottom_edge() {
+        let (x, y) = logical_origin(&LAPTOP, PROMPT_HEIGHT);
+        assert_eq!((x, y), (612.0, 947.0 - 152.0 - 12.0));
+        let (_, pill_y) = logical_origin(&LAPTOP, HEIGHT);
+        assert_eq!(pill_y + 64.0, y + 152.0);
+    }
+
+    // KTD11: a resize keeps the bottom edge, so the pill stays where it is.
+    #[test]
+    fn a_resize_grows_the_window_up_and_back_down() {
+        // A pill on the external display with its bottom edge at 956 px.
+        let grown = resized_y(&EXTERNAL, 892, 64, 152);
+        assert_eq!(grown, 804);
+        assert_eq!(resized_y(&EXTERNAL, grown, 152, 64), 892);
+    }
+
+    // A pill that the user dragged to the top edge of the display: the
+    // taller window does not go above the display.
+    #[test]
+    fn a_resize_at_the_top_edge_keeps_the_window_on_the_display() {
+        assert_eq!(resized_y(&EXTERNAL, 10, 64, 152), 0);
+        // A display above the laptop has a negative origin.
+        let above = Screen {
+            key: DisplayKey {
+                x: 0,
+                y: -1080,
+                ..EXTERNAL.key
+            },
+            ..EXTERNAL
+        };
+        assert_eq!(resized_y(&above, -1070, 64, 152), -1080);
+        // The bottom edge does not go below the display either.
+        assert_eq!(fit_y(&EXTERNAL, 1000, 152), 1080 - 152);
+    }
+
+    // A pill dragged near the top edge and then shown with the prompt goes
+    // to its dragged bottom edge, moved down to fit on the display.
+    #[test]
+    fn a_dragged_place_with_the_prompt_fits_on_the_display() {
+        let moved = Moved {
+            display: EXTERNAL.key,
+            x: 3100,
+            bottom: 10 + 64,
+        };
+        let pill = placement(&[EXTERNAL], None, None, None, None, Some(moved), HEIGHT);
+        assert_eq!(
+            pill,
+            Some(Placement::At {
+                screen: EXTERNAL,
+                x: 3100,
+                y: 10
+            })
+        );
+        let prompt = placement(
+            &[EXTERNAL],
+            None,
+            None,
+            None,
+            None,
+            Some(moved),
+            PROMPT_HEIGHT,
+        );
+        assert_eq!(
+            prompt,
+            Some(Placement::At {
+                screen: EXTERNAL,
+                x: 3100,
+                y: 0
+            })
+        );
+        let lower = Moved {
+            bottom: 600,
+            ..moved
+        };
+        let prompt = placement(
+            &[EXTERNAL],
+            None,
+            None,
+            None,
+            None,
+            Some(lower),
+            PROMPT_HEIGHT,
+        );
+        assert_eq!(
+            prompt,
+            Some(Placement::At {
+                screen: EXTERNAL,
+                x: 3100,
+                y: 600 - 152
+            })
+        );
+    }
+
+    // A pill that hides while the prompt shows keeps the same place as the
+    // pill alone: the bottom edge is compared, not the top.
+    #[test]
+    fn a_hide_with_the_prompt_at_the_default_place_keeps_no_dragged_place() {
+        let (x, y) = default_position(&LAPTOP, PROMPT_HEIGHT);
+        assert_eq!(moved_place(&LAPTOP, x, y, 304), None);
+        assert_eq!(
+            moved_place(&LAPTOP, x, y - 100, 304),
+            Some(Moved {
+                display: LAPTOP.key,
+                x,
+                bottom: y - 100 + 304
+            })
+        );
+    }
+
+    #[test]
+    fn the_physical_bounds_of_the_prompt_keep_the_bottom_edge() {
+        let (_, y, _, height) = physical_bounds(&EXTERNAL, 1.0, HEIGHT);
+        let (_, py, pw, ph) = physical_bounds(&EXTERNAL, 1.0, PROMPT_HEIGHT);
+        assert_eq!((pw, ph), (288, 152));
+        assert_eq!(py + ph, y + height);
     }
 }

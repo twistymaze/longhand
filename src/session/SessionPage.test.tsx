@@ -112,6 +112,7 @@ function captureOf(over: Partial<Capture> = {}): Capture {
     levels: [],
     recordedMs: 0,
     lostReason: null,
+    prompt: null,
     refresh: async () => {},
     ...over,
   };
