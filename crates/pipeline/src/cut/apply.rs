@@ -16,9 +16,12 @@
 //!
 //! The segment rows come before the renames, because a chunk with no row
 //! gets a row at launch (`recover::register_chunks`); that step waits
-//! while a cut is not done ([`unfinished`]). At the next run, a plan that is
-//! not done finishes first. Each file step checks its source, so it can run
-//! again.
+//! while a cut is between step 2 and step 5 ([`unfinished`]). At the next
+//! run, a plan after step 2 finishes first. Each file step checks its
+//! source, so it can run again. A plan that stopped after step 1 changed
+//! nothing, but a Resume can add a segment with an index that a part of
+//! the plan also uses. Thus the next run deletes that plan and plans again
+//! from the rows of now.
 //!
 //! The live results of the kept audio stay valid (KTD18). One read pass
 //! over the chunks of each split segment verifies the old `live-source`
@@ -74,9 +77,10 @@ struct Stored {
     feature_files: Vec<PathBuf>,
 }
 
-/// True when the note has a cut that is not done.
+/// True when the note has a cut that changed the rows and is not done. A
+/// plan that stopped after step 1 changed nothing.
 pub fn unfinished(store: &SharedStore, id: &str) -> Result<bool, StageError> {
-    Ok(stored(store, id)?.is_some_and(|stored| stored.step != Step::Done))
+    Ok(stored(store, id)?.is_some_and(|stored| stored.step == Step::Rows))
 }
 
 fn stored(store: &SharedStore, id: &str) -> Result<Option<Stored>, StageError> {
@@ -84,35 +88,36 @@ fn stored(store: &SharedStore, id: &str) -> Result<Option<Stored>, StageError> {
 }
 
 /// Find and apply the cut of the current recording of the note `id`. A
-/// cut that is not done finishes first. A note with no snapshot, with the
-/// cut off, or with a checked current recording is not changed.
+/// cut that changed the rows and is not done finishes first. A note with no
+/// snapshot, with the cut off, or with no segment that a cut did not check
+/// is not changed.
 pub fn run(
     store: &SharedStore,
     id: &str,
     session_dir: &Path,
     control: &dyn Control,
 ) -> Result<(), StageError> {
-    if let Some(stored) = stored(store, id)?
-        && stored.step != Step::Done
-    {
-        return finish(store, id, session_dir, stored, control);
+    match stored(store, id)? {
+        Some(stored) if stored.step == Step::Rows => {
+            finish(store, id, session_dir, stored, control)?;
+        }
+        // Step 1 changed nothing. The rows can be different now, for
+        // example after a Resume, so the plan can be wrong.
+        Some(stored) if stored.step == Step::Planned => {
+            log::info!("{id}: the cut plans again; its earlier plan changed nothing");
+            lock(store).delete_checkpoint(id, Stage::Assemble, PLAN_KEY)?;
+        }
+        _ => {}
     }
     let Some(settings) = settings(store, id)? else {
         return Ok(());
     };
     let segments = lock(store).segments(id)?;
-    let Some(start) = recording_start(session_dir, &segments)? else {
+    let checked = lock(store).cut_checked(id)?;
+    // Assemble closes the `.part` files that this skips.
+    let Some(start) = recording_start(session_dir, &segments, &checked)? else {
         return Ok(());
     };
-    let checked = lock(store).cut_checked(id)?;
-    // An earlier cut checked the current recording: `detect` gives no plan.
-    // Assemble closes the `.part` files that this skips.
-    if segments
-        .iter()
-        .any(|s| s.offset_ms >= start && checked.contains(&s.index))
-    {
-        return Ok(());
-    }
     let recovery = session_dir.join(RECOVERY_DIR);
     // A crash while capturing leaves a `.part` open; close it from its length.
     recorder::recover_partial_chunks(&recovery)?;
@@ -183,14 +188,22 @@ fn settings(store: &SharedStore, id: &str) -> Result<Option<CutSettings>, StageE
     }))
 }
 
-/// Where the current recording starts on the note timeline. A Resume of a
-/// saved note lists the segments that the note had before; the current
-/// recording is the segments after them. `None` when the note has no
-/// segment in the current recording.
-fn recording_start(session_dir: &Path, segments: &[Segment]) -> Result<Option<u64>, StageError> {
+/// Where the current recording starts on the note timeline. The current
+/// recording is the segments that are not old and that no cut checked
+/// (`checked`). A Resume of a saved note lists the old segments. A cut with
+/// the cut on checks every segment of its recording, and a Resume of an
+/// unsaved note keeps the snapshot of the note, so the segments of an
+/// earlier recording of the note are old or checked. `None` when the note
+/// has no segment in the current recording.
+fn recording_start(
+    session_dir: &Path,
+    segments: &[Segment],
+    checked: &BTreeSet<u32>,
+) -> Result<Option<u64>, StageError> {
     let old = crate::old_audio::old_segments(session_dir)?.unwrap_or_default();
     Ok(segments
         .iter()
+        .filter(|s| !checked.contains(&s.index))
         .filter(|s| !old.iter().any(|o| o.audio_file == s.audio_file))
         .map(|s| s.offset_ms)
         .min())
@@ -771,19 +784,23 @@ mod tests {
     const ID: &str = "s";
     const MIN: u64 = 60_000;
 
-    /// A note with one 16-kHz segment of ten chunks: speech, speech, six
-    /// quiet chunks, speech, speech. With a cut time of 3 minutes, the cut
-    /// removes the chunks 3 to 6. The live row has a word in each part.
-    fn note(dir: &Path) -> SharedStore {
-        let store: SharedStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
-        let wall = chrono::DateTime::parse_from_rfc3339("2026-11-16T10:00:00+00:00").unwrap();
+    /// The wall clock `minutes` after the start of the note.
+    fn wall(minutes: i64) -> chrono::DateTime<chrono::FixedOffset> {
+        chrono::DateTime::parse_from_rfc3339("2026-11-16T10:00:00+00:00").unwrap()
+            + chrono::Duration::minutes(minutes)
+    }
+
+    /// Write the chunks and sidecars of one 16-kHz segment `index` at
+    /// `offset_ms`, with one 1-minute chunk for each letter of `kinds`:
+    /// speech (`S`) or quiet room tone (`Q`). Returns the segment row.
+    fn record(dir: &Path, index: u32, offset_ms: u64, kinds: &str) -> Segment {
         let recovery = dir.join(RECOVERY_DIR);
         let mut writer = recorder::ChunkedWriter::with_probe(
             recorder::SegmentArgs {
                 dir: recovery.clone(),
-                segment: 0,
-                capture_started_at: 1_800_000_000_000,
-                offset_ms: 0,
+                segment: index,
+                capture_started_at: 1_800_000_000_000 + offset_ms,
+                offset_ms,
                 sample_rate: 16_000,
                 channels: 1,
                 floor_bytes: 0,
@@ -791,15 +808,21 @@ mod tests {
             Box::new(|_| Some(u64::MAX)),
         )
         .unwrap();
-        let audio: Vec<f32> = (0..10 * 60 * 16_000usize)
+        let minutes = kinds.len();
+        let audio: Vec<f32> = (0..minutes * 60 * 16_000)
             .map(|i| ((i * 7_919 % 2_003) as f32 / 2_003.0 - 0.5) * 0.5)
             .collect();
         for block in audio.chunks(320) {
             writer.write(block).unwrap();
         }
         writer.finish().unwrap();
-        for chunk in recorder::list_chunks(&recovery).unwrap() {
-            let speech = matches!(chunk.start_ms / MIN, 0 | 1 | 8 | 9);
+        for chunk in recorder::list_chunks(&recovery)
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.segment == index)
+        {
+            let minute = ((chunk.start_ms - offset_ms) / MIN) as usize;
+            let speech = kinds.as_bytes()[minute] == b'S';
             let cell = Cell {
                 mic: ChannelCell {
                     voiced: if speech { 255 } else { 0 },
@@ -809,28 +832,36 @@ mod tests {
             };
             write_sidecar(&sidecar_of(&chunk), 1, &[cell; 240], File::sync_all).unwrap();
         }
+        let start = (offset_ms / MIN) as i64;
+        Segment {
+            index,
+            offset_ms,
+            duration_ms: minutes as u64 * MIN,
+            wall_start: wall(start),
+            wall_end: wall(start + minutes as i64),
+            audio_file: crate::recover::segment_audio_file(index),
+            channels: 1,
+            ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
+        }
+    }
+
+    /// A note with one 16-kHz segment of ten chunks: speech, speech, six
+    /// quiet chunks, speech, speech. With a cut time of 3 minutes, the cut
+    /// removes the chunks 3 to 6. The live row has a word in each part.
+    fn note(dir: &Path) -> SharedStore {
+        let store: SharedStore = Arc::new(Mutex::new(Store::open_in_memory().unwrap()));
         {
             let mut s = lock(&store);
-            s.create_session(ID, wall, None).unwrap();
-            s.put_segment(
-                ID,
-                &Segment {
-                    index: 0,
-                    offset_ms: 0,
-                    duration_ms: 10 * MIN,
-                    wall_start: wall,
-                    wall_end: wall + chrono::Duration::minutes(10),
-                    audio_file: crate::recover::segment_audio_file(0),
-                    channels: 1,
-                    ends_in_pause: false,
-                    cut_before_ms: 0,
-                    cut_after_ms: 0,
-                },
-            )
-            .unwrap();
+            s.create_session(ID, wall(0), None).unwrap();
             s.set_recording_guards(ID, Some(r#"{"cut_minutes":3,"countdown_minutes":2}"#))
                 .unwrap();
         }
+        lock(&store)
+            .put_segment(ID, &record(dir, 0, 0, "SSQQQQQQSS"))
+            .unwrap();
+        let recovery = dir.join(RECOVERY_DIR);
         let mut reader = ArchiveReader::new(Archive {
             dir: recovery,
             segment: 0,
@@ -902,7 +933,8 @@ mod tests {
             crash(step);
             assert!(run(&store, ID, dir.path(), &Unattended).is_err());
             crash(0);
-            assert!(unfinished(&store, ID).unwrap(), "step {step}");
+            // Step 1 changes nothing.
+            assert_eq!(unfinished(&store, ID).unwrap(), step >= 2, "step {step}");
             // Launch recovery makes no row for a chunk while the cut is
             // not done.
             let before = lock(&store).segments(ID).unwrap();
@@ -912,6 +944,120 @@ mod tests {
             assert!(!unfinished(&store, ID).unwrap());
             assert_eq!(state(&store, dir.path()), expected, "step {step}");
         }
+    }
+
+    /// A control that stops the stage, as a pause or a cancel of
+    /// processing does.
+    struct Stopped;
+
+    impl Control for Stopped {
+        fn proceed(&self) -> Result<(), StageError> {
+            Err(StageError::Cancelled)
+        }
+    }
+
+    /// The segment index and start of each chunk, in time order.
+    fn chunks(dir: &Path) -> Vec<(u32, u64)> {
+        let mut chunks: Vec<(u32, u64)> = recorder::list_chunks(&dir.join(RECOVERY_DIR))
+            .unwrap()
+            .iter()
+            .map(|c| (c.segment, c.start_ms))
+            .collect();
+        chunks.sort_by_key(|c| c.1);
+        chunks
+    }
+
+    /// A plan that stops after step 1 changed nothing. A Resume then adds a
+    /// recording with the next index, which a part of the old plan also
+    /// uses. The next run plans again from the rows of now: the new
+    /// recording keeps its audio, and the first recording is cut.
+    #[test]
+    fn a_resume_after_a_plan_that_stopped_at_step_1_keeps_the_new_recording() {
+        for crashed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = note(dir.path());
+            if crashed {
+                crash(1);
+                assert!(run(&store, ID, dir.path(), &Unattended).is_err());
+                crash(0);
+            } else {
+                assert!(run(&store, ID, dir.path(), &Stopped).is_err());
+            }
+            // The Resume records the segment 1 at the end of the timeline.
+            let new = record(dir.path(), 1, 10 * MIN, "SSSS");
+            if crashed {
+                // A crash while recording leaves chunks with no row; launch
+                // recovery gives them one.
+                crate::recover::register_chunks(&store, ID, dir.path(), None).unwrap();
+                let rows = lock(&store).segments(ID).unwrap();
+                assert_eq!(rows.len(), 2, "crashed {crashed}");
+                assert_eq!(
+                    (rows[1].index, rows[1].offset_ms, rows[1].duration_ms),
+                    (1, 10 * MIN, 4 * MIN)
+                );
+            } else {
+                lock(&store).put_segment(ID, &new).unwrap();
+            }
+
+            run(&store, ID, dir.path(), &Unattended).unwrap();
+            assert!(!unfinished(&store, ID).unwrap());
+            let rows: Vec<(u32, u64, u64)> = lock(&store)
+                .segments(ID)
+                .unwrap()
+                .iter()
+                .map(|s| (s.index, s.offset_ms, s.duration_ms))
+                .collect();
+            assert_eq!(
+                rows,
+                vec![
+                    (0, 0, 3 * MIN),
+                    (1, 7 * MIN, 3 * MIN),
+                    (2, 10 * MIN, 4 * MIN)
+                ],
+                "crashed {crashed}"
+            );
+            let expected: Vec<(u32, u64)> = [0, 1, 2]
+                .map(|m| (0, m * MIN))
+                .into_iter()
+                .chain([7, 8, 9].map(|m| (1, m * MIN)))
+                .chain([10, 11, 12, 13].map(|m| (2, m * MIN)))
+                .collect();
+            assert_eq!(chunks(dir.path()), expected, "crashed {crashed}");
+            assert_eq!(
+                lock(&store).cut_checked(ID).unwrap(),
+                BTreeSet::from([0, 1, 2])
+            );
+        }
+    }
+
+    /// An unsaved note: the cut of the first recording is done. A Resume
+    /// adds a second recording with long silence. The cut at the next Stop
+    /// cuts the second recording and does not change the first.
+    #[test]
+    fn the_cut_of_a_resumed_unsaved_note_cuts_the_new_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = note(dir.path());
+        run(&store, ID, dir.path(), &Unattended).unwrap();
+        let first = lock(&store).segments(ID).unwrap();
+        assert_eq!(first.len(), 2);
+
+        let new = record(dir.path(), 2, 10 * MIN, "SSQQQQQQSS");
+        lock(&store).put_segment(ID, &new).unwrap();
+        run(&store, ID, dir.path(), &Unattended).unwrap();
+
+        let rows = lock(&store).segments(ID).unwrap();
+        assert_eq!(rows[..2], first[..]);
+        let second: Vec<(u32, u64, u64)> = rows[2..]
+            .iter()
+            .map(|s| (s.index, s.offset_ms, s.duration_ms))
+            .collect();
+        assert_eq!(second, vec![(2, 10 * MIN, 3 * MIN), (3, 17 * MIN, 3 * MIN)]);
+        let starts: Vec<u64> = chunks(dir.path()).iter().map(|c| c.1 / MIN).collect();
+        assert_eq!(starts, vec![0, 1, 2, 7, 8, 9, 10, 11, 12, 17, 18, 19]);
+        assert_eq!(
+            lock(&store).cut_checked(ID).unwrap(),
+            BTreeSet::from([0, 1, 2, 3])
+        );
     }
 
     #[test]

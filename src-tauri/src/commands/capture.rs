@@ -147,9 +147,9 @@ pub async fn keep_recording(
     .await
 }
 
-/// Stop in the prompt `generation` (R7, R9): the note stops as the user's
-/// Stop does, with no stop reason. `None` when the prompt is already
-/// closed: the note does not stop.
+/// Stop in the prompt `generation` (R7, R9): the note of the prompt stops
+/// as the user's Stop does, with no stop reason. `None` when the prompt is
+/// already closed or its note is no longer open: no note stops.
 #[tauri::command]
 #[specta::specta]
 pub async fn stop_from_prompt(
@@ -162,14 +162,13 @@ pub async fn stop_from_prompt(
     let manager = Arc::clone(&manager);
     let guard = Arc::clone(&guard);
     let outcome = blocking(move || {
-        let Some(checks) = guard.answer_stop(generation) else {
+        let Some((note_id, checks)) = guard.answer_stop(generation) else {
             return Ok(None);
         };
         guard.publish(&app, checks);
         manager
-            .stop_session(&app)
-            .inspect(|outcome| log::info!("stopped from the prompt: {outcome:?}"))
-            .map(Some)
+            .stop_note_from_prompt(&app, &note_id)
+            .inspect(|outcome| log::info!("stopped {note_id} from the prompt: {outcome:?}"))
             .map_err(|e| e.to_string())
     })
     .await?;

@@ -1392,23 +1392,23 @@ fn open_note(store: &Store) -> Result<Option<(String, SessionState)>, CaptureErr
     Ok(None)
 }
 
-/// Whether the automatic stop of `note_id` applies (KTD7 of the
+/// Whether a stop of `note_id` from its prompt applies (KTD7 of the
 /// forgotten-recording plan): the note is open here, or the store has it
 /// Capturing or Interrupted. When it applies, the stop reason `reason` is
-/// written (KTD8). The caller holds `inner` and checked that the stop is
-/// still due.
-fn begin_auto_stop(
+/// written (KTD8). `None` is the Stop answer of the prompt, a user Stop
+/// with no reason. The caller holds `inner`.
+fn begin_stop(
     store: &pipeline::SharedStore,
     inner: &Inner,
     note_id: &str,
-    reason: &AutoStop,
+    reason: Option<&AutoStop>,
 ) -> Result<bool, CaptureError> {
     let store = pipeline::lock(store);
     let open = inner.holds(note_id) || open_note(&store)?.is_some_and(|(id, _)| id == note_id);
     if !open {
         return Ok(false);
     }
-    store.set_auto_stop(note_id, Some(reason))?;
+    store.set_auto_stop(note_id, reason)?;
     Ok(true)
 }
 
@@ -2550,16 +2550,51 @@ impl CaptureManager {
         if !guard.stop_pending(note_id, generation) {
             return Ok(None);
         }
-        if !begin_auto_stop(&self.store, &inner, note_id, reason)? {
+        log::info!("note {note_id} stops at the end of the countdown ({reason:?})");
+        self.stop_open_note(app, inner, note_id, Some(reason))
+    }
+
+    /// Stop the note `note_id` for the Stop answer of its prompt (R7): a
+    /// user Stop with no stop reason. It takes `inner` and checks that the
+    /// note is still open, so the answer never stops a note that started
+    /// later. `None` when the note is no longer open.
+    pub fn stop_note_from_prompt(
+        &self,
+        app: &AppHandle,
+        note_id: &str,
+    ) -> Result<Option<StopOutcome>, CaptureError> {
+        let inner = self.inner();
+        self.stop_open_note(app, inner, note_id, None)
+    }
+
+    /// Stop `note_id` with the stop reason `reason` when the note is still
+    /// open. The caller holds `inner`. When the stop fails, the reason is
+    /// removed again, so a later user Stop has no reason.
+    fn stop_open_note(
+        &self,
+        app: &AppHandle,
+        inner: std::sync::MutexGuard<'_, Inner>,
+        note_id: &str,
+        reason: Option<&AutoStop>,
+    ) -> Result<Option<StopOutcome>, CaptureError> {
+        if !begin_stop(&self.store, &inner, note_id, reason)? {
             // The note stopped in a way that the checks did not see: its
             // checks end.
-            let checks = guard.stopped(note_id);
+            let checks = guard::of(app)
+                .map(|guard| guard.stopped(note_id))
+                .unwrap_or_default();
             drop(inner);
             publish_checks(app, checks);
             return Ok(None);
         }
-        log::info!("session {note_id} stops at the end of the countdown ({reason:?})");
-        self.stop_held(app, inner).map(Some)
+        let stopped = self.stop_held(app, inner);
+        if stopped.is_err()
+            && reason.is_some()
+            && let Err(e) = pipeline::lock(&self.store).set_auto_stop(note_id, None)
+        {
+            log::error!("could not remove the stop reason of {note_id}: {e}");
+        }
+        stopped.map(Some)
     }
 
     /// Open a new note that does not record (KTD2): a note with no audio,
@@ -7128,7 +7163,7 @@ mod tests {
             .unwrap();
         let mut inner = Inner::default();
 
-        assert!(begin_auto_stop(&store, &inner, "s", &silence_reason()).unwrap());
+        assert!(begin_stop(&store, &inner, "s", Some(&silence_reason())).unwrap());
         let id = stop_target(&store, root.path(), &mut inner, None).unwrap();
         assert_eq!(id, "s");
         let outcome = settle_stop(&store, &dir, &id, at(70)).unwrap();
@@ -7159,11 +7194,30 @@ mod tests {
         let store = shared(store);
         let inner = recording_segment("b", open_timeline(), 0);
 
-        assert!(!begin_auto_stop(&store, &inner, "s", &silence_reason()).unwrap());
+        assert!(!begin_stop(&store, &inner, "s", Some(&silence_reason())).unwrap());
         assert_eq!(store.lock().unwrap().auto_stop("s").unwrap(), None);
         assert_eq!(store.lock().unwrap().auto_stop("b").unwrap(), None);
         // The note that records stops when its own stop is due.
-        assert!(begin_auto_stop(&store, &inner, "b", &silence_reason()).unwrap());
+        assert!(begin_stop(&store, &inner, "b", Some(&silence_reason())).unwrap());
+    }
+
+    // Covers R7 (KTD7): the Stop answer of a prompt of the note "s" stops
+    // nothing when "s" stopped and the note "b" records. The Stop answer
+    // of the note that records is a user Stop: it writes no reason.
+    #[test]
+    fn the_stop_answer_of_a_prompt_stops_only_the_note_of_the_prompt() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        stop_note(&mut store, "s", at(20)).unwrap();
+        recording_note(&mut store, "b", "");
+        store.set_auto_stop("b", Some(&silence_reason())).unwrap();
+        let store = shared(store);
+        let inner = recording_segment("b", open_timeline(), 0);
+
+        assert!(!begin_stop(&store, &inner, "s", None).unwrap());
+        assert!(begin_stop(&store, &inner, "b", None).unwrap());
+        assert_eq!(store.lock().unwrap().auto_stop("b").unwrap(), None);
     }
 
     // Covers KTD14: a new recording stores the snapshot and removes the

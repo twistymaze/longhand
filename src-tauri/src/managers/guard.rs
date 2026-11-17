@@ -223,9 +223,11 @@ impl GuardFlow {
     }
 
     /// Stop for the prompt `generation`: the prompt closes, and the caller
-    /// stops the note as a user Stop. `None` when the prompt is not open.
-    pub fn answer_stop(&mut self, generation: u64) -> Option<Vec<Action>> {
-        self.is_open(generation).then(|| self.close())
+    /// stops the note of the prompt as a user Stop. Returns that note and
+    /// the actions. `None` when the prompt is not open.
+    pub fn answer_stop(&mut self, generation: u64) -> Option<(String, Vec<Action>)> {
+        let note_id = self.prompt.as_ref()?.note_id.clone();
+        self.is_open(generation).then(|| (note_id, self.close()))
     }
 
     /// The user paused the note (R4). An open prompt closes, and the pause
@@ -462,7 +464,7 @@ impl GuardManager {
         Self::applied(&state, actions)
     }
 
-    pub fn answer_stop(&self, generation: u64) -> Option<Vec<Action>> {
+    pub fn answer_stop(&self, generation: u64) -> Option<(String, Vec<Action>)> {
         self.state().flow.answer_stop(generation)
     }
 
@@ -496,6 +498,19 @@ impl GuardManager {
         self.state().flow.prompt().cloned()
     }
 
+    /// Show the notification of `prompt`. The show runs with no lock, so a
+    /// Pause or a Stop can close the prompt and remove its notification
+    /// first. Then the notification is removed again. Returns false when
+    /// the prompt is closed.
+    fn show_notice(&self, prompt: &Prompt) -> bool {
+        self.notice.show(prompt);
+        let open = self.state().flow.is_open(prompt.generation);
+        if !open {
+            self.notice.remove(prompt.generation);
+        }
+        open
+    }
+
     /// Show, change and close the prompt on each surface (R5, R9). Returns
     /// the automatic stop when `actions` has one. The caller holds no lock.
     pub fn publish(&self, app: &AppHandle, actions: Vec<Action>) -> Option<StopRequest> {
@@ -510,7 +525,10 @@ impl GuardManager {
                         prompt.silence_check_minutes,
                         prompt.time_limit_hours
                     );
-                    self.notice.show(&prompt);
+                    // A prompt that closed first gets no surface.
+                    if !self.show_notice(&prompt) {
+                        continue;
+                    }
                     emit(
                         app,
                         RecordingPrompt {
@@ -790,11 +808,16 @@ mod tests {
     fn the_stop_answer_closes_the_prompt_and_asks_for_no_automatic_stop() {
         let mut flow = started(Some(defaults()));
         let prompt = silence_prompt(&mut flow);
+        // The answer names the note of the prompt: the caller stops only
+        // that note.
         assert_eq!(
             flow.answer_stop(prompt.generation),
-            Some(vec![Action::Close {
-                generation: prompt.generation
-            }])
+            Some((
+                "n".to_string(),
+                vec![Action::Close {
+                    generation: prompt.generation
+                }]
+            ))
         );
         assert!(!flow.stop_pending("n", prompt.generation));
         assert!(flow.prompt().is_none());
@@ -1039,5 +1062,50 @@ mod tests {
         waiter.join().unwrap();
         // A watched flow does not wait.
         guard.wait_for_watch();
+    }
+
+    /// A notice that records each call.
+    #[derive(Clone, Default)]
+    struct Calls(Arc<Mutex<Vec<String>>>);
+
+    impl PromptNotice for Calls {
+        fn show(&self, prompt: &Prompt) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("show {}", prompt.generation));
+        }
+        fn remove(&self, generation: u64) {
+            self.0.lock().unwrap().push(format!("remove {generation}"));
+        }
+    }
+
+    // Covers R9: a Pause that closes the prompt before its notification
+    // shows leaves no notification.
+    #[test]
+    fn a_notification_of_a_prompt_that_closed_first_is_removed() {
+        let calls = Calls::default();
+        let guard = GuardManager::new(Box::new(calls.clone()));
+        let meter = Arc::new(GuardMeter::default());
+        guard.start("n", Some(defaults()), Arc::clone(&meter));
+        meter.add(30 * MIN, false);
+        let prompt = shown(&guard.tick(at(30 * 60)));
+        assert!(guard.show_notice(&prompt));
+        assert_eq!(
+            *calls.0.lock().unwrap(),
+            vec![format!("show {}", prompt.generation)]
+        );
+
+        // The Pause closes the prompt, and then the show runs.
+        guard.pause();
+        assert!(!guard.show_notice(&prompt));
+        assert_eq!(
+            *calls.0.lock().unwrap(),
+            vec![
+                format!("show {}", prompt.generation),
+                format!("show {}", prompt.generation),
+                format!("remove {}", prompt.generation),
+            ]
+        );
     }
 }
