@@ -148,6 +148,12 @@ pub struct Analysis {
     pub total: usize,
     /// Hop between windows, in samples.
     pub step: usize,
+    /// The source sample where window 0 starts. Window `w` starts at
+    /// `grid_start + w * step`. It is 0 for an analysis that `analyze()`
+    /// makes. A part of a cut segment keeps the windows of the original
+    /// grid, so its grid can start before or after its sample 0. A frame
+    /// before sample 0 gets no vote.
+    pub grid_start: i64,
     pub activities: Vec<WindowActivity>,
     pub embeddings: Vec<WindowEmbedding>,
 }
@@ -423,20 +429,27 @@ pub fn reconstruct(
     let mut votes = vec![vec![0u16; frame_count]; speaker_count];
     let mut coverage = vec![0u16; frame_count];
 
+    // The global frame of frame `frame` of window `window`, or `None`
+    // before sample 0.
+    let global = |window: usize, frame: usize| {
+        let start = analysis.grid_start + (window * step) as i64;
+        // Round to the nearest frame of the global grid.
+        let offset = (start + FRAME_SIZE as i64 / 2).div_euclid(FRAME_SIZE as i64);
+        usize::try_from(offset + frame as i64).ok()
+    };
     for (window, activity) in analysis.activities.iter().enumerate() {
-        let offset = window * step / FRAME_SIZE;
         for frame in 0..activity.frames.len() {
-            if let Some(slot) = coverage.get_mut(offset + frame) {
+            if let Some(slot) = global(window, frame).and_then(|at| coverage.get_mut(at)) {
                 *slot += 1;
             }
         }
     }
     for (item, &label) in analysis.embeddings.iter().zip(labels) {
         let activity = &analysis.activities[item.window];
-        let offset = item.window * step / FRAME_SIZE;
         for (frame, active) in activity.frames.iter().enumerate() {
             if active[item.local_speaker]
-                && let Some(slot) = votes[label].get_mut(offset + frame)
+                && let Some(slot) =
+                    global(item.window, frame).and_then(|at| votes[label].get_mut(at))
             {
                 *slot += 1;
             }
@@ -695,6 +708,7 @@ mod tests {
         let analysis = Analysis {
             total: WINDOW_SAMPLES + step,
             step,
+            grid_start: 0,
             activities: vec![window.clone(), window],
             embeddings: (0..2)
                 .map(|w| WindowEmbedding {

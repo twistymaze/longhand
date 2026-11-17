@@ -24,14 +24,14 @@ use session_core::folder::{
 };
 use session_core::jobs::{Title, TitleSource};
 use session_core::note_folder::SESSION_FILE;
-use session_core::note_record::{ImportSource, LAYOUT, NOTE_RECORD_FILE, NoteRecord};
+use session_core::note_record::{AutoStop, ImportSource, LAYOUT, NOTE_RECORD_FILE, NoteRecord};
 use session_core::recognition::ArtifactReference;
 use session_save::home_write::write_atomic;
 use session_save::naming::folder_name;
 use session_save::note_files::{new_session_md, write_record};
 use shared_settings::file::{
-    AudioRemoval, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue, TranscriptRemoval,
-    default_settings, read_settings, save_settings, settings_path,
+    AudioRemoval, CheckTime, Field, FileRead, SCHEMA_VERSION, SharedFields, SharedValue,
+    TranscriptRemoval, default_settings, read_settings, save_settings, settings_path,
 };
 use shared_settings::prompts::{
     prompts_folder, render_prompt_file, render_prompt_file_with_title, scan_prompts,
@@ -156,6 +156,8 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
             audio: "audio/segment-01.opus".to_string(),
             channels: 1,
             ends_in_pause: true,
+            cut_before_ms: 120_000,
+            cut_after_ms: 600_000,
         }],
         summary: Some(SummaryMeta::Complete {
             endpoint_host: "llm.example.com".to_string(),
@@ -166,6 +168,10 @@ fn full_record(dir: &Path, pending_type: Option<PendingType>) -> NoteRecord {
         import: Some(ImportSource {
             source_name: "Drift check.m4a".to_string(),
             sha256: Some(IMPORTED.to_string()),
+        }),
+        auto_stop: Some(AutoStop {
+            silence_check_minutes: Some(30),
+            time_limit_hours: Some(6),
         }),
     }
 }
@@ -212,6 +218,10 @@ fn field_of(value: &SharedValue) -> &'static str {
         SharedValue::NoteTypePrompts(_) => "note_type_prompts",
         SharedValue::ShowRecordingWidget(_) => "show_recording_widget",
         SharedValue::NewNoteRecords(_) => "new_note_records",
+        SharedValue::SilenceCheckMinutes(_) => "silence_check_minutes",
+        SharedValue::RecordingTimeLimitHours(_) => "recording_time_limit_hours",
+        SharedValue::LongSilenceCutMinutes(_) => "long_silence_cut_minutes",
+        SharedValue::StopCountdownMinutes(_) => "stop_countdown_minutes",
     }
 }
 
@@ -238,6 +248,10 @@ fn every_setting() -> Vec<SharedValue> {
         )])),
         SharedValue::ShowRecordingWidget(true),
         SharedValue::NewNoteRecords(true),
+        SharedValue::SilenceCheckMinutes(CheckTime::After(45)),
+        SharedValue::RecordingTimeLimitHours(CheckTime::Off),
+        SharedValue::LongSilenceCutMinutes(CheckTime::After(20)),
+        SharedValue::StopCountdownMinutes(3),
     ]
 }
 
@@ -289,6 +303,10 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         note_type_prompts,
         show_recording_widget,
         new_note_records,
+        silence_check_minutes,
+        recording_time_limit_hours,
+        long_silence_cut_minutes,
+        stop_countdown_minutes,
     } = file.fields;
     assert_eq!(schema_version, Some(SCHEMA_VERSION));
     let mut checked = BTreeSet::new();
@@ -327,6 +345,26 @@ fn every_setting_writes_a_known_value_for_each_shared_setting() {
         &show_recording_widget,
     );
     assert_known(&mut checked, "new_note_records", &new_note_records);
+    assert_known(
+        &mut checked,
+        "silence_check_minutes",
+        &silence_check_minutes,
+    );
+    assert_known(
+        &mut checked,
+        "recording_time_limit_hours",
+        &recording_time_limit_hours,
+    );
+    assert_known(
+        &mut checked,
+        "long_silence_cut_minutes",
+        &long_silence_cut_minutes,
+    );
+    assert_known(
+        &mut checked,
+        "stop_countdown_minutes",
+        &stop_countdown_minutes,
+    );
     // Each value names one parsed field, and each parsed field has one value.
     let settings = every_setting();
     let written: BTreeSet<&str> = settings.iter().map(field_of).collect();

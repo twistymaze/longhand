@@ -31,23 +31,64 @@ struct StoredEpoch {
 fn epoch_prefix(scope: &SpeakerScope) -> String {
     format!("{NATIVE_FINAL_PREFIX}{:020}/", scope.epoch)
 }
+/// The start of the key of each epoch record.
+pub(crate) const EPOCH_KEY_PREFIX: &str = "recognition-epoch-";
 fn epoch_key(start: u64) -> String {
-    format!("recognition-epoch-{start:020}")
+    format!("{EPOCH_KEY_PREFIX}{start:020}")
 }
-/// The completed epoch `start..end` of this generation, if one is saved.
-fn saved_epoch(
+/// The sample in the key `key` of an epoch record. `None` for a key that is
+/// not the key of an epoch record.
+pub(crate) fn epoch_start(key: &str) -> Option<u64> {
+    key.strip_prefix(EPOCH_KEY_PREFIX)?.parse().ok()
+}
+/// The epoch windows of `range` on the epoch grid that starts at `origin`:
+/// the grid start of each epoch and the samples of `range` inside it.
+fn windows(origin: u64, range: SampleRange) -> Vec<(u64, SampleRange)> {
+    let origin = origin.min(range.start);
+    let mut windows = Vec::new();
+    let mut grid = origin + (range.start - origin) / MAX_EPOCH_SAMPLES * MAX_EPOCH_SAMPLES;
+    while grid < range.end {
+        let end = range.end.min(grid + MAX_EPOCH_SAMPLES);
+        windows.push((
+            grid,
+            SampleRange {
+                start: range.start.max(grid),
+                end,
+            },
+        ));
+        grid += MAX_EPOCH_SAMPLES;
+    }
+    windows
+}
+/// The completed epoch of this generation whose range contains `window`,
+/// if one is saved. The epoch at the grid start `grid` comes first. After
+/// a cut, its range is clipped to the kept audio and can include removed
+/// audio between two parts. A window that starts after its grid start, at
+/// the start of a part, has its own key when [`walk`] computed it.
+fn reusable(
     store: &crate::SharedStore,
     session: &str,
     stage: session_core::Stage,
     generation: &str,
-    start: u64,
-    end: u64,
+    grid: u64,
+    window: SampleRange,
 ) -> Result<Option<StoredEpoch>, StageError> {
-    let saved: Option<StoredEpoch> =
-        crate::checkpoint::get(store, session, stage, &epoch_key(start))?;
-    Ok(saved.filter(|saved| {
-        saved.scope.generation == generation && saved.range == (SampleRange { start, end })
-    }))
+    let mut keys = vec![grid];
+    if window.start != grid {
+        keys.push(window.start);
+    }
+    for key in keys {
+        let saved: Option<StoredEpoch> =
+            crate::checkpoint::get(store, session, stage, &epoch_key(key))?;
+        if let Some(saved) = saved.filter(|saved| {
+            saved.scope.generation == generation
+                && saved.range.start <= window.start
+                && saved.range.end >= window.end
+        }) {
+            return Ok(Some(saved));
+        }
+    }
+    Ok(None)
 }
 /// The samples of `range` in saved separate-speaker epochs. [`run_file`]
 /// restores these epochs with no new input.
@@ -55,19 +96,136 @@ pub(super) fn saved_samples(
     store: &crate::SharedStore,
     session: &str,
     generation: &str,
+    origin: u64,
     range: SampleRange,
 ) -> Result<u64, StageError> {
     let mut samples = 0;
-    let mut start = range.start;
-    while start < range.end {
-        let end = range.end.min(start + MAX_EPOCH_SAMPLES);
+    for (grid, window) in windows(origin, range) {
         let stage = session_core::Stage::Diarize;
-        if saved_epoch(store, session, stage, generation, start, end)?.is_some() {
-            samples += end - start;
+        if reusable(store, session, stage, generation, grid, window)?.is_some() {
+            samples += window.end - window.start;
         }
-        start = end;
     }
     Ok(samples)
+}
+/// The start of the epoch grid of `segment`, in 16-kHz note-timeline
+/// samples. The grid of a part of a cut segment starts at the original
+/// segment, as the live epochs did (KTD20 of the forgotten-recording plan).
+pub(super) fn grid_origin(
+    store: &crate::SharedStore,
+    session: &str,
+    segment: &session_core::Segment,
+) -> Result<u64, StageError> {
+    let origin: Option<u64> = crate::checkpoint::get(
+        store,
+        session,
+        session_core::Stage::Assemble,
+        &crate::cut::origin_key(segment.index),
+    )?;
+    Ok(origin.unwrap_or(segment.offset_ms) * 16)
+}
+/// `epoch` with only its output inside `window`. Rows and turns that cross
+/// an edge of `window` end at that edge.
+fn clip(mut epoch: RouteResult, window: SampleRange) -> RouteResult {
+    let inside = |range: &SampleRange| {
+        if range.start == range.end {
+            window.start <= range.start && range.start <= window.end
+        } else {
+            range.start < window.end && range.end > window.start
+        }
+    };
+    let clipped = |range: SampleRange| SampleRange {
+        start: range.start.max(window.start),
+        end: range.end.min(window.end),
+    };
+    epoch.rows.retain(|row| inside(&row.range));
+    for row in &mut epoch.rows {
+        row.range = clipped(row.range);
+    }
+    epoch.speakers.retain(|turn| inside(&turn.range));
+    for turn in &mut epoch.speakers {
+        turn.range = clipped(turn.range);
+    }
+    epoch.coverage = vec![window];
+    epoch
+}
+/// The fixed inputs of one walk over the epoch grid of a file.
+struct Grid<'a> {
+    store: &'a crate::SharedStore,
+    session: &'a str,
+    stage: session_core::Stage,
+    generation: &'a str,
+    route: Route,
+    native_route: &'a str,
+}
+/// The output of one computed epoch and its speaker scope.
+type Computed = (RouteResult, SpeakerScope);
+/// Walk the epoch grid of `range` from `origin`. A saved epoch that contains
+/// a window gives the output of that window. `compute` gives the output of
+/// each other window, and the walk saves it.
+fn walk(
+    grid: &Grid<'_>,
+    origin: u64,
+    range: SampleRange,
+    control: &dyn Control,
+    compute: &mut dyn FnMut(SampleRange) -> Result<Computed, StageError>,
+) -> Result<RouteResult, StageError> {
+    let mut result = RouteResult {
+        route: grid.route,
+        coverage: vec![],
+        rows: vec![],
+        speakers: vec![],
+        coverage_limitations: vec![],
+    };
+    let mut add = |epoch: RouteResult| {
+        result.coverage.extend(epoch.coverage);
+        result.rows.extend(epoch.rows);
+        result.speakers.extend(epoch.speakers);
+        result
+            .coverage_limitations
+            .extend(epoch.coverage_limitations);
+    };
+    for (start, window) in windows(origin, range) {
+        control.proceed()?;
+        let saved = reusable(
+            grid.store,
+            grid.session,
+            grid.stage,
+            grid.generation,
+            start,
+            window,
+        )?;
+        if let Some(saved) = saved {
+            // [`saved_samples`] counted this epoch before new input.
+            add(clip(
+                restore_epoch(grid.store, grid.session, &saved, grid.route)?,
+                window,
+            ));
+            continue;
+        }
+        let (mut epoch, scope) = compute(window)?;
+        if grid.native_route == "combined_offline" {
+            join_separate(&mut epoch.rows, &epoch.speakers);
+        }
+        let record = persist_epoch(grid.store, grid.session, &scope, &epoch, grid.native_route)?;
+        crate::checkpoint::put(
+            grid.store,
+            grid.session,
+            grid.stage,
+            &epoch_key(window.start),
+            &record,
+        )?;
+        crate::lock(grid.store).delete_recognition_prefix(
+            grid.session,
+            &scope.generation,
+            &format!("{LIVE_NEMO_PREFIX}{:020}/", scope.epoch),
+        )?;
+        add(epoch);
+    }
+    if grid.native_route == "combined_offline" {
+        join_separate(&mut result.rows, &result.speakers);
+    }
+    Ok(result)
 }
 fn persist_epoch(
     store: &crate::SharedStore,
@@ -170,12 +328,15 @@ fn restore_epoch(
     clippy::too_many_arguments,
     reason = "The route binds storage, execution identity, audio, and cancellation for one file"
 )]
+/// Recognize the file `path`, which holds the samples `range`. The epochs
+/// are on the grid from `origin` ([`grid_origin`]).
 pub(super) fn run_file(
     store: &crate::SharedStore,
     session: &str,
     spec: &ExecutionSpec,
     provider: &dyn EngineProvider,
     path: &Path,
+    origin: u64,
     range: SampleRange,
     generation: &str,
     combined: bool,
@@ -226,43 +387,23 @@ pub(super) fn run_file(
     } else {
         "combined_stream"
     };
-    let mut result = RouteResult {
+    let grid = Grid {
+        store,
+        session,
+        stage: if combined {
+            session_core::Stage::Transcribe
+        } else {
+            session_core::Stage::Diarize
+        },
+        generation,
         route: if combined {
             Route::CombinedNemo
         } else {
             Route::SeparateNemo
         },
-        coverage: vec![],
-        rows: vec![],
-        speakers: vec![],
-        coverage_limitations: vec![],
+        native_route,
     };
-    let mut start = range.start;
-    while start < range.end {
-        control.proceed()?;
-        let end = range.end.min(start + MAX_EPOCH_SAMPLES);
-        let stage = if combined {
-            session_core::Stage::Transcribe
-        } else {
-            session_core::Stage::Diarize
-        };
-        let key = epoch_key(start);
-        if let Some(saved) = saved_epoch(store, session, stage, generation, start, end)? {
-            // [`saved_samples`] counted this epoch before new input.
-            let epoch = restore_epoch(store, session, &saved, result.route)?;
-            result.coverage.extend(epoch.coverage);
-            result.rows.extend(epoch.rows);
-            result.speakers.extend(epoch.speakers);
-            result
-                .coverage_limitations
-                .extend(epoch.coverage_limitations);
-            start = end;
-            continue;
-        }
-        let scope = SpeakerScope {
-            generation: generation.into(),
-            epoch: start,
-        };
+    let mut compute = |window: SampleRange| {
         let input = EpochInput {
             store,
             session,
@@ -274,54 +415,37 @@ pub(super) fn run_file(
             streaming: spec.config.asr_model != "parakeet-tdt-0.6b-v3-q80",
             language: spec.config.language.as_deref(),
             file_start: range.start,
-            range: SampleRange { start, end },
-            scope,
+            range: window,
+            scope: SpeakerScope {
+                generation: generation.into(),
+                epoch: window.start,
+            },
         };
         let requested_gpu = provider.nemo_gpu();
-        let (mut epoch, scope) =
-            match run_epoch(&input, requested_gpu, control, speakers.as_deref_mut()) {
-                Ok(epoch) => epoch,
-                Err(StageError::Failed(message)) if requested_gpu >= 0 => {
-                    // No output from a failed epoch is committed. Replay its complete
-                    // input on CPU and record the fallback in the result. The
-                    // meter holds its value until the replay passes it (KTD2).
-                    control.proceed()?;
-                    let reason = format!(
-                        "Accelerated NeMo attempt failed; epoch {start} replayed on CPU: {message}"
-                    );
-                    log::warn!("{reason}");
-                    let (mut output, scope) =
-                        run_epoch(&input, -1, control, speakers.as_deref_mut())?;
-                    output.coverage_limitations.push(reason);
-                    (output, scope)
-                }
-                Err(error) => return Err(error),
-            };
-        if native_route == "combined_offline" {
-            join_separate(&mut epoch.rows, &epoch.speakers);
-        }
-        let record = persist_epoch(store, session, &scope, &epoch, native_route)?;
-        crate::checkpoint::put(store, session, stage, &key, &record)?;
-        crate::lock(store).delete_recognition_prefix(
-            session,
-            &scope.generation,
-            &format!("{LIVE_NEMO_PREFIX}{:020}/", scope.epoch),
-        )?;
+        let computed = match run_epoch(&input, requested_gpu, control, speakers.as_deref_mut()) {
+            Ok(epoch) => epoch,
+            Err(StageError::Failed(message)) if requested_gpu >= 0 => {
+                // No output from a failed epoch is committed. Replay its complete
+                // input on CPU and record the fallback in the result. The
+                // meter holds its value until the replay passes it (KTD2).
+                control.proceed()?;
+                let reason = format!(
+                    "Accelerated NeMo attempt failed; epoch {} replayed on CPU: {message}",
+                    window.start
+                );
+                log::warn!("{reason}");
+                let (mut output, scope) = run_epoch(&input, -1, control, speakers.as_deref_mut())?;
+                output.coverage_limitations.push(reason);
+                (output, scope)
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(meter) = speakers.as_deref_mut() {
-            meter.finished(end - start);
+            meter.finished(window.end - window.start);
         }
-        result.coverage.extend(epoch.coverage);
-        result.rows.extend(epoch.rows);
-        result.speakers.extend(epoch.speakers);
-        result
-            .coverage_limitations
-            .extend(epoch.coverage_limitations);
-        start = end;
-    }
-    if native_route == "combined_offline" {
-        join_separate(&mut result.rows, &result.speakers);
-    }
-    Ok(result)
+        Ok(computed)
+    };
+    walk(&grid, origin, range, control, &mut compute)
 }
 
 struct EpochInput<'a> {
@@ -1019,7 +1143,7 @@ impl LiveNative {
             &self.output.store,
             &self.output.session,
             stage,
-            &format!("recognition-epoch-{:020}", range.start),
+            &epoch_key(range.start),
             &record,
         )?;
         Ok(())
@@ -1359,5 +1483,300 @@ mod tests {
             }
         );
         assert!(out.word(1, 0).speaker.is_some());
+    }
+
+    // Epoch reuse after a cut (U11, KTD20 of the forgotten-recording plan).
+    // The original segment starts at `ORIGIN` and is 3.5 epochs long. The
+    // cut removes the second half of epoch 1 except its last quarter:
+    // part A is `ORIGIN..A_END`, part B is `B_START..B_END`.
+    const M: u64 = MAX_EPOCH_SAMPLES;
+    const ORIGIN: u64 = 7 * 16000;
+    const A_END: u64 = ORIGIN + M + M / 4;
+    const B_START: u64 = ORIGIN + M + 3 * M / 4;
+    const B_END: u64 = ORIGIN + 3 * M + M / 2;
+    const GENERATION: &str = "test";
+
+    fn range(start: u64, end: u64) -> SampleRange {
+        SampleRange { start, end }
+    }
+    fn speaker(epoch: u64, local_id: u32) -> SpeakerKey {
+        SpeakerKey {
+            scope: SpeakerScope {
+                generation: GENERATION.into(),
+                epoch,
+            },
+            input_start_sample: 0,
+            local_id,
+        }
+    }
+    fn turn(epoch: u64, local_id: u32, start: u64, end: u64) -> SpeakerTurn {
+        SpeakerTurn {
+            range: range(start, end),
+            timing: TimingPrecision::NativeSegment,
+            speaker: speaker(epoch, local_id),
+            finality: Finality::Final,
+        }
+    }
+    fn row(epoch: u64, local_id: u32, start: u64, end: u64, text: &str) -> RecognitionSegment {
+        RecognitionSegment {
+            id: RecognitionId {
+                scope: speaker(epoch, local_id).scope,
+                input_start_sample: start,
+                ordinal: 0,
+            },
+            range: range(start, end),
+            timing: TimingPrecision::NativeSegment,
+            text: text.into(),
+            speaker: Some(speaker(epoch, local_id)),
+            revision: 0,
+            text_finality: Finality::Final,
+            speaker_finality: Finality::Final,
+        }
+    }
+    fn grid<'a>(store: &'a crate::SharedStore, combined: bool) -> Grid<'a> {
+        Grid {
+            store,
+            session: "test",
+            stage: if combined {
+                session_core::Stage::Transcribe
+            } else {
+                session_core::Stage::Diarize
+            },
+            generation: GENERATION,
+            route: if combined {
+                Route::CombinedNemo
+            } else {
+                Route::SeparateNemo
+            },
+            native_route: if combined {
+                "combined_stream"
+            } else {
+                "separate"
+            },
+        }
+    }
+    /// Save a live epoch at the grid start `key` with the output `rows` and
+    /// `turns`, and with the range `stored` that the cut gave it.
+    fn save_live_epoch(
+        grid: &Grid<'_>,
+        key: u64,
+        epoch: u64,
+        stored: SampleRange,
+        rows: Vec<RecognitionSegment>,
+        turns: Vec<SpeakerTurn>,
+    ) {
+        let scope = speaker(epoch, 0).scope;
+        let result = RouteResult {
+            route: grid.route,
+            coverage: vec![stored],
+            rows,
+            speakers: turns,
+            coverage_limitations: vec![],
+        };
+        let record =
+            persist_epoch(grid.store, grid.session, &scope, &result, grid.native_route).unwrap();
+        crate::checkpoint::put(
+            grid.store,
+            grid.session,
+            grid.stage,
+            &epoch_key(key),
+            &record,
+        )
+        .unwrap();
+    }
+    /// Walk `range` and record each window that the walk computes. A
+    /// computed window gives one turn over the window.
+    fn walk_counting(
+        grid: &Grid<'_>,
+        range: SampleRange,
+        computed: &mut Vec<SampleRange>,
+    ) -> RouteResult {
+        let mut compute = |window: SampleRange| {
+            computed.push(window);
+            let epoch = 100 + computed.len() as u64;
+            Ok((
+                RouteResult {
+                    route: grid.route,
+                    coverage: vec![window],
+                    rows: vec![],
+                    speakers: vec![turn(epoch, 0, window.start, window.end)],
+                    coverage_limitations: vec![],
+                },
+                speaker(epoch, 0).scope,
+            ))
+        };
+        walk(grid, ORIGIN, range, &crate::Unattended, &mut compute).unwrap()
+    }
+
+    #[test]
+    fn a_cut_part_reuses_the_live_epochs_on_the_original_grid() {
+        let out = output();
+        let grid = grid(&out.store, true);
+        save_live_epoch(
+            &grid,
+            ORIGIN,
+            1,
+            range(ORIGIN, ORIGIN + M),
+            vec![row(1, 0, ORIGIN + 1000, ORIGIN + 9000, "first")],
+            vec![turn(1, 0, ORIGIN + 1000, ORIGIN + 9000)],
+        );
+        // Epoch 2 contains the cut. Its range is the hull of the kept
+        // audio, so it covers part A, the removed audio and part B.
+        let gap = ORIGIN + M + M / 2;
+        save_live_epoch(
+            &grid,
+            ORIGIN + M,
+            2,
+            range(ORIGIN + M, ORIGIN + 2 * M),
+            vec![
+                row(2, 0, ORIGIN + M + 1000, ORIGIN + M + 9000, "before"),
+                row(2, 1, gap, gap + 8000, "removed"),
+                row(2, 0, B_START + 1000, B_START + 9000, "after"),
+            ],
+            vec![
+                turn(2, 0, ORIGIN + M + 1000, ORIGIN + M + 9000),
+                turn(2, 0, A_END - 4000, A_END + 4000),
+                turn(2, 1, gap, gap + 8000),
+                turn(2, 0, B_START + 1000, B_START + 9000),
+            ],
+        );
+        save_live_epoch(
+            &grid,
+            ORIGIN + 2 * M,
+            3,
+            range(ORIGIN + 2 * M, ORIGIN + 3 * M),
+            vec![],
+            vec![turn(3, 0, ORIGIN + 2 * M, ORIGIN + 2 * M + 8000)],
+        );
+        save_live_epoch(
+            &grid,
+            ORIGIN + 3 * M,
+            4,
+            range(ORIGIN + 3 * M, B_END),
+            vec![],
+            vec![turn(4, 0, B_END - 8000, B_END)],
+        );
+
+        let mut computed = vec![];
+        let a = walk_counting(&grid, range(ORIGIN, A_END), &mut computed);
+        let b = walk_counting(&grid, range(B_START, B_END), &mut computed);
+        assert_eq!(computed, [], "no epoch of kept audio is computed again");
+
+        // Part A: epoch 1, and epoch 2 clipped to the end of part A.
+        assert_eq!(
+            a.coverage,
+            [range(ORIGIN, ORIGIN + M), range(ORIGIN + M, A_END)]
+        );
+        let texts = |r: &RouteResult| r.rows.iter().map(|r| r.text.clone()).collect::<Vec<_>>();
+        assert_eq!(texts(&a), ["first", "before"]);
+        assert_eq!(
+            a.speakers,
+            [
+                turn(1, 0, ORIGIN + 1000, ORIGIN + 9000),
+                turn(2, 0, ORIGIN + M + 1000, ORIGIN + M + 9000),
+                turn(2, 0, A_END - 4000, A_END),
+            ]
+        );
+        // Part B: epoch 2 from the start of part B, then epochs 3 and 4 on
+        // the original grid.
+        assert_eq!(
+            b.coverage,
+            [
+                range(B_START, ORIGIN + 2 * M),
+                range(ORIGIN + 2 * M, ORIGIN + 3 * M),
+                range(ORIGIN + 3 * M, B_END),
+            ]
+        );
+        assert_eq!(texts(&b), ["after"]);
+        assert_eq!(b.speakers[0], turn(2, 0, B_START + 1000, B_START + 9000));
+        // The native label of epoch 2 is the same speaker in both parts.
+        assert_eq!(a.speakers[1].speaker, b.speakers[0].speaker);
+        assert_eq!(a.rows[1].speaker, b.rows[0].speaker);
+        crate::recognition::validate_result(&a, &[range(ORIGIN, A_END)]).unwrap();
+        crate::recognition::validate_result(&b, &[range(B_START, B_END)]).unwrap();
+    }
+
+    #[test]
+    fn a_window_with_no_saved_epoch_is_computed_once() {
+        let out = output();
+        let grid = grid(&out.store, false);
+        save_live_epoch(&grid, ORIGIN, 1, range(ORIGIN, ORIGIN + M), vec![], vec![]);
+        // The live worker stopped in the removed audio: epoch 2 holds only
+        // part A. Epoch 4 was never saved.
+        save_live_epoch(
+            &grid,
+            ORIGIN + M,
+            2,
+            range(ORIGIN + M, A_END),
+            vec![],
+            vec![turn(2, 0, A_END - 8000, A_END)],
+        );
+        save_live_epoch(
+            &grid,
+            ORIGIN + 2 * M,
+            3,
+            range(ORIGIN + 2 * M, ORIGIN + 3 * M),
+            vec![],
+            vec![],
+        );
+        let samples = |r: SampleRange| saved_samples(&out.store, "test", GENERATION, ORIGIN, r);
+        assert_eq!(samples(range(ORIGIN, A_END)).unwrap(), A_END - ORIGIN);
+        assert_eq!(samples(range(B_START, B_END)).unwrap(), M);
+
+        let mut computed = vec![];
+        let b = walk_counting(&grid, range(B_START, B_END), &mut computed);
+        assert_eq!(
+            computed,
+            [range(B_START, ORIGIN + 2 * M), range(ORIGIN + 3 * M, B_END)]
+        );
+        assert_eq!(
+            b.coverage,
+            [
+                range(B_START, ORIGIN + 2 * M),
+                range(ORIGIN + 2 * M, ORIGIN + 3 * M),
+                range(ORIGIN + 3 * M, B_END),
+            ]
+        );
+        // The computed window of part B does not replace epoch 2 of part A.
+        computed.clear();
+        let a = walk_counting(&grid, range(ORIGIN, A_END), &mut computed);
+        assert_eq!(computed, []);
+        assert_eq!(a.speakers, [turn(2, 0, A_END - 8000, A_END)]);
+        // A second walk of part B reuses the computed windows.
+        let again = walk_counting(&grid, range(B_START, B_END), &mut computed);
+        assert_eq!(computed, []);
+        assert_eq!(again.speakers, b.speakers);
+        assert_eq!(samples(range(B_START, B_END)).unwrap(), B_END - B_START);
+    }
+
+    #[test]
+    fn a_part_takes_its_grid_origin_from_the_original_segment() {
+        let out = output();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-09-27T10:00:00-05:00").unwrap();
+        let segment = |index: u32, offset_ms: u64| session_core::Segment {
+            index,
+            offset_ms,
+            duration_ms: 60_000,
+            wall_start: at,
+            wall_end: at,
+            audio_file: format!("audio/segment-{index:02}.opus"),
+            channels: 1,
+            ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
+        };
+        crate::checkpoint::put(
+            &out.store,
+            "test",
+            session_core::Stage::Assemble,
+            &crate::cut::origin_key(1),
+            &7_u64,
+        )
+        .unwrap();
+        assert_eq!(
+            grid_origin(&out.store, "test", &segment(1, 900)).unwrap(),
+            7 * 16
+        );
+        assert_eq!(grid_origin(&out.store, "test", &segment(0, 0)).unwrap(), 0);
     }
 }

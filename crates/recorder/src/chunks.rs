@@ -19,6 +19,9 @@
 //! Names, all times in milliseconds:
 //! - open: `{segment}-{capture_started_at}-{start_ms}-{audio_start_ms}.part`
 //! - closed: `{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav`
+//! - speech sidecar of a closed chunk, when capture asks for it:
+//!   `{segment}-{capture_started_at}-{start_ms}.speech` (see
+//!   [`crate::speech`])
 //!
 //! `start_ms` and `end_ms` are on the session timeline; `audio_start_ms` is
 //! where the file's first sample sits, up to 2 s before `start_ms`.
@@ -29,6 +32,7 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 
+use crate::speech::{self, CELLS_PER_CHUNK, Cell, CellBuilder, VoiceDetector};
 use crate::storage::{self, SpaceProbe};
 use crate::wav::{self, WavFile};
 
@@ -108,6 +112,44 @@ pub struct ChunkedWriter {
     /// The previous chunk's sync and rename, still running.
     pending: Option<JoinHandle<std::io::Result<()>>>,
     sync: fn(&File) -> std::io::Result<()>,
+    /// The speech timeline of the segment, when capture asks for it.
+    speech: Option<SpeechTrack>,
+}
+
+/// The speech timeline of a segment (KTD2 of the forgotten-recording plan).
+/// A cell ends where a chunk ends, so the cells of the open chunk are the
+/// cells of its sidecar.
+struct SpeechTrack {
+    builder: CellBuilder,
+    /// The cells of the open chunk.
+    cells: Vec<Cell>,
+    on_cell: Box<dyn FnMut(&Cell) + Send>,
+}
+
+impl SpeechTrack {
+    fn push(&mut self, samples: &[f32]) {
+        let (builder, mut keep) = self.parts();
+        builder.push(samples, &mut keep);
+    }
+
+    fn finish(&mut self) {
+        let (builder, mut keep) = self.parts();
+        builder.finish(&mut keep);
+    }
+
+    /// The builder, and the function that gives each new cell to
+    /// `on_cell` and keeps it in `cells`.
+    fn parts(&mut self) -> (&mut CellBuilder, impl FnMut(Cell) + '_) {
+        let Self {
+            builder,
+            cells,
+            on_cell,
+        } = self;
+        (builder, move |cell| {
+            on_cell(&cell);
+            cells.push(cell);
+        })
+    }
 }
 
 impl ChunkedWriter {
@@ -143,7 +185,28 @@ impl ChunkedWriter {
             since_space_check: 0,
             pending: None,
             sync: File::sync_all,
+            speech: None,
         })
+    }
+
+    /// Detect speech and measure the level of each channel, and write a
+    /// sidecar beside each closed chunk (KTD1, KTD2 of the forgotten-recording
+    /// plan). `detector` makes the detector of one channel at the segment's
+    /// rate. `on_cell` gets each cell on the writing thread, so it must
+    /// never wait. Call before the first write.
+    pub fn with_speech(
+        mut self,
+        detector: impl Fn(u32) -> Box<dyn VoiceDetector>,
+        on_cell: impl FnMut(&Cell) + Send + 'static,
+    ) -> Self {
+        let rate = self.args.sample_rate;
+        let detectors = (0..self.args.channels).map(|_| detector(rate)).collect();
+        self.speech = Some(SpeechTrack {
+            builder: CellBuilder::new(rate, detectors),
+            cells: Vec::with_capacity(CELLS_PER_CHUNK as usize),
+            on_cell: Box::new(on_cell),
+        });
+        self
     }
 
     /// Replace how a closed chunk is made durable, to test a slow or
@@ -247,6 +310,10 @@ impl ChunkedWriter {
         let rate = self.rate();
         let chunk = self.chunk.as_mut().expect("opened above");
         chunk.write(samples)?;
+        // Only new audio, so the cells do not include the lookback.
+        if let Some(speech) = self.speech.as_mut() {
+            speech.push(samples);
+        }
         let n = (samples.len() / width) as u64;
         self.chunk_samples += n;
         self.segment_samples += n;
@@ -276,19 +343,47 @@ impl ChunkedWriter {
         let file = chunk.close()?;
         let end_ms = self.start_ms + self.ms(self.chunk_samples);
         let partial = self.partial_path();
-        let closed = self.args.dir.join(format!(
-            "{}-{}-{}-{}-{}.wav",
+        let closed = self.args.dir.join(chunk_file_name(
             self.args.segment,
             self.args.capture_started_at,
             self.start_ms,
             end_ms,
-            self.audio_start_ms
+            self.audio_start_ms,
         ));
+        // The cells of the chunk, for its sidecar.
+        let sidecar = self
+            .speech
+            .as_mut()
+            .map(|speech| {
+                (
+                    speech::sidecar_path(
+                        &self.args.dir,
+                        self.args.segment,
+                        self.args.capture_started_at,
+                        self.start_ms,
+                    ),
+                    speech.builder.channels(),
+                    std::mem::take(&mut speech.cells),
+                )
+            })
+            .filter(|(_, _, cells)| !cells.is_empty());
         let dir = self.args.dir.clone();
         let sync = self.sync;
         let publish = move || {
             sync(&file)?;
             drop(file);
+            // The sidecar comes before the closed name, so a reader that
+            // lists a closed chunk finds its sidecar. A sidecar that is not
+            // written leaves cells with no data, which count as speech, so
+            // the recording continues.
+            if let Some((path, channels, cells)) = sidecar
+                && let Err(e) = speech::write_sidecar(&path, channels, &cells, sync)
+            {
+                log::warn!(
+                    "could not write the speech sidecar {} ({e}); its cells count as speech",
+                    path.display()
+                );
+            }
             std::fs::rename(partial, closed)?;
             sync_dir(&dir)
         };
@@ -316,6 +411,10 @@ impl ChunkedWriter {
 
     /// Close the last chunk and report the segment's span.
     pub fn finish(mut self) -> Result<SegmentSpan, RecorderError> {
+        // The last cell can be shorter than 250 ms.
+        if let Some(speech) = self.speech.as_mut() {
+            speech.finish();
+        }
         self.close_chunk(false)?;
         Ok(SegmentSpan {
             segment: self.args.segment,
@@ -406,7 +505,20 @@ pub fn chunk_segment_of(file_name: &str) -> Option<u32> {
     stem.split('-').next()?.parse().ok()
 }
 
-/// Remove every chunk of `segment`, closed or open (R35).
+/// The file name of a closed chunk:
+/// `{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav`.
+pub fn chunk_file_name(
+    segment: u32,
+    capture_started_at: u64,
+    start_ms: u64,
+    end_ms: u64,
+    audio_start_ms: u64,
+) -> String {
+    format!("{segment}-{capture_started_at}-{start_ms}-{end_ms}-{audio_start_ms}.wav")
+}
+
+/// Remove every chunk of `segment`, closed or open, and its speech sidecars
+/// (R35).
 pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -418,7 +530,9 @@ pub fn remove_segment(dir: &Path, segment: u32) -> std::io::Result<()> {
         let entry = entry?;
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with(&prefix) && (name.ends_with(".wav") || name.ends_with(".part")) {
+        let chunk =
+            name.starts_with(&prefix) && (name.ends_with(".wav") || name.ends_with(".part"));
+        if chunk || speech::is_sidecar_of(&name, segment) {
             std::fs::remove_file(entry.path())?;
         }
     }

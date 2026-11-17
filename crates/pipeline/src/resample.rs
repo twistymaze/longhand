@@ -26,6 +26,29 @@ pub struct StreamResampler {
     skip: usize,
     in_count: u64,
     out_count: u64,
+    /// The output samples of the pre-roll, which [`Self::emit_trimmed`]
+    /// drops.
+    pre_out: u64,
+}
+
+/// The input samples of one FFT block of the resampler from `in_hz` to
+/// `out_hz`, as rubato's `FftFixedIn` computes it for [`CHUNK`]. The
+/// output of a block depends only on the input of that block and of the
+/// block before it. So two resamplers that start on the same block grid
+/// give the same samples after their first block. 1 for equal rates.
+pub(crate) fn block_input(in_hz: u32, out_hz: u32) -> usize {
+    if in_hz == out_hz {
+        return 1;
+    }
+    let min_chunk_in = (in_hz / gcd(in_hz, out_hz)) as usize;
+    CHUNK.div_ceil(min_chunk_in) * min_chunk_in
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
 }
 
 impl StreamResampler {
@@ -43,7 +66,19 @@ impl StreamResampler {
             skip,
             in_count: 0,
             out_count: 0,
+            pre_out: 0,
         }
+    }
+
+    /// Give the resampler input that comes before its stream, and drop the
+    /// output of that input. Call it before the first [`Self::push`]. A
+    /// part of a cut segment uses the lookback of its first chunk this way
+    /// (KTD16 of the forgotten-recording plan): when the pre-roll starts on
+    /// the block grid of the original segment and holds at least one
+    /// block, the part gets the same samples as the original segment.
+    pub fn pre_roll(&mut self, src: &[f32]) {
+        self.push(src, &mut |_| {});
+        self.pre_out = self.expected();
     }
 
     fn expected(&self) -> u64 {
@@ -116,7 +151,10 @@ impl StreamResampler {
         self.skip -= drop;
         data = &data[drop..];
         let room = self.expected().saturating_sub(self.out_count) as usize;
-        let data = &data[..data.len().min(room)];
+        let mut data = &data[..data.len().min(room)];
+        let pre = (self.pre_out.saturating_sub(self.out_count) as usize).min(data.len());
+        self.out_count += pre as u64;
+        data = &data[pre..];
         if !data.is_empty() {
             self.out_count += data.len() as u64;
             emit(data);
@@ -165,6 +203,36 @@ mod tests {
             .unwrap()
             .0;
         assert!((peak as i64 - 24_000).abs() <= 2, "peak at {peak}");
+    }
+
+    /// Resample `input[part..]` with a pre-roll from the lookback before
+    /// `part` that starts on the block grid of `input`.
+    fn run_part(in_hz: u32, input: &[f32], part: usize, lookback: usize) -> Vec<f32> {
+        let block = block_input(in_hz, 16_000);
+        let pre = (lookback - part % block) / block * block + part % block;
+        let mut r = StreamResampler::new(in_hz, 16_000);
+        r.pre_roll(&input[part - pre..part]);
+        let mut out = Vec::new();
+        for chunk in input[part..].chunks(4_096) {
+            r.push(chunk, &mut |s| out.extend_from_slice(s));
+        }
+        r.finish(&mut |s| out.extend_from_slice(s));
+        out
+    }
+
+    #[test]
+    fn a_part_with_a_pre_roll_on_the_block_grid_has_the_samples_of_the_whole() {
+        for in_hz in [48_000u32, 44_100] {
+            let input: Vec<f32> = (0..in_hz as usize * 9)
+                .map(|i| ((i * 7_919 % 2_003) as f32 / 2_003.0 - 0.5) * 0.8)
+                .collect();
+            let whole = run(in_hz, 16_000, &input, 4_096);
+            // A part starts at 3 s, with a lookback of 2 s.
+            let part = in_hz as usize * 3;
+            let out = run_part(in_hz, &input, part, in_hz as usize * 2);
+            assert_eq!(out.len(), whole.len() - 48_000, "{in_hz}");
+            assert!(out == whole[48_000..], "{in_hz}: the samples differ");
+        }
     }
 
     #[test]

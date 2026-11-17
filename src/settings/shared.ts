@@ -36,7 +36,8 @@ export function damagedFileText(file: DamagedFile): string {
   return (
     `Longhand can’t read the settings file in the storage folder (${where}). ` +
     "Until the file is fixed, these settings can’t be changed: the default prompt, the note types, the default type, the prompt of each type, " +
-    "the transcription choices, update checks, audio removal, the recording widget and New Note. " +
+    "the transcription choices, update checks, audio removal, the recording widget, New Note, " +
+    "the silence check, the time limit, the long-silence cut and the stop countdown. " +
     "Fix the file, or restore it from another computer."
   );
 }

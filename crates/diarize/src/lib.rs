@@ -167,7 +167,11 @@ pub fn cluster_session_in_windows(
 
 // ------------------------------------------------------------ analysis file
 
-const MAGIC: &[u8; 8] = b"LHDIAR01";
+/// The first version, with no grid start: window 0 starts at sample 0.
+const MAGIC_V1: &[u8; 8] = b"LHDIAR01";
+/// The second version adds the grid start after the hop (KTD18 of the
+/// forgotten-recording plan).
+const MAGIC: &[u8; 8] = b"LHDIAR02";
 
 /// Where a segment's analysis is kept, beside its processing audio.
 pub fn analysis_path(proc_wav: &Path) -> PathBuf {
@@ -183,6 +187,7 @@ pub fn write_analysis(path: &Path, analysis: &Analysis) -> std::io::Result<()> {
         out.write_all(MAGIC)?;
         out.write_all(&(analysis.total as u64).to_le_bytes())?;
         out.write_all(&(analysis.step as u64).to_le_bytes())?;
+        out.write_all(&analysis.grid_start.to_le_bytes())?;
         out.write_all(&(analysis.activities.len() as u64).to_le_bytes())?;
         for activity in &analysis.activities {
             out.write_all(&(activity.frames.len() as u32).to_le_bytes())?;
@@ -208,9 +213,11 @@ pub fn write_analysis(path: &Path, analysis: &Analysis) -> std::io::Result<()> {
     std::fs::rename(temp, path)
 }
 
-/// Read an analysis that [`write_analysis`] wrote. A file that `analyze()`
-/// cannot have made is `InvalidData`: each count must fit in the bytes that
-/// are left, and each index must point into the analysis.
+/// Read an analysis that [`write_analysis`] wrote, in the current or the
+/// first version. A file of the first version has the grid start 0. A file
+/// that `analyze()` and a cut cannot have made is `InvalidData`: each count
+/// must fit in the bytes that are left, each index must point into the
+/// analysis, and the grid start must be less than one window from sample 0.
 pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
     let file = std::fs::File::open(path)?;
     let left = file.metadata()?.len();
@@ -218,11 +225,20 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
         reader: BufReader::new(file),
         left,
     };
-    if &input.bytes::<8>()? != MAGIC {
+    let version = input.bytes::<8>()?;
+    if &version != MAGIC && &version != MAGIC_V1 {
         return Err(invalid("not a Longhand diarization analysis"));
     }
     let total = input.u64()?;
     let step = input.u64()?;
+    let grid_start = if &version == MAGIC {
+        i64::from_le_bytes(input.bytes()?)
+    } else {
+        0
+    };
+    if grid_start.unsigned_abs() >= WINDOW_SAMPLES as u64 {
+        return Err(invalid("the analysis grid start is not valid"));
+    }
     // Each window holds at least its frame count.
     let windows = input.u64()?;
     let windows = input.count(windows, 4)?;
@@ -232,12 +248,13 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
     }
     // `analyze()` makes no window when there are no samples. Otherwise it
     // makes one window for the first `WINDOW_SAMPLES` and one more for each
-    // hop.
+    // hop. The windows start at the grid start.
     let cover = match windows {
         0 => Some(0),
         _ => (windows - 1)
             .checked_mul(step)
-            .and_then(|hops| hops.checked_add(WINDOW_SAMPLES)),
+            .and_then(|hops| hops.checked_add(WINDOW_SAMPLES))
+            .and_then(|end| usize::try_from(end as i64 + grid_start).ok()),
     };
     let total = usize::try_from(total)
         .ok()
@@ -284,6 +301,7 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
     Ok(Analysis {
         total,
         step,
+        grid_start,
         activities,
         embeddings,
     })
@@ -340,8 +358,9 @@ mod tests {
 
     fn analysis() -> Analysis {
         Analysis {
-            total: 180_000,
+            total: 170_000,
             step: 31_860,
+            grid_start: -20_000,
             activities: vec![
                 WindowActivity {
                     frames: vec![[true, false, true], [false, false, false]],
@@ -376,15 +395,44 @@ mod tests {
         assert!(read_analysis(&path).is_err());
     }
 
+    #[test]
+    fn a_file_of_the_first_version_reads_with_the_grid_start_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("segment-01.diar");
+        write_analysis(&path, &analysis()).unwrap();
+        // The first version has no grid start field.
+        let raw = std::fs::read(&path).unwrap();
+        let mut old = MAGIC_V1.to_vec();
+        old.extend_from_slice(&raw[TOTAL..GRID]);
+        old.extend_from_slice(&raw[GRID + 8..]);
+        std::fs::write(&path, old).unwrap();
+        assert_eq!(
+            read_analysis(&path).unwrap(),
+            Analysis {
+                grid_start: 0,
+                ..analysis()
+            }
+        );
+    }
+
+    #[test]
+    fn a_grid_start_of_one_window_or_more_is_refused() {
+        let window = WINDOW_SAMPLES as i64;
+        assert_invalid(read_damaged(GRID, &window.to_le_bytes()));
+        assert_invalid(read_damaged(GRID, &(-window).to_le_bytes()));
+        assert!(read_damaged(GRID, &(window - 1).to_le_bytes()).is_ok());
+    }
+
     // Byte offsets in the file of `analysis()`.
     const TOTAL: usize = 8;
     const STEP: usize = 16;
-    const WINDOWS: usize = 24;
-    const FIRST_FRAMES: usize = 32;
-    const COUNT: usize = 43;
-    const EMBEDDING_WINDOW: usize = 51;
-    const LOCAL_SPEAKER: usize = 55;
-    const DIM: usize = 57;
+    const GRID: usize = 24;
+    const WINDOWS: usize = 32;
+    const FIRST_FRAMES: usize = 40;
+    const COUNT: usize = 51;
+    const EMBEDDING_WINDOW: usize = 59;
+    const LOCAL_SPEAKER: usize = 63;
+    const DIM: usize = 65;
 
     /// Write `analysis()`, put `bytes` at `at`, and read the file again.
     fn read_damaged(at: usize, bytes: &[u8]) -> std::io::Result<Analysis> {
@@ -435,7 +483,8 @@ mod tests {
     #[test]
     fn a_total_past_the_windows_is_refused() {
         assert_invalid(read_damaged(TOTAL, &u64::MAX.to_le_bytes()));
-        let cover = 31_860 + WINDOW_SAMPLES as u64;
+        // The grid of `analysis()` starts 20 000 samples before sample 0.
+        let cover = 31_860 + WINDOW_SAMPLES as u64 - 20_000;
         assert_invalid(read_damaged(TOTAL, &(cover + 1).to_le_bytes()));
         assert!(read_damaged(TOTAL, &cover.to_le_bytes()).is_ok());
     }

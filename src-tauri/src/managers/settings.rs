@@ -12,13 +12,14 @@
 //! (R13). The shared settings and the custom prompts come from the shared
 //! settings manager (`managers::shared`). [`Settings`] joins both.
 
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use shared_settings::file::{
-    AudioRemoval, Field, SharedValue, TranscriptRemoval, is_catalog_asr_model,
+    AudioRemoval, CheckTime, Field, SharedValue, TranscriptRemoval, is_catalog_asr_model,
 };
 use shared_settings::view::ActivePrompt;
 use specta::Type;
@@ -214,6 +215,73 @@ impl From<TranscriptRemoval> for TranscriptRemovalSetting {
         }
     }
 }
+
+/// A shared setting: the time of a recording check or of the long-silence
+/// cut (R10, KTD13). The file form is [`CheckTime`]; this is the form of
+/// the Settings window. The setting gives the unit, minutes or hours, and
+/// the range.
+#[derive(Serialize, Deserialize, Type, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckTimeSetting {
+    Off,
+    /// The check or the cut uses this many whole minutes or hours.
+    After {
+        time: u32,
+    },
+}
+
+impl CheckTimeSetting {
+    /// Refuse a time outside `range`, which the shared settings file cannot
+    /// hold for the setting.
+    pub fn validate(&self, range: &RangeInclusive<u32>) -> Result<(), String> {
+        if CheckTime::from(*self).valid_in(range) {
+            Ok(())
+        } else {
+            Err(format!("Choose from {} to {}.", range.start(), range.end()))
+        }
+    }
+
+    /// The time, or `None` when the setting is off.
+    pub fn time(self) -> Option<u32> {
+        CheckTime::from(self).time()
+    }
+}
+
+impl From<CheckTimeSetting> for CheckTime {
+    fn from(setting: CheckTimeSetting) -> Self {
+        match setting {
+            CheckTimeSetting::Off => CheckTime::Off,
+            CheckTimeSetting::After { time } => CheckTime::After(time),
+        }
+    }
+}
+
+impl From<CheckTime> for CheckTimeSetting {
+    fn from(time: CheckTime) -> Self {
+        match time {
+            CheckTime::Off => CheckTimeSetting::Off,
+            CheckTime::After(time) => CheckTimeSetting::After { time },
+        }
+    }
+}
+
+/// Refuse a countdown that the shared settings file cannot hold (R10).
+pub fn validate_stop_countdown(minutes: u32) -> Result<(), String> {
+    let range = shared_settings::file::STOP_COUNTDOWN_MINUTES_RANGE;
+    if range.contains(&minutes) {
+        Ok(())
+    } else {
+        Err(format!(
+            "Choose from {} to {} minutes.",
+            range.start(),
+            range.end()
+        ))
+    }
+}
+
+/// The recording checks and the long-silence cut of one recording (KTD14).
+/// The note store holds this snapshot.
+pub use session_core::RecordingGuards;
 
 /// The usual microphone (R1, KTD1): cpal's stable device ID, with the device
 /// name as its label, so Settings can name a microphone that is not
@@ -846,6 +914,21 @@ pub struct Settings {
     /// and gives no delay for such a value or while the shared settings are
     /// read-only (KTD7).
     pub transcript_removal: TranscriptRemovalSetting,
+    /// A shared setting. The silence check: the minutes with no speech
+    /// before the "Keep recording?" prompt (R2, R10). On by default, with
+    /// 30 minutes. A change applies to the next recording (R11): see
+    /// [`RecordingGuards`].
+    pub silence_check_minutes: CheckTimeSetting,
+    /// A shared setting. The time limit: the hours of recording time before
+    /// the prompt (R3, R10). On by default, with 6 hours.
+    pub recording_time_limit_hours: CheckTimeSetting,
+    /// A shared setting. The long-silence cut: the shortest stretch of
+    /// silence, in minutes, that a Stop removes (R12, R10). On by default,
+    /// with 10 minutes.
+    pub long_silence_cut_minutes: CheckTimeSetting,
+    /// A shared setting. The countdown of the prompt in minutes (R5, R10).
+    /// 2 minutes by default. It has no off state.
+    pub stop_countdown_minutes: u32,
     /// A shared setting. The custom summary prompts, in the order that
     /// Settings shows them (KTD6).
     pub summary_prompts: Vec<SummaryPrompt>,
@@ -1054,6 +1137,16 @@ impl Default for Settings {
             check_updates_automatically: true,
             audio_removal: AudioRemovalSetting::default(),
             transcript_removal: TranscriptRemovalSetting::default(),
+            silence_check_minutes: CheckTimeSetting::After {
+                time: shared_settings::file::DEFAULT_SILENCE_CHECK_MINUTES,
+            },
+            recording_time_limit_hours: CheckTimeSetting::After {
+                time: shared_settings::file::DEFAULT_RECORDING_TIME_LIMIT_HOURS,
+            },
+            long_silence_cut_minutes: CheckTimeSetting::After {
+                time: shared_settings::file::DEFAULT_LONG_SILENCE_CUT_MINUTES,
+            },
+            stop_countdown_minutes: shared_settings::file::DEFAULT_STOP_COUNTDOWN_MINUTES,
             summary_prompts: Vec::new(),
             active_summary_prompt: TOPIC_SUMMARY_ID.to_string(),
             shared: SharedState::default(),
@@ -1119,6 +1212,25 @@ impl Settings {
             audio_removal: known_or(&fields.audio_removal, AudioRemoval::default()).into(),
             transcript_removal: known_or(&fields.transcript_removal, TranscriptRemoval::default())
                 .into(),
+            silence_check_minutes: known_or(
+                &fields.silence_check_minutes,
+                defaults.silence_check_minutes.into(),
+            )
+            .into(),
+            recording_time_limit_hours: known_or(
+                &fields.recording_time_limit_hours,
+                defaults.recording_time_limit_hours.into(),
+            )
+            .into(),
+            long_silence_cut_minutes: known_or(
+                &fields.long_silence_cut_minutes,
+                defaults.long_silence_cut_minutes.into(),
+            )
+            .into(),
+            stop_countdown_minutes: known_or(
+                &fields.stop_countdown_minutes,
+                defaults.stop_countdown_minutes,
+            ),
             summary_prompts: shared
                 .view
                 .prompts
@@ -1148,6 +1260,17 @@ impl Settings {
                 .filter_map(|(id, prompt)| Some((id.clone(), prompt.prompt()?.clone())))
                 .collect(),
             too_large_prompts: shared.view.too_large_prompts.clone(),
+        }
+    }
+
+    /// The snapshot of the recording checks and the cut that a new
+    /// recording stores (KTD14).
+    pub fn recording_guards(&self) -> RecordingGuards {
+        RecordingGuards {
+            silence_check_minutes: self.silence_check_minutes.time(),
+            time_limit_hours: self.recording_time_limit_hours.time(),
+            cut_minutes: self.long_silence_cut_minutes.time(),
+            countdown_minutes: self.stop_countdown_minutes,
         }
     }
 
@@ -1519,6 +1642,26 @@ pub fn shared_patch(before: &Settings, after: &Settings) -> Vec<SharedValue> {
     }
     if before.new_note_records != after.new_note_records {
         patch.push(SharedValue::NewNoteRecords(after.new_note_records));
+    }
+    if before.silence_check_minutes != after.silence_check_minutes {
+        patch.push(SharedValue::SilenceCheckMinutes(
+            after.silence_check_minutes.into(),
+        ));
+    }
+    if before.recording_time_limit_hours != after.recording_time_limit_hours {
+        patch.push(SharedValue::RecordingTimeLimitHours(
+            after.recording_time_limit_hours.into(),
+        ));
+    }
+    if before.long_silence_cut_minutes != after.long_silence_cut_minutes {
+        patch.push(SharedValue::LongSilenceCutMinutes(
+            after.long_silence_cut_minutes.into(),
+        ));
+    }
+    if before.stop_countdown_minutes != after.stop_countdown_minutes {
+        patch.push(SharedValue::StopCountdownMinutes(
+            after.stop_countdown_minutes,
+        ));
     }
     patch
 }
@@ -2280,6 +2423,14 @@ fn apply_shared(settings: &mut Settings, value: &SharedValue) {
         SharedValue::TranscriptRemoval(removal) => settings.transcript_removal = (*removal).into(),
         SharedValue::ShowRecordingWidget(on) => settings.show_recording_widget = *on,
         SharedValue::NewNoteRecords(on) => settings.new_note_records = *on,
+        SharedValue::SilenceCheckMinutes(time) => settings.silence_check_minutes = (*time).into(),
+        SharedValue::RecordingTimeLimitHours(time) => {
+            settings.recording_time_limit_hours = (*time).into()
+        }
+        SharedValue::LongSilenceCutMinutes(time) => {
+            settings.long_silence_cut_minutes = (*time).into()
+        }
+        SharedValue::StopCountdownMinutes(minutes) => settings.stop_countdown_minutes = *minutes,
         SharedValue::NoteTypes(_)
         | SharedValue::DefaultNoteType(_)
         | SharedValue::NoteTypePrompts(_) => {}
@@ -2838,6 +2989,199 @@ mod tests {
         let settings = with_shared_file(raw);
         assert!(!settings.show_recording_widget);
         assert!(!settings.new_note_records);
+    }
+
+    // The recording checks, the long-silence cut and the countdown are
+    // shared settings with defaults (R10, R11, KTD13).
+    #[test]
+    fn the_recording_check_settings_are_shared_and_on_by_default() {
+        use shared_settings::file::CheckTime;
+        let before = Settings::default();
+        assert_eq!(
+            before.silence_check_minutes,
+            CheckTimeSetting::After { time: 30 }
+        );
+        assert_eq!(
+            before.recording_time_limit_hours,
+            CheckTimeSetting::After { time: 6 }
+        );
+        assert_eq!(
+            before.long_silence_cut_minutes,
+            CheckTimeSetting::After { time: 10 }
+        );
+        assert_eq!(before.stop_countdown_minutes, 2);
+        let mut after = before.clone();
+        after.silence_check_minutes = CheckTimeSetting::Off;
+        after.recording_time_limit_hours = CheckTimeSetting::After { time: 24 };
+        after.long_silence_cut_minutes = CheckTimeSetting::After { time: 5 };
+        after.stop_countdown_minutes = 10;
+        let patch = shared_patch(&before, &after);
+        assert_eq!(
+            patch,
+            [
+                SharedValue::SilenceCheckMinutes(CheckTime::Off),
+                SharedValue::RecordingTimeLimitHours(CheckTime::After(24)),
+                SharedValue::LongSilenceCutMinutes(CheckTime::After(5)),
+                SharedValue::StopCountdownMinutes(10),
+            ]
+        );
+        assert_eq!(after.local(), before.local());
+        let stored = serde_json::to_value(after.local()).unwrap();
+        for key in [
+            "silence_check_minutes",
+            "recording_time_limit_hours",
+            "long_silence_cut_minutes",
+            "stop_countdown_minutes",
+        ] {
+            assert!(stored.get(key).is_none(), "{key} is in the local store");
+        }
+        let mut applied = before.clone();
+        for value in &patch {
+            apply_shared(&mut applied, value);
+        }
+        assert_eq!(applied, after);
+    }
+
+    // An absent key, and a value that this version does not know, read as
+    // the default.
+    #[test]
+    fn an_absent_or_unknown_recording_check_value_reads_as_the_default() {
+        let mut raw = shared_settings::file::default_settings();
+        raw.remove("silence_check_minutes");
+        raw.remove("recording_time_limit_hours");
+        raw.remove("long_silence_cut_minutes");
+        raw.remove("stop_countdown_minutes");
+        let absent = with_shared_file(raw.clone());
+        raw.insert("silence_check_minutes".into(), json!(4));
+        raw.insert("recording_time_limit_hours".into(), json!("6"));
+        raw.insert("long_silence_cut_minutes".into(), json!(241));
+        raw.insert("stop_countdown_minutes".into(), json!("off"));
+        let unknown = with_shared_file(raw);
+        for settings in [&absent, &unknown] {
+            assert_eq!(
+                settings.silence_check_minutes,
+                CheckTimeSetting::After { time: 30 }
+            );
+            assert_eq!(
+                settings.recording_time_limit_hours,
+                CheckTimeSetting::After { time: 6 }
+            );
+            assert_eq!(
+                settings.long_silence_cut_minutes,
+                CheckTimeSetting::After { time: 10 }
+            );
+            assert_eq!(settings.stop_countdown_minutes, 2);
+        }
+        let keys: Vec<&str> = unknown
+            .shared
+            .unknown_values
+            .iter()
+            .map(|v| v.key.as_str())
+            .collect();
+        for key in [
+            "silence_check_minutes",
+            "recording_time_limit_hours",
+            "long_silence_cut_minutes",
+            "stop_countdown_minutes",
+        ] {
+            assert!(keys.contains(&key), "{key} is not unknown");
+        }
+    }
+
+    #[test]
+    fn the_recording_check_settings_come_from_the_shared_file() {
+        let mut raw = shared_settings::file::default_settings();
+        raw.insert("silence_check_minutes".into(), json!(240));
+        raw.insert("recording_time_limit_hours".into(), json!("off"));
+        raw.insert("long_silence_cut_minutes".into(), json!("off"));
+        raw.insert("stop_countdown_minutes".into(), json!(1));
+        let settings = with_shared_file(raw);
+        assert_eq!(
+            settings.silence_check_minutes,
+            CheckTimeSetting::After { time: 240 }
+        );
+        assert_eq!(settings.recording_time_limit_hours, CheckTimeSetting::Off);
+        assert_eq!(settings.long_silence_cut_minutes, CheckTimeSetting::Off);
+        assert_eq!(settings.stop_countdown_minutes, 1);
+    }
+
+    #[test]
+    fn each_recording_check_form_refuses_a_value_outside_its_range() {
+        let after = |time| CheckTimeSetting::After { time };
+        for (range, low, high) in [
+            (shared_settings::file::SILENCE_CHECK_MINUTES_RANGE, 5, 240),
+            (
+                shared_settings::file::RECORDING_TIME_LIMIT_HOURS_RANGE,
+                1,
+                24,
+            ),
+            (
+                shared_settings::file::LONG_SILENCE_CUT_MINUTES_RANGE,
+                5,
+                240,
+            ),
+        ] {
+            assert!(CheckTimeSetting::Off.validate(&range).is_ok());
+            for time in [low, high] {
+                assert!(after(time).validate(&range).is_ok(), "{time}");
+            }
+            for time in [low - 1, high + 1] {
+                assert!(after(time).validate(&range).is_err(), "{time}");
+            }
+        }
+        for minutes in [1, 10] {
+            assert!(validate_stop_countdown(minutes).is_ok(), "{minutes}");
+        }
+        for minutes in [0, 11] {
+            assert!(validate_stop_countdown(minutes).is_err(), "{minutes}");
+        }
+    }
+
+    // KTD14: the snapshot holds the four values of a new recording, with
+    // `None` for a check that is off, and stores as JSON text.
+    #[test]
+    fn the_recording_guards_hold_the_settings_and_store_as_json() {
+        let defaults = Settings::default().recording_guards();
+        assert_eq!(
+            defaults,
+            RecordingGuards {
+                silence_check_minutes: Some(30),
+                time_limit_hours: Some(6),
+                cut_minutes: Some(10),
+                countdown_minutes: 2,
+            }
+        );
+        let settings = Settings {
+            silence_check_minutes: CheckTimeSetting::Off,
+            recording_time_limit_hours: CheckTimeSetting::After { time: 12 },
+            long_silence_cut_minutes: CheckTimeSetting::Off,
+            stop_countdown_minutes: 7,
+            ..Settings::default()
+        };
+        let guards = settings.recording_guards();
+        assert_eq!(
+            guards,
+            RecordingGuards {
+                silence_check_minutes: None,
+                time_limit_hours: Some(12),
+                cut_minutes: None,
+                countdown_minutes: 7,
+            }
+        );
+        let text = serde_json::to_string(&guards).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({
+                "silence_check_minutes": null,
+                "time_limit_hours": 12,
+                "cut_minutes": null,
+                "countdown_minutes": 7,
+            })
+        );
+        assert_eq!(
+            serde_json::from_str::<RecordingGuards>(&text).unwrap(),
+            guards
+        );
     }
 
     #[test]

@@ -291,8 +291,9 @@ fn analyze(
             let length = |range: &SampleRange| range.end - range.start;
             // Epochs saved by an earlier run count before new input (KTD2).
             let mut complete: u64 = all[..saved].iter().map(length).sum();
-            for range in &all[saved..] {
-                complete += super::nemo::saved_samples(store, id, &generation, *range)?;
+            for (segment, range) in segments.iter().zip(&all[saved..]) {
+                let origin = super::nemo::grid_origin(store, id, segment)?;
+                complete += super::nemo::saved_samples(store, id, &generation, origin, *range)?;
             }
             speakers.plan(all.iter().map(length).sum(), complete);
             for (segment, range) in segments.iter().zip(&all[saved..]) {
@@ -302,6 +303,7 @@ fn analyze(
                     spec,
                     provider,
                     &dir.join(crate::proc_file(&segment.audio_file)),
+                    super::nemo::grid_origin(store, id, segment)?,
                     *range,
                     &generation,
                     false,
@@ -540,6 +542,7 @@ fn transcribe_route(
                 spec,
                 provider,
                 &dir.join(crate::proc_file(&segment.audio_file)),
+                super::nemo::grid_origin(store, id, segment)?,
                 *range,
                 &generation,
                 true,
@@ -712,7 +715,7 @@ pub fn prepare_retry(store: &SharedStore, id: &str) -> Result<(), StageError> {
     crate::verify::prepare_retry(store, id)?;
     let guard = lock(store);
     for (key, _) in guard.checkpoints(id, Stage::Transcribe)? {
-        if key.starts_with("recognition-epoch-") {
+        if key.starts_with(super::nemo::EPOCH_KEY_PREFIX) {
             guard.delete_checkpoint(id, Stage::Transcribe, &key)?;
         }
     }

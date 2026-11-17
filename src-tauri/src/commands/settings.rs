@@ -484,6 +484,79 @@ pub async fn set_show_recording_widget(app: AppHandle, enabled: bool) -> Result<
     .await
 }
 
+/// Set the silence check, or turn it off (R2, R10). The value goes into
+/// the shared settings file and applies to the next recording (R11). A
+/// time outside the range is refused and changes nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_silence_check_minutes(
+    app: AppHandle,
+    check: settings::CheckTimeSetting,
+) -> Result<Settings, String> {
+    check.validate(&shared_settings::file::SILENCE_CHECK_MINUTES_RANGE)?;
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.silence_check_minutes = check;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Set the time limit of a recording, or turn it off (R3, R10). The value
+/// goes into the shared settings file and applies to the next recording
+/// (R11). A time outside the range is refused and changes nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_recording_time_limit_hours(
+    app: AppHandle,
+    limit: settings::CheckTimeSetting,
+) -> Result<Settings, String> {
+    limit.validate(&shared_settings::file::RECORDING_TIME_LIMIT_HOURS_RANGE)?;
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.recording_time_limit_hours = limit;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Set the long-silence cut, or turn it off (R12, R10). The value goes
+/// into the shared settings file and applies to the next recording (R11).
+/// A time outside the range is refused and changes nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_long_silence_cut_minutes(
+    app: AppHandle,
+    cut: settings::CheckTimeSetting,
+) -> Result<Settings, String> {
+    cut.validate(&shared_settings::file::LONG_SILENCE_CUT_MINUTES_RANGE)?;
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.long_silence_cut_minutes = cut;
+            Ok(())
+        })
+    })
+    .await
+}
+
+/// Set the countdown of the "Keep recording?" prompt (R5, R10). The value
+/// goes into the shared settings file and applies to the next recording
+/// (R11). A time outside the range is refused and changes nothing.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_stop_countdown_minutes(app: AppHandle, minutes: u32) -> Result<Settings, String> {
+    settings::validate_stop_countdown(minutes)?;
+    blocking(move || {
+        settings::update_settings(&app, |s| {
+            s.stop_countdown_minutes = minutes;
+            Ok(())
+        })
+    })
+    .await
+}
+
 /// Choose whether the app checks for updates by itself (R10). The next
 /// scheduled check reads the new value.
 #[tauri::command]

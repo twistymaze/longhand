@@ -486,6 +486,16 @@ def check_setting(report, key, value, settings, after_state):
                 '%s must be "off" or whole days from %d to %d.'
                 % (where, lh.TRANSCRIPT_REMOVAL_MIN_DAYS, lh.TRANSCRIPT_REMOVAL_MAX_DAYS)
             )
+    elif key in lh.CHECK_TIME_RANGES:
+        low, high, unit = lh.CHECK_TIME_RANGES[key]
+        if value != "off" and not (is_int(value) and low <= value <= high):
+            report.problems.append('%s must be "off" or whole %s from %d to %d.' % (where, unit, low, high))
+    elif key == "stop_countdown_minutes":
+        if not (is_int(value) and lh.STOP_COUNTDOWN_MIN_MINUTES <= value <= lh.STOP_COUNTDOWN_MAX_MINUTES):
+            report.problems.append(
+                "%s must be whole minutes from %d to %d."
+                % (where, lh.STOP_COUNTDOWN_MIN_MINUTES, lh.STOP_COUNTDOWN_MAX_MINUTES)
+            )
     elif key == "speaker_source":
         if value not in lh.SPEAKER_SOURCES:
             report.problems.append("%s must be one of %s." % (where, ", ".join(lh.SPEAKER_SOURCES)))

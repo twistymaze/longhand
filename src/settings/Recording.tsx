@@ -1,6 +1,7 @@
 // The Recording pane (R1, R6, KTD15): the usual microphone and the app list.
 // A new note starts with both. The pane also holds the recording and Pause
-// shortcuts, the two permissions and the alert sound (R6–R9, R16).
+// shortcuts, the two permissions and the alert sound (R6–R9, R16), and the
+// checks for a long recording and the long-silence cut (RecordingGuards).
 
 import { type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -18,6 +19,7 @@ import { Menu, type MenuEntry } from "../session/SessionMenu";
 import { CheckIcon, ChevronIcon } from "./icons";
 import { isMac, isWindows, MicrophoneAccessRow, SystemAudioAccessRow } from "./Permissions";
 import { ShortcutField } from "./ShortcutField";
+import { RecordingGuards } from "./RecordingGuards";
 import { readOnlyReason } from "./shared";
 import { SettingSwitch } from "./Status";
 import { Button, ErrorText, Group, Pane, Row, Status as StatusText } from "./ui";
@@ -504,6 +506,7 @@ export function RecordingPane(props: PaneProps) {
     <Pane title="Recording">
       <NewNote {...props} />
       <WidgetGroup {...props} />
+      <RecordingGuards settings={props.settings} onSettings={props.onSettings} />
       <MicrophoneGroup {...props} />
       <AppsGroup {...props} />
       <AlertGroup settings={props.settings} onSettings={props.onSettings} />

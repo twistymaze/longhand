@@ -380,7 +380,140 @@ fn segment(index: u32, offset_ms: u64) -> session_core::Segment {
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
+}
+
+#[test]
+fn a_segment_keeps_its_cut_fields_in_the_store() {
+    // KTD21.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    let cut = session_core::Segment {
+        cut_before_ms: 180_000,
+        cut_after_ms: 600_000,
+        ..segment(1, 900_000)
+    };
+    store.put_segment("s1", &segment(0, 0)).unwrap();
+    store.put_segment("s1", &cut).unwrap();
+    assert_eq!(store.segments("s1").unwrap(), [segment(0, 0), cut.clone()]);
+
+    // A write again changes the fields.
+    let uncut = segment(1, 900_000);
+    store.put_segment("s1", &uncut).unwrap();
+    assert_eq!(store.segments("s1").unwrap()[1], uncut);
+}
+
+#[test]
+fn the_cut_mark_is_on_each_segment_that_the_cut_checked() {
+    // KTD19: the cut marks the segments that it checked.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    for (index, offset) in [(0, 0), (1, 120_000), (2, 240_000)] {
+        store.put_segment("s1", &segment(index, offset)).unwrap();
+    }
+    assert!(store.cut_checked("s1").unwrap().is_empty());
+
+    store.mark_cut_checked("s1", &[0, 2]).unwrap();
+    assert_eq!(
+        store.cut_checked("s1").unwrap(),
+        std::collections::BTreeSet::from([0, 2])
+    );
+
+    // A write again of a segment keeps its mark.
+    store.put_segment("s1", &segment(2, 240_000)).unwrap();
+    assert_eq!(
+        store.cut_checked("s1").unwrap(),
+        std::collections::BTreeSet::from([0, 2])
+    );
+    assert!(store.mark_cut_checked("missing", &[0]).is_err());
+}
+
+#[test]
+fn a_cut_writes_its_rows_marks_and_checkpoints_in_one_transaction() {
+    // KTD19 step 2: the segment rows, the cut marks and the re-keyed
+    // checkpoints change together.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    for (index, offset) in [(0, 0), (1, 120_000), (2, 240_000)] {
+        store.put_segment("s1", &segment(index, offset)).unwrap();
+    }
+    store
+        .put_checkpoint("s1", Stage::Transcribe, "seg-0002-live-0000", "{}")
+        .unwrap();
+    let part = session_core::Segment {
+        cut_after_ms: 60_000,
+        ..segment(1, 240_000)
+    };
+    let cut = session_core::jobs::CutRows {
+        deleted_segments: vec![2],
+        segments: vec![part.clone()],
+        checked: vec![0, 1],
+        checkpoints: vec![
+            (Stage::Transcribe, "seg-0002-live-0000".into(), None),
+            (
+                Stage::Transcribe,
+                "seg-0001-live-0000".into(),
+                Some("{}".into()),
+            ),
+        ],
+    };
+    store.apply_cut("s1", &cut).unwrap();
+    assert_eq!(store.segments("s1").unwrap(), [segment(0, 0), part]);
+    assert_eq!(
+        store.cut_checked("s1").unwrap(),
+        std::collections::BTreeSet::from([0, 1])
+    );
+    assert_eq!(
+        store
+            .checkpoints("s1", Stage::Transcribe)
+            .unwrap()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>(),
+        ["seg-0001-live-0000"]
+    );
+    assert!(store.apply_cut("missing", &cut).is_err());
+}
+
+#[test]
+fn the_recording_settings_snapshot_is_on_the_note_row() {
+    // KTD14: the store holds the snapshot as text that it does not read.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.recording_guards("s1").unwrap(), None);
+
+    let snapshot = r#"{"countdown_minutes":2,"cut_minutes":10}"#;
+    store.set_recording_guards("s1", Some(snapshot)).unwrap();
+    assert_eq!(
+        store.recording_guards("s1").unwrap().as_deref(),
+        Some(snapshot)
+    );
+
+    store.set_recording_guards("s1", None).unwrap();
+    assert_eq!(store.recording_guards("s1").unwrap(), None);
+    assert!(store.recording_guards("missing").is_err());
+    assert!(store.set_recording_guards("missing", None).is_err());
+}
+
+#[test]
+fn the_store_holds_the_stop_reason_until_it_is_removed() {
+    // R8, KTD8: the reason waits in the store for the save.
+    use session_core::note_record::AutoStop;
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    assert_eq!(store.auto_stop("s1").unwrap(), None);
+
+    let reason = AutoStop {
+        silence_check_minutes: Some(30),
+        time_limit_hours: None,
+    };
+    store.set_auto_stop("s1", Some(&reason)).unwrap();
+    assert_eq!(store.auto_stop("s1").unwrap(), Some(reason));
+
+    store.set_auto_stop("s1", None).unwrap();
+    assert_eq!(store.auto_stop("s1").unwrap(), None);
 }
 
 #[test]

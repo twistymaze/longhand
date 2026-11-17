@@ -12,6 +12,8 @@ log.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["macros", "sync"] }
 tokio-util = "0.7"
+# Earshot speech detection on each channel during capture (KTD1).
+vad = { path = "../vad" }
 
 # The free-space lookup asks the operating system for one volume.
 [target.'cfg(target_os = "macos")'.dependencies]

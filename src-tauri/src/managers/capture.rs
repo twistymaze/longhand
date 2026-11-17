@@ -45,12 +45,14 @@ use audio_system::{AppSet, Permission};
 use chrono::{DateTime, FixedOffset, Local};
 use pipeline::live::LiveEnd;
 use pipeline::recover::segment_audio_file;
+use recorder::speech::{EarshotDetector, GuardFeed, GuardMeter, VoiceDetector};
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{
     ChunkedWriter, Frame, SegmentArgs, SegmentEnd, SegmentInput, SegmentOutcome, SpeakerCommand,
 };
 use serde::Serialize;
 use session_core::jobs::{Claims, RECORDED_INTO};
+use session_core::note_record::AutoStop;
 use session_core::{
     CaptureChoice, Closed, Event, InterruptReason, Microphone, RecordedApp, RecordingModel,
     SessionState, SpeakerCount, Store, Timeline,
@@ -63,10 +65,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::audio::AppAudio;
 use crate::managers::alerts::{self, AlertsManager};
+use crate::managers::guard::{self, Action as GuardAction, Prompt};
 use crate::managers::live::{DeferredLive, LiveManager};
 use crate::managers::models::ModelsManager;
 use crate::managers::processing::ProcessingManager;
-use crate::managers::settings::{self, ListedApp, MicrophoneChoice, Settings};
+use crate::managers::settings::{self, ListedApp, MicrophoneChoice, RecordingGuards, Settings};
 
 /// Frames of 20 ms: small enough for a responsive level meter (U7), large
 /// enough to keep per-frame overhead negligible.
@@ -187,6 +190,8 @@ pub struct RecordingStatus {
     /// The app audio state of the segment that records (R16). `None` when
     /// no segment records or the note's app set is empty.
     pub app_audio: Option<AppAudioState>,
+    /// The open prompt "Keep recording?" of the note (R5, R9).
+    pub prompt: Option<Prompt>,
 }
 
 /// The app audio state of the segment that records (R16).
@@ -1198,6 +1203,11 @@ struct Inner {
     /// cancelled its open (KTD8 of the capture recovery plan). That Stop
     /// returns it.
     cancelled_open: Option<StopOutcome>,
+    /// The counters of the silence check and the time limit of the note
+    /// (KTD6 of the forgotten-recording plan). Each segment thread of the
+    /// note adds to them. A new recording gets a new meter, and Continue
+    /// sets the silence time to zero (R3, R4).
+    guard: Arc<GuardMeter>,
 }
 
 /// What [`CaptureManager::status`] reads under the inner lock.
@@ -1319,6 +1329,93 @@ enum ContinueStep {
     Open(String),
     /// No note is paused.
     Nothing,
+}
+
+/// The guard meter of a new recording: Start, Resume or Record into a note
+/// (R3). Audio that the note recorded before does not count.
+fn meter_at_start(inner: &mut Inner) {
+    inner.guard = Arc::default();
+}
+
+/// The guard meter at an open of the next segment by the user (R3, R4).
+/// Continue keeps the recording time and starts the silence check again.
+/// A reopen after a microphone change, a restart or the first app sound
+/// does not come here, so it keeps both counters (KTD6).
+fn meter_at_reopen(inner: &mut Inner, reopen: Reopen) {
+    match reopen {
+        Reopen::Resume | Reopen::Record => meter_at_start(inner),
+        Reopen::Continue => inner.guard.reset_silence(),
+    }
+}
+
+/// Store the settings snapshot `guards` of a new recording of the note `id`
+/// (KTD14 of the forgotten-recording plan), and remove the stop reason of an
+/// earlier recording (KTD8). `None` keeps the snapshot that the note has: a
+/// Resume of an interrupted note keeps its snapshot.
+fn begin_recording(
+    store: &Store,
+    id: &str,
+    guards: Option<&RecordingGuards>,
+) -> Result<(), CaptureError> {
+    if let Some(guards) = guards {
+        let text = serde_json::to_string(guards).map_err(|e| CaptureError::Other(e.to_string()))?;
+        store.set_recording_guards(id, Some(&text))?;
+    }
+    store.set_auto_stop(id, None)?;
+    Ok(())
+}
+
+/// [`begin_recording`], with an error only in the log: the recording does
+/// not stop for it.
+fn begin_recording_or_log(store: &Store, id: &str, guards: Option<&RecordingGuards>) {
+    if let Err(e) = begin_recording(store, id, guards) {
+        log::error!("could not store the recording checks of {id}: {e}");
+    }
+}
+
+/// The settings snapshot of the note `id` (KTD14). A note with no snapshot,
+/// or with a snapshot that does not parse, gets no checks.
+fn stored_guards(store: &Store, id: &str) -> Option<RecordingGuards> {
+    store
+        .read_recording_guards(id)
+        .inspect_err(|e| log::warn!("could not read the recording checks of {id}: {e}"))
+        .ok()?
+}
+
+/// The open note in the store: Capturing, else Interrupted.
+fn open_note(store: &Store) -> Result<Option<(String, SessionState)>, CaptureError> {
+    for name in ["capturing", "interrupted"] {
+        if let Some(record) = store.sessions_in(name)?.into_iter().next() {
+            return Ok(Some((record.id, record.state)));
+        }
+    }
+    Ok(None)
+}
+
+/// Whether a stop of `note_id` from its prompt applies (KTD7 of the
+/// forgotten-recording plan): the note is open here, or the store has it
+/// Capturing or Interrupted. When it applies, the stop reason `reason` is
+/// written (KTD8). `None` is the Stop answer of the prompt, a user Stop
+/// with no reason. The caller holds `inner`.
+fn begin_stop(
+    store: &pipeline::SharedStore,
+    inner: &Inner,
+    note_id: &str,
+    reason: Option<&AutoStop>,
+) -> Result<bool, CaptureError> {
+    let store = pipeline::lock(store);
+    let open = inner.holds(note_id) || open_note(&store)?.is_some_and(|(id, _)| id == note_id);
+    if !open {
+        return Ok(false);
+    }
+    store.set_auto_stop(note_id, reason)?;
+    Ok(true)
+}
+
+/// The speech detector of one channel of a segment, new for each segment
+/// because the rate can change (KTD1).
+fn earshot_detector(rate: u32) -> Box<dyn VoiceDetector> {
+    Box::new(EarshotDetector::new(rate))
 }
 
 fn continue_step(inner: &Inner) -> ContinueStep {
@@ -2318,6 +2415,7 @@ impl CaptureManager {
         let apps = apps_at_start(&settings, audio_system::apps::supported());
         let live = model.live_transcript.then_some(model.asr_model.as_str());
         let choice = mic_of(&capture);
+        meter_at_start(&mut inner);
         let opening = Opening {
             note_id: &id,
             segment: index,
@@ -2388,6 +2486,8 @@ impl CaptureManager {
             if let Err(e) = store.set_note_apps(&id, &apps) {
                 log::error!("could not store the app set of {id}: {e}");
             }
+            // The checks and the cut read only this snapshot (KTD14).
+            begin_recording_or_log(&store, &id, Some(&settings.recording_guards()));
             stopped
         };
         // The folder is written on the thread of its job: the recording
@@ -2412,9 +2512,89 @@ impl CaptureManager {
             apps.len()
         );
         self.watch_capture(app, &mut inner, &id);
+        let checks = self.start_checks(app, &inner, &id);
+        drop(inner);
+        publish_checks(app, checks);
         opened(app, &id);
         leave_in_background(app, emptied);
         Ok(id)
+    }
+
+    /// The checks of a new recording of `id` begin with its stored snapshot
+    /// and the new meter (R3, KTD14). The caller holds `inner`.
+    fn start_checks(&self, app: &AppHandle, inner: &Inner, id: &str) -> Vec<GuardAction> {
+        let Some(guard) = guard::of(app) else {
+            return Vec::new();
+        };
+        let guards = stored_guards(&self.store(), id);
+        guard.start(id, guards, Arc::clone(&inner.guard))
+    }
+
+    /// Stop the note `note_id` at the end of the countdown of the prompt
+    /// `generation`, with the stop reason `reason` (R7, R8, KTD7). It takes
+    /// `inner`, checks that the stop is still due and that the note is
+    /// still open, writes the reason, and then stops the note as the user's
+    /// Stop does. `None` when Keep Recording, a Pause or a new recording
+    /// came first, or when the note is no longer open.
+    pub fn stop_session_if(
+        &self,
+        app: &AppHandle,
+        note_id: &str,
+        generation: u64,
+        reason: &AutoStop,
+    ) -> Result<Option<StopOutcome>, CaptureError> {
+        let Some(guard) = guard::of(app) else {
+            return Ok(None);
+        };
+        let inner = self.inner();
+        if !guard.stop_pending(note_id, generation) {
+            return Ok(None);
+        }
+        log::info!("note {note_id} stops at the end of the countdown ({reason:?})");
+        self.stop_open_note(app, inner, note_id, Some(reason))
+    }
+
+    /// Stop the note `note_id` for the Stop answer of its prompt (R7): a
+    /// user Stop with no stop reason. It takes `inner` and checks that the
+    /// note is still open, so the answer never stops a note that started
+    /// later. `None` when the note is no longer open.
+    pub fn stop_note_from_prompt(
+        &self,
+        app: &AppHandle,
+        note_id: &str,
+    ) -> Result<Option<StopOutcome>, CaptureError> {
+        let inner = self.inner();
+        self.stop_open_note(app, inner, note_id, None)
+    }
+
+    /// Stop `note_id` with the stop reason `reason` when the note is still
+    /// open. The caller holds `inner`. When the stop fails, the reason is
+    /// removed again, so a later user Stop has no reason.
+    fn stop_open_note(
+        &self,
+        app: &AppHandle,
+        inner: std::sync::MutexGuard<'_, Inner>,
+        note_id: &str,
+        reason: Option<&AutoStop>,
+    ) -> Result<Option<StopOutcome>, CaptureError> {
+        if !begin_stop(&self.store, &inner, note_id, reason)? {
+            // The note stopped in a way that the checks did not see: its
+            // checks end.
+            let checks = guard::of(app)
+                .map(|guard| guard.stopped(note_id))
+                .unwrap_or_default();
+            drop(inner);
+            publish_checks(app, checks);
+            return Ok(None);
+        }
+        let stopped = self.stop_held(app, inner);
+        if stopped.is_err()
+            && reason.is_some()
+            && let Err(e) = pipeline::lock(&self.store).set_auto_stop(note_id, None)
+        {
+            log::error!("could not remove the stop reason of {note_id}: {e}");
+        }
+        stopped.map(Some)
     }
 
     /// Open a new note that does not record (KTD2): a note with no audio,
@@ -2442,25 +2622,41 @@ impl CaptureManager {
         // Stop does not wait for a microphone start (KTD1): cancel it, and
         // each open that takes `inner` before this Stop.
         self.opens.stop_begins();
-        let mut inner = self.inner();
+        let inner = self.inner();
         self.opens.stop_has_lock();
+        self.stop_held(app, inner)
+    }
+
+    /// The Stop of the note that `inner` holds, or of the open note in the
+    /// store. The user's Stop and the automatic stop (KTD7) go this way.
+    fn stop_held(
+        &self,
+        app: &AppHandle,
+        mut inner: std::sync::MutexGuard<'_, Inner>,
+    ) -> Result<StopOutcome, CaptureError> {
         let reconnecting = inner.supersede();
         let id = match stop_step(&self.store, &self.working_root, &mut inner, reconnecting)? {
             StopStep::Settle(id) => id,
             // The opener already ended its note, and sent the change.
             StopStep::Done(outcome) => return Ok(outcome),
         };
+        // The prompt of the note closes on each surface (R9).
+        let checks = guard::of(app)
+            .map(|guard| guard.stopped(&id))
+            .unwrap_or_default();
         let outcome = match self.stop_in_store(app, &id) {
             Ok(outcome) => outcome,
             Err(e) => {
                 // Nothing records now. The note stays Interrupted or
                 // Capturing, and a later Stop finds it (KTD5).
                 drop(inner);
+                publish_checks(app, checks);
                 changed(app, None);
                 return Err(e);
             }
         };
         drop(inner);
+        publish_checks(app, checks);
         // A note that this Stop made Interrupted keeps the alert that the
         // Stop raised.
         if !matches!(outcome, StopOutcome::Interrupted { .. }) {
@@ -2503,7 +2699,12 @@ impl CaptureManager {
         } else if let Err(e) = self.store().mark_pause(&id) {
             log::error!("could not mark the pause of {id}: {e}");
         }
+        // A Pause closes the prompt and counts as Keep Recording (R4).
+        let checks = guard::of(app)
+            .map(|guard| guard.pause())
+            .unwrap_or_default();
         drop(inner);
+        publish_checks(app, checks);
         log::info!("session {id} paused");
         // The note stays open: the tray and the page keep the note. The
         // tray title says "Paused" (R10).
@@ -2716,6 +2917,12 @@ impl CaptureManager {
                 == pipeline::save::AudioState::Present;
             let old_segments = store.segments(id)?;
             let state = resume_in_store(&mut store, id, &claims, space_ok, audio_intact)?;
+            // A Resume of a saved note is a new recording with the settings
+            // of now. An interrupted note keeps its snapshot (KTD14).
+            if matches!(state, SessionState::Capturing) {
+                let guards = completed.then(|| settings::get_settings(app).recording_guards());
+                begin_recording_or_log(&store, id, guards.as_ref());
+            }
             // The old segments of a saved note are listed for their copy
             // into the working location (KTD8 of the audio removal plan).
             // The list reads no audio, so the recording does not wait for
@@ -2780,6 +2987,7 @@ impl CaptureManager {
             // the title and notes that another computer wrote.
             pipeline::follow::follow_folder(&mut store, id, false).map_err(other)?;
             record_in_store(&mut store, id, &claims, &recognition, &capture, &apps)?;
+            begin_recording_or_log(&store, id, Some(&settings.recording_guards()));
         }
         // This run's in-use marker, then the flag "recording not saved"
         // (KTD4). Neither write holds up the recording.
@@ -2802,6 +3010,7 @@ impl CaptureManager {
         reopen: Reopen,
     ) -> Result<(), CaptureError> {
         inner.supersede();
+        meter_at_reopen(&mut inner, reopen);
         let held = inner
             .clock
             .take()
@@ -2867,6 +3076,19 @@ impl CaptureManager {
         log::info!("session {id} records segment {index} at {offset} ms ({reopen:?})");
         self.copy_old_audio(id);
         self.watch_capture(app, &mut inner, id);
+        // Continue keeps the checks of the recording, with the silence time
+        // at zero (R4). Resume and Record begin a new recording (R3).
+        let checks = match reopen {
+            Reopen::Continue => {
+                if let Some(guard) = guard::of(app) {
+                    guard.resume();
+                }
+                Vec::new()
+            }
+            Reopen::Resume | Reopen::Record => self.start_checks(app, &inner, id),
+        };
+        drop(inner);
+        publish_checks(app, checks);
         app.state::<Arc<AlertsManager>>().clear(id);
         opened(app, id);
         Ok(())
@@ -2955,13 +3177,7 @@ impl CaptureManager {
     /// The session a note typed now belongs to: the one recording, or the
     /// most recent one interrupted and still resumable.
     fn open_session(&self) -> Result<Option<(String, SessionState)>, CaptureError> {
-        let store = self.store();
-        for name in ["capturing", "interrupted"] {
-            if let Some(record) = store.sessions_in(name)?.into_iter().next() {
-                return Ok(Some((record.id, record.state)));
-            }
-        }
-        Ok(None)
+        open_note(&self.store())
     }
 
     pub fn session_state(&self, id: &str) -> Option<SessionState> {
@@ -3054,6 +3270,7 @@ impl CaptureManager {
             microphone_choice,
             note_apps,
             app_audio,
+            prompt: guard::of(app).and_then(|guard| guard.prompt()),
         })
     }
 
@@ -3712,6 +3929,19 @@ impl CaptureManager {
             if inner.note_open() {
                 return;
             }
+            // A countdown that ended in the sleep stops the note before the
+            // microphone opens again (R17, KTD9 of the forgotten-recording
+            // plan).
+            if let Some(guard) = guard::of(app) {
+                let checks = guard.wake(chrono::Utc::now());
+                if !checks.is_empty() {
+                    drop(inner);
+                    if let Some(stop) = guard.publish(app, checks) {
+                        guard.auto_stop(app, &self, stop);
+                    }
+                    return;
+                }
+            }
             // A sleep past the auto-queue wait (R5e) is taken as the end of
             // the session, whichever of the wake and the queue's tick is
             // first; it can still be resumed by hand.
@@ -4075,6 +4305,11 @@ impl CaptureManager {
             channels,
             floor_bytes: DISK_RESERVE_BYTES,
         })?;
+        // Speech detection on each channel, also with the live transcript
+        // off (R1, KTD1 of the forgotten-recording plan). The cells go to
+        // the sidecars and to the note's meter, which only takes atomics.
+        let mut feed = GuardFeed::new(Arc::clone(&inner.guard));
+        let writer = writer.with_speech(earshot_detector, move |cell| feed.cell(cell));
         // The speaker side of a stereo segment (KTD18).
         let (link, commands) = if channels == 2 {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4483,6 +4718,16 @@ mod faults {
 }
 
 /// The capture state changed, and no segment opened for a note.
+/// Show, change or close the prompt on each surface (R5, R9).
+fn publish_checks(app: &AppHandle, actions: Vec<GuardAction>) {
+    if actions.is_empty() {
+        return;
+    }
+    if let Some(guard) = guard::of(app) {
+        guard.publish(app, actions);
+    }
+}
+
 fn changed(app: &AppHandle, note_id: Option<&str>) {
     emit_changed(app, note_id, false);
 }
@@ -6168,6 +6413,8 @@ mod tests {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         }
     }
 
@@ -6509,6 +6756,68 @@ mod tests {
         }
     }
 
+    /// A note's meter after 20 minutes of recording with no speech.
+    fn metered_inner() -> Inner {
+        let inner = paused_inner("s");
+        inner.guard.add(20 * 60_000, false);
+        inner
+    }
+
+    // Covers R4, AE7 (KTD6 of the forgotten-recording plan).
+    #[test]
+    fn continue_starts_the_silence_check_again_and_keeps_the_recording_time() {
+        let mut inner = metered_inner();
+        meter_at_reopen(&mut inner, Reopen::Continue);
+        assert_eq!(inner.guard.silence_ms(), 0);
+        assert_eq!(inner.guard.run_ms(), 20 * 60_000);
+    }
+
+    // Covers R3 (KTD6 of the forgotten-recording plan).
+    #[test]
+    fn resume_and_record_start_both_counters_at_zero() {
+        for reopen in [Reopen::Resume, Reopen::Record] {
+            let mut inner = metered_inner();
+            // The thread of a closed segment can still hold the old meter.
+            let old = Arc::clone(&inner.guard);
+            meter_at_reopen(&mut inner, reopen);
+            assert_eq!(inner.guard.silence_ms(), 0, "{reopen:?}");
+            assert_eq!(inner.guard.run_ms(), 0, "{reopen:?}");
+            old.add(1_000, false);
+            assert_eq!(inner.guard.run_ms(), 0, "{reopen:?}");
+        }
+        let mut inner = metered_inner();
+        meter_at_start(&mut inner);
+        assert_eq!(inner.guard.run_ms(), 0);
+        assert_eq!(inner.guard.silence_ms(), 0);
+    }
+
+    // Covers R1, R2 (KTD1 of the forgotten-recording plan): the detector of
+    // capture finds no speech in noise, at the device rate.
+    #[test]
+    fn the_capture_detector_finds_no_speech_in_noise() {
+        let mut detector = earshot_detector(44_100);
+        let mut state: u32 = 7;
+        let noise: Vec<f32> = (0..44_100 * 5)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.017
+            })
+            .collect();
+        let (mut frames, mut voiced) = (0, 0);
+        for part in noise.chunks(882) {
+            detector.push(part, &mut |v| {
+                frames += 1;
+                voiced += u32::from(v);
+            });
+        }
+        // 5 s at 16 kHz is 312 frames of 256 samples, less the resampler
+        // block that is not full.
+        assert!(frames >= 300, "{frames}");
+        assert_eq!(voiced, 0);
+    }
+
     // Covers R1, R5 (KTD2).
     #[test]
     fn only_a_recording_note_pauses() {
@@ -6820,6 +7129,127 @@ mod tests {
             }
         );
         assert_eq!(segment_rows(&store, "s"), vec![0]);
+    }
+
+    fn silence_reason() -> AutoStop {
+        AutoStop {
+            silence_check_minutes: Some(30),
+            time_limit_hours: None,
+        }
+    }
+
+    // Covers R17, R8, AE8 (KTD7, KTD9 of the forgotten-recording plan): a
+    // countdown that ended in the sleep stops the note from
+    // Interrupted(sleep), with its reason, and nothing opens the microphone.
+    #[test]
+    fn an_automatic_stop_after_sleep_queues_the_note_with_its_reason() {
+        let root = tempfile::tempdir().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let store = shared(store);
+        let dir = root.path().join("s");
+        write_chunks(&dir, 0, 0, 3_000);
+        // The sleep closed the segment, so `Inner` holds no segment.
+        store
+            .lock()
+            .unwrap()
+            .apply(
+                "s",
+                &Event::CaptureLost {
+                    reason: InterruptReason::Sleep,
+                    at: at(30),
+                },
+            )
+            .unwrap();
+        let mut inner = Inner::default();
+
+        assert!(begin_stop(&store, &inner, "s", Some(&silence_reason())).unwrap());
+        let id = stop_target(&store, root.path(), &mut inner, None).unwrap();
+        assert_eq!(id, "s");
+        let outcome = settle_stop(&store, &dir, &id, at(70)).unwrap();
+
+        assert_eq!(
+            outcome,
+            StopOutcome::Recorded {
+                note_id: "s".into()
+            }
+        );
+        assert!(matches!(state_of(&store, "s"), SessionState::Queued { .. }));
+        assert_eq!(
+            store.lock().unwrap().auto_stop("s").unwrap(),
+            Some(silence_reason())
+        );
+        assert!(inner.active.is_none());
+    }
+
+    // Covers KTD7: the automatic stop of a note that is no longer open
+    // stops nothing and writes no reason, also when a new note records.
+    #[test]
+    fn an_automatic_stop_of_a_note_that_is_not_open_does_nothing() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        stop_note(&mut store, "s", at(20)).unwrap();
+        recording_note(&mut store, "b", "");
+        let store = shared(store);
+        let inner = recording_segment("b", open_timeline(), 0);
+
+        assert!(!begin_stop(&store, &inner, "s", Some(&silence_reason())).unwrap());
+        assert_eq!(store.lock().unwrap().auto_stop("s").unwrap(), None);
+        assert_eq!(store.lock().unwrap().auto_stop("b").unwrap(), None);
+        // The note that records stops when its own stop is due.
+        assert!(begin_stop(&store, &inner, "b", Some(&silence_reason())).unwrap());
+    }
+
+    // Covers R7 (KTD7): the Stop answer of a prompt of the note "s" stops
+    // nothing when "s" stopped and the note "b" records. The Stop answer
+    // of the note that records is a user Stop: it writes no reason.
+    #[test]
+    fn the_stop_answer_of_a_prompt_stops_only_the_note_of_the_prompt() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        store.put_segment("s", &one_segment(1)).unwrap();
+        stop_note(&mut store, "s", at(20)).unwrap();
+        recording_note(&mut store, "b", "");
+        store.set_auto_stop("b", Some(&silence_reason())).unwrap();
+        let store = shared(store);
+        let inner = recording_segment("b", open_timeline(), 0);
+
+        assert!(!begin_stop(&store, &inner, "s", None).unwrap());
+        assert!(begin_stop(&store, &inner, "b", None).unwrap());
+        assert_eq!(store.lock().unwrap().auto_stop("b").unwrap(), None);
+    }
+
+    // Covers KTD14: a new recording stores the snapshot and removes the
+    // stop reason of an earlier recording; a Resume of an interrupted note
+    // keeps its snapshot.
+    #[test]
+    fn a_new_recording_stores_its_snapshot_and_removes_the_old_stop_reason() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        let defaults = Settings::default().recording_guards();
+        begin_recording(&store, "s", Some(&defaults)).unwrap();
+        assert_eq!(stored_guards(&store, "s"), Some(defaults));
+
+        store.set_auto_stop("s", Some(&silence_reason())).unwrap();
+        let mut changed = defaults;
+        changed.silence_check_minutes = None;
+        begin_recording(&store, "s", None).unwrap();
+        assert_eq!(stored_guards(&store, "s"), Some(defaults));
+        assert_eq!(store.auto_stop("s").unwrap(), None);
+
+        begin_recording(&store, "s", Some(&changed)).unwrap();
+        assert_eq!(stored_guards(&store, "s"), Some(changed));
+    }
+
+    // Covers KTD14: a note with no snapshot gets no checks.
+    #[test]
+    fn a_note_with_no_snapshot_has_no_checks() {
+        let mut store = Store::open_in_memory().unwrap();
+        recording_note(&mut store, "s", "");
+        assert_eq!(stored_guards(&store, "s"), None);
+        store.set_recording_guards("s", Some("not json")).unwrap();
+        assert_eq!(stored_guards(&store, "s"), None);
     }
 
     // Covers C8: a Start in the same run does not delete the chunks.

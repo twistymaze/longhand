@@ -45,6 +45,8 @@ fn segment(
         audio_file: format!("audio/{index}.wav"),
         channels: 1,
         ends_in_pause,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
 }
 fn row_at(start_ms: u64, text: &str) -> RecognitionSegment {
@@ -104,6 +106,117 @@ fn a_recognition_transcript_has_a_line_between_segments() {
         ]
     );
 }
+/// The lines of the recognition transcript of `rows` over `segments`, as
+/// short labels with the original recording time of each turn.
+fn route_lines(rows: Vec<RecognitionSegment>, segments: &[session_core::Segment]) -> Vec<String> {
+    use session_core::folder::TranscriptLine;
+    let result = RouteResult {
+        route: Route::Off,
+        coverage: vec![SampleRange {
+            start: 0,
+            end: 20_000_000 * 16,
+        }],
+        rows,
+        speakers: vec![],
+        coverage_limitations: vec![],
+    };
+    pipeline::recognition::transcript(&result, segments)
+        .lines
+        .iter()
+        .map(|l| match l {
+            TranscriptLine::Turn {
+                position_ms, text, ..
+            } => format!("{position_ms} {text}"),
+            TranscriptLine::Pause { duration_ms } => format!("pause {duration_ms}"),
+            TranscriptLine::Gap { duration_ms } => format!("gap {duration_ms}"),
+            TranscriptLine::Silence { duration_ms } => format!("silence {duration_ms}"),
+            TranscriptLine::Text { text } => format!("text {text}"),
+        })
+        .collect()
+}
+
+fn cut(
+    segment: session_core::Segment,
+    cut_before_ms: u64,
+    cut_after_ms: u64,
+) -> session_core::Segment {
+    session_core::Segment {
+        cut_before_ms,
+        cut_after_ms,
+        ..segment
+    }
+}
+
+// Covers R15 on the recognition route: a cut between two parts gives one
+// silence line with the removed duration, and the turn times keep the
+// original recording time.
+#[test]
+fn a_recognition_transcript_has_one_silence_line_for_a_cut_between_parts() {
+    let segments = [
+        cut(segment(0, 0, 180_000, false), 0, 1_920_000),
+        segment(1, 2_100_000, 180_000, false),
+    ];
+    assert_eq!(
+        route_lines(
+            vec![row_at(1_000, "before"), row_at(2_190_000, "after")],
+            &segments
+        ),
+        ["1000 before", "silence 1920000", "2190000 after"]
+    );
+}
+
+// Covers R15 on the recognition route: a trailing cut gives a final
+// silence line, and a leading cut gives a first silence line.
+#[test]
+fn a_recognition_transcript_has_a_silence_line_for_a_leading_and_a_trailing_cut() {
+    assert_eq!(
+        route_lines(
+            vec![row_at(1_000, "the end")],
+            &[cut(segment(0, 0, 180_000, false), 0, 1_800_000)]
+        ),
+        ["1000 the end", "silence 1800000"]
+    );
+    assert_eq!(
+        route_lines(
+            vec![row_at(690_000, "hello")],
+            &[cut(segment(0, 600_000, 180_000, false), 600_000, 0)]
+        ),
+        ["silence 600000", "690000 hello"]
+    );
+    // AE9: no speech at all gives one silence line.
+    assert_eq!(
+        route_lines(vec![], &[cut(segment(0, 0, 60_000, false), 0, 10_740_000)]),
+        ["silence 10740000"]
+    );
+}
+
+// Covers R15 and KTD21 on the recognition route: a cut before a Resume
+// gives silence then gap, and a cut before a Pause gives silence then
+// pause.
+#[test]
+fn a_recognition_transcript_has_the_rest_line_after_a_cut() {
+    assert_eq!(
+        route_lines(
+            vec![row_at(1_000, "one"), row_at(901_000, "two")],
+            &[
+                cut(segment(0, 0, 180_000, false), 0, 600_000),
+                segment(1, 900_000, 60_000, false),
+            ]
+        ),
+        ["1000 one", "silence 600000", "gap 120000", "901000 two"]
+    );
+    assert_eq!(
+        route_lines(
+            vec![row_at(1_000, "one"), row_at(1_081_000, "two")],
+            &[
+                cut(segment(0, 0, 180_000, true), 0, 600_000),
+                segment(1, 1_080_000, 60_000, false),
+            ]
+        ),
+        ["1000 one", "silence 600000", "pause 300000", "1081000 two"]
+    );
+}
+
 // A note seeded from its transcript.md keeps the paragraphs of its old part
 // when the recognition route writes the transcript again. The rows come
 // from the seeded windows, as in the transcribe step of the route.

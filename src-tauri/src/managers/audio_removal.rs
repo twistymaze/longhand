@@ -989,6 +989,8 @@ mod tests {
                 audio_file: AUDIO.into(),
                 channels: 1,
                 ends_in_pause: false,
+                cut_before_ms: 0,
+                cut_after_ms: 0,
             }];
             let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
             let summary = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";

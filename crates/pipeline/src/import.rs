@@ -995,6 +995,8 @@ impl Imports {
                         audio_file: crate::recover::segment_audio_file(0),
                         channels: 1,
                         ends_in_pause: false,
+                        cut_before_ms: 0,
+                        cut_after_ms: 0,
                     };
                     store.finish_import(id, &segment, Local::now().fixed_offset())?;
                     true

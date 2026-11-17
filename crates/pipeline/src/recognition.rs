@@ -190,9 +190,11 @@ pub fn covers(ranges: &[SampleRange], required: SampleRange) -> bool {
 }
 
 /// Render readable turns without discarding the neutral rows' timing precision.
-/// Between two of the note's `segments`, a pause line or a gap line goes
-/// before the first turn of the later segment, as in `join::build` (KTD5 of
-/// the pause plan).
+/// Between two of the note's `segments`, the boundary lines (a silence line
+/// for a cut, a pause line or a gap line) go before the first turn of the
+/// later segment, as in `join::build` (KTD5 of the pause plan, KTD21 of the
+/// forgotten-recording plan). A cut before the first segment or after the
+/// last segment gives a first or a last silence line.
 pub fn transcript(
     result: &RouteResult,
     segments: &[session_core::Segment],
@@ -200,18 +202,21 @@ pub fn transcript(
     use session_core::folder::{Transcript, TranscriptLine};
     let mut ordered: Vec<_> = segments.iter().collect();
     ordered.sort_by_key(|s| s.offset_ms);
-    // (start of the later segment, its line), in timeline order.
+    // (start of the later segment, its lines), in timeline order.
     let mut boundaries = ordered
         .windows(2)
         .map(|pair| {
             (
                 pair[1].offset_ms,
-                crate::join::boundary_line(pair[0], pair[1]),
+                crate::join::boundary_lines(pair[0], pair[1]),
             )
         })
         .peekable();
     let mut keys: Vec<asr::SpeakerKey> = Vec::new();
-    let mut lines = Vec::new();
+    let mut lines = ordered
+        .first()
+        .map(|first| crate::join::leading_lines(first))
+        .unwrap_or_default();
     let mut open: Option<(Option<u32>, u64, u64, String)> = None;
     let mut rows: Vec<_> = result.rows.iter().collect();
     rows.sort_by_key(|r| r.range.start);
@@ -221,7 +226,7 @@ pub fn transcript(
             continue;
         }
         let start = row.range.start / 16;
-        while let Some((_, line)) = boundaries.next_if(|(at, _)| *at <= start) {
+        while let Some((_, boundary)) = boundaries.next_if(|(at, _)| *at <= start) {
             if let Some((speaker, position_ms, _, text)) = open.take() {
                 lines.push(TranscriptLine::Turn {
                     position_ms,
@@ -229,7 +234,7 @@ pub fn transcript(
                     text,
                 });
             }
-            lines.push(line);
+            lines.extend(boundary);
         }
         let speaker = row.speaker.as_ref().map(|key| {
             let index = keys
@@ -276,8 +281,11 @@ pub fn transcript(
             text,
         });
     }
-    // A segment with no text after it still gets its line.
-    lines.extend(boundaries.map(|(_, line)| line));
+    // A segment with no text after it still gets its lines.
+    lines.extend(boundaries.flat_map(|(_, boundary)| boundary));
+    if let Some(last) = ordered.last() {
+        lines.extend(crate::join::trailing_lines(last));
+    }
     Transcript {
         has_speakers: result.route != Route::Off,
         lines,

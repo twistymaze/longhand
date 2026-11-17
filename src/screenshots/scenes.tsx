@@ -61,6 +61,7 @@ const idle: RecordingStatus = {
   microphone_fallback: false,
   note_apps: [],
   app_audio: null,
+  prompt: null,
   microphone_choice: null,
   paused: false,
   recorded_ms: 0,
@@ -112,6 +113,7 @@ const detail = (e: SessionEntry): SessionDetail => ({
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
 });
 
 // The weekly team meeting after it ended. The recording scene shows
@@ -290,6 +292,7 @@ function recording(): Scene {
     levels,
     recordedMs: 18 * 60_000 + 24_000,
     lostReason: null,
+    prompt: null,
     refresh: async () => {},
   };
   return {
@@ -341,7 +344,7 @@ const teamDocument = () =>
 
 function summary(): Scene {
   const e = teamMeeting;
-  const capture: Capture = { status: idle, input: "idle", levels: [], recordedMs: 0, lostReason: null, refresh: async () => {} };
+  const capture: Capture = { status: idle, input: "idle", levels: [], recordedMs: 0, lostReason: null, prompt: null, refresh: async () => {} };
   return {
     handlers: {
       ...common(recordingNotes),

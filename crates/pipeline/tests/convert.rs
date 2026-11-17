@@ -48,6 +48,8 @@ fn save_note(store: &SharedStore, working: &Path, id: &str, root: &Path) -> Path
         audio_file: "audio/segment-01.opus".into(),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     };
     {
         let mut s = store.lock().unwrap();

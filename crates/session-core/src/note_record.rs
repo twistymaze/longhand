@@ -77,6 +77,24 @@ pub struct NoteRecord {
     /// the storage folder decides whether a file was imported.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub import: Option<ImportSource>,
+    /// The checks in the prompt when Longhand stopped the note (R8, KTD8 of
+    /// the forgotten-recording plan). `None` for a note that the user
+    /// stopped. An older build drops the field at its next write.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_stop: Option<AutoStop>,
+}
+
+/// The checks in the prompt when Longhand stopped a note, each with the
+/// time that the recording settings snapshot had for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutoStop {
+    /// The time of the silence check, when the silence check was in the
+    /// prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silence_check_minutes: Option<u32>,
+    /// The time of the time limit, when the time limit was in the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_limit_hours: Option<u32>,
 }
 
 /// The source of an imported note: the file that it was imported from.
@@ -127,6 +145,7 @@ impl NoteRecord {
             segments: Vec::new(),
             summary: None,
             import: None,
+            auto_stop: None,
         }
     }
 

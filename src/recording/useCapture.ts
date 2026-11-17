@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { commands, events, type RecordingStatus } from "../bindings";
+import { commands, events, type Prompt, type RecordingStatus } from "../bindings";
 import { type InputStatus, inputStatus } from "./inputStatus";
+import { usePrompt } from "./StillRecording";
 
 /// 30 s of history at one peak per 250 ms.
 export const HISTORY = 120;
@@ -12,6 +13,8 @@ export type Capture = {
   /// Recorded so far, gaps between segments excluded: the elapsed time shown.
   recordedMs: number;
   lostReason: string | null;
+  /// The open "Keep recording?" prompt of the note, or null (R5).
+  prompt: Prompt | null;
   refresh: () => Promise<void>;
 };
 
@@ -26,11 +29,14 @@ export function useCapture(): Capture {
   /// keeps it, so the ticked time stays.
   const tickedSession = useRef<string | null>(null);
   const startedAt = useRef<number | null>(null);
+  const { prompt, read: readPrompt } = usePrompt();
 
   const refresh = useCallback(async () => {
+    const applyPrompt = readPrompt();
     const result = await commands.recordingStatus();
     if (result.status === "ok") {
       setStatus(result.data);
+      applyPrompt(result.data.prompt);
       // While paused, interrupted or not recording, no tick arrives, and
       // the status holds the whole recorded time. While a segment records,
       // the status does not hold that segment, so the ticks give the time.
@@ -41,7 +47,7 @@ export function useCapture(): Capture {
         setRecordedMs(d.recorded_ms);
       }
     }
-  }, []);
+  }, [readPrompt]);
 
   useEffect(() => {
     void refresh();
@@ -107,6 +113,7 @@ export function useCapture(): Capture {
     levels,
     recordedMs,
     lostReason,
+    prompt,
     refresh,
   };
 }

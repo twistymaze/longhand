@@ -1820,6 +1820,7 @@ fn windowed_analysis(total: usize) -> diarize::Analysis {
     diarize::Analysis {
         total,
         step,
+        grid_start: 0,
         activities: vec![
             pyannote_local::segmentation::WindowActivity {
                 frames: vec![[true, false, false]; 10],
@@ -1885,7 +1886,7 @@ fn has_turns(r: &Run) -> bool {
 /// Put `u64::MAX` as the window count of the analysis file at `path`.
 fn damage_window_count(path: &std::path::Path) {
     let mut raw = std::fs::read(path).unwrap();
-    raw[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
+    raw[32..40].copy_from_slice(&u64::MAX.to_le_bytes());
     std::fs::write(path, raw).unwrap();
 }
 

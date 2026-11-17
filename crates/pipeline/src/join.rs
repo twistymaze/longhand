@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use diarize::Turn;
-use session_core::folder::{Transcript, TranscriptLine};
+use session_core::folder::{Transcript, TranscriptLine, rest_between};
 use session_core::{Segment, Stage};
 
 use crate::diarize::{Speakers, speakers};
@@ -74,9 +74,14 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
     let mut lines = Vec::new();
     let mut previous: Option<&Segment> = None;
     for segment in ordered {
-        if let Some(before) = previous {
-            lines.push(boundary_line(before, segment));
-        }
+        let before_lines = match previous {
+            Some(before) => boundary_lines(before, segment),
+            None => leading_lines(segment),
+        };
+        // The kept margin next to a cut gets no silence line of its own:
+        // the silence line of the cut shows the removed stretch (R15).
+        let after_cut = matches!(before_lines.last(), Some(TranscriptLine::Silence { .. }));
+        lines.extend(before_lines);
         previous = Some(segment);
 
         let mut pieces: Vec<Piece> = Vec::new();
@@ -116,8 +121,10 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
         // (speaker, position, text) of the turn being built.
         let mut open: Option<(Option<u32>, u64, String)> = None;
         let mut last_end = 0u64;
+        let mut first = true;
         for piece in pieces.iter().filter(|p| !p.text.trim().is_empty()) {
-            if piece.start_ms.saturating_sub(last_end) >= SILENCE_MARK_MS {
+            let margin = std::mem::take(&mut first) && after_cut;
+            if piece.start_ms.saturating_sub(last_end) >= SILENCE_MARK_MS && !margin {
                 flush(&mut open, &mut lines);
                 lines.push(TranscriptLine::Silence {
                     duration_ms: piece.start_ms - last_end,
@@ -154,11 +161,15 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
             }
         }
         flush(&mut open, &mut lines);
-        if segment.duration_ms.saturating_sub(last_end) >= SILENCE_MARK_MS {
+        let margin = segment.cut_after_ms > 0 || (first && after_cut);
+        if segment.duration_ms.saturating_sub(last_end) >= SILENCE_MARK_MS && !margin {
             lines.push(TranscriptLine::Silence {
                 duration_ms: segment.duration_ms - last_end,
             });
         }
+    }
+    if let Some(last) = previous {
+        lines.extend(trailing_lines(last));
     }
 
     renumber(&mut lines);
@@ -168,15 +179,44 @@ pub fn build(segments: &[Segment], windows: &[WindowResult], speakers: &Speakers
     }
 }
 
-/// The line between two segments that follow each other: a pause line when
-/// the note paused after `before`, otherwise a gap line (KTD5 of the pause
-/// plan). Both transcript routes use it.
-pub(crate) fn boundary_line(before: &Segment, after: &Segment) -> TranscriptLine {
-    let duration_ms = after.offset_ms.saturating_sub(before.end_ms());
-    if before.ends_in_pause {
-        TranscriptLine::Pause { duration_ms }
+/// The lines between two segments that follow each other (KTD21 of the
+/// forgotten-recording plan). Both transcript routes use them:
+///
+/// 1. a silence line for the audio that the cut removed after `before`;
+/// 2. a pause line when the note paused after `before`, otherwise a gap
+///    line (KTD5 of the pause plan), for the rest of the distance, as
+///    [`rest_between`] gives it;
+/// 3. a silence line for the audio that the cut removed before `after`.
+pub fn boundary_lines(before: &Segment, after: &Segment) -> Vec<TranscriptLine> {
+    let mut lines = trailing_lines(before);
+    if let Some(duration_ms) = rest_between(before, after) {
+        lines.push(if before.ends_in_pause {
+            TranscriptLine::Pause { duration_ms }
+        } else {
+            TranscriptLine::Gap { duration_ms }
+        });
+    }
+    lines.extend(leading_lines(after));
+    lines
+}
+
+/// The silence line for the audio that the cut removed before `segment`,
+/// if any.
+pub fn leading_lines(segment: &Segment) -> Vec<TranscriptLine> {
+    cut_line(segment.cut_before_ms)
+}
+
+/// The silence line for the audio that the cut removed after `segment`,
+/// if any.
+pub fn trailing_lines(segment: &Segment) -> Vec<TranscriptLine> {
+    cut_line(segment.cut_after_ms)
+}
+
+fn cut_line(duration_ms: u64) -> Vec<TranscriptLine> {
+    if duration_ms == 0 {
+        Vec::new()
     } else {
-        TranscriptLine::Gap { duration_ms }
+        vec![TranscriptLine::Silence { duration_ms }]
     }
 }
 

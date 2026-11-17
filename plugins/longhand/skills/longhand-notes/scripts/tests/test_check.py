@@ -655,6 +655,63 @@ class SettingsTests(support.StorageFolderTest):
                 self.assertIn(key, out)
                 self.write(original, ".longhand/settings.json")
 
+    def test_valid_recording_check_values_pass(self):
+        cases = [
+            ("silence_check_minutes", "off"),
+            ("silence_check_minutes", 5),
+            ("silence_check_minutes", 240),
+            ("recording_time_limit_hours", "off"),
+            ("recording_time_limit_hours", 1),
+            ("recording_time_limit_hours", 24),
+            ("long_silence_cut_minutes", "off"),
+            ("long_silence_cut_minutes", 5),
+            ("long_silence_cut_minutes", 240),
+            ("stop_countdown_minutes", 1),
+            ("stop_countdown_minutes", 10),
+        ]
+        for key, good in cases:
+            with self.subTest(key=key, value=good):
+                original = self.read(".longhand/settings.json")
+                snapshot = self.snapshot()
+                value = self.settings()
+                value[key] = good
+                self.write_settings(value)
+                code, out, _ = self.compare(snapshot)
+                self.assertEqual(code, PASS, out)
+                self.write(original, ".longhand/settings.json")
+
+    def test_recording_check_values_that_are_not_valid_are_problems(self):
+        cases = [
+            ("silence_check_minutes", 4),
+            ("silence_check_minutes", 241),
+            ("silence_check_minutes", "30"),
+            ("silence_check_minutes", 30.5),
+            ("silence_check_minutes", True),
+            ("silence_check_minutes", None),
+            ("recording_time_limit_hours", 0),
+            ("recording_time_limit_hours", 25),
+            ("recording_time_limit_hours", "never"),
+            ("long_silence_cut_minutes", 4),
+            ("long_silence_cut_minutes", 241),
+            ("long_silence_cut_minutes", False),
+            ("stop_countdown_minutes", 0),
+            ("stop_countdown_minutes", 11),
+            ("stop_countdown_minutes", "off"),
+            ("stop_countdown_minutes", 2.5),
+            ("stop_countdown_minutes", True),
+        ]
+        for key, bad in cases:
+            with self.subTest(key=key, value=bad):
+                original = self.read(".longhand/settings.json")
+                snapshot = self.snapshot()
+                value = self.settings()
+                value[key] = bad
+                self.write_settings(value)
+                code, out, _ = self.compare(snapshot)
+                self.assertEqual(code, PROBLEM, out)
+                self.assertIn(key, out)
+                self.write(original, ".longhand/settings.json")
+
     def test_a_settings_file_that_does_not_parse_is_a_problem(self):
         snapshot = self.snapshot()
         self.write(self.read(".longhand/settings.json")[:-10], ".longhand/settings.json")

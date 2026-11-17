@@ -74,6 +74,8 @@ pub fn write_segment(
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 1,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
 }
 
@@ -124,6 +126,8 @@ pub fn write_stereo_segment(
         audio_file: format!("audio/segment-{:02}.opus", index + 1),
         channels: 2,
         ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
     }
 }
 

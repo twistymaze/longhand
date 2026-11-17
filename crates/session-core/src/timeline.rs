@@ -28,6 +28,16 @@ pub struct Segment {
     /// plan). A resume of the note clears it on the last segment.
     #[serde(default)]
     pub ends_in_pause: bool,
+    /// The removed audio before the segment start, for a stretch at the
+    /// start of a recording (KTD21 of the forgotten-recording plan). The
+    /// transcript shows it as one silence line.
+    #[serde(default)]
+    pub cut_before_ms: u64,
+    /// The removed audio after the segment end (KTD21 of the
+    /// forgotten-recording plan). The transcript shows it as one silence
+    /// line.
+    #[serde(default)]
+    pub cut_after_ms: u64,
 }
 
 /// The channel count of a record that has no `channels` field: mono. The
@@ -142,9 +152,11 @@ impl Timeline {
 
     /// The index the next opened segment takes. A dropped sub-second segment
     /// gives its index back, so saved audio files number without holes. A
-    /// retired index is not given back.
+    /// retired index is not given back. The largest index counts, not the
+    /// last segment by offset: after a cut, indices are not in time order
+    /// (KTD22 of the forgotten-recording plan).
     fn next_index(&self) -> u32 {
-        let closed = self.segments.last().map(|s| s.index + 1).unwrap_or(0);
+        let closed = self.segments.iter().map(|s| s.index + 1).max().unwrap_or(0);
         closed
             .max(self.open.as_ref().map(|o| o.index + 1).unwrap_or(0))
             .max(self.retired)
@@ -251,6 +263,8 @@ impl Timeline {
             audio_file,
             channels: open.channels,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         };
         self.segments.push(segment.clone());
         Ok(Closed::Kept(segment))

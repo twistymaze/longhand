@@ -1076,6 +1076,8 @@ mod stereo {
             audio_file: "audio/segment-01.opus".into(),
             channels: 2,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         };
         store
             .lock()
@@ -1091,4 +1093,62 @@ mod stereo {
         assert!(err.contains("free some space"), "{err}");
         assert!(check(needed).is_ok(), "no temporary file is needed");
     }
+}
+
+/// Write 180 s of 48-kHz audio as segment 0, and give the last chunk the
+/// index 1, as a cut that removes the second chunk does.
+fn cut_segment(dir: &std::path::Path, audio: &[f32]) -> session_core::Segment {
+    let whole = write_segment(dir, 0, 0, 48_000, audio, false);
+    let recovery = dir.join(RECOVERY_DIR);
+    for chunk in recorder::list_chunks(&recovery).unwrap() {
+        if chunk.start_ms == 120_000 {
+            let name = chunk
+                .path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            std::fs::rename(&chunk.path, recovery.join(format!("1{}", &name[1..]))).unwrap();
+        }
+    }
+    session_core::Segment {
+        index: 1,
+        offset_ms: 120_000,
+        duration_ms: 60_000,
+        audio_file: "audio/segment-02.opus".into(),
+        ..whole
+    }
+}
+
+#[test]
+fn a_part_of_a_cut_segment_has_the_processing_samples_of_the_original_segment() {
+    // KTD16 and KTD18 of the forgotten-recording plan: the live speaker
+    // features of a part stay valid only with the same samples.
+    let audio: Vec<f32> = (0..48_000usize * 180)
+        .map(|i| ((i * 7_919 % 2_003) as f32 / 2_003.0 - 0.5) * 0.5)
+        .collect();
+    let root = tempfile::tempdir().unwrap();
+    let whole_dir = root.path().join("whole");
+    let whole = write_segment(&whole_dir, 0, 0, 48_000, &audio, false);
+    assemble::assemble_segment(
+        &whole_dir.join(RECOVERY_DIR),
+        &whole_dir,
+        &whole,
+        &Unattended,
+    )
+    .unwrap();
+    let (_, whole) = read_proc(&whole_dir.join(proc_file(&whole.audio_file)));
+
+    let dir = root.path().join("part");
+    let part = cut_segment(&dir, &audio);
+    let recovery = dir.join(RECOVERY_DIR);
+    assemble::assemble_part(&recovery, &dir, &part, Some(0), &Unattended).unwrap();
+    let (_, samples) = read_proc(&dir.join(proc_file(&part.audio_file)));
+    assert_eq!(samples.len(), 60 * 16_000);
+    assert!(samples == whole[120 * 16_000..], "the samples differ");
+
+    // With no pre-roll, the resampler starts on another block grid.
+    assemble::assemble_part(&recovery, &dir, &part, None, &Unattended).unwrap();
+    let (_, samples) = read_proc(&dir.join(proc_file(&part.audio_file)));
+    assert!(samples != whole[120 * 16_000..]);
 }

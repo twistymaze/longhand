@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { mockWindows } from "@tauri-apps/api/mocks";
-import type { RecordingStatus } from "../bindings";
+import type { Prompt, RecordingStatus } from "../bindings";
 import { mockTauri } from "../test/tauri";
 import { RecordingWidget } from "./RecordingWidget";
 
@@ -20,6 +20,7 @@ const idle: RecordingStatus = {
   microphone_fallback: false,
   note_apps: [],
   app_audio: null,
+  prompt: null,
   microphone_choice: null,
   paused: false,
   recorded_ms: 0,
@@ -224,5 +225,65 @@ describe("the pill", () => {
     const { tauri } = open(() => idle);
     await waitFor(() => expect(called(tauri, "recording_status")).toBeGreaterThan(0));
     expect(screen.queryByRole("button")).toBeNull();
+  });
+});
+
+describe("the Keep recording? prompt in the pill (R5, R9, KTD11)", () => {
+  const prompt = (generation: number): Prompt => ({
+    note_id: "s1",
+    generation,
+    silence_check_minutes: 30,
+    time_limit_hours: null,
+    deadline_ms: Date.now() + 120_000,
+    countdown_minutes: 2,
+  });
+
+  test("shows from the status with the countdown, Keep Recording and Stop", async () => {
+    open(() => ({ ...recording, prompt: prompt(4) }));
+    await screen.findByText("Keep recording?");
+    expect(screen.getByRole("button", { name: "Keep Recording" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Stop" })).toHaveLength(2);
+    expect(screen.getByText(/^[12]:[0-5]\d$/)).toBeTruthy();
+  });
+
+  test("shows from the event and goes on a close event", async () => {
+    const { tauri } = open(() => recording);
+    await screen.findByRole("button", { name: "Pause" });
+    expect(screen.queryByText("Keep recording?")).toBeNull();
+    await act(async () => {
+      await tauri.emit("recording-prompt", { generation: 1, prompt: prompt(1) });
+    });
+    expect(screen.getByText("Keep recording?")).toBeTruthy();
+    await act(async () => {
+      await tauri.emit("recording-prompt", { generation: 0, prompt: null });
+    });
+    expect(screen.getByText("Keep recording?")).toBeTruthy();
+    await act(async () => {
+      await tauri.emit("recording-prompt", { generation: 1, prompt: null });
+    });
+    expect(screen.queryByText("Keep recording?")).toBeNull();
+  });
+
+  test("goes when the capture ends", async () => {
+    const { tauri } = open(() => ({ ...recording, prompt: prompt(2) }));
+    await screen.findByText("Keep recording?");
+    await act(async () => {
+      await tauri.emit("capture-ended", { note_id: "s1", reason: "Microphone disconnected" });
+    });
+    expect(screen.queryByText("Keep recording?")).toBeNull();
+  });
+
+  test("each answer calls its command with the generation and does not show the note", async () => {
+    const { tauri, user } = open(() => ({ ...recording, prompt: prompt(9) }), {
+      keep_recording: () => null,
+      stop_from_prompt: () => null,
+    });
+    await user.click(await screen.findByRole("button", { name: "Keep Recording" }));
+    const [answerStop] = screen.getAllByRole("button", { name: "Stop" }).filter((b) => b.dataset.control === "answer-stop");
+    await user.click(answerStop!);
+    expect(tauri.calls.filter((c) => c.cmd === "keep_recording").map((c) => c.args)).toEqual([{ generation: 9 }]);
+    expect(tauri.calls.filter((c) => c.cmd === "stop_from_prompt").map((c) => c.args)).toEqual([{ generation: 9 }]);
+    expect(called(tauri, "stop_recording")).toBe(0);
+    expect(called(tauri, "widget_open_note")).toBe(0);
   });
 });

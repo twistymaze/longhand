@@ -5,13 +5,14 @@
 //! machine and persists the result together with its queue side effects in
 //! one transaction.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use chrono::{DateTime, FixedOffset};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::folder::{PendingType, SessionDoc, SpeakerCount};
-use crate::note_record::ImportSource;
+use crate::note_record::{AutoStop, ImportSource};
 use crate::recognition;
 use crate::state::{Event, IllegalTransition, SessionState, Stage};
 use crate::timeline::Segment;
@@ -35,6 +36,25 @@ pub enum StoreError {
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+/// The recording checks and the long-silence cut of one recording (KTD14
+/// of the forgotten-recording plan). Start, a Resume of a saved note and
+/// Record into a note each read the shared settings once and store this
+/// snapshot with the note. The checks and the cut read only the snapshot,
+/// so a change of the settings applies to the next recording (R11). `None`
+/// is a check or a cut that is off.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecordingGuards {
+    /// The minutes with no speech before the silence check triggers (R2).
+    pub silence_check_minutes: Option<u32>,
+    /// The hours of recording time before the time limit triggers (R3).
+    pub time_limit_hours: Option<u32>,
+    /// The shortest stretch of silence, in minutes, that the cut removes
+    /// (R12).
+    pub cut_minutes: Option<u32>,
+    /// The minutes of the countdown of the "Keep recording?" prompt (R5).
+    pub countdown_minutes: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
@@ -821,6 +841,25 @@ impl Store {
         Ok(())
     }
 
+    /// The checks in the prompt when Longhand stopped the note `id` (R8,
+    /// KTD8 of the forgotten-recording plan). `None` for a note that the
+    /// user stopped. The save writes it into `longhand.json`.
+    pub fn auto_stop(&self, id: &str) -> Result<Option<AutoStop>> {
+        Ok(self
+            .result_state(id, AUTO_STOP)?
+            .map(serde_json::from_value)
+            .transpose()?)
+    }
+
+    /// Write the stop reason of the note `id`. `None` removes it: a new
+    /// recording of the note has no stop reason yet.
+    pub fn set_auto_stop(&self, id: &str, reason: Option<&AutoStop>) -> Result<()> {
+        match reason {
+            Some(reason) => self.set_result_state(id, AUTO_STOP, &serde_json::to_value(reason)?),
+            None => self.clear_result_state(id, AUTO_STOP),
+        }
+    }
+
     pub fn promote_result_snapshot(
         &self,
         id: &str,
@@ -1546,7 +1585,7 @@ impl Store {
     pub fn segments(&self, note_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self.conn.prepare(
             "SELECT idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
-               ends_in_pause
+               ends_in_pause, cut_before_ms, cut_after_ms
              FROM segments WHERE note_id = ?1 ORDER BY offset_ms",
         )?;
         let rows = stmt.query_map([note_id], |r| {
@@ -1559,11 +1598,13 @@ impl Store {
                 r.get::<_, String>(5)?,
                 r.get::<_, u16>(6)?,
                 r.get::<_, bool>(7)?,
+                (r.get::<_, i64>(8)?, r.get::<_, i64>(9)?),
             ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            let (index, offset, duration, start, end, audio_file, channels, ends_in_pause) = row?;
+            let (index, offset, duration, start, end, audio_file, channels, ends_in_pause, cut) =
+                row?;
             out.push(Segment {
                 index,
                 offset_ms: offset as u64,
@@ -1573,9 +1614,97 @@ impl Store {
                 audio_file,
                 channels,
                 ends_in_pause,
+                cut_before_ms: cut.0 as u64,
+                cut_after_ms: cut.1 as u64,
             });
         }
         Ok(out)
+    }
+
+    /// The indices of the note's segments that the long-silence cut checked
+    /// (KTD19 of the forgotten-recording plan).
+    pub fn cut_checked(&self, note_id: &str) -> Result<BTreeSet<u32>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT idx FROM segments WHERE note_id = ?1 AND cut_checked = 1")?;
+        let rows = stmt.query_map([note_id], |r| r.get::<_, u32>(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Mark the segments `indices` of the note `id` as checked by the
+    /// long-silence cut (KTD19 of the forgotten-recording plan).
+    pub fn mark_cut_checked(&self, id: &str, indices: &[u32]) -> Result<()> {
+        self.require(id)?;
+        mark_checked(&self.conn, id, indices)
+    }
+
+    /// Write the store changes of a long-silence cut in one transaction
+    /// (KTD19 of the forgotten-recording plan): delete the rows of
+    /// `deleted_segments`, write the rows of `segments`, mark the segments
+    /// `checked` as checked by the cut, and write or delete each
+    /// checkpoint. A checkpoint with no payload is deleted.
+    pub fn apply_cut(&mut self, id: &str, cut: &CutRows) -> Result<()> {
+        self.require(id)?;
+        let tx = self.conn.transaction()?;
+        for index in &cut.deleted_segments {
+            tx.execute(
+                "DELETE FROM segments WHERE note_id = ?1 AND idx = ?2",
+                params![id, index],
+            )?;
+        }
+        for segment in &cut.segments {
+            insert_segment(&tx, id, segment)?;
+        }
+        mark_checked(&tx, id, &cut.checked)?;
+        for (stage, key, payload) in &cut.checkpoints {
+            match payload {
+                Some(payload) => put_checkpoint_in(&tx, id, *stage, key, payload)?,
+                None => {
+                    tx.execute(
+                        "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2 AND key = ?3",
+                        params![id, stage_key(*stage), key],
+                    )?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The recording settings snapshot of the note `id` (KTD14 of the
+    /// forgotten-recording plan), as the JSON text that the recording
+    /// wrote. `None` for a note with no snapshot.
+    pub fn recording_guards(&self, id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT recording_guards FROM sessions WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NoSuchSession(id.into()))
+    }
+
+    /// The recording settings snapshot of the note `id`, parsed. `None`
+    /// for a note with no snapshot, and for a snapshot that does not parse:
+    /// the log then gets a warning.
+    pub fn read_recording_guards(&self, id: &str) -> Result<Option<RecordingGuards>> {
+        let Some(text) = self.recording_guards(id)? else {
+            return Ok(None);
+        };
+        Ok(serde_json::from_str(&text)
+            .inspect_err(|e| log::warn!("the recording checks of {id} do not parse: {e}"))
+            .ok())
+    }
+
+    /// Write the recording settings snapshot of the note `id` (KTD14 of
+    /// the forgotten-recording plan). `None` removes it.
+    pub fn set_recording_guards(&self, id: &str, guards: Option<&str>) -> Result<()> {
+        self.update_one(
+            id,
+            "UPDATE sessions SET recording_guards = ?2 WHERE id = ?1",
+            guards,
+        )
     }
 
     /// Mark the note's last kept segment as the end of a pause (KTD4 of the
@@ -2442,6 +2571,21 @@ impl Store {
     }
 }
 
+/// The store changes of a long-silence cut (KTD19 of the
+/// forgotten-recording plan). [`Store::apply_cut`] writes them in one
+/// transaction.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CutRows {
+    /// The indices of the segment rows to delete. A row in `segments`
+    /// with the same index is written after the delete.
+    pub deleted_segments: Vec<u32>,
+    pub segments: Vec<Segment>,
+    /// The indices of the segments that get the cut mark.
+    pub checked: Vec<u32>,
+    /// The checkpoints to write. `None` deletes the checkpoint.
+    pub checkpoints: Vec<(Stage, String, Option<String>)>,
+}
+
 /// Add `id` to the Move with the step Pending, unless the Move has it.
 /// Returns the number of rows that it added.
 fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
@@ -2452,18 +2596,31 @@ fn insert_pending_move_note(conn: &Connection, id: &str) -> Result<usize> {
 }
 
 /// Write `segment`. A segment that the row already has keeps its removed
-/// flag: only the scan, the refresh and the adopt set it.
+/// flag: only the scan, the refresh and the adopt set it. It also keeps its
+/// cut mark: only the cut sets it.
+/// Mark the segments `indices` of the note `id` as checked by the
+/// long-silence cut (KTD19 of the forgotten-recording plan).
+fn mark_checked(conn: &Connection, id: &str, indices: &[u32]) -> Result<()> {
+    conn.execute(
+        "UPDATE segments SET cut_checked = 1
+         WHERE note_id = ?1 AND idx IN (SELECT value FROM json_each(?2))",
+        params![id, serde_json::to_string(indices)?],
+    )?;
+    Ok(())
+}
+
 fn insert_segment(conn: &Connection, note_id: &str, segment: &Segment) -> Result<()> {
     conn.execute(
         "INSERT INTO segments
          (note_id, idx, offset_ms, duration_ms, wall_start, wall_end, audio_file, channels,
-          ends_in_pause)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+          ends_in_pause, cut_before_ms, cut_after_ms)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT (note_id, idx) DO UPDATE SET
            offset_ms = excluded.offset_ms, duration_ms = excluded.duration_ms,
            wall_start = excluded.wall_start, wall_end = excluded.wall_end,
            audio_file = excluded.audio_file, channels = excluded.channels,
-           ends_in_pause = excluded.ends_in_pause",
+           ends_in_pause = excluded.ends_in_pause,
+           cut_before_ms = excluded.cut_before_ms, cut_after_ms = excluded.cut_after_ms",
         params![
             note_id,
             segment.index,
@@ -2474,6 +2631,8 @@ fn insert_segment(conn: &Connection, note_id: &str, segment: &Segment) -> Result
             segment.audio_file,
             segment.channels,
             segment.ends_in_pause,
+            segment.cut_before_ms as i64,
+            segment.cut_after_ms as i64,
         ],
     )?;
     Ok(())
@@ -3154,6 +3313,10 @@ where
         }),
     }
 }
+
+/// The `result_state` key that holds the stop reason of a note that
+/// Longhand stopped ([`Store::auto_stop`]).
+pub const AUTO_STOP: &str = "auto-stop";
 
 /// The `result_state` key that marks a note that existed before its
 /// recording: Record started the recording in a note with no audio. A

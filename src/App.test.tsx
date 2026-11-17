@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { Readiness, RecordingStatus, SessionEntry, Settings } from "./bindings";
+import type { Prompt, Readiness, RecordingStatus, SessionEntry, Settings } from "./bindings";
 import App from "./App";
 import { mockTauri, shortcutStatuses } from "./test/tauri";
 
@@ -31,6 +31,7 @@ const idle: RecordingStatus = {
   microphone_fallback: false,
   note_apps: [],
   app_audio: null,
+  prompt: null,
   microphone_choice: null,
   paused: false,
   recorded_ms: 0,
@@ -72,6 +73,8 @@ function mockApp(
     load_session_notes: () => ({ markdown: "", fingerprint: "f" }),
     session_detail: ({ noteId }) => ({ entry: entries.current.find((e) => e.id === noteId) ?? recordingEntry, done: [], current: null, resumable: false }),
     session_document: () => ({ has_speakers: false, lines: [], transcript_markdown: "", summary: null }),
+    keep_recording: () => null,
+    stop_from_prompt: () => null,
   });
 }
 
@@ -572,5 +575,57 @@ describe("a failed shortcut press", () => {
     await act(() => tauri.emit("recording-changed", { note_id: "a", opened: true }));
     await waitFor(() => expect(screen.queryByText(reason)).toBeNull());
     expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+  });
+});
+
+describe("the Keep recording? prompt in the main window (R5, R9, KTD12)", () => {
+  const prompt = (generation: number): Prompt => ({
+    note_id: "rec",
+    generation,
+    silence_check_minutes: null,
+    time_limit_hours: 6,
+    deadline_ms: Date.now() + 120_000,
+    countdown_minutes: 2,
+  });
+  const recording: RecordingStatus = { ...idle, note_id: "rec", state: "capturing", recording: true };
+  const region = () => screen.queryByRole("region", { name: "Keep recording?" });
+
+  test("shows on Home from the status, and its answers call the commands with the generation", async () => {
+    const tauri = mockApp({ current: { ...recording, prompt: prompt(3) } }, { current: [recordingEntry] });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Notes" });
+    const row = await screen.findByRole("region", { name: "Keep recording?" });
+    expect(within(row).getByRole("status").textContent).toContain("Recording for 6 hours.");
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Keep Recording" }));
+    await user.click(within(row).getByRole("button", { name: "Stop" }));
+    expect(tauri.calls.filter((c) => c.cmd === "keep_recording").map((c) => c.args)).toEqual([{ generation: 3 }]);
+    expect(tauri.calls.filter((c) => c.cmd === "stop_from_prompt").map((c) => c.args)).toEqual([{ generation: 3 }]);
+    expect(tauri.calls.some((c) => c.cmd === "stop_recording")).toBe(false);
+  });
+
+  test("shows above the note page from the event, takes no focus, and goes on a close event", async () => {
+    const tauri = mockApp({ current: recording }, { current: [recordingEntry] });
+    render(<App />);
+    await act(() => tauri.emit("show-session", { note_id: "rec" }));
+    await screen.findByRole("button", { name: "Back" });
+    expect(region()).toBeNull();
+    const focused = document.activeElement;
+    await act(() => tauri.emit("recording-prompt", { generation: 1, prompt: prompt(1) }));
+    expect(region()).not.toBeNull();
+    expect(document.activeElement).toBe(focused);
+    expect(screen.getByRole("button", { name: "Back" })).toBeTruthy();
+    await act(() => tauri.emit("recording-prompt", { generation: 1, prompt: null }));
+    expect(region()).toBeNull();
+  });
+
+  test("goes when the capture ends", async () => {
+    const tauri = mockApp({ current: recording }, { current: [recordingEntry] });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Notes" });
+    await act(() => tauri.emit("recording-prompt", { generation: 2, prompt: prompt(2) }));
+    expect(region()).not.toBeNull();
+    await act(() => tauri.emit("capture-ended", { note_id: "rec", reason: "Microphone disconnected" }));
+    expect(region()).toBeNull();
   });
 });

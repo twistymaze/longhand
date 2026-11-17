@@ -86,6 +86,7 @@ fn synthetic(windows: usize, voice: impl Fn(usize) -> usize) -> Analysis {
     Analysis {
         total: WINDOW_SAMPLES + (windows - 1) * step,
         step,
+        grid_start: 0,
         activities: vec![
             WindowActivity {
                 frames: vec![[true, false, false]; frames]

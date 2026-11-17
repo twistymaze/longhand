@@ -324,6 +324,58 @@ async setShowRecordingWidget(enabled: boolean) : Promise<Result<Settings, string
 }
 },
 /**
+ * Set the silence check, or turn it off (R2, R10). The value goes into
+ * the shared settings file and applies to the next recording (R11). A
+ * time outside the range is refused and changes nothing.
+ */
+async setSilenceCheckMinutes(check: CheckTimeSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_silence_check_minutes", { check }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the time limit of a recording, or turn it off (R3, R10). The value
+ * goes into the shared settings file and applies to the next recording
+ * (R11). A time outside the range is refused and changes nothing.
+ */
+async setRecordingTimeLimitHours(limit: CheckTimeSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_recording_time_limit_hours", { limit }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the long-silence cut, or turn it off (R12, R10). The value goes
+ * into the shared settings file and applies to the next recording (R11).
+ * A time outside the range is refused and changes nothing.
+ */
+async setLongSilenceCutMinutes(cut: CheckTimeSetting) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_long_silence_cut_minutes", { cut }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Set the countdown of the "Keep recording?" prompt (R5, R10). The value
+ * goes into the shared settings file and applies to the next recording
+ * (R11). A time outside the range is refused and changes nothing.
+ */
+async setStopCountdownMinutes(minutes: number) : Promise<Result<Settings, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("set_stop_countdown_minutes", { minutes }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Choose whether the app checks for updates by itself (R10). The next
  * scheduled check reads the new value.
  */
@@ -1006,6 +1058,32 @@ async continueRecording() : Promise<Result<null, string>> {
 }
 },
 /**
+ * Keep Recording in the prompt `generation` (R6, R9): the prompt closes on
+ * each surface, and each check in it starts again. An answer to a prompt
+ * that is already closed does nothing.
+ */
+async keepRecording(generation: number) : Promise<Result<null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("keep_recording", { generation }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
+ * Stop in the prompt `generation` (R7, R9): the note of the prompt stops
+ * as the user's Stop does, with no stop reason. `None` when the prompt is
+ * already closed or its note is no longer open: no note stops.
+ */
+async stopFromPrompt(generation: number) : Promise<Result<StopOutcome | null, string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("stop_from_prompt", { generation }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
+},
+/**
  * Record more into a note with audio, or resume an interrupted note.
  * Refused with the reason that the note page shows (R12, R21, R23) while
  * another computer uses the note or did not finish its recording.
@@ -1589,6 +1667,7 @@ moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 promisedFiles: PromisedFiles,
 recordingChanged: RecordingChanged,
+recordingPrompt: RecordingPrompt,
 settingsChanged: SettingsChanged,
 settingsPaneRequested: SettingsPaneRequested,
 shortcutFailed: ShortcutFailed,
@@ -1614,6 +1693,7 @@ moveProgress: "move-progress",
 processingUpdate: "processing-update",
 promisedFiles: "promised-files",
 recordingChanged: "recording-changed",
+recordingPrompt: "recording-prompt",
 settingsChanged: "settings-changed",
 settingsPaneRequested: "settings-pane-requested",
 shortcutFailed: "shortcut-failed",
@@ -1705,6 +1785,11 @@ export type AudioView =
  * deliver it.
  */
 "waiting"
+/**
+ * The checks in the prompt when Longhand stopped a note, with the time of
+ * each check from the note's settings snapshot.
+ */
+export type AutoStopView = { silence_check_minutes: number | null; time_limit_hours: number | null }
 export type BuildInfo = { 
 /**
  * The full version, for example `1.0.4`.
@@ -1806,6 +1891,17 @@ id: string;
  * The commit time, in seconds since 1970 (UTC).
  */
 time: number }
+/**
+ * A shared setting: the time of a recording check or of the long-silence
+ * cut (R10, KTD13). The file form is [`CheckTime`]; this is the form of
+ * the Settings window. The setting gives the unit, minutes or hours, and
+ * the range.
+ */
+export type CheckTimeSetting = { kind: "off" } | 
+/**
+ * The check or the cut uses this many whole minutes or hours.
+ */
+{ kind: "after"; time: number }
 /**
  * A choice in the update window. A close of the window is `Close`.
  */
@@ -2501,6 +2597,34 @@ export type PromisedFiles =
  */
 { kind: "received"; paths: string[]; failed: number }
 /**
+ * The prompt "Keep recording?" of the note that records (R5, R9). It
+ * holds each check that triggered, with the time of the check in the
+ * settings snapshot of the recording.
+ */
+export type Prompt = { note_id: string; 
+/**
+ * A new number for each prompt. An answer with another number does
+ * nothing.
+ */
+generation: number; 
+/**
+ * The minutes of the silence check, when the silence check is in the
+ * prompt.
+ */
+silence_check_minutes: number | null; 
+/**
+ * The hours of the time limit, when the time limit is in the prompt.
+ */
+time_limit_hours: number | null; 
+/**
+ * The end of the countdown, in milliseconds since the Unix epoch (UTC).
+ */
+deadline_ms: number; 
+/**
+ * The length of the countdown.
+ */
+countdown_minutes: number }
+/**
  * One AI provider. Each provider has a default address, except Custom,
  * whose address the user enters. The serialized name of each provider is
  * [`Provider::name`]: the settings, the Keychain account and the saved
@@ -2707,6 +2831,12 @@ note_id: string | null;
  * note. A pause, a device switch or a restart gives `false`.
  */
 opened: boolean }
+/**
+ * The prompt opened, changed or closed (R5, R9). `prompt` is `None` when
+ * the prompt `generation` closed. A surface ignores an event of a
+ * generation that is older than the prompt that it shows.
+ */
+export type RecordingPrompt = { generation: number; prompt: Prompt | null }
 export type RecordingStatus = { 
 /**
  * The open session: recording, or interrupted and resumable.
@@ -2777,7 +2907,11 @@ note_apps: ListedApp[];
  * The app audio state of the segment that records (R16). `None` when
  * no segment records or the note's app set is empty.
  */
-app_audio: AppAudioState | null }
+app_audio: AppAudioState | null; 
+/**
+ * The open prompt "Keep recording?" of the note (R5, R9).
+ */
+prompt: Prompt | null }
 /**
  * Work on a note on another computer (KTD5). Record, Resume, Transcribe
  * Again, Regenerate Summary, Remove Audio and Delete wait for it (R21),
@@ -2929,7 +3063,14 @@ conflict_files: string[];
  * (KTD4). The page shows "Not saved yet". `None` when the write is
  * done or has no problem.
  */
-not_saved_yet: string | null }
+not_saved_yet: string | null; 
+/**
+ * The checks in the prompt when Longhand stopped the note (R8, KTD8
+ * of the forgotten-recording plan). `None` for a note that the user
+ * stopped. A saved note takes it from its `longhand.json`, so a note
+ * that another computer stopped has it too.
+ */
+auto_stop: AutoStopView | null }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).
@@ -3133,6 +3274,29 @@ audio_removal: AudioRemovalSetting;
  * read-only (KTD7).
  */
 transcript_removal: TranscriptRemovalSetting; 
+/**
+ * A shared setting. The silence check: the minutes with no speech
+ * before the "Keep recording?" prompt (R2, R10). On by default, with
+ * 30 minutes. A change applies to the next recording (R11): see
+ * [`RecordingGuards`].
+ */
+silence_check_minutes: CheckTimeSetting; 
+/**
+ * A shared setting. The time limit: the hours of recording time before
+ * the prompt (R3, R10). On by default, with 6 hours.
+ */
+recording_time_limit_hours: CheckTimeSetting; 
+/**
+ * A shared setting. The long-silence cut: the shortest stretch of
+ * silence, in minutes, that a Stop removes (R12, R10). On by default,
+ * with 10 minutes.
+ */
+long_silence_cut_minutes: CheckTimeSetting; 
+/**
+ * A shared setting. The countdown of the prompt in minutes (R5, R10).
+ * 2 minutes by default. It has no off state.
+ */
+stop_countdown_minutes: number; 
 /**
  * A shared setting. The custom summary prompts, in the order that
  * Settings shows them (KTD6).

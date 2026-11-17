@@ -13,6 +13,7 @@ import { LicencesWindow } from "./licences/LicencesWindow";
 import { ScopeTonesProvider } from "./lib/Labels";
 import { notesSaved } from "./lib/notesSaves";
 import { formatChord } from "./lib/timeline";
+import { StillRecordingBar } from "./recording/StillRecording";
 import { useCapture } from "./recording/useCapture";
 import { SessionPage } from "./session/SessionPage";
 import { useSessions } from "./session/useSessions";
@@ -140,6 +141,17 @@ function MainWindow() {
   return (
     <div className="flex h-screen flex-col bg-window">
       <div data-tauri-drag-region className="title-strip" />
+      {/* The "Keep recording?" prompt is above Home and the note page,
+          because the recording bar shows only on the page of the open
+          note (KTD12). It takes no focus, and it does not show or front
+          the window. */}
+      {capture.prompt && (
+        <StillRecordingBar
+          key={capture.prompt.generation}
+          prompt={capture.prompt}
+          onAnswered={() => void capture.refresh()}
+        />
+      )}
       <div className="min-h-0 flex-1">
       {view.kind === "session" && (
         <SessionPage

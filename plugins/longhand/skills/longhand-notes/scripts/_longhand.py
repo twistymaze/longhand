@@ -84,8 +84,9 @@ _SHARED_RECORD_KEYS = frozenset(
 RECORD_ID_KEYS = {1: "session_id", 2: "note_id"}
 
 # The keys that only one layout has, other than the note id. Layout 2 has
-# the optional key `import`: the source file of an imported note.
-_LAYOUT_RECORD_KEYS = {1: frozenset(), 2: frozenset(["import"])}
+# the optional key `import`: the source file of an imported note, and the
+# optional key `auto_stop`: the checks that made Longhand stop the note.
+_LAYOUT_RECORD_KEYS = {1: frozenset(), 2: frozenset(["auto_stop", "import"])}
 
 # The keys of a `longhand.json` in each known layout. A file with another
 # key comes from a Longhand that these scripts do not know, so a check
@@ -107,14 +108,18 @@ SETTINGS_KEYS = frozenset(
         "default_note_type",
         "default_speaker_count",
         "live_transcript",
+        "long_silence_cut_minutes",
         "new_note_records",
         "note_type_prompts",
         "note_types",
         "recognition_language",
+        "recording_time_limit_hours",
         "schema_version",
         "show_recording_widget",
+        "silence_check_minutes",
         "speaker_processing_mode",
         "speaker_source",
+        "stop_countdown_minutes",
         "transcript_removal",
     ]
 )
@@ -167,6 +172,15 @@ AUDIO_REMOVAL_MIN_DAYS = 1
 AUDIO_REMOVAL_MAX_DAYS = 3650
 TRANSCRIPT_REMOVAL_MIN_DAYS = AUDIO_REMOVAL_MIN_DAYS
 TRANSCRIPT_REMOVAL_MAX_DAYS = AUDIO_REMOVAL_MAX_DAYS
+# The settings that are "off" or a whole number in a range: the lowest and
+# the highest value, and the unit.
+CHECK_TIME_RANGES = {
+    "silence_check_minutes": (5, 240, "minutes"),
+    "recording_time_limit_hours": (1, 24, "hours"),
+    "long_silence_cut_minutes": (5, 240, "minutes"),
+}
+STOP_COUNTDOWN_MIN_MINUTES = 1
+STOP_COUNTDOWN_MAX_MINUTES = 10
 SPEAKER_SOURCES = ("off", "pyannote", "sortformer", "nemotron")
 PROCESSING_MODES = ("during_recording", "after_stop")
 

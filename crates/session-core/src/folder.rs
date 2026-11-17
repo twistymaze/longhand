@@ -221,6 +221,15 @@ pub struct SegmentRecord {
     /// pause plan).
     #[serde(default, skip_serializing_if = "is_false")]
     pub ends_in_pause: bool,
+    /// The removed audio before the segment start (KTD21 of the
+    /// forgotten-recording plan). 0 writes no field, so a record with no
+    /// cut stays as before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cut_before_ms: u64,
+    /// The removed audio after the segment end (KTD21 of the
+    /// forgotten-recording plan). 0 writes no field.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cut_after_ms: u64,
 }
 
 fn is_mono(channels: &u16) -> bool {
@@ -229,6 +238,10 @@ fn is_mono(channels: &u16) -> bool {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl From<&Segment> for SegmentRecord {
@@ -242,6 +255,8 @@ impl From<&Segment> for SegmentRecord {
             audio: s.audio_file.clone(),
             channels: s.channels,
             ends_in_pause: s.ends_in_pause,
+            cut_before_ms: s.cut_before_ms,
+            cut_after_ms: s.cut_after_ms,
         }
     }
 }
@@ -257,6 +272,8 @@ impl From<&SegmentRecord> for Segment {
             audio_file: r.audio.clone(),
             channels: r.channels,
             ends_in_pause: r.ends_in_pause,
+            cut_before_ms: r.cut_before_ms,
+            cut_after_ms: r.cut_after_ms,
         }
     }
 }
@@ -381,21 +398,47 @@ impl SessionDoc {
                 s.audio
             ));
         }
-        for pair in self.segments.windows(2) {
-            let gap = pair[1].offset_ms - (pair[0].offset_ms + pair[0].duration_ms);
-            let kind = if pair[0].ends_in_pause {
-                "Pause"
-            } else {
-                "Gap"
-            };
-            out.push_str(&format!(
-                "\n{kind} of {} between segments {} and {}.",
-                format_position(gap),
-                pair[0].index + 1,
-                pair[1].index + 1
-            ));
+        // The removed audio of each cut, and a pause or gap line for the
+        // rest of the distance between segments (KTD21 of the
+        // forgotten-recording plan).
+        let mut lines: Vec<String> = Vec::new();
+        let removed = |lines: &mut Vec<String>, ms: u64, side: &str, s: &SegmentRecord| {
+            if ms > 0 {
+                lines.push(format!(
+                    "Silence of {} removed {side} segment {}.",
+                    format_position(ms),
+                    s.index + 1
+                ));
+            }
+        };
+        if let Some(first) = self.segments.first() {
+            removed(&mut lines, first.cut_before_ms, "before", first);
         }
-        if self.segments.len() > 1 {
+        for pair in self.segments.windows(2) {
+            removed(&mut lines, pair[0].cut_after_ms, "after", &pair[0]);
+            if let Some(rest) = rest_between(&Segment::from(&pair[0]), &Segment::from(&pair[1])) {
+                let kind = if pair[0].ends_in_pause {
+                    "Pause"
+                } else {
+                    "Gap"
+                };
+                lines.push(format!(
+                    "{kind} of {} between segments {} and {}.",
+                    format_position(rest),
+                    pair[0].index + 1,
+                    pair[1].index + 1
+                ));
+            }
+            removed(&mut lines, pair[1].cut_before_ms, "before", &pair[1]);
+        }
+        if let Some(last) = self.segments.last() {
+            removed(&mut lines, last.cut_after_ms, "after", last);
+        }
+        for line in &lines {
+            out.push('\n');
+            out.push_str(line);
+        }
+        if !lines.is_empty() {
             out.push('\n');
         }
         out
@@ -734,12 +777,31 @@ pub enum TranscriptLine {
     /// Between segments, where the user paused the note (KTD5 of the pause
     /// plan). Processing does not treat this time as missing audio.
     Pause { duration_ms: u64 },
-    /// A within-segment silence past the threshold.
+    /// A within-segment silence past the threshold, or audio that the
+    /// long-silence cut removed (KTD21 of the forgotten-recording plan).
     Silence { duration_ms: u64 },
     /// A line that is not in one of the forms above, for example a line
     /// that a person or an agent wrote (KTD7 of the safe agent edits
     /// plan). It has no time.
     Text { text: String },
+}
+
+/// Next to a cut, a pause or gap line shows only for a rest longer than
+/// this (KTD21 of the forgotten-recording plan).
+pub const REST_LINE_MS: u64 = 1_000;
+
+/// The time between two segments that follow each other that is not
+/// removed audio, when the transcript shows a pause or gap line for it
+/// (KTD21 of the forgotten-recording plan). With no cut at the boundary,
+/// the line always shows. Next to a cut, the line shows only when the rest
+/// is longer than [`REST_LINE_MS`].
+pub fn rest_between(before: &Segment, after: &Segment) -> Option<u64> {
+    let cut_ms = before.cut_after_ms + after.cut_before_ms;
+    let rest_ms = after
+        .offset_ms
+        .saturating_sub(before.end_ms())
+        .saturating_sub(cut_ms);
+    (cut_ms == 0 || rest_ms > REST_LINE_MS).then_some(rest_ms)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

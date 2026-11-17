@@ -3,6 +3,7 @@ pub mod alerts;
 pub mod audio_removal;
 pub mod capture;
 pub mod destination;
+pub mod guard;
 pub mod import;
 pub mod library;
 pub mod live;

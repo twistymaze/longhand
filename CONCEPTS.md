@@ -134,16 +134,16 @@ A small window above all other windows that shows the open note's state, time an
 *Avoid:* pill, overlay (the code calls the shape a pill; say recording widget)
 
 ### Silence check
-A check during recording that triggers after a set time (30 minutes by default) in which no speech was detected on any channel. Sound that is not speech counts as silence. With the time limit, it shows "Still recording?" with a countdown; when nobody answers, Longhand stops the note. Paused time does not count. Planned in `docs/plans/2026-11-15-1059-feat-forgotten-recording-plan.md`.
+A check during recording that triggers after a set time (30 minutes by default) in which no speech was detected on any channel. Speech is at least 1 second of voiced sound within 2 seconds on one channel. Sound that is not speech, such as a fan or traffic, counts as silence. The check shows the keep-recording prompt. Paused time does not count. The check starts again from zero after Continue, and after Keep Recording when the prompt shows the silence check.
 
 ### Time limit
-A check during recording that triggers after a set recording time (6 hours by default), with the same prompt and countdown as the silence check. Paused time does not count.
+A check during recording that triggers after a set recording time (6 hours by default) of the current recording, with the same prompt and countdown as the silence check. The current recording starts at Start, at Resume or at Record into a saved note. Paused time does not count. After Keep Recording in a prompt that shows the time limit, the check triggers again after a further time of the same length.
 
 ### Long-silence cut
-The removal, at Stop and before Preparing the audio, of each stretch of at least a set time (10 minutes by default) in which every channel has no speech and a low sound level. The transcript shows each removed stretch as one silence line. Removed audio is deleted.
+The removal, at Stop and before Preparing the audio, of each stretch of at least a set time (10 minutes by default) in which every channel has no speech and a low sound level. Only a Pause or a Resume ends a stretch. The cut removes whole minutes, and keeps 1 to 2 minutes of audio between a removed stretch and the speech on each side. When the cut would remove all audio of the current recording, the first minute stays. The transcript shows each removed stretch as one silence line, and transcript times keep the original recording time. Removed audio is deleted, and the live results of the kept audio stay valid.
 
-### Still-recording prompt
-The question "Still recording?" that the silence check or the time limit shows on the recording computer, with Keep Recording, Stop and a countdown. It shows on the recording widget when the widget shows, in the main window and as a system notification. When the countdown ends with no answer, Longhand stops the note and the note shows which check stopped it.
+### Keep-recording prompt
+The question "Keep recording?" that the silence check or the time limit shows on the recording computer, with Keep Recording, Stop and a countdown (2 minutes by default). It shows on the recording widget when the widget shows, in the main window and as a system notification, and it plays no sound. When the countdown ends with no answer, Longhand stops the note, and the note shows which check stopped it on every computer that uses the storage folder.
 *Avoid:* alert (an alert is for a failed capture)
 
 ### Import

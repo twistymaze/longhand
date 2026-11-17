@@ -10,11 +10,12 @@ use std::{
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
-const WINDOW: usize = 160_000;
+/// The samples of one live speaker feature window at 16 kHz.
+pub(crate) const WINDOW: usize = 160_000;
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Window {
+pub(crate) struct Window {
     digest: String,
-    file: PathBuf,
+    pub(crate) file: PathBuf,
     step: usize,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -22,12 +23,27 @@ struct Index {
     total: usize,
     step: usize,
     windows: usize,
+    /// Where window 0 starts in the segment (KTD18 of the
+    /// forgotten-recording plan). See [`grid_key`].
+    #[serde(default)]
+    grid_start: i64,
 }
 pub fn key(segment: u32) -> String {
     format!("live-features-{segment:08}")
 }
-fn window_key(segment: u32, window: usize) -> String {
+pub(crate) fn window_key(segment: u32, window: usize) -> String {
     format!("live-feature-{segment:08}-{window:012}")
+}
+/// The grid start of a part of a cut segment: the sample of the part where
+/// window 0 starts. Window `w` starts at `grid_start + w * step`. A part
+/// keeps the windows of the original segment that lie fully inside it, so
+/// its grid is the grid of the original segment (KTD18 of the
+/// forgotten-recording plan). It is 0 or negative: a window that starts
+/// before the part reads zeros there. A segment with no grid start has the
+/// grid start 0. The key starts with `live-feature-`, so it stays when the
+/// recognition identity changes, as the windows stay.
+pub fn grid_key(segment: u32) -> String {
+    format!("live-feature-{segment:08}-grid")
 }
 
 pub fn extract(
@@ -118,6 +134,7 @@ pub fn extract(
             total,
             step,
             windows,
+            grid_start: 0,
         },
     )?;
     archive::save_proof(store, config, &source)
@@ -164,7 +181,10 @@ fn window(
     if analysis.step == 0 || analysis.step > WINDOW || analysis.total != pcm.len() {
         return Err(StageError::Failed("invalid live feature layout".into()));
     }
-    let file = PathBuf::from(format!("{segment:08}-{index:012}.diar"));
+    // The digest is in the name: after a cut, a part keeps the files of
+    // the original segment, and a window of another segment can get the
+    // same index (KTD18 of the forgotten-recording plan).
+    let file = PathBuf::from(format!("{segment:08}-{index:012}-{}.diar", &digest[..16]));
     diarize::write_analysis(&dir.join(&file), &analysis)?;
     let saved = Window {
         digest,
@@ -179,6 +199,9 @@ fn window(
 /// Initial mono Assemble writes this PCM from capture, before Opus encoding.
 /// An archive decode or changed preprocessing must pass each PCM digest again.
 /// `progress` receives the fraction of the segment's samples that is done.
+/// A part of a cut segment uses the grid of its [`grid_key`]. Its windows
+/// at the cut edges are computed again; the samples before its sample 0
+/// are zeros.
 pub fn complete(
     store: &SharedStore,
     id: &str,
@@ -189,11 +212,14 @@ pub fn complete(
     progress: &mut dyn FnMut(f32),
 ) -> Result<Option<Analysis>, StageError> {
     use diarize::AudioSource;
-    if checkpoint::get::<Window>(store, id, Stage::Diarize, &window_key(segment.index, 0))?
-        .is_none()
+    let grid: Option<i64> = checkpoint::get(store, id, Stage::Diarize, &grid_key(segment.index))?;
+    if grid.is_none()
+        && checkpoint::get::<Window>(store, id, Stage::Diarize, &window_key(segment.index, 0))?
+            .is_none()
     {
         return Ok(None);
     }
+    let grid_start = grid.unwrap_or(0).min(0);
     let snapshot = crate::recognition::snapshot(store, id)?;
     let mut source =
         diarize::WavAudioSource::open(&dir.join(crate::proc_file(&segment.audio_file)))
@@ -209,15 +235,20 @@ pub fn complete(
             true
         }
     };
-    let mut start = 0;
+    let total_i = total as i64;
+    let mut start = grid_start;
     let mut windows = 0;
     let mut step = 0;
-    while start < total {
+    while start < total_i {
         control.proceed()?;
-        let mut pcm = vec![0.0; WINDOW.min(total - start)];
-        source
-            .read(start, &mut pcm)
-            .map_err(|e| StageError::Failed(e.to_string()))?;
+        let mut pcm = vec![0.0; WINDOW.min((total_i - start) as usize)];
+        // The samples before sample 0 stay zeros.
+        let lead = (-start).max(0) as usize;
+        if lead < pcm.len() {
+            source
+                .read(start.max(0) as usize, &mut pcm[lead..])
+                .map_err(|e| StageError::Failed(e.to_string()))?;
+        }
         let saved = window(
             store,
             id,
@@ -238,11 +269,12 @@ pub fn complete(
         }
         step = saved.step;
         windows += 1;
-        progress((start + pcm.len()) as f32 / total as f32);
-        if start + pcm.len() == total {
+        let end = start + pcm.len() as i64;
+        progress(end as f32 / total as f32);
+        if end == total_i {
             break;
         }
-        start += step;
+        start += step as i64;
     }
     checkpoint::put(
         store,
@@ -253,6 +285,7 @@ pub fn complete(
             total,
             step,
             windows,
+            grid_start,
         },
     )?;
     restore(store, id, dir, segment.index)
@@ -279,6 +312,7 @@ pub fn restore(
     let mut result = Analysis {
         total: index.total,
         step: index.step,
+        grid_start: index.grid_start,
         ..Default::default()
     };
     for window in 0..index.windows {

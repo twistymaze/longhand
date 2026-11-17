@@ -10,7 +10,7 @@ use pipeline::folder_rename::FolderRename;
 use serde::Serialize;
 use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::note_folder::{Layout, NoteFiles};
-use session_core::note_record::NOTE_RECORD_FILE;
+use session_core::note_record::{AutoStop, NOTE_RECORD_FILE, NoteRecord};
 use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
@@ -600,6 +600,54 @@ pub struct SessionDetail {
     /// (KTD4). The page shows "Not saved yet". `None` when the write is
     /// done or has no problem.
     pub not_saved_yet: Option<String>,
+    /// The checks in the prompt when Longhand stopped the note (R8, KTD8
+    /// of the forgotten-recording plan). `None` for a note that the user
+    /// stopped. A saved note takes it from its `longhand.json`, so a note
+    /// that another computer stopped has it too.
+    pub auto_stop: Option<AutoStopView>,
+}
+
+/// The checks in the prompt when Longhand stopped a note, with the time of
+/// each check from the note's settings snapshot.
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct AutoStopView {
+    pub silence_check_minutes: Option<u32>,
+    pub time_limit_hours: Option<u32>,
+}
+
+impl From<AutoStop> for AutoStopView {
+    fn from(reason: AutoStop) -> Self {
+        Self {
+            silence_check_minutes: reason.silence_check_minutes,
+            time_limit_hours: reason.time_limit_hours,
+        }
+    }
+}
+
+/// The stop reason that the note page shows (R8). A saved note takes it
+/// from the note record in `home`: another computer can have stopped the
+/// note. A note that is not saved takes `stored`, the store value: its
+/// record does not have the reason yet, or has the reason of an earlier
+/// recording. A record that cannot be read gives `stored`.
+fn auto_stop_of(
+    state: &SessionState,
+    home: Option<&Path>,
+    stored: Option<AutoStop>,
+) -> Option<AutoStopView> {
+    let from_record = match (state, home) {
+        (SessionState::Saved, Some(home)) => {
+            match read_timed(home.join(NOTE_RECORD_FILE), READ_TIMEOUT) {
+                Read::Bytes(bytes) => String::from_utf8(bytes)
+                    .ok()
+                    .and_then(|text| NoteRecord::parse(&text).ok())
+                    .and_then(|read| read.current())
+                    .map(|record| record.auto_stop),
+                Read::Missing | Read::Failed(_) => None,
+            }
+        }
+        _ => None,
+    };
+    from_record.unwrap_or(stored).map(AutoStopView::from)
 }
 
 #[derive(Serialize, Type)]
@@ -1024,7 +1072,7 @@ fn detail_of(
     let e = |e: pipeline::StageError| e.to_string();
     // The waits read the capture state, so they come before the store lock.
     let waits = processing.waits();
-    let (record, segments, saving, audio, transcript, again) = {
+    let (record, segments, saving, audio, transcript, again, stored_stop) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&note_id)
@@ -1040,8 +1088,24 @@ fn detail_of(
         let again = store
             .transcribe_again_marks(&note_id)
             .map_err(|e| e.to_string())?;
-        (record, segments, saving, audio, transcript, again)
+        let stored_stop = store.auto_stop(&note_id).map_err(|e| e.to_string())?;
+        (
+            record,
+            segments,
+            saving,
+            audio,
+            transcript,
+            again,
+            stored_stop,
+        )
     };
+    // The record read is outside the store lock: the storage folder can be
+    // slow.
+    let auto_stop = auto_stop_of(
+        &record.state,
+        record.home_path.as_deref().map(Path::new),
+        stored_stop,
+    );
     let audio_intact = audio == pipeline::save::AudioState::Present;
     let snapshot = pipeline::progress::snapshot(&shared, &note_id).map_err(e)?;
 
@@ -1131,6 +1195,7 @@ fn detail_of(
         waiting: waiting_parts(&note.waiting),
         conflict_files: file_names(&note.other_versions),
         not_saved_yet: processing.early_homes().problem(&note_id),
+        auto_stop,
     })
 }
 
@@ -1590,16 +1655,30 @@ fn summary_of(files: &NoteFiles, text: Option<&str>) -> Option<Summary> {
 
 /// Transcript lines, each gap placed at the end of the segment before it
 /// and given the wall-clock start of the segment after it. Gap and pause
-/// lines pair with the segment pairs in order.
+/// lines pair in order with the segment pairs that have such a line. Next
+/// to a cut, the gap starts after the audio removed from the end of the
+/// segment before it, and ends before the audio removed from the start of
+/// the segment after it (KTD21 of the forgotten-recording plan).
 fn doc_lines(doc: &SessionDoc, transcript: Transcript) -> Vec<DocLine> {
-    let mut ordered: Vec<_> = doc.segments.iter().collect();
+    let mut ordered: Vec<session_core::Segment> = doc
+        .segments
+        .iter()
+        .map(session_core::Segment::from)
+        .collect();
     ordered.sort_by_key(|s| s.offset_ms);
-    let mut gaps = ordered.windows(2).map(|pair| {
-        (
-            pair[0].offset_ms + pair[0].duration_ms,
-            pair[1].wall_start.to_rfc3339(),
-        )
-    });
+    let pairs: Vec<(u64, String)> = ordered
+        .windows(2)
+        .filter(|pair| session_core::folder::rest_between(&pair[0], &pair[1]).is_some())
+        .map(|pair| {
+            let wall_start =
+                pair[1].wall_start - chrono::TimeDelta::milliseconds(pair[1].cut_before_ms as i64);
+            (
+                pair[0].end_ms() + pair[0].cut_after_ms,
+                wall_start.to_rfc3339(),
+            )
+        })
+        .collect();
+    let mut gaps = pairs.into_iter();
     transcript
         .lines
         .into_iter()
@@ -2269,6 +2348,8 @@ mod remove_audio_tests {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         }];
         let transcript = "# Transcript\n\n- [00:00:01] Speaker 1: Hello.\n";
         let summary = "---\nstatus: stub\nfailed_stage: summarize\n---\n\nNo summary.\n";
@@ -2607,6 +2688,94 @@ mod tests {
         EndpointView::of(&s)
     }
 
+    /// A note folder whose `longhand.json` has the stop reason `reason`.
+    fn folder_with_stop(reason: Option<AutoStop>) -> tempfile::TempDir {
+        let folder = tempfile::tempdir().unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339("2026-11-16T14:00:00+00:00").unwrap();
+        let mut record = session_core::note_record::NoteRecord::new("s", started);
+        record.auto_stop = reason;
+        std::fs::write(folder.path().join(NOTE_RECORD_FILE), record.render()).unwrap();
+        folder
+    }
+
+    fn silence(minutes: u32) -> AutoStop {
+        AutoStop {
+            silence_check_minutes: Some(minutes),
+            time_limit_hours: None,
+        }
+    }
+
+    // Covers R8, KTD8 (U7): another computer stopped the note. This
+    // computer's store has no stop reason, and the line comes from the
+    // note record.
+    #[test]
+    fn a_saved_note_takes_the_stop_reason_from_the_note_record() {
+        let folder = folder_with_stop(Some(AutoStop {
+            silence_check_minutes: Some(45),
+            time_limit_hours: Some(8),
+        }));
+        assert_eq!(
+            auto_stop_of(&SessionState::Saved, Some(folder.path()), None),
+            Some(AutoStopView {
+                silence_check_minutes: Some(45),
+                time_limit_hours: Some(8),
+            })
+        );
+    }
+
+    // Covers R8 (U7): a note that the user stopped shows no line.
+    #[test]
+    fn a_saved_note_that_the_user_stopped_has_no_stop_reason() {
+        let folder = folder_with_stop(None);
+        assert_eq!(
+            auto_stop_of(&SessionState::Saved, Some(folder.path()), None),
+            None
+        );
+    }
+
+    // Covers R8 (U7): before the save, the record does not have the stop
+    // reason yet, so the store gives it.
+    #[test]
+    fn a_note_that_is_not_saved_yet_takes_the_stop_reason_from_the_store() {
+        let stopped_at = chrono::DateTime::parse_from_rfc3339("2026-11-16T15:00:00+00:00").unwrap();
+        assert_eq!(
+            auto_stop_of(
+                &SessionState::Processing { stopped_at },
+                None,
+                Some(silence(30))
+            ),
+            Some(AutoStopView {
+                silence_check_minutes: Some(30),
+                time_limit_hours: None,
+            })
+        );
+    }
+
+    // Covers R8 (U7): a new recording into a saved note removes the stop
+    // reason from the store. The old reason in the record does not show
+    // until the next save writes the record again.
+    #[test]
+    fn a_new_recording_hides_the_old_stop_reason_of_the_record() {
+        let folder = folder_with_stop(Some(silence(30)));
+        assert_eq!(
+            auto_stop_of(&SessionState::Capturing, Some(folder.path()), None),
+            None
+        );
+    }
+
+    // Covers R8 (U7): a record that cannot be read gives the store value.
+    #[test]
+    fn a_saved_note_with_no_record_takes_the_stop_reason_from_the_store() {
+        let folder = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auto_stop_of(&SessionState::Saved, Some(folder.path()), Some(silence(30))),
+            Some(AutoStopView {
+                silence_check_minutes: Some(30),
+                time_limit_hours: None,
+            })
+        );
+    }
+
     #[test]
     fn the_endpoint_view_names_the_provider_and_treats_loopback_http_as_local() {
         assert_eq!(
@@ -2731,6 +2900,73 @@ mod tests {
                 duration_ms: 4_500_000,
                 wall_start: Some(w),
             } if w == "2026-09-22T16:00:00+00:00"
+        ));
+    }
+
+    // Covers KTD21 of the forgotten-recording plan: a cut between two parts
+    // has no gap line, so a later gap line pairs with the segment pair
+    // after the cut. A gap after a removed end starts where the removed
+    // audio ends, and a gap before a removed start ends where the removed
+    // audio starts.
+    #[test]
+    fn a_gap_after_a_cut_gets_the_wall_clock_of_its_own_segment_pair() {
+        let segment = |index: u32, start: &str, offset_ms: u64, cut: &str| {
+            format!(
+                "- index: {index}\n  wall_start: 2026-09-22T{start}:00+00:00\n  wall_end: 2026-09-22T{start}:00+00:00\n  offset_ms: {offset_ms}\n  duration_ms: 600000\n  audio: audio/segment-0{}.opus\n{cut}",
+                index + 1
+            )
+        };
+        let text = format!(
+            "---\nsession_id: s\nstarted: 2026-09-22T14:00:00+00:00\nsegments:\n{}{}{}{}---\n",
+            // Parts of one recording with a 20-minute cut between them.
+            segment(0, "14:00", 0, "  cut_after_ms: 1200000\n"),
+            // A 10-minute cut at the end, then a Resume 1 hour later.
+            segment(1, "14:30", 1_800_000, "  cut_after_ms: 600000\n"),
+            // A 5-minute cut at the start of the resumed recording.
+            segment(2, "15:55", 6_600_000, "  cut_before_ms: 300000\n"),
+            segment(3, "17:00", 10_000_000, ""),
+        );
+        let doc = SessionDoc::parse(&text).unwrap();
+        let turn = |position_ms: u64| TranscriptLine::Turn {
+            position_ms,
+            speaker: None,
+            text: "a".into(),
+        };
+        let silence = |duration_ms: u64| TranscriptLine::Silence { duration_ms };
+        let transcript = Transcript {
+            has_speakers: false,
+            lines: vec![
+                turn(1_000),
+                silence(1_200_000),
+                turn(1_801_000),
+                silence(600_000),
+                TranscriptLine::Gap {
+                    duration_ms: 3_300_000,
+                },
+                silence(300_000),
+                turn(6_601_000),
+                TranscriptLine::Gap {
+                    duration_ms: 2_800_000,
+                },
+                turn(10_001_000),
+            ],
+        };
+        let lines = doc_lines(&doc, transcript);
+        assert!(matches!(
+            &lines[4],
+            DocLine::Gap {
+                at_ms: 3_000_000,
+                duration_ms: 3_300_000,
+                wall_start: Some(w),
+            } if w == "2026-09-22T15:50:00+00:00"
+        ));
+        assert!(matches!(
+            &lines[7],
+            DocLine::Gap {
+                at_ms: 7_200_000,
+                duration_ms: 2_800_000,
+                wall_start: Some(w),
+            } if w == "2026-09-22T17:00:00+00:00"
         ));
     }
 
@@ -3253,6 +3489,8 @@ mod record_tests {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         }
     }
 

@@ -74,6 +74,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
 });
 
 const document = (body: string): SessionDocument => ({
@@ -1431,7 +1432,9 @@ describe("Home: notes with no audio and other computers", () => {
     const notice = screen.getByText(/can’t read the settings file/);
     expect(notice.textContent).toContain("(.longhand/settings.json, line 3)");
     expect(notice.textContent).toContain("Fix the file, or restore it from another computer.");
-    expect(notice.textContent).toContain("the recording widget and New Note");
+    expect(notice.textContent).toContain(
+      "the recording widget, New Note, the silence check, the time limit, the long-silence cut and the stop countdown",
+    );
   });
 
   test("when a note can start but not record, the record banner shows", () => {

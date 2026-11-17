@@ -232,25 +232,76 @@ fn live_source_matches(
     {
         return Ok(false);
     }
+    // A cut clips an epoch to the kept audio, and an epoch can continue
+    // over the removed audio in the next part of its segment (KTD18 of the
+    // forgotten-recording plan). Then only its samples in this segment must
+    // have the proof of this segment.
+    let limit = if segment.cut_after_ms > 0 {
+        (segment.offset_ms + segment.duration_ms) * 16
+    } else {
+        u64::MAX
+    };
     for stage in [Stage::Transcribe, Stage::Diarize] {
         for (key, value) in checkpoint::all(store, id, stage)? {
-            let start = key
-                .strip_prefix("recognition-epoch-")
-                .and_then(|s| s.parse::<u64>().ok());
-            if start.is_some_and(|at| {
-                at >= segment.offset_ms * 16 && at < (segment.offset_ms + segment.duration_ms) * 16
-            }) {
-                let record: serde_json::Value = serde_json::from_str(&value)?;
-                if record["range"]["end"]
-                    .as_u64()
-                    .is_none_or(|end| end > covered_end)
-                {
-                    return Ok(false);
-                }
+            let Some(record) = epoch_of_segment(&key, &value, segment)? else {
+                continue;
+            };
+            if record
+                .range
+                .end
+                .is_none_or(|end| end.min(limit) > covered_end)
+            {
+                return Ok(false);
             }
         }
     }
     Ok(true)
+}
+
+/// The range of an epoch record. The segment checks read no other field.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct EpochRecord {
+    range: EpochRange,
+}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct EpochRange {
+    start: Option<u64>,
+    end: Option<u64>,
+}
+
+/// The epoch record `value` at `key`, when it has samples in `segment`:
+/// its key starts in the segment, or its range overlaps the segment. After
+/// a cut, an epoch can start in removed audio and continue in a part
+/// (KTD18 of the forgotten-recording plan). `None` for another key and
+/// for an epoch with no samples in the segment.
+///
+/// The range of an epoch record never starts before its key. So a record
+/// whose key starts at or after the end of the segment has no samples in
+/// it, and its JSON is not read.
+fn epoch_of_segment(
+    key: &str,
+    value: &str,
+    segment: &Segment,
+) -> Result<Option<EpochRecord>, StageError> {
+    if !key.starts_with(super::nemo::EPOCH_KEY_PREFIX) {
+        return Ok(None);
+    }
+    let start = segment.offset_ms * 16;
+    let end = (segment.offset_ms + segment.duration_ms) * 16;
+    let at = super::nemo::epoch_start(key);
+    if at.is_some_and(|at| at >= end) {
+        return Ok(None);
+    }
+    let record: EpochRecord = serde_json::from_str(value)?;
+    let keyed = at.is_some_and(|at| at >= start);
+    let overlaps = match (record.range.start, record.range.end) {
+        (Some(from), Some(to)) => from < end && to > start,
+        _ => false,
+    };
+    Ok((keyed || overlaps).then_some(record))
 }
 
 /// Bind live output only after checking its exact capture samples. An altered
@@ -335,15 +386,9 @@ fn bind_live(
                 Stage::Diarize,
                 &crate::live::features::key(segment.index),
             )?;
-            let start = segment.offset_ms * 16;
-            let end = start + segment.duration_ms * 16;
             for stage in [Stage::Transcribe, Stage::Diarize] {
-                for (key, _) in checkpoint::all(store, id, stage)? {
-                    if key
-                        .strip_prefix("recognition-epoch-")
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .is_some_and(|at| at >= start && at < end)
-                    {
+                for (key, value) in checkpoint::all(store, id, stage)? {
+                    if epoch_of_segment(&key, &value, segment)?.is_some() {
                         lock(store).delete_checkpoint(id, stage, &key)?;
                     }
                 }
@@ -431,10 +476,7 @@ fn prepare_fingerprints(
     let keep_live_epoch = |key: &str| {
         prefix.is_some()
             && live_matches
-            && key
-                .strip_prefix("recognition-epoch-")
-                .and_then(|s| s.parse::<u64>().ok())
-                .is_some_and(|start| start >= active[0].offset_ms * 16)
+            && super::nemo::epoch_start(key).is_some_and(|start| start >= active[0].offset_ms * 16)
     };
     let mut guard = lock(store);
     for stage in [
@@ -636,7 +678,7 @@ pub fn visit_catchup_blocks(
     let mut completed = std::collections::BTreeMap::new();
     for stage in [Stage::Transcribe, Stage::Diarize] {
         for (key, value) in store.checkpoints(id, stage)? {
-            if key.starts_with("recognition-epoch-") {
+            if key.starts_with(super::nemo::EPOCH_KEY_PREFIX) {
                 let record: CompletedEpoch = serde_json::from_str(&value)?;
                 if record.scope.generation == generation {
                     let output = record.output.unwrap_or(EpochOutput {
@@ -1075,6 +1117,8 @@ mod tests {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         };
         let archive = temp.path().join(&segment.audio_file);
         let processing = temp.path().join(crate::proc_file(&segment.audio_file));

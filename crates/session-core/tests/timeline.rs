@@ -17,6 +17,8 @@ fn two_segments() -> Timeline {
             audio_file: "audio/segment-01.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         },
         Segment {
             index: 1,
@@ -27,6 +29,8 @@ fn two_segments() -> Timeline {
             audio_file: "audio/segment-02.opus".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         },
     ])
     .unwrap()
@@ -60,6 +64,8 @@ fn gap_comes_from_the_monotonic_offsets_not_the_wall_clock() {
             audio_file: "a".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         },
         Segment {
             index: 1,
@@ -70,10 +76,37 @@ fn gap_comes_from_the_monotonic_offsets_not_the_wall_clock() {
             audio_file: "b".into(),
             channels: 1,
             ends_in_pause: false,
+            cut_before_ms: 0,
+            cut_after_ms: 0,
         },
     ])
     .unwrap();
     assert_eq!(timeline.gaps(), vec![(0, 120_000)]);
+}
+
+#[test]
+fn the_next_segment_takes_the_largest_index_plus_one() {
+    // KTD22: after a cut, indices are not in time order. By offset the
+    // segments are 0, 2, 1, so the last one by offset has index 1.
+    let segment = |index: u32, offset_ms: u64| Segment {
+        index,
+        offset_ms,
+        duration_ms: 60_000,
+        wall_start: wall(0),
+        wall_end: wall(0) + TimeDelta::minutes(1),
+        audio_file: format!("audio/segment-{index}.opus"),
+        channels: 1,
+        ends_in_pause: false,
+        cut_before_ms: 0,
+        cut_after_ms: 0,
+    };
+    let mut timeline = Timeline::from_segments(vec![
+        segment(0, 0),
+        segment(2, 120_000),
+        segment(1, 240_000),
+    ])
+    .unwrap();
+    assert_eq!(timeline.open(400_000, wall(1)).unwrap(), 3);
 }
 
 #[test]

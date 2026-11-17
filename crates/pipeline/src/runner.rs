@@ -1838,11 +1838,16 @@ fn execute(
     }
     match stage {
         Stage::Assemble => {
+            // The long-silence cut runs first, so Assemble and its space
+            // check see only the kept audio (KTD15 of the
+            // forgotten-recording plan). The cut changes the segment rows.
+            crate::cut::run(&env.store, id, &dir, control)?;
+            let segments = lock(&env.store).segments(id)?;
             let home = lock(&env.store)
                 .session(id)?
                 .and_then(|record| record.home_path)
                 .map(std::path::PathBuf::from);
-            assemble::run(&env.store, id, &dir, segments, home.as_deref(), control).map(|_| ())
+            assemble::run(&env.store, id, &dir, &segments, home.as_deref(), control).map(|_| ())
         }
         Stage::Diarize => {
             let mut analyzer = env.engines.analyzer().map_err(|e| match e {

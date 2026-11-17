@@ -6,6 +6,7 @@ mod interface_zoom;
 mod managers;
 #[cfg(target_os = "macos")]
 mod menu;
+mod notify_prompt;
 mod relaunch;
 mod shortcut;
 mod startup;
@@ -73,6 +74,10 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::settings::set_new_note_records,
             commands::settings::set_alert_sound,
             commands::settings::set_show_recording_widget,
+            commands::settings::set_silence_check_minutes,
+            commands::settings::set_recording_time_limit_hours,
+            commands::settings::set_long_silence_cut_minutes,
+            commands::settings::set_stop_countdown_minutes,
             commands::settings::set_check_updates_automatically,
             commands::settings::set_audio_removal,
             commands::settings::audio_removal_count,
@@ -129,6 +134,8 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::capture::stop_recording,
             commands::capture::pause_recording,
             commands::capture::continue_recording,
+            commands::capture::keep_recording,
+            commands::capture::stop_from_prompt,
             commands::capture::resume_recording,
             commands::capture::record_note,
             commands::capture::recording_status,
@@ -189,6 +196,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             managers::capture::CaptureEnded,
             managers::capture::CaptureTick,
             managers::capture::RecordingChanged,
+            managers::guard::RecordingPrompt,
             managers::processing::ProcessingUpdate,
             managers::processing::MoveProgress,
             managers::processing::MovePaused,
@@ -364,6 +372,15 @@ fn setup_app(
     }
     let alerts = std::sync::Arc::new(managers::alerts::AlertsManager::default());
     app.manage(std::sync::Arc::clone(&alerts));
+    // The silence check and the time limit of the note that records
+    // (KTD5 of the forgotten-recording plan). Managed before anything
+    // records; its thread starts once processing is managed.
+    // A prompt notification that a crash or a quit left goes first (KTD10).
+    notify_prompt::remove_leftover(&handle);
+    let guard = std::sync::Arc::new(managers::guard::GuardManager::new(Box::new(
+        notify_prompt::NativeNotice::new(handle.clone()),
+    )));
+    app.manage(std::sync::Arc::clone(&guard));
     // Sleep closes the segment on the notifying thread, before the
     // machine stops; the wake's restart runs off it (U13).
     let sleeping = std::sync::Arc::clone(&capture);
@@ -397,6 +414,7 @@ fn setup_app(
     processing.start();
     let working = std::sync::Arc::clone(&processing);
     app.manage(processing);
+    guard.start_thread(handle.clone(), std::sync::Arc::clone(&capture));
     // Busy means that a note records or processes (KTD7).
     let recording = std::sync::Arc::clone(&capture);
     let updates = managers::updates::UpdateManager::new(&handle, move || {

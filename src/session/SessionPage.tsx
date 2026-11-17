@@ -12,6 +12,7 @@
 
 import { type MouseEvent, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
+  type AutoStopView,
   commands,
   type ListedApp,
   type MicrophoneChoice,
@@ -30,7 +31,7 @@ import { copySelection, copyText } from "../lib/clipboard";
 import { sameType } from "../lib/Labels";
 import { useReloadOn } from "../lib/useReloadOn";
 import { type Segment, SegmentedControl } from "../lib/SegmentedControl";
-import { formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
+import { count, formatDuration, sentence, sessionTitle, startedAt } from "../processing/describe";
 import type { Capture } from "../recording/useCapture";
 import { useRunningApps } from "../settings/Recording";
 import { Button } from "../settings/ui";
@@ -193,6 +194,16 @@ function offerFor(
         prompt: typePrompts?.prompts.find((p) => p.id === offerType.summary_prompt_id)?.name ?? offerType.prompt_name,
       }
     : null;
+}
+
+/// The line of a note that Longhand stopped (R8): each check in the prompt
+/// with its time from the note record.
+function autoStopLine({ silence_check_minutes: minutes, time_limit_hours: hours }: AutoStopView): string {
+  const checks = [
+    minutes !== null ? `${count(minutes, "minute")} with no speech` : null,
+    hours !== null ? `${count(hours, "hour")} of recording` : null,
+  ].filter((check) => check !== null);
+  return `Longhand stopped this note after ${checks.join(" and ")}.`;
 }
 
 function BackChevron() {
@@ -1033,6 +1044,13 @@ export function SessionPage({
           {!open && !deleted && detail?.not_saved_yet && (
             <p role="status" title={sentence(detail.not_saved_yet)} className="mt-1 text-[0.85rem] text-label-secondary">
               Not saved yet.
+            </p>
+          )}
+          {/* Longhand stopped the note (R8). The times come from the note
+              record, not from the settings now. */}
+          {!open && !deleted && detail?.auto_stop && (
+            <p role="status" className="mt-1 text-[0.85rem] text-label-secondary">
+              {autoStopLine(detail.auto_stop)}
             </p>
           )}
           {newNote && (
