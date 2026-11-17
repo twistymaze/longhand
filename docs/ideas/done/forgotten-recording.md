@@ -18,3 +18,7 @@ A note recorded for 43.5 hours over a weekend after the user forgot to stop it. 
 
 ## Notes / Current state
 The plan holds the requirements.
+
+## Outcome
+
+Shipped in [PR 99](https://github.com/twistymaze/longhand/pull/99) on 2026-11-17, as one release. The prompt asks "Keep recording?" in the recording widget, the main window and a system notification. When nobody answers, the note stops and shows why. At every Stop, the long-silence cut removes long silent stretches before Preparing the audio, and the live results of the kept audio stay valid.
