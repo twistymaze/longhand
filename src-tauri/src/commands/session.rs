@@ -10,7 +10,7 @@ use pipeline::folder_rename::FolderRename;
 use serde::Serialize;
 use session_core::folder::{SessionDoc, Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::note_folder::{Layout, NoteFiles};
-use session_core::note_record::NOTE_RECORD_FILE;
+use session_core::note_record::{AutoStop, NOTE_RECORD_FILE, NoteRecord};
 use session_core::{Event, SessionRecord, SessionState, Stage};
 use specta::Type;
 use tauri::{AppHandle, State};
@@ -600,6 +600,54 @@ pub struct SessionDetail {
     /// (KTD4). The page shows "Not saved yet". `None` when the write is
     /// done or has no problem.
     pub not_saved_yet: Option<String>,
+    /// The checks in the prompt when Longhand stopped the note (R8, KTD8
+    /// of the forgotten-recording plan). `None` for a note that the user
+    /// stopped. A saved note takes it from its `longhand.json`, so a note
+    /// that another computer stopped has it too.
+    pub auto_stop: Option<AutoStopView>,
+}
+
+/// The checks in the prompt when Longhand stopped a note, with the time of
+/// each check from the note's settings snapshot.
+#[derive(Serialize, Type, Debug, Clone, PartialEq, Eq)]
+pub struct AutoStopView {
+    pub silence_check_minutes: Option<u32>,
+    pub time_limit_hours: Option<u32>,
+}
+
+impl From<AutoStop> for AutoStopView {
+    fn from(reason: AutoStop) -> Self {
+        Self {
+            silence_check_minutes: reason.silence_check_minutes,
+            time_limit_hours: reason.time_limit_hours,
+        }
+    }
+}
+
+/// The stop reason that the note page shows (R8). A saved note takes it
+/// from the note record in `home`: another computer can have stopped the
+/// note. A note that is not saved takes `stored`, the store value: its
+/// record does not have the reason yet, or has the reason of an earlier
+/// recording. A record that cannot be read gives `stored`.
+fn auto_stop_of(
+    state: &SessionState,
+    home: Option<&Path>,
+    stored: Option<AutoStop>,
+) -> Option<AutoStopView> {
+    let from_record = match (state, home) {
+        (SessionState::Saved, Some(home)) => {
+            match read_timed(home.join(NOTE_RECORD_FILE), READ_TIMEOUT) {
+                Read::Bytes(bytes) => String::from_utf8(bytes)
+                    .ok()
+                    .and_then(|text| NoteRecord::parse(&text).ok())
+                    .and_then(|read| read.current())
+                    .map(|record| record.auto_stop),
+                Read::Missing | Read::Failed(_) => None,
+            }
+        }
+        _ => None,
+    };
+    from_record.unwrap_or(stored).map(AutoStopView::from)
 }
 
 #[derive(Serialize, Type)]
@@ -1024,7 +1072,7 @@ fn detail_of(
     let e = |e: pipeline::StageError| e.to_string();
     // The waits read the capture state, so they come before the store lock.
     let waits = processing.waits();
-    let (record, segments, saving, audio, transcript, again) = {
+    let (record, segments, saving, audio, transcript, again, stored_stop) = {
         let store = shared.lock().unwrap_or_else(|e| e.into_inner());
         let record = store
             .session(&note_id)
@@ -1040,8 +1088,24 @@ fn detail_of(
         let again = store
             .transcribe_again_marks(&note_id)
             .map_err(|e| e.to_string())?;
-        (record, segments, saving, audio, transcript, again)
+        let stored_stop = store.auto_stop(&note_id).map_err(|e| e.to_string())?;
+        (
+            record,
+            segments,
+            saving,
+            audio,
+            transcript,
+            again,
+            stored_stop,
+        )
     };
+    // The record read is outside the store lock: the storage folder can be
+    // slow.
+    let auto_stop = auto_stop_of(
+        &record.state,
+        record.home_path.as_deref().map(Path::new),
+        stored_stop,
+    );
     let audio_intact = audio == pipeline::save::AudioState::Present;
     let snapshot = pipeline::progress::snapshot(&shared, &note_id).map_err(e)?;
 
@@ -1131,6 +1195,7 @@ fn detail_of(
         waiting: waiting_parts(&note.waiting),
         conflict_files: file_names(&note.other_versions),
         not_saved_yet: processing.early_homes().problem(&note_id),
+        auto_stop,
     })
 }
 
@@ -2621,6 +2686,94 @@ mod tests {
             s.set_provider_address(provider, address).unwrap();
         }
         EndpointView::of(&s)
+    }
+
+    /// A note folder whose `longhand.json` has the stop reason `reason`.
+    fn folder_with_stop(reason: Option<AutoStop>) -> tempfile::TempDir {
+        let folder = tempfile::tempdir().unwrap();
+        let started = chrono::DateTime::parse_from_rfc3339("2026-11-16T14:00:00+00:00").unwrap();
+        let mut record = session_core::note_record::NoteRecord::new("s", started);
+        record.auto_stop = reason;
+        std::fs::write(folder.path().join(NOTE_RECORD_FILE), record.render()).unwrap();
+        folder
+    }
+
+    fn silence(minutes: u32) -> AutoStop {
+        AutoStop {
+            silence_check_minutes: Some(minutes),
+            time_limit_hours: None,
+        }
+    }
+
+    // Covers R8, KTD8 (U7): another computer stopped the note. This
+    // computer's store has no stop reason, and the line comes from the
+    // note record.
+    #[test]
+    fn a_saved_note_takes_the_stop_reason_from_the_note_record() {
+        let folder = folder_with_stop(Some(AutoStop {
+            silence_check_minutes: Some(45),
+            time_limit_hours: Some(8),
+        }));
+        assert_eq!(
+            auto_stop_of(&SessionState::Saved, Some(folder.path()), None),
+            Some(AutoStopView {
+                silence_check_minutes: Some(45),
+                time_limit_hours: Some(8),
+            })
+        );
+    }
+
+    // Covers R8 (U7): a note that the user stopped shows no line.
+    #[test]
+    fn a_saved_note_that_the_user_stopped_has_no_stop_reason() {
+        let folder = folder_with_stop(None);
+        assert_eq!(
+            auto_stop_of(&SessionState::Saved, Some(folder.path()), None),
+            None
+        );
+    }
+
+    // Covers R8 (U7): before the save, the record does not have the stop
+    // reason yet, so the store gives it.
+    #[test]
+    fn a_note_that_is_not_saved_yet_takes_the_stop_reason_from_the_store() {
+        let stopped_at = chrono::DateTime::parse_from_rfc3339("2026-11-16T15:00:00+00:00").unwrap();
+        assert_eq!(
+            auto_stop_of(
+                &SessionState::Processing { stopped_at },
+                None,
+                Some(silence(30))
+            ),
+            Some(AutoStopView {
+                silence_check_minutes: Some(30),
+                time_limit_hours: None,
+            })
+        );
+    }
+
+    // Covers R8 (U7): a new recording into a saved note removes the stop
+    // reason from the store. The old reason in the record does not show
+    // until the next save writes the record again.
+    #[test]
+    fn a_new_recording_hides_the_old_stop_reason_of_the_record() {
+        let folder = folder_with_stop(Some(silence(30)));
+        assert_eq!(
+            auto_stop_of(&SessionState::Capturing, Some(folder.path()), None),
+            None
+        );
+    }
+
+    // Covers R8 (U7): a record that cannot be read gives the store value.
+    #[test]
+    fn a_saved_note_with_no_record_takes_the_stop_reason_from_the_store() {
+        let folder = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auto_stop_of(&SessionState::Saved, Some(folder.path()), Some(silence(30))),
+            Some(AutoStopView {
+                silence_check_minutes: Some(30),
+                time_limit_hours: None,
+            })
+        );
     }
 
     #[test]

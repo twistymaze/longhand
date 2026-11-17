@@ -74,6 +74,7 @@ const detail = (e: SessionEntry, home: string | null): SessionDetail => ({
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
 });
 
 const document = (body: string): SessionDocument => ({

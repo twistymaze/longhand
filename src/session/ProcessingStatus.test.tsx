@@ -48,6 +48,7 @@ const waiting: SessionDetail = {
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
 };
 
 function open() {

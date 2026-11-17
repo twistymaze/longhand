@@ -94,6 +94,7 @@ const detail = (e: SessionEntry, over: Partial<SessionDetail> = {}): SessionDeta
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
   ...over,
 });
 
@@ -2457,6 +2458,33 @@ describe("SessionPage: Record, Resume and other computers", () => {
     renderPage({ id: "n", sessions: sessionsOf([e]) });
     const line = await screen.findByText("Not saved yet.");
     expect(line.getAttribute("title")).toBe("The storage folder is not available.");
+  });
+
+  // R8, KTD8 (U7). The times come from the note record, so a note that
+  // another computer stopped with its own settings shows them.
+  test.each([
+    [{ silence_check_minutes: 30, time_limit_hours: null }, "Longhand stopped this note after 30 minutes with no speech."],
+    [{ silence_check_minutes: null, time_limit_hours: 6 }, "Longhand stopped this note after 6 hours of recording."],
+    [
+      { silence_check_minutes: 45, time_limit_hours: 1 },
+      "Longhand stopped this note after 45 minutes with no speech and 1 hour of recording.",
+    ],
+  ])("a note that Longhand stopped names the checks: %o", async (reason, text) => {
+    const e = entry("n");
+    mockPage(e, { auto_stop: reason });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    const line = await screen.findByText(text);
+    expect(line.getAttribute("role")).toBe("status");
+  });
+
+  // R8 (U7).
+  test("a note that the user stopped shows no stop line", async () => {
+    const e = entry("n");
+    // The Not saved yet line shows that the page has the detail.
+    mockPage(e, { not_saved_yet: "the storage folder is not available" });
+    renderPage({ id: "n", sessions: sessionsOf([e]) });
+    await screen.findByText("Not saved yet.");
+    expect(screen.queryByText(/Longhand stopped this note/)).toBeNull();
   });
 
   // R24.

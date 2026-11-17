@@ -42,6 +42,7 @@ const detail = (over: Partial<SessionDetail>): SessionDetail => ({
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
   ...over,
 });
 

@@ -113,6 +113,7 @@ const detail = (e: SessionEntry): SessionDetail => ({
   waiting: [],
   conflict_files: [],
   not_saved_yet: null,
+  auto_stop: null,
 });
 
 // The weekly team meeting after it ended. The recording scene shows

@@ -1785,6 +1785,11 @@ export type AudioView =
  * deliver it.
  */
 "waiting"
+/**
+ * The checks in the prompt when Longhand stopped a note, with the time of
+ * each check from the note's settings snapshot.
+ */
+export type AutoStopView = { silence_check_minutes: number | null; time_limit_hours: number | null }
 export type BuildInfo = { 
 /**
  * The full version, for example `1.0.4`.
@@ -3058,7 +3063,14 @@ conflict_files: string[];
  * (KTD4). The page shows "Not saved yet". `None` when the write is
  * done or has no problem.
  */
-not_saved_yet: string | null }
+not_saved_yet: string | null; 
+/**
+ * The checks in the prompt when Longhand stopped the note (R8, KTD8
+ * of the forgotten-recording plan). `None` for a note that the user
+ * stopped. A saved note takes it from its `longhand.json`, so a note
+ * that another computer stopped has it too.
+ */
+auto_stop: AutoStopView | null }
 export type SessionDocument = { has_speakers: boolean; lines: DocLine[]; 
 /**
  * The text of `transcript.md`, which the Transcript tab copies (R17).
