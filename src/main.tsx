@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import App from "./App";
 import { commands } from "./bindings";
 import { forwardErrorsToLog } from "./lib/log";
+import { setUpWidgetPage } from "./widget/page";
 import "./index.css";
 
 // Both windows load this page. Their errors go to the app log too.
@@ -12,10 +13,8 @@ forwardErrorsToLog();
 // its place (`.title-strip` in index.css).
 if (navigator.userAgent.includes("Mac")) document.documentElement.classList.add("mac");
 
-// The recording widget window is transparent: only its pill shows
-// (`.widget-window` in index.css).
 if (new URLSearchParams(window.location.search).get("window") === "widget") {
-  document.documentElement.classList.add("widget-window");
+  setUpWidgetPage(window, { release: import.meta.env.PROD });
 }
 
 // On macOS the app menu holds Settings… (⌘,). Windows has no app menu, so

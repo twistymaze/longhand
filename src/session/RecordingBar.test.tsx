@@ -1,8 +1,9 @@
-import { describe, expect, test } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { describe, expect, test, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Readiness, RecordingStatus } from "../bindings";
 import type { Capture } from "../recording/useCapture";
+import { imeKeyDown } from "../test/keys";
 import { mockTauri } from "../test/tauri";
 import { RecordingBar } from "./RecordingBar";
 
@@ -100,5 +101,23 @@ describe("the app audio warnings", () => {
     cleanup();
     const empty = showStatus({ note_apps: [], app_audio: null });
     expect(within(empty.bar).queryByRole("status")).toBeNull();
+  });
+});
+
+describe("the Speakers field", () => {
+  test("the Enter that ends an input method composition does not set the count", async () => {
+    const tauri = mockTauri({ set_session_speaker_count: () => null });
+    const onSpeakersDone = vi.fn(() => {});
+    render(<RecordingBar capture={capture} readiness={ready} speakers={true} onSpeakersDone={onSpeakersDone} />);
+    const field = screen.getByRole("textbox", { name: /^Speakers in this note/ });
+    fireEvent.change(field, { target: { value: "4" } });
+    imeKeyDown(field, "Enter");
+    await act(async () => {});
+    expect(tauri.calls.some((c) => c.cmd === "set_session_speaker_count")).toBe(false);
+    fireEvent.keyDown(field, { key: "Enter", keyCode: 13 });
+    await waitFor(() => expect(onSpeakersDone).toHaveBeenCalled());
+    expect(tauri.calls.filter((c) => c.cmd === "set_session_speaker_count").map((c) => c.args)).toEqual([
+      { count: { kind: "exact", count: 4 } },
+    ]);
   });
 });

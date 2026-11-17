@@ -18,6 +18,7 @@ import { type Capture, HISTORY } from "../recording/useCapture";
 import { describeDestination } from "../settings/DestinationPicker";
 import { Button, fieldClass, formatBytes } from "../settings/ui";
 import { SetUpProviderButton } from "./ProcessingStatus";
+import { isImeComposing } from "../lib/keyboard";
 
 const statusText: Record<InputStatus, string> = {
   idle: "Recording stopped",
@@ -223,6 +224,7 @@ function SpeakerField({ onDone }: { onDone: () => void }) {
         onChange={(e) => setValue(e.target.value)}
         onBlur={() => void commit()}
         onKeyDown={(e) => {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") void commit();
           if (e.key === "Escape") onDone();
         }}

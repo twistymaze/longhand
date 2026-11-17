@@ -29,6 +29,7 @@ import {
 } from "../icons";
 import { schema } from "../note/schema";
 import { isValidUrl, normalizeUrlHref } from "../plugins/url";
+import { isImeComposing } from "../../lib/keyboard";
 
 // The toolbar that appears over a text selection. See PROVENANCE.md.
 
@@ -320,6 +321,7 @@ export function FormatToolbar() {
             setLinkInvalid(false);
           }}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") {
               e.preventDefault();
               if (applyLink(linkDraft)) setLinkDraft(null);

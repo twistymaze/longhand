@@ -1,6 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { imeKeyDown } from "../test/keys";
 import { TagPicker } from "./TagPicker";
 
 const tags = ["Person::Nathan", "Person::Ana", "Project::Atlas", "urgent", "follow up"];
@@ -44,6 +45,17 @@ describe("TagPicker", () => {
     expect(onAdd.mock.calls).toEqual([["Client :: Acme"]]);
     expect(input().value).toBe("");
     expect(document.activeElement).toBe(input());
+  });
+
+  test("the Enter that ends an input method composition does not add the tag", async () => {
+    const { user, opener, onAdd } = setup();
+    await user.click(opener);
+    await user.keyboard("顧客");
+    imeKeyDown(input(), "Enter");
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(input().value).toBe("顧客");
+    await user.keyboard("{Enter}");
+    expect(onAdd.mock.calls).toEqual([["顧客"]]);
   });
 
   test("Enter on the exact text of a listed tag adds the listed spelling", async () => {

@@ -9,6 +9,7 @@ import { commands, type NoteTypeList } from "../bindings";
 import { sentence } from "../processing/describe";
 import { fieldClass } from "../settings/ui";
 import { sameType } from "./Labels";
+import { isImeComposing } from "./keyboard";
 
 export function NewTypeDialog({
   onCreated,
@@ -86,6 +87,9 @@ export function NewTypeDialog({
       onKeyDown={(e) => {
         // Escape closes the dialog only, not the page around it.
         e.stopPropagation();
+        // An Escape that cancels a composition in the field does not close
+        // the dialog.
+        if (isImeComposing(e)) return;
         if (e.key === "Escape") {
           e.preventDefault();
           cancel();
@@ -107,6 +111,7 @@ export function NewTypeDialog({
           setError(null);
         }}
         onKeyDown={(e) => {
+          if (isImeComposing(e)) return;
           if (e.key === "Enter") {
             e.preventDefault();
             void create();

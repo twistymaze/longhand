@@ -6,6 +6,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { commands } from "../bindings";
 import { sentence } from "../processing/describe";
+import { isImeComposing } from "../lib/keyboard";
 
 /// `settings` shows an "Open Settings…" button, when the fix is in Settings.
 export type Notice = { tone: "caution" | "negative"; text: string; settings?: boolean };
@@ -78,6 +79,7 @@ export const TitleField = forwardRef<
       }}
       onBlur={() => void commit()}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter") {
           e.preventDefault();
           e.currentTarget.blur();

@@ -19,6 +19,7 @@ import { WebLink } from "../settings/About";
 import { AppIcon } from "../settings/icons";
 import { sentence } from "../processing/describe";
 import { Button, formatBytes } from "../settings/ui";
+import { isImeComposing } from "../lib/keyboard";
 
 /// A prominent button is blue, as the default button of a macOS alert.
 type Action = { label: string; choice: Choice; prominent?: boolean };
@@ -229,6 +230,7 @@ export function UpdateWindow() {
       // window, Return and Space on a link in the list of changes open
       // that link, not the default button.
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key !== "Enter" && e.key !== " ") return;
         if (e.key === " " && withKey) return;
         if (withKey && e.target instanceof Element && e.target.closest("section")) return;

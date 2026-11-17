@@ -7,6 +7,7 @@ import { autoUpdate, computePosition, flip, offset, shift } from "@floating-ui/d
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fieldClass } from "./ui";
+import { isImeComposing } from "../lib/keyboard";
 
 type Row = { kind: "model" | "typed"; model: string };
 
@@ -139,6 +140,7 @@ export function ModelPicker({
           onFocus={() => setOpen(true)}
           onBlur={close}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             if (e.key === "ArrowDown" || e.key === "ArrowUp") {
               e.preventDefault();
               move(e.key === "ArrowDown" ? 1 : -1);

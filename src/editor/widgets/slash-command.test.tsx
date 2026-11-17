@@ -11,6 +11,7 @@ import type { EditorView } from "prosemirror-view";
 
 import { schema } from "../note/schema";
 import { SLASH_COMMANDS, SlashCommandMenu } from "./slash-command";
+import { imeKeyDown } from "../../test/keys";
 
 afterEach(cleanup);
 
@@ -128,5 +129,31 @@ describe("slash menu keys", () => {
       fireEvent.keyDown(v.dom, { key: "Enter" });
     });
     expect(v.state.doc.firstChild!.type.name).toBe("heading");
+  });
+
+  test("the Enter that ends an input method composition does not run the item", () => {
+    let view: EditorView | null = null;
+    const doc = schema.node("doc", null, [para()]);
+    render(
+      <ProseMirror defaultState={EditorState.create({ doc, plugins: [reactKeys()] })}>
+        <ProseMirrorDoc />
+        <CaptureView
+          onView={(next) => {
+            if (view === next) return;
+            view = next;
+            vi.spyOn(next, "coordsAtPos").mockReturnValue({ bottom: 20, left: 0, right: 40, top: 0 });
+          }}
+        />
+        <SlashCommandMenu />
+      </ProseMirror>,
+    );
+    const v = view as unknown as EditorView;
+    act(() => {
+      v.dispatch(v.state.tr.insertText("/h1"));
+    });
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+    act(() => imeKeyDown(v.dom, "Enter"));
+    expect(v.state.doc.firstChild!.type.name).toBe("paragraph");
+    expect(screen.getAllByRole("button")).toHaveLength(1);
   });
 });

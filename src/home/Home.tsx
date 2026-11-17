@@ -40,6 +40,7 @@ import { SessionRow } from "./SessionRow";
 import { useFileDrop } from "./useFileDrop";
 import { useLibraryNotices } from "./useLibraryNotices";
 import { useTypesAndTags } from "./useTypesAndTags";
+import { isImeComposing } from "../lib/keyboard";
 
 export type { RecordingNow };
 
@@ -229,7 +230,7 @@ export function Home({
         return;
       if (
         event.defaultPrevented ||
-        event.isComposing ||
+        isImeComposing(event) ||
         event.altKey ||
         event.ctrlKey ||
         event.metaKey ||
