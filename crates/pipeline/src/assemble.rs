@@ -199,7 +199,13 @@ pub fn run(
             )));
         }
         control.proceed()?;
-        let assembled = assemble_segment(&recovery, session_dir, segment, control)?;
+        let origin: Option<u64> = checkpoint::get(
+            store,
+            note_id,
+            Stage::Assemble,
+            &crate::cut::origin_key(segment.index),
+        )?;
+        let assembled = assemble_part(&recovery, session_dir, segment, origin, control)?;
         record(store, note_id, session_dir, segment, None, &assembled)?;
         log::info!(
             "assembled segment {} of {note_id}: {} samples at {} Hz",
@@ -348,6 +354,19 @@ impl Sink {
         }
     }
 
+    /// Give the processing resampler the pre-roll of a part of a cut
+    /// segment: interleaved native-rate samples before the part. The
+    /// archive does not get them.
+    fn pre_roll(&mut self, block: &[f32]) {
+        match self {
+            Sink::Mono { to_proc, .. } => to_proc.pre_roll(block),
+            Sink::Stereo { to_proc, .. } => {
+                let (left, right) = deinterleave(block);
+                to_proc.pre_roll(&audio::live_mix::mix(&left, &right));
+            }
+        }
+    }
+
     /// Flush the resamplers and give the processing file writer.
     fn finish(self, opus: &mut OpusWriter) -> Result<ProcWriter, StageError> {
         match self {
@@ -402,6 +421,23 @@ pub fn assemble_segment(
     segment: &Segment,
     control: &dyn Control,
 ) -> Result<Assembled, StageError> {
+    assemble_part(recovery, session_dir, segment, None, control)
+}
+
+/// [`assemble_segment`] for a segment that can be a part of a cut segment
+/// (KTD16 of the forgotten-recording plan). `origin_ms` is the offset of
+/// the original segment. When the part starts after it, the lookback of
+/// the first chunk goes into the processing resampler as a pre-roll on the
+/// block grid of the original segment. So the processing file of the part
+/// has the samples of the original segment, and the live speaker features
+/// of the part stay valid. The archive does not get the lookback.
+pub fn assemble_part(
+    recovery: &Path,
+    session_dir: &Path,
+    segment: &Segment,
+    origin_ms: Option<u64>,
+    control: &dyn Control,
+) -> Result<Assembled, StageError> {
     let chunks: Vec<_> = recorder::list_chunks(recovery)?
         .into_iter()
         .filter(|c| c.segment == segment.index)
@@ -431,6 +467,10 @@ pub fn assemble_segment(
     let _temps = TempFiles(vec![temp_path(&archive), temp_path(&processing)]);
     let mut opus = OpusWriter::create(&temp_path(&archive), rate, channels)?;
     let mut sink = Sink::new(rate, channels, &processing)?;
+    if let Some(origin_ms) = origin_ms.filter(|&origin| first.start_ms > origin) {
+        let pre_roll = pre_roll(first, origin_ms, rate, width)?;
+        sink.pre_roll(&pre_roll);
+    }
 
     let mut native_samples = 0u64;
     let mut expected_ms = first.start_ms;
@@ -505,6 +545,32 @@ pub fn assemble_segment(
         },
         echo,
     })
+}
+
+/// The interleaved samples of the lookback of `first` that start on the
+/// block grid of the processing resampler of a segment at `origin_ms`.
+fn pre_roll(
+    first: &recorder::ChunkInfo,
+    origin_ms: u64,
+    rate: u32,
+    width: usize,
+) -> Result<Vec<f32>, StageError> {
+    let lookback = ms_to_samples(first.start_ms.saturating_sub(first.audio_start_ms), rate);
+    let block = crate::resample::block_input(rate, PROC_RATE) as u64;
+    let phase = ms_to_samples(first.start_ms - origin_ms, rate) % block;
+    if lookback < phase {
+        return Ok(Vec::new());
+    }
+    let frames = (lookback - phase) / block * block + phase;
+    let mut reader = hound::WavReader::open(&first.path)?;
+    let skip = ((lookback - frames) as usize) * width;
+    let take = frames as usize * width;
+    reader
+        .samples::<i16>()
+        .skip(skip)
+        .take(take)
+        .map(|sample| Ok(sample? as f32 / 32_768.0))
+        .collect()
 }
 
 /// Decode an archive this stage wrote back into a 16 kHz processing file,

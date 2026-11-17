@@ -4,10 +4,13 @@
 //! and returns a [`CutPlan`] (KTD16, KTD17). It is a pure function of plain
 //! data. [`read_input`] reads that data from the `audio-recovery/` folder of
 //! a note: the chunk list and the speech sidecars of the segments of the
-//! current recording.
+//! current recording. [`run`] applies the plan before Assemble (KTD15,
+//! KTD18, KTD19).
 
+mod apply;
 mod detect;
 
+pub use apply::{PLAN_KEY, origin_key, run, unfinished};
 pub use detect::detect;
 
 use std::collections::BTreeSet;
@@ -79,7 +82,9 @@ pub struct WordSpan {
 /// One chunk of a segment, as the segment index and the new audio of the
 /// chunk on the note timeline. The segment index is the index before the
 /// cut.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct ChunkSpan {
     pub segment: u32,
     pub start_ms: u64,
@@ -94,7 +99,7 @@ impl ChunkSpan {
 
 /// One segment of the current recording after the cut: a part of an
 /// original segment (KTD16).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PlannedSegment {
     /// The index of the original segment before the cut.
     pub source: u32,
@@ -108,7 +113,7 @@ pub struct PlannedSegment {
 }
 
 /// The result of [`detect`] for the current recording.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CutPlan {
     /// The segments of the current recording after the cut, in time order.
     /// A segment that the cut removes completely has no entry.

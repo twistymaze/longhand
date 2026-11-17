@@ -1624,6 +1624,43 @@ impl Store {
         Ok(())
     }
 
+    /// Write the store changes of a long-silence cut in one transaction
+    /// (KTD19 of the forgotten-recording plan): delete the rows of
+    /// `deleted_segments`, write the rows of `segments`, mark the segments
+    /// `checked` as checked by the cut, and write or delete each
+    /// checkpoint. A checkpoint with no payload is deleted.
+    pub fn apply_cut(&mut self, id: &str, cut: &CutRows) -> Result<()> {
+        self.require(id)?;
+        let tx = self.conn.transaction()?;
+        for index in &cut.deleted_segments {
+            tx.execute(
+                "DELETE FROM segments WHERE note_id = ?1 AND idx = ?2",
+                params![id, index],
+            )?;
+        }
+        for segment in &cut.segments {
+            insert_segment(&tx, id, segment)?;
+        }
+        tx.execute(
+            "UPDATE segments SET cut_checked = 1
+             WHERE note_id = ?1 AND idx IN (SELECT value FROM json_each(?2))",
+            params![id, serde_json::to_string(&cut.checked)?],
+        )?;
+        for (stage, key, payload) in &cut.checkpoints {
+            match payload {
+                Some(payload) => put_checkpoint_in(&tx, id, *stage, key, payload)?,
+                None => {
+                    tx.execute(
+                        "DELETE FROM checkpoints WHERE note_id = ?1 AND stage = ?2 AND key = ?3",
+                        params![id, stage_key(*stage), key],
+                    )?;
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The recording settings snapshot of the note `id` (KTD14 of the
     /// forgotten-recording plan), as the JSON text that the recording
     /// wrote. `None` for a note with no snapshot.
@@ -2510,6 +2547,21 @@ impl Store {
         )?;
         Ok(())
     }
+}
+
+/// The store changes of a long-silence cut (KTD19 of the
+/// forgotten-recording plan). [`Store::apply_cut`] writes them in one
+/// transaction.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CutRows {
+    /// The indices of the segment rows to delete. A row in `segments`
+    /// with the same index is written after the delete.
+    pub deleted_segments: Vec<u32>,
+    pub segments: Vec<Segment>,
+    /// The indices of the segments that get the cut mark.
+    pub checked: Vec<u32>,
+    /// The checkpoints to write. `None` deletes the checkpoint.
+    pub checkpoints: Vec<(Stage, String, Option<String>)>,
 }
 
 /// Add `id` to the Move with the step Pending, unless the Move has it.

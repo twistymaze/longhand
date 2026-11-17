@@ -372,6 +372,7 @@ impl SpeakerAnalyzer for ExactAnalyzer {
         Ok(Analysis {
             total,
             step,
+            grid_start: 0,
             activities: vec![
                 WindowActivity {
                     frames: vec![[true, false, false]; frames_for_samples(WINDOW_SAMPLES)]
@@ -12836,4 +12837,75 @@ async fn a_rename_of_an_imported_note_before_its_summary_ends_keeps_the_users_ti
         (title.text.as_str(), title.source),
         ("Budget review", TitleSource::User)
     );
+}
+
+#[tokio::test]
+async fn the_automatic_queue_of_an_interrupted_note_cuts_it_before_assemble() {
+    // KTD15 of the forgotten-recording plan: every stop path reaches the
+    // cut, and Assemble reads the rows after the cut.
+    let r = rig().await;
+    common::record_session(
+        &r.store,
+        &r.root,
+        "s",
+        100,
+        Some("m"),
+        &[(16_000, vec![0.0; 5 * 60 * 16_000])],
+    );
+    // Speech in the first and the last chunk, quiet room tone between.
+    let recovery = r.root.join("s").join(pipeline::RECOVERY_DIR);
+    for chunk in recorder::list_chunks(&recovery).unwrap() {
+        let speech = matches!(chunk.start_ms / 60_000, 0 | 4);
+        let cell = recorder::speech::Cell {
+            mic: recorder::speech::ChannelCell {
+                voiced: if speech { 255 } else { 0 },
+                level: if speech { 20 } else { 70 },
+            },
+            app: None,
+        };
+        recorder::speech::write_sidecar(
+            &recorder::speech::sidecar_of(&chunk),
+            1,
+            &[cell; 240],
+            std::fs::File::sync_all,
+        )
+        .unwrap();
+    }
+    {
+        let mut s = r.store.lock().unwrap();
+        s.set_recording_guards("s", Some(r#"{"cut_minutes":1,"countdown_minutes":2}"#))
+            .unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::CaptureLost {
+                reason: session_core::InterruptReason::Crash,
+                at: common::at(100),
+            },
+        )
+        .unwrap();
+        s.apply(
+            "s",
+            &session_core::Event::Tick {
+                now: common::at(100)
+                    + session_core::AUTO_QUEUE_AFTER
+                    + chrono::TimeDelta::seconds(1),
+                retained_audio: true,
+            },
+        )
+        .unwrap();
+    }
+
+    let (_, outcome) = r.runner.run_next().await.unwrap();
+
+    assert_eq!(outcome, Outcome::Finished);
+    // The cut removes the middle minute: each side keeps one minute of
+    // margin.
+    let segments = r.store.lock().unwrap().segments("s").unwrap();
+    let spans: Vec<(u32, u64, u64)> = segments
+        .iter()
+        .map(|s| (s.index, s.offset_ms, s.duration_ms))
+        .collect();
+    assert_eq!(spans, [(0, 0, 120_000), (1, 180_000, 120_000)]);
+    // One analysis per assembled segment.
+    assert_eq!(r.script.analyses.load(Ordering::SeqCst), 2);
 }

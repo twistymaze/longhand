@@ -202,6 +202,13 @@ pub fn register_chunks(
     session_dir: &Path,
     keep: Option<u32>,
 ) -> Result<(), StageError> {
+    // A cut that is not done has renamed some chunks of its parts and not
+    // the others. Its plan finishes first, at the next Assemble (KTD19 of
+    // the forgotten-recording plan).
+    if crate::cut::unfinished(store, id)? {
+        log::info!("{id} has a cut that is not done; its chunks get no new rows");
+        return Ok(());
+    }
     let dir = session_dir.join(RECOVERY_DIR);
     let partial = recorder::recover_partial_chunks(&dir)?;
     if !partial.left.is_empty() {

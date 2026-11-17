@@ -431,6 +431,53 @@ fn the_cut_mark_is_on_each_segment_that_the_cut_checked() {
 }
 
 #[test]
+fn a_cut_writes_its_rows_marks_and_checkpoints_in_one_transaction() {
+    // KTD19 step 2: the segment rows, the cut marks and the re-keyed
+    // checkpoints change together.
+    let mut store = Store::open_in_memory().unwrap();
+    store.create_session("s1", t(0), None).unwrap();
+    for (index, offset) in [(0, 0), (1, 120_000), (2, 240_000)] {
+        store.put_segment("s1", &segment(index, offset)).unwrap();
+    }
+    store
+        .put_checkpoint("s1", Stage::Transcribe, "seg-0002-live-0000", "{}")
+        .unwrap();
+    let part = session_core::Segment {
+        cut_after_ms: 60_000,
+        ..segment(1, 240_000)
+    };
+    let cut = session_core::jobs::CutRows {
+        deleted_segments: vec![2],
+        segments: vec![part.clone()],
+        checked: vec![0, 1],
+        checkpoints: vec![
+            (Stage::Transcribe, "seg-0002-live-0000".into(), None),
+            (
+                Stage::Transcribe,
+                "seg-0001-live-0000".into(),
+                Some("{}".into()),
+            ),
+        ],
+    };
+    store.apply_cut("s1", &cut).unwrap();
+    assert_eq!(store.segments("s1").unwrap(), [segment(0, 0), part]);
+    assert_eq!(
+        store.cut_checked("s1").unwrap(),
+        std::collections::BTreeSet::from([0, 1])
+    );
+    assert_eq!(
+        store
+            .checkpoints("s1", Stage::Transcribe)
+            .unwrap()
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<Vec<_>>(),
+        ["seg-0001-live-0000"]
+    );
+    assert!(store.apply_cut("missing", &cut).is_err());
+}
+
+#[test]
 fn the_recording_settings_snapshot_is_on_the_note_row() {
     // KTD14: the store holds the snapshot as text that it does not read.
     let mut store = Store::open_in_memory().unwrap();
