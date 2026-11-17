@@ -9,6 +9,7 @@
 //! samples, so the microphone is the clock (KTD5).
 
 pub mod chunks;
+pub mod speech;
 pub mod storage;
 pub mod wav;
 

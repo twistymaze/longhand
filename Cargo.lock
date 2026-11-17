@@ -4695,12 +4695,14 @@ dependencies = [
  "log",
  "objc2",
  "objc2-foundation",
+ "rubato",
  "session-core",
  "sysinfo",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "vad",
  "windows-sys 0.61.2",
 ]
 

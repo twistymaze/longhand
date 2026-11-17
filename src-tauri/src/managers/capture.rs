@@ -45,6 +45,7 @@ use audio_system::{AppSet, Permission};
 use chrono::{DateTime, FixedOffset, Local};
 use pipeline::live::LiveEnd;
 use pipeline::recover::segment_audio_file;
+use recorder::speech::{EarshotDetector, GuardFeed, GuardMeter, VoiceDetector};
 use recorder::storage::DISK_RESERVE_BYTES;
 use recorder::{
     ChunkedWriter, Frame, SegmentArgs, SegmentEnd, SegmentInput, SegmentOutcome, SpeakerCommand,
@@ -1198,6 +1199,11 @@ struct Inner {
     /// cancelled its open (KTD8 of the capture recovery plan). That Stop
     /// returns it.
     cancelled_open: Option<StopOutcome>,
+    /// The counters of the silence check and the time limit of the note
+    /// (KTD6 of the forgotten-recording plan). Each segment thread of the
+    /// note adds to them. A new recording gets a new meter, and Continue
+    /// sets the silence time to zero (R3, R4).
+    guard: Arc<GuardMeter>,
 }
 
 /// What [`CaptureManager::status`] reads under the inner lock.
@@ -1319,6 +1325,29 @@ enum ContinueStep {
     Open(String),
     /// No note is paused.
     Nothing,
+}
+
+/// The guard meter of a new recording: Start, Resume or Record into a note
+/// (R3). Audio that the note recorded before does not count.
+fn meter_at_start(inner: &mut Inner) {
+    inner.guard = Arc::default();
+}
+
+/// The guard meter at an open of the next segment by the user (R3, R4).
+/// Continue keeps the recording time and starts the silence check again.
+/// A reopen after a microphone change, a restart or the first app sound
+/// does not come here, so it keeps both counters (KTD6).
+fn meter_at_reopen(inner: &mut Inner, reopen: Reopen) {
+    match reopen {
+        Reopen::Resume | Reopen::Record => meter_at_start(inner),
+        Reopen::Continue => inner.guard.reset_silence(),
+    }
+}
+
+/// The speech detector of one channel of a segment, new for each segment
+/// because the rate can change (KTD1).
+fn earshot_detector(rate: u32) -> Box<dyn VoiceDetector> {
+    Box::new(EarshotDetector::new(rate))
 }
 
 fn continue_step(inner: &Inner) -> ContinueStep {
@@ -2318,6 +2347,7 @@ impl CaptureManager {
         let apps = apps_at_start(&settings, audio_system::apps::supported());
         let live = model.live_transcript.then_some(model.asr_model.as_str());
         let choice = mic_of(&capture);
+        meter_at_start(&mut inner);
         let opening = Opening {
             note_id: &id,
             segment: index,
@@ -2802,6 +2832,7 @@ impl CaptureManager {
         reopen: Reopen,
     ) -> Result<(), CaptureError> {
         inner.supersede();
+        meter_at_reopen(&mut inner, reopen);
         let held = inner
             .clock
             .take()
@@ -4075,6 +4106,11 @@ impl CaptureManager {
             channels,
             floor_bytes: DISK_RESERVE_BYTES,
         })?;
+        // Speech detection on each channel, also with the live transcript
+        // off (R1, KTD1 of the forgotten-recording plan). The cells go to
+        // the sidecars and to the note's meter, which only takes atomics.
+        let mut feed = GuardFeed::new(Arc::clone(&inner.guard));
+        let writer = writer.with_speech(earshot_detector, move |cell| feed.cell(cell));
         // The speaker side of a stereo segment (KTD18).
         let (link, commands) = if channels == 2 {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6509,6 +6545,68 @@ mod tests {
             paused: Some(id.into()),
             ..Inner::default()
         }
+    }
+
+    /// A note's meter after 20 minutes of recording with no speech.
+    fn metered_inner() -> Inner {
+        let inner = paused_inner("s");
+        inner.guard.add(20 * 60_000, false);
+        inner
+    }
+
+    // Covers R4, AE7 (KTD6 of the forgotten-recording plan).
+    #[test]
+    fn continue_starts_the_silence_check_again_and_keeps_the_recording_time() {
+        let mut inner = metered_inner();
+        meter_at_reopen(&mut inner, Reopen::Continue);
+        assert_eq!(inner.guard.silence_ms(), 0);
+        assert_eq!(inner.guard.run_ms(), 20 * 60_000);
+    }
+
+    // Covers R3 (KTD6 of the forgotten-recording plan).
+    #[test]
+    fn resume_and_record_start_both_counters_at_zero() {
+        for reopen in [Reopen::Resume, Reopen::Record] {
+            let mut inner = metered_inner();
+            // The thread of a closed segment can still hold the old meter.
+            let old = Arc::clone(&inner.guard);
+            meter_at_reopen(&mut inner, reopen);
+            assert_eq!(inner.guard.silence_ms(), 0, "{reopen:?}");
+            assert_eq!(inner.guard.run_ms(), 0, "{reopen:?}");
+            old.add(1_000, false);
+            assert_eq!(inner.guard.run_ms(), 0, "{reopen:?}");
+        }
+        let mut inner = metered_inner();
+        meter_at_start(&mut inner);
+        assert_eq!(inner.guard.run_ms(), 0);
+        assert_eq!(inner.guard.silence_ms(), 0);
+    }
+
+    // Covers R1, R2 (KTD1 of the forgotten-recording plan): the detector of
+    // capture finds no speech in noise, at the device rate.
+    #[test]
+    fn the_capture_detector_finds_no_speech_in_noise() {
+        let mut detector = earshot_detector(44_100);
+        let mut state: u32 = 7;
+        let noise: Vec<f32> = (0..44_100 * 5)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state as f32 / u32::MAX as f32 * 2.0 - 1.0) * 0.017
+            })
+            .collect();
+        let (mut frames, mut voiced) = (0, 0);
+        for part in noise.chunks(882) {
+            detector.push(part, &mut |v| {
+                frames += 1;
+                voiced += u32::from(v);
+            });
+        }
+        // 5 s at 16 kHz is 312 frames of 256 samples, less the resampler
+        // block that is not full.
+        assert!(frames >= 300, "{frames}");
+        assert_eq!(voiced, 0);
     }
 
     // Covers R1, R5 (KTD2).
