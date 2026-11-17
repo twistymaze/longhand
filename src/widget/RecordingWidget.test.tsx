@@ -228,7 +228,7 @@ describe("the pill", () => {
   });
 });
 
-describe("the Still recording? prompt in the pill (R5, R9, KTD11)", () => {
+describe("the Keep recording? prompt in the pill (R5, R9, KTD11)", () => {
   const prompt = (generation: number): Prompt => ({
     note_id: "s1",
     generation,
@@ -240,7 +240,7 @@ describe("the Still recording? prompt in the pill (R5, R9, KTD11)", () => {
 
   test("shows from the status with the countdown, Keep Recording and Stop", async () => {
     open(() => ({ ...recording, prompt: prompt(4) }));
-    await screen.findByText("Still recording?");
+    await screen.findByText("Keep recording?");
     expect(screen.getByRole("button", { name: "Keep Recording" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Stop" })).toHaveLength(2);
     expect(screen.getByText(/^[12]:[0-5]\d$/)).toBeTruthy();
@@ -249,28 +249,28 @@ describe("the Still recording? prompt in the pill (R5, R9, KTD11)", () => {
   test("shows from the event and goes on a close event", async () => {
     const { tauri } = open(() => recording);
     await screen.findByRole("button", { name: "Pause" });
-    expect(screen.queryByText("Still recording?")).toBeNull();
+    expect(screen.queryByText("Keep recording?")).toBeNull();
     await act(async () => {
       await tauri.emit("recording-prompt", { generation: 1, prompt: prompt(1) });
     });
-    expect(screen.getByText("Still recording?")).toBeTruthy();
+    expect(screen.getByText("Keep recording?")).toBeTruthy();
     await act(async () => {
       await tauri.emit("recording-prompt", { generation: 0, prompt: null });
     });
-    expect(screen.getByText("Still recording?")).toBeTruthy();
+    expect(screen.getByText("Keep recording?")).toBeTruthy();
     await act(async () => {
       await tauri.emit("recording-prompt", { generation: 1, prompt: null });
     });
-    expect(screen.queryByText("Still recording?")).toBeNull();
+    expect(screen.queryByText("Keep recording?")).toBeNull();
   });
 
   test("goes when the capture ends", async () => {
     const { tauri } = open(() => ({ ...recording, prompt: prompt(2) }));
-    await screen.findByText("Still recording?");
+    await screen.findByText("Keep recording?");
     await act(async () => {
       await tauri.emit("capture-ended", { note_id: "s1", reason: "Microphone disconnected" });
     });
-    expect(screen.queryByText("Still recording?")).toBeNull();
+    expect(screen.queryByText("Keep recording?")).toBeNull();
   });
 
   test("each answer calls its command with the generation and does not show the note", async () => {

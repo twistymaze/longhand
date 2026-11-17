@@ -52,7 +52,7 @@ describe("the main-window prompt (KTD12)", () => {
     render(<StillRecordingBar prompt={prompt} />);
     const live = screen.getByRole("status");
     const text = live.textContent;
-    expect(text).toContain("Still recording?");
+    expect(text).toContain("Keep recording?");
     expect(text).toContain("2 minutes");
     expect(text).not.toContain("2:00");
     expect(screen.getByText("2:00")).toBeTruthy();

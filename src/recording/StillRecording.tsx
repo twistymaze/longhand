@@ -1,4 +1,4 @@
-// The "Still recording?" prompt of the note that records (R5, R6, R7, R9).
+// The "Keep recording?" prompt of the note that records (R5, R6, R7, R9).
 // The recording widget and the main window show it. Both read it from the
 // recording status and from the `RecordingPrompt` event, and both answer
 // with the generation of the prompt, so an answer to a prompt that closed
@@ -137,10 +137,10 @@ export function StillRecordingBar({ prompt, onAnswered }: { prompt: Prompt; onAn
   };
 
   return (
-    <section aria-label="Still recording?" className="shrink-0 border-b border-separator bg-group select-none">
+    <section aria-label="Keep recording?" className="shrink-0 border-b border-separator bg-group select-none">
       <div className="flex items-center gap-2.5 px-4 py-2">
         <div role="status" className="flex min-w-0 flex-1 items-baseline gap-2">
-          <span className="shrink-0 font-medium text-caution">Still recording?</span>
+          <span className="shrink-0 font-medium text-caution">Keep recording?</span>
           <span className="min-w-0 truncate text-label-secondary">{promptReason(prompt)}</span>
           <span className="sr-only">The note stops in {count(prompt.countdown_minutes, "minute")}.</span>
         </div>

@@ -1,4 +1,4 @@
-//! The system notification of the "Still recording?" prompt (R5, R9, KTD10
+//! The system notification of the "Keep recording?" prompt (R5, R9, KTD10
 //! of the forgotten-recording plan).
 //!
 //! The notification has no buttons and plays no sound. A click on it opens
@@ -22,11 +22,11 @@ use crate::managers::guard::{Prompt, PromptNotice};
 
 /// The title of the prompt notification. The macOS removal finds the
 /// notification by this title.
-pub const TITLE: &str = "Still recording?";
+pub const TITLE: &str = "Keep recording?";
 
 /// The tag of the Windows toast.
 #[cfg(any(windows, test))]
-const TAG: &str = "still-recording";
+const TAG: &str = "keep-recording";
 
 /// The group of the Windows toast.
 #[cfg(any(windows, test))]
@@ -263,9 +263,9 @@ mod tests {
 
     #[test]
     fn the_macos_scan_matches_only_the_prompt_title() {
-        assert!(is_prompt_title(Some("Still recording?")));
+        assert!(is_prompt_title(Some("Keep recording?")));
         assert!(!is_prompt_title(Some("Note ready")));
-        assert!(!is_prompt_title(Some("Still recording")));
+        assert!(!is_prompt_title(Some("Keep recording")));
         assert!(!is_prompt_title(Some("")));
         assert!(!is_prompt_title(None));
     }
@@ -274,7 +274,7 @@ mod tests {
     fn the_toast_is_silent_and_has_no_actions() {
         let xml = toast_xml(&body(2));
         assert!(xml.starts_with("<toast>"), "{xml}");
-        assert!(xml.contains("<text>Still recording?</text>"), "{xml}");
+        assert!(xml.contains("<text>Keep recording?</text>"), "{xml}");
         assert!(
             xml.contains(
                 "<text>Longhand stops this note in 2 minutes. Open Longhand to keep recording.</text>"
@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn the_toast_tag_and_group_identify_the_prompt() {
-        assert_eq!(TAG, "still-recording");
+        assert_eq!(TAG, "keep-recording");
         assert_eq!(GROUP, "longhand");
         // Windows limits a tag and a group to 64 characters.
         assert!(TAG.len() <= 64 && GROUP.len() <= 64);

@@ -68,7 +68,7 @@ pub const RECORDING_TIME_LIMIT_HOURS_RANGE: RangeInclusive<u32> = 1..=24;
 pub const DEFAULT_LONG_SILENCE_CUT_MINUTES: u32 = 10;
 /// The minutes that the long-silence cut can hold (R10).
 pub const LONG_SILENCE_CUT_MINUTES_RANGE: RangeInclusive<u32> = 5..=240;
-/// The countdown of the "Still recording?" prompt of a new storage folder
+/// The countdown of the "Keep recording?" prompt of a new storage folder
 /// (R5, R10).
 pub const DEFAULT_STOP_COUNTDOWN_MINUTES: u32 = 2;
 /// The minutes that the countdown can hold. The countdown has no off state

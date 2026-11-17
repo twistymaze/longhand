@@ -20,9 +20,9 @@ The shared settings are the settings that every computer with the same storage f
 | `note_type_prompts` | An object: type name to prompt id | The prompt of each note type. "General" is the key for General. A type with no key uses the default prompt. |
 | `show_recording_widget` | `true` or `false` | A new note shows the recording widget. |
 | `new_note_records` | `true` or `false` | New Note and the recording shortcut start a note that records. With `false`, they start a note with no audio. |
-| `silence_check_minutes` | `"off"`, or whole minutes from 5 to 240 | When a recording has no speech for that many minutes, Longhand asks "Still recording?" and stops the note when nobody answers. |
-| `recording_time_limit_hours` | `"off"`, or whole hours from 1 to 24 | When a recording runs for that many hours, Longhand asks "Still recording?" and stops the note when nobody answers. |
-| `stop_countdown_minutes` | Whole minutes from 1 to 10 | How long the "Still recording?" question waits for an answer before Longhand stops the note. |
+| `silence_check_minutes` | `"off"`, or whole minutes from 5 to 240 | When a recording has no speech for that many minutes, Longhand asks "Keep recording?" and stops the note when nobody answers. |
+| `recording_time_limit_hours` | `"off"`, or whole hours from 1 to 24 | When a recording runs for that many hours, Longhand asks "Keep recording?" and stops the note when nobody answers. |
+| `stop_countdown_minutes` | Whole minutes from 1 to 10 | How long the "Keep recording?" question waits for an answer before Longhand stops the note. |
 | `long_silence_cut_minutes` | `"off"`, or whole minutes from 5 to 240 | At each Stop, Longhand permanently deletes each stretch of silence at least that long from the audio. |
 | `check_updates_automatically` | `true` or `false` | Longhand checks for updates automatically. |
 | `audio_removal` | `"off"`, or whole days from 1 to 3650 | Longhand removes the audio of a saved note that many days after the note last recorded. |

@@ -578,7 +578,7 @@ describe("a failed shortcut press", () => {
   });
 });
 
-describe("the Still recording? prompt in the main window (R5, R9, KTD12)", () => {
+describe("the Keep recording? prompt in the main window (R5, R9, KTD12)", () => {
   const prompt = (generation: number): Prompt => ({
     note_id: "rec",
     generation,
@@ -588,13 +588,13 @@ describe("the Still recording? prompt in the main window (R5, R9, KTD12)", () =>
     countdown_minutes: 2,
   });
   const recording: RecordingStatus = { ...idle, note_id: "rec", state: "capturing", recording: true };
-  const region = () => screen.queryByRole("region", { name: "Still recording?" });
+  const region = () => screen.queryByRole("region", { name: "Keep recording?" });
 
   test("shows on Home from the status, and its answers call the commands with the generation", async () => {
     const tauri = mockApp({ current: { ...recording, prompt: prompt(3) } }, { current: [recordingEntry] });
     render(<App />);
     await screen.findByRole("heading", { name: "Notes" });
-    const row = await screen.findByRole("region", { name: "Still recording?" });
+    const row = await screen.findByRole("region", { name: "Keep recording?" });
     expect(within(row).getByRole("status").textContent).toContain("Recording for 6 hours.");
     const user = userEvent.setup();
     await user.click(within(row).getByRole("button", { name: "Keep Recording" }));

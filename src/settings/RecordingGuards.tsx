@@ -1,5 +1,5 @@
 // Settings > Recording: the silence check, the time limit, the countdown of
-// the "Still recording?" prompt and the long-silence cut (R10, R11, KTD13).
+// the "Keep recording?" prompt and the long-silence cut (R10, R11, KTD13).
 // The four settings are shared settings, and a change applies to the next
 // note. Each check and the cut has a switch and a time; the countdown has
 // only a time.
@@ -234,7 +234,7 @@ export function RecordingGuards({ settings, onSettings }: { settings: Settings; 
     >
       <CheckTime
         label="Ask after silence"
-        detail="Asks “Still recording?” when nobody speaks"
+        detail="Asks “Keep recording?” when nobody speaks"
         timeLabel="Silence before asking"
         fieldLabel="Minutes with no speech before the question"
         setting={settings.silence_check_minutes}
@@ -246,7 +246,7 @@ export function RecordingGuards({ settings, onSettings }: { settings: Settings; 
       />
       <CheckTime
         label="Ask after a time limit"
-        detail="Asks “Still recording?” after a long recording"
+        detail="Asks “Keep recording?” after a long recording"
         timeLabel="Recording time before asking"
         fieldLabel="Hours of recording before the question"
         setting={settings.recording_time_limit_hours}

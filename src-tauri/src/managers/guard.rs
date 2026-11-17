@@ -34,7 +34,7 @@ const TICK: Duration = Duration::from_secs(1);
 const MINUTE_MS: u64 = 60_000;
 const HOUR_MS: u64 = 60 * MINUTE_MS;
 
-/// The prompt "Still recording?" of the note that records (R5, R9). It
+/// The prompt "Keep recording?" of the note that records (R5, R9). It
 /// holds each check that triggered, with the time of the check in the
 /// settings snapshot of the recording.
 #[derive(Serialize, Clone, Type, Debug, PartialEq, Eq)]

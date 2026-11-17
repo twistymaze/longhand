@@ -915,7 +915,7 @@ pub struct Settings {
     /// read-only (KTD7).
     pub transcript_removal: TranscriptRemovalSetting,
     /// A shared setting. The silence check: the minutes with no speech
-    /// before the "Still recording?" prompt (R2, R10). On by default, with
+    /// before the "Keep recording?" prompt (R2, R10). On by default, with
     /// 30 minutes. A change applies to the next recording (R11): see
     /// [`RecordingGuards`].
     pub silence_check_minutes: CheckTimeSetting,

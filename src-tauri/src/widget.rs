@@ -17,7 +17,7 @@ pub const WIDGET_WINDOW: &str = "widget";
 const WIDTH: f64 = 288.0;
 const HEIGHT: f64 = 64.0;
 
-/// The window height in logical points while the "Still recording?" prompt
+/// The window height in logical points while the "Keep recording?" prompt
 /// shows (KTD11). The page draws the prompt row above the pill. The window
 /// grows up, so the pill stays where it is.
 const PROMPT_HEIGHT: f64 = 152.0;

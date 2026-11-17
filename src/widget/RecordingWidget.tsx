@@ -17,7 +17,7 @@
 // moves except the meter, so the pill draws little attention from the
 // participants.
 //
-// While the "Still recording?" prompt is open, a row above the pill shows
+// While the "Keep recording?" prompt is open, a row above the pill shows
 // the question, the countdown, Keep Recording and Stop (R5, KTD11). The
 // widget thread makes the window taller for the row, and the pill stays
 // where it is. The row has no motion: the countdown is text that changes
@@ -210,7 +210,7 @@ export function RecordingWidget() {
   );
 }
 
-/// The "Still recording?" row above the pill (R5, KTD11). The row (84
+/// The "Keep recording?" row above the pill (R5, KTD11). The row (84
 /// points), the gap and the pill fit in the 152-point window that the
 /// widget thread sets while the prompt shows. Neither answer is the
 /// default: both buttons have the same look.
@@ -240,7 +240,7 @@ function PromptRow({
   return (
     <div className="flex w-[272px] cursor-default flex-col gap-2.5 rounded-[18px] border border-control-border bg-group p-3 text-label shadow-[0_1px_3px_rgb(0_0_0/0.12)]">
       <div className="flex h-5 items-baseline justify-between">
-        <span className="text-[14px] font-medium">Still recording?</span>
+        <span className="text-[14px] font-medium">Keep recording?</span>
         <span className="text-[14px] text-label-secondary tabular-nums">{countdown}</span>
       </div>
       <div className="flex gap-2">

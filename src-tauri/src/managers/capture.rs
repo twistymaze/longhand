@@ -190,7 +190,7 @@ pub struct RecordingStatus {
     /// The app audio state of the segment that records (R16). `None` when
     /// no segment records or the note's app set is empty.
     pub app_audio: Option<AppAudioState>,
-    /// The open prompt "Still recording?" of the note (R5, R9).
+    /// The open prompt "Keep recording?" of the note (R5, R9).
     pub prompt: Option<Prompt>,
 }
 

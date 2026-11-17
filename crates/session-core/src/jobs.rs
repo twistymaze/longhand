@@ -52,7 +52,7 @@ pub struct RecordingGuards {
     /// The shortest stretch of silence, in minutes, that the cut removes
     /// (R12).
     pub cut_minutes: Option<u32>,
-    /// The minutes of the countdown of the "Still recording?" prompt (R5).
+    /// The minutes of the countdown of the "Keep recording?" prompt (R5).
     pub countdown_minutes: u32,
 }
 

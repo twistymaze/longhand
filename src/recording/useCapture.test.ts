@@ -132,7 +132,7 @@ test("recording starts and status polls do not check sound output; capture error
   }
 });
 
-describe("the Still recording? prompt (R5, R9)", () => {
+describe("the Keep recording? prompt (R5, R9)", () => {
   const prompt = (generation: number): Prompt => ({
     note_id: "rec",
     generation,

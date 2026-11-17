@@ -13,7 +13,7 @@ export type Capture = {
   /// Recorded so far, gaps between segments excluded: the elapsed time shown.
   recordedMs: number;
   lostReason: string | null;
-  /// The open "Still recording?" prompt of the note, or null (R5).
+  /// The open "Keep recording?" prompt of the note, or null (R5).
   prompt: Prompt | null;
   refresh: () => Promise<void>;
 };

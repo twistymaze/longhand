@@ -541,7 +541,7 @@ pub async fn set_long_silence_cut_minutes(
     .await
 }
 
-/// Set the countdown of the "Still recording?" prompt (R5, R10). The value
+/// Set the countdown of the "Keep recording?" prompt (R5, R10). The value
 /// goes into the shared settings file and applies to the next recording
 /// (R11). A time outside the range is refused and changes nothing.
 #[tauri::command]

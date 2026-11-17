@@ -114,7 +114,7 @@ dispatch2 = "0.3"
 tauri-plugin-autostart = "=2.7.0"
 # Keeps the recording widget topmost and places it (src/widget.rs), as in
 # Handy. The version that tauri already uses.
-# `UI_Notifications` and `Data_Xml_Dom`: the toast of the "Still recording?"
+# `UI_Notifications` and `Data_Xml_Dom`: the toast of the "Keep recording?"
 # prompt (src/notify_prompt.rs), which Longhand shows and removes itself.
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "UI_Notifications", "Data_Xml_Dom"] }
 # Reads the Windows text size, so the recording widget window grows with it

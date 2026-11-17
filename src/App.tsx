@@ -141,7 +141,7 @@ function MainWindow() {
   return (
     <div className="flex h-screen flex-col bg-window">
       <div data-tauri-drag-region className="title-strip" />
-      {/* The "Still recording?" prompt is above Home and the note page,
+      {/* The "Keep recording?" prompt is above Home and the note page,
           because the recording bar shows only on the page of the open
           note (KTD12). It takes no focus, and it does not show or front
           the window. */}

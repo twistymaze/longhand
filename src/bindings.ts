@@ -363,7 +363,7 @@ async setLongSilenceCutMinutes(cut: CheckTimeSetting) : Promise<Result<Settings,
 }
 },
 /**
- * Set the countdown of the "Still recording?" prompt (R5, R10). The value
+ * Set the countdown of the "Keep recording?" prompt (R5, R10). The value
  * goes into the shared settings file and applies to the next recording
  * (R11). A time outside the range is refused and changes nothing.
  */
@@ -1071,9 +1071,9 @@ async keepRecording(generation: number) : Promise<Result<null, string>> {
 }
 },
 /**
- * Stop in the prompt `generation` (R7, R9): the note stops as the user's
- * Stop does, with no stop reason. `None` when the prompt is already
- * closed: the note does not stop.
+ * Stop in the prompt `generation` (R7, R9): the note of the prompt stops
+ * as the user's Stop does, with no stop reason. `None` when the prompt is
+ * already closed or its note is no longer open: no note stops.
  */
 async stopFromPrompt(generation: number) : Promise<Result<StopOutcome | null, string>> {
     try {
@@ -2597,7 +2597,7 @@ export type PromisedFiles =
  */
 { kind: "received"; paths: string[]; failed: number }
 /**
- * The prompt "Still recording?" of the note that records (R5, R9). It
+ * The prompt "Keep recording?" of the note that records (R5, R9). It
  * holds each check that triggered, with the time of the check in the
  * settings snapshot of the recording.
  */
@@ -2909,7 +2909,7 @@ note_apps: ListedApp[];
  */
 app_audio: AppAudioState | null; 
 /**
- * The open prompt "Still recording?" of the note (R5, R9).
+ * The open prompt "Keep recording?" of the note (R5, R9).
  */
 prompt: Prompt | null }
 /**
@@ -3276,7 +3276,7 @@ audio_removal: AudioRemovalSetting;
 transcript_removal: TranscriptRemovalSetting; 
 /**
  * A shared setting. The silence check: the minutes with no speech
- * before the "Still recording?" prompt (R2, R10). On by default, with
+ * before the "Keep recording?" prompt (R2, R10). On by default, with
  * 30 minutes. A change applies to the next recording (R11): see
  * [`RecordingGuards`].
  */
