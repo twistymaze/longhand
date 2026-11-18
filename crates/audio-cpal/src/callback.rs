@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use cpal::traits::DeviceTrait;
-use cpal::{Device, ErrorKind, FromSample, Sample, SizedSample, Stream, SupportedStreamConfig};
+use cpal::{
+    BufferSize, Device, ErrorKind, FromSample, Sample, SizedSample, Stream, SupportedStreamConfig,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 /// Seconds of audio the ring holds between the callback and the worker:
@@ -45,6 +47,24 @@ pub const FAULT_DEVICE_LOST: u8 = 1;
 /// Any other stream error. Also fatal: cpal reports no error it recovers from
 /// itself except an xrun, which is counted rather than stored here.
 pub const FAULT_OTHER: u8 = 2;
+
+/// The capture buffer that the stream asks the platform for.
+///
+/// On Windows, 500 ms (half the sample rate in frames), as in
+/// handy-recorder (see PROVENANCE.md). Over Remote Desktop the microphone
+/// audio comes in bursts, and the default WASAPI shared-mode buffer is too
+/// small to hold a burst, so WASAPI drops samples. The callback period does
+/// not change: WASAPI still calls back once each device period. The value
+/// is not clamped to the range that the device reports, because the Remote
+/// Audio device reports only its period, not the capacity of the shared-mode
+/// buffer. Other platforms keep the default buffer.
+pub fn capture_buffer_size(windows: bool, sample_rate: u32) -> BufferSize {
+    if windows {
+        BufferSize::Fixed(sample_rate / 2)
+    } else {
+        BufferSize::Default
+    }
+}
 
 #[derive(Default)]
 pub struct Shared {
@@ -86,9 +106,12 @@ where
         chunk.commit_all();
     }
 
+    let mut stream_config = config.config();
+    stream_config.buffer_size = capture_buffer_size(cfg!(windows), stream_config.sample_rate);
+
     let data_shared = Arc::clone(&shared);
     let stream = device.build_input_stream(
-        config.config(),
+        stream_config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             write_input_to_ring(
                 data,
@@ -215,6 +238,17 @@ mod tests {
             &mut Written::default(),
             shared,
         );
+    }
+
+    #[test]
+    fn windows_asks_for_half_a_second_of_capture_buffer() {
+        assert_eq!(capture_buffer_size(true, 48_000), BufferSize::Fixed(24_000));
+        assert_eq!(capture_buffer_size(true, 44_100), BufferSize::Fixed(22_050));
+    }
+
+    #[test]
+    fn other_platforms_keep_the_default_buffer() {
+        assert_eq!(capture_buffer_size(false, 48_000), BufferSize::Default);
     }
 
     #[test]
