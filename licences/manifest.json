@@ -91,6 +91,14 @@
       "source": "https://github.com/cjpais/Handy"
     },
     {
+      "name": "Code copied from handy-recorder",
+      "version": "",
+      "part": "native",
+      "platforms": ["windows"],
+      "files": ["licences/sources/handy-recorder-MIT.txt"],
+      "source": "https://github.com/handy-computer/handy-recorder"
+    },
+    {
       "name": "NeMo-Speech.cpp",
       "version": "97a15afa5caa9bce5baaa86c1184103877af4101",
       "part": "native",

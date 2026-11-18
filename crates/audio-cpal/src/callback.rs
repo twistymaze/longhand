@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 use cpal::traits::DeviceTrait;
-use cpal::{Device, ErrorKind, FromSample, Sample, SizedSample, Stream, SupportedStreamConfig};
+use cpal::{
+    BufferSize, Device, ErrorKind, FromSample, Sample, SizedSample, Stream, SupportedStreamConfig,
+};
 use rtrb::{Consumer, Producer, RingBuffer};
 
 /// Seconds of audio the ring holds between the callback and the worker:
@@ -46,6 +48,46 @@ pub const FAULT_DEVICE_LOST: u8 = 1;
 /// itself except an xrun, which is counted rather than stored here.
 pub const FAULT_OTHER: u8 = 2;
 
+/// The capture buffer that the stream asks the platform for.
+///
+/// On Windows, 500 ms (half the sample rate in frames), as in
+/// handy-recorder (see PROVENANCE.md). Over Remote Desktop the microphone
+/// audio comes in bursts, and the default WASAPI shared-mode buffer is too
+/// small to hold a burst, so WASAPI drops samples. The callback period does
+/// not change: WASAPI still calls back once each device period. The value
+/// is not clamped to the range that the device reports, because the Remote
+/// Audio device reports only its period, not the capacity of the shared-mode
+/// buffer. Other platforms keep the default buffer.
+pub fn capture_buffer_size(windows: bool, sample_rate: u32) -> BufferSize {
+    if windows {
+        BufferSize::Fixed(sample_rate / 2)
+    } else {
+        BufferSize::Default
+    }
+}
+
+/// Builds the stream with the `preferred` buffer. When that build fails and
+/// `preferred` is a fixed size, builds it again with the default buffer.
+///
+/// Some WASAPI devices reject a fixed 500 ms buffer with `E_INVALIDARG`:
+/// the Remote Audio device on Windows 10 and some USB headsets (Handy issue
+/// 2531). Without the second build, these microphones do not open at all.
+/// With it, they open as they did before the fixed buffer.
+pub fn with_buffer_fallback<T, E: std::fmt::Display>(
+    preferred: BufferSize,
+    mut build: impl FnMut(BufferSize) -> Result<T, E>,
+) -> Result<T, E> {
+    match build(preferred) {
+        Err(e) if preferred != BufferSize::Default => {
+            log::warn!(
+                "the input stream did not open with {preferred:?} ({e}); using the default buffer"
+            );
+            build(BufferSize::Default)
+        }
+        result => result,
+    }
+}
+
 #[derive(Default)]
 pub struct Shared {
     pub fault: AtomicU8,
@@ -59,6 +101,7 @@ pub struct Shared {
 pub fn build_stream<T>(
     device: &Device,
     config: &SupportedStreamConfig,
+    buffer: BufferSize,
     shared: Arc<Shared>,
 ) -> Result<(Stream, Consumer<f32>, Consumer<Overrun>), cpal::Error>
 where
@@ -86,9 +129,12 @@ where
         chunk.commit_all();
     }
 
+    let mut stream_config = config.config();
+    stream_config.buffer_size = buffer;
+
     let data_shared = Arc::clone(&shared);
     let stream = device.build_input_stream(
-        config.config(),
+        stream_config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
             write_input_to_ring(
                 data,
@@ -215,6 +261,53 @@ mod tests {
             &mut Written::default(),
             shared,
         );
+    }
+
+    #[test]
+    fn windows_asks_for_half_a_second_of_capture_buffer() {
+        assert_eq!(capture_buffer_size(true, 48_000), BufferSize::Fixed(24_000));
+        assert_eq!(capture_buffer_size(true, 44_100), BufferSize::Fixed(22_050));
+    }
+
+    #[test]
+    fn other_platforms_keep_the_default_buffer() {
+        assert_eq!(capture_buffer_size(false, 48_000), BufferSize::Default);
+    }
+
+    #[test]
+    fn a_rejected_fixed_buffer_is_tried_again_with_the_default() {
+        let mut asked = Vec::new();
+        let result = with_buffer_fallback(BufferSize::Fixed(24_000), |buffer| {
+            asked.push(buffer);
+            match buffer {
+                BufferSize::Fixed(_) => Err("The parameter is incorrect."),
+                BufferSize::Default => Ok("opened"),
+            }
+        });
+        assert_eq!(result, Ok("opened"));
+        assert_eq!(asked, [BufferSize::Fixed(24_000), BufferSize::Default]);
+    }
+
+    #[test]
+    fn an_accepted_fixed_buffer_is_kept() {
+        let mut asked = Vec::new();
+        let result = with_buffer_fallback(BufferSize::Fixed(24_000), |buffer| {
+            asked.push(buffer);
+            Ok::<_, &str>("opened")
+        });
+        assert_eq!(result, Ok("opened"));
+        assert_eq!(asked, [BufferSize::Fixed(24_000)]);
+    }
+
+    #[test]
+    fn a_failed_default_buffer_is_not_tried_again() {
+        let mut asked = Vec::new();
+        let result: Result<(), _> = with_buffer_fallback(BufferSize::Default, |buffer| {
+            asked.push(buffer);
+            Err("no device")
+        });
+        assert_eq!(result, Err("no device"));
+        assert_eq!(asked, [BufferSize::Default]);
     }
 
     #[test]

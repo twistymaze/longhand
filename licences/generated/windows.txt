@@ -4271,6 +4271,8 @@ Code copied from Handy
     Copyright (c) 2025 CJ Pais
 Code copied from anarlog
     Copyright (c) 2023-present Fastrepl, Inc.
+Code copied from handy-recorder
+    Copyright (c) 2026 handy-computer
 ONNX Runtime 1.31.0 (linked through ort-sys)
     Copyright (c) Microsoft Corporation
 ggml (NeMo runtime) c03b4e2bcece5134827881af90242086daf75be5

@@ -37,3 +37,12 @@ Borrowed material in this crate, one record per file (R27). The provider in `src
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
 - Status: modified — pause handshake and channel selection removed; the error callback records the cpal 0.18 error kind so a lost device ends capture; overruns are reported with their position so the worker can fill them with silence (U25)
+
+## `src/callback.rs`
+
+- Repository: https://github.com/handy-computer/handy-recorder
+- Revision: 056d4f0337d7ad0513ff40668d8b4d5ece87f886
+- Source paths: `crates/handy-recorder/src/backend/cpal/mod.rs` (the fixed 500 ms WASAPI capture buffer in `CpalOpenDevice`)
+- Copyright: Copyright (c) 2026 handy-computer
+- Licence: MIT, licences/sources/handy-recorder-MIT.txt
+- Status: modified — the buffer size is a function that tests can call on each platform
