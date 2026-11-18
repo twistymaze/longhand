@@ -360,19 +360,31 @@ fn build(
     config: &SupportedStreamConfig,
     shared: Arc<Shared>,
 ) -> Result<(cpal::Stream, rtrb::Consumer<f32>, rtrb::Consumer<Overrun>), Error> {
-    let built = match config.sample_format() {
-        SampleFormat::U8 => callback::build_stream::<u8>(device, config, shared),
-        SampleFormat::I8 => callback::build_stream::<i8>(device, config, shared),
-        SampleFormat::I16 => callback::build_stream::<i16>(device, config, shared),
-        SampleFormat::I32 => callback::build_stream::<i32>(device, config, shared),
-        SampleFormat::F32 => callback::build_stream::<f32>(device, config, shared),
+    type BuildStream =
+        fn(
+            &cpal::Device,
+            &SupportedStreamConfig,
+            cpal::BufferSize,
+            Arc<Shared>,
+        )
+            -> Result<(cpal::Stream, rtrb::Consumer<f32>, rtrb::Consumer<Overrun>), cpal::Error>;
+    let build_stream: BuildStream = match config.sample_format() {
+        SampleFormat::U8 => callback::build_stream::<u8>,
+        SampleFormat::I8 => callback::build_stream::<i8>,
+        SampleFormat::I16 => callback::build_stream::<i16>,
+        SampleFormat::I32 => callback::build_stream::<i32>,
+        SampleFormat::F32 => callback::build_stream::<f32>,
         other => {
             return Err(Error::MicStreamInitializationFailed(format!(
                 "unsupported sample format {other:?}"
             )));
         }
     };
-    built.map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))
+    let preferred = callback::capture_buffer_size(cfg!(windows), config.sample_rate());
+    callback::with_buffer_fallback(preferred, |buffer| {
+        build_stream(device, config, buffer, Arc::clone(&shared))
+    })
+    .map_err(|e| Error::MicStreamInitializationFailed(e.to_string()))
 }
 
 const SILENCE: [f32; 4_096] = [0.0; 4_096];
