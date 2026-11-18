@@ -423,7 +423,7 @@ export function TypesAndTags({
         {typeError && <ErrorText>{typeError}</ErrorText>}
       </Group>
 
-      <Group header="Tags" footer="A change applies to every note with the tag. A rename to an existing tag joins the two tags.">
+      <Group header="Tags" footer="To give a tag a scope, write Scope::Value, for example Person::Nathan. Tags with the same scope share a colour. A change applies to every note with the tag. A rename to an existing tag joins the two tags.">
         {tags && tags.length === 0 && (
           <div className="settings-row px-4">
             <p className="flex min-h-[2.25rem] items-center py-1.5 text-label-secondary">

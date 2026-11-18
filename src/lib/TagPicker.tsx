@@ -143,7 +143,7 @@ export function TagPicker({
         aria-activedescendant={visible && active >= 0 ? optionId(active) : undefined}
         className="h-[20px] w-44 rounded-[5px] bg-control px-[6px] text-[0.875rem] text-label shadow-[inset_0_0_0_1px_var(--control-border)] outline-offset-0 placeholder:text-label-tertiary focus:outline-2 focus:outline-accent"
         value={query}
-        placeholder="Tag name"
+        placeholder="Tag, or Scope::Value"
         spellCheck={false}
         autoCapitalize="off"
         autoCorrect="off"
