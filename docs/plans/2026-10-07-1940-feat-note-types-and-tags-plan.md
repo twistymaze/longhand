@@ -171,7 +171,7 @@ This plan covers note types with type folders, and tags with the Home filter. Th
   - Depends on this plan: the note type of R1 is the "type" that idea needs.
 - Search the library ([library-and-browsing](../ideas/someday/library-and-browsing.md))
   - Shares the Home list and the filter bar. Still to decide: whether search uses the filter bar.
-- Agentic summary ([agentic-summary](../ideas/someday/agentic-summary.md))
+- Agentic summary ([agentic-summary](../ideas/next/agentic-summary.md))
   - Can use the tags and note types in the note files to find a group of notes. Can proceed independently of this plan.
 
 ### Dependencies / Assumptions
