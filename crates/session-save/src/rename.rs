@@ -87,6 +87,10 @@ pub const IN_USE_DELAY: Duration = Duration::from_millis(200);
 
 /// [`Fs::rename_new`], tried again while the folder is in use
 /// ([`is_in_use`]). Returns the last error.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "this is the shared function that the ban points to"
+)]
 pub fn rename_new_waiting(fs: &dyn Fs, from: &Path, to: &Path) -> io::Result<()> {
     let mut tries = 0;
     loop {

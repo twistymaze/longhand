@@ -1,0 +1,10 @@
+family = "rename-waits"
+rule = "Rename a note folder with rename_new_waiting, which waits while another app holds the folder, and decide a new name only with is_name_taken."
+state = "enforced"
+enforced_by = "cargo clippy --workspace --all-targets -- -D warnings"
+lessons = ["docs/solutions/logic-errors/folder-in-use-taken-for-a-taken-name.md"]
+
+[[negative]]
+apply = "rules/negatives/rename-waits.patch"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+expect = "use of a disallowed method `session_save::rename::Fs::rename_new`"

@@ -2,6 +2,11 @@
 //! gets one home folder in the storage folder at its start, and a crash at
 //! any step leaves at most one folder (R4).
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a test Fs that fails on purpose calls the real rename_new; the code under test calls rename_new_waiting"
+)]
+
 mod common;
 
 use std::path::{Path, PathBuf};

@@ -1,0 +1,12 @@
+diff --git a/crates/onnx/tests/negative_ort_builder.rs b/crates/onnx/tests/negative_ort_builder.rs
+new file mode 100644
+index 00000000..277d87aa
+--- /dev/null
++++ b/crates/onnx/tests/negative_ort_builder.rs
+@@ -0,0 +1,6 @@
++//! A negative example: an ONNX session builder that skips the shared helper.
++
++#[test]
++fn builder_without_the_helper() {
++    let _ = ort::session::Session::builder;
++}

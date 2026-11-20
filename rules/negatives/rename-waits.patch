@@ -1,0 +1,15 @@
+diff --git a/crates/session-save/tests/negative_rename_waits.rs b/crates/session-save/tests/negative_rename_waits.rs
+new file mode 100644
+index 00000000..5b55bce4
+--- /dev/null
++++ b/crates/session-save/tests/negative_rename_waits.rs
+@@ -0,0 +1,9 @@
++//! A negative example: a rename that does not wait while the folder is in use.
++
++use session_save::{Fs, RealFs};
++use std::path::Path;
++
++#[test]
++fn rename_without_waiting() {
++    let _ = RealFs.rename_new(Path::new("a"), Path::new("b"));
++}

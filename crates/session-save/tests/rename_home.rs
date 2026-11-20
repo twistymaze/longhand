@@ -1,6 +1,11 @@
 //! The rename of a home folder (KTD8): each move is recorded before it is
 //! taken, and a record whose end was lost settles from disk alone.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a test Fs that fails on purpose calls the real rename_new; the code under test calls rename_new_waiting"
+)]
+
 use std::cell::Cell;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};

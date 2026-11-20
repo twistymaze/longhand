@@ -1,0 +1,10 @@
+family = "ort-cpu-builder"
+rule = "Build each ONNX session through session_builder in crates/onnx, so that a session stays on CPU unless the caller adds Core ML."
+state = "enforced"
+enforced_by = "cargo clippy --workspace --all-targets -- -D warnings"
+lessons = ["docs/solutions/integration-issues/ort-adds-core-ml-to-every-session-by-default.md"]
+
+[[negative]]
+apply = "rules/negatives/ort-cpu-builder.patch"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+expect = "use of a disallowed method `ort::session::Session::builder`"
