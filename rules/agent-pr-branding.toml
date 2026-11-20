@@ -1,0 +1,11 @@
+family = "agent-pr-branding"
+rule = "A PR description or commit message has no Compound Engineering branding or badges."
+state = "enforced"
+enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
+lessons = ["CLAUDE.md"]
+
+# Codex does not run Claude Code hooks; for Codex the rule stays as text in CLAUDE.md.
+[[negative]]
+apply = "rules/negatives/agent-pr-branding.patch"
+run = "node .claude/hooks/rules.mjs < rules/negatives/agent-pr-branding-input.json"
+expect = "agent-pr-branding: Do not add Compound Engineering branding"

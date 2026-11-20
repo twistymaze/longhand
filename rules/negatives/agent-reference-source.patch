@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-reference-source-input.json b/rules/negatives/agent-reference-source-input.json
+new file mode 100644
+index 00000000..6a8b56a6
+--- /dev/null
++++ b/rules/negatives/agent-reference-source-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Edit","tool_input":{"file_path":"reference-source/handy/README.md"}}

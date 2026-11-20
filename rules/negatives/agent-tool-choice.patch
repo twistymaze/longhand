@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-tool-choice-input.json b/rules/negatives/agent-tool-choice-input.json
+new file mode 100644
+index 00000000..e032715f
+--- /dev/null
++++ b/rules/negatives/agent-tool-choice-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"pip install requests"}}

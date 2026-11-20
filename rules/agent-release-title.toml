@@ -1,0 +1,11 @@
+family = "agent-release-title"
+rule = "A PR title has no ! and no BREAKING CHANGE unless the user asks for a major release, and a feat title waits for the patch-or-minor answer."
+state = "enforced"
+enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
+lessons = ["CLAUDE.md"]
+
+# Codex does not run Claude Code hooks; for Codex the rule stays as text in CLAUDE.md.
+[[negative]]
+apply = "rules/negatives/agent-release-title.patch"
+run = "node .claude/hooks/rules.mjs < rules/negatives/agent-release-title-input.json"
+expect = "agent-release-title: `!` or BREAKING CHANGE"

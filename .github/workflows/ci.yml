@@ -335,7 +335,7 @@ jobs:
       # The rule ledger in rules/ and the scans that hold some of its rules.
       - name: Rule ledger script tests
         if: runner.os == 'macOS'
-        run: node --test scripts/check-rules.test.ts scripts/check-timing.test.ts scripts/command-errors.test.ts
+        run: node --test scripts/check-rules.test.ts scripts/check-timing.test.ts scripts/command-errors.test.ts .claude/hooks/rules.test.mjs
 
       - name: Short time limits in tests
         if: runner.os == 'macOS'

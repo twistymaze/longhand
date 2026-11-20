@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-private-paths-input.json b/rules/negatives/agent-private-paths-input.json
+new file mode 100644
+index 00000000..cef1ed9c
+--- /dev/null
++++ b/rules/negatives/agent-private-paths-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"git add -f manual-tests/session.md"}}

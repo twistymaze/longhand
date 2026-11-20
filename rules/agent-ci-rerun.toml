@@ -1,0 +1,11 @@
+family = "agent-ci-rerun"
+rule = "Run a CI job again only for an infrastructure fault; a failure that depends on timing is a defect in the test."
+state = "enforced"
+enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
+lessons = ["CLAUDE.md"]
+
+# Codex does not run Claude Code hooks; for Codex the rule stays as text in CLAUDE.md.
+[[negative]]
+apply = "rules/negatives/agent-ci-rerun.patch"
+run = "node .claude/hooks/rules.mjs < rules/negatives/agent-ci-rerun-input.json && false"
+expect = "Run a CI job again only for an infrastructure fault"

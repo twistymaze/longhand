@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-ideas-move-input.json b/rules/negatives/agent-ideas-move-input.json
+new file mode 100644
+index 00000000..42393a8b
+--- /dev/null
++++ b/rules/negatives/agent-ideas-move-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"git mv docs/ideas/someday/a.md docs/ideas/next/a.md"}}

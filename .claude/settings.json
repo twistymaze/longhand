@@ -10,5 +10,19 @@
   },
   "enabledPlugins": {
     "compound-engineering@compound-engineering-plugin": true
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/rules.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
