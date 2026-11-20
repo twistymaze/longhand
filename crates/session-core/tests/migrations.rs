@@ -947,7 +947,11 @@ const LATER_HASHES: &[&str] = &[
 /// database stops at launch (rules/migration-hashes.toml).
 #[test]
 fn every_migration_has_a_pinned_hash() {
-    let pinned: Vec<&str> = VERSION_21_HASHES.iter().chain(LATER_HASHES).copied().collect();
+    let pinned: Vec<&str> = VERSION_21_HASHES
+        .iter()
+        .chain(LATER_HASHES)
+        .copied()
+        .collect();
     assert_eq!(
         session_core::schema::migration_hashes(),
         pinned,
