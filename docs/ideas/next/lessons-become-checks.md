@@ -5,6 +5,7 @@ area: distribution
 added: 2026-11-19
 source: "Conversation about the talk 'All code is slop except mine' (Lauren Tan, AI Engineer) and her pstack plugin; audit of docs/solutions, CLAUDE.md, docs/development-workflow.md and agent memories on 2026-11-19"
 related: []
+plan: docs/plans/2026-11-20-1050-chore-lessons-become-checks-pilot-plan.md
 ---
 
 # Lessons become checks
