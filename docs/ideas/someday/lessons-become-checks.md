@@ -21,7 +21,7 @@ Most lessons in `docs/solutions/` and in the agent guidance are prose. Nothing f
 6. **F** Process gate: CI step, git hook or Claude Code hook.
 7. **G** Prose, only for a real judgment.
 
-For each check, prove that it fails on the original mistake: check out the commit before the fix, or put the mistake back. Then make the doc one line that names the check, or delete the doc.
+For each check, store the mistake as code (a negative example: a snippet that must not compile, a lint fixture, or a patch that puts the bug back). CI applies it to the current tree and expects the named check to fail. Then make the doc short: the reason and the check.
 
 ## Why
 
@@ -30,7 +30,9 @@ The talk argues that code is the largest input to an agent, and that agents copy
 The audit found these problems in Longhand:
 
 - Only 6 of 115 solution docs need prose. The other 109 can become a check or a design change, or are obsolete.
-- Almost no lesson has a project-specific check. The repo has no `clippy.toml`, no `[workspace.lints]` and no ESLint. Some source-scan tests exist, for example `src/lib/keyboard.test.ts` for the IME rule. These tests are the model to copy.
+- About half of the lessons have an enforcer today, usually a regression test from the fix. About a third have a partial enforcer. The rest have none.
+- The repo has no custom lint layer: no `clippy.toml`, no `[workspace.lints]` and no ESLint. Some source-scan tests exist, for example `src/lib/keyboard.test.ts` for the IME rule. These tests are the model to copy.
+- Nothing proves that an enforcer still catches its mistake. A test can change and stop catching the mistake, and nothing shows it.
 - Prose is stale. 15 solution docs show `bun` commands. Some docs cite a deleted workflow file, a deleted crate or old line numbers (185 `file:line` citations). One doc contradicts `src-tauri/capabilities/default.json`. Some agent memories are no longer true.
 
 ## Notes / Current state
@@ -76,9 +78,9 @@ About 60 % of all items fall into five low-cost mechanisms: `clippy.toml` with w
 
 ### Experiments, in order
 
-1. **Low-cost checks.** Build the five mechanisms. Measure: lessons retired per hour, each rule fails on its original faulty commit, no false positives on `main`.
-2. **Blind replay.** For 5 past bugs, give a new agent the original task at the commit before the fix. One agent gets only the doc, and the other gets only the check. Count how often each repeats the mistake. The task must look normal: no words such as "eval".
-3. **Error-message quality.** Same replay. Compare a bare lint message with a message that names the function to use.
+1. **Low-cost checks.** Build the five mechanisms. Measure: families covered per hour, each rule fails on its negative example, no false positives on `main`. For a pattern that is common today, fail only on new instances (a ratchet).
+2. **Recurrence.** Count the new lessons, review findings and corrections that belong to a family already covered. This is the main measure. A count of past mistakes that a check now blocks is not a measure of the method, because each promoted check blocks its own mistake by design.
+3. **Error-message quality and blind replay (optional sample).** Give a new agent the original task, once with only the doc and once with only the check. The task must make the agent run the normal checks. Compare a bare lint message with a message that names the function to use.
 4. **One design-change pilot**, for example `ProvenGone` or `write_record(&Store)`. Measure how many lessons one type retires.
 5. **Hook rule table** for agent process rules. Measure: memories deleted; the hook's blocks and warnings over two weeks.
 6. **Runtime verification.** Use pstack `/create-verification-skill` to make a skill that drives the signed bundle. Measure: D lessons and manual-test steps it covers.
