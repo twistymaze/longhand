@@ -32,7 +32,7 @@ describe("links", () => {
 
   test("no window's opener allows a scheme that isOpenableHref refuses", () => {
     for (const [file, urls] of Object.entries(openerScopes)) {
-      for (const url of urls) expect(url, `${file}: opener scope`).toMatch(/^(?:https?:\/\/|mailto:)/);
+      for (const url of urls) expect(isOpenableHref(url.replace(/\*/g, "x")), `${file}: opener scope ${url}`).toBe(true);
     }
   });
 });
