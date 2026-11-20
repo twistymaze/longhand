@@ -83,6 +83,12 @@ test("a commit message or a PR body that names a tool or BREAKING CHANGE is allo
   allowed(bash('gh pr create --title "chore: x" --body "no BREAKING CHANGE"'));
 });
 
+test("a here-document body is text, and the command after it is checked", () => {
+  allowed(bash("cat > x.sh <<EOF\npython3 a.py\nEOF"));
+  allowed(bash("cat > x.sh <<-'END'\n\tpip install x\n\tEND\necho done"));
+  denied(bash("cat > x.sh <<EOF\nok\nEOF\npython3 a.py"), "agent-tool-choice");
+});
+
 test("an edit in reference-source is denied, and an edit elsewhere is allowed", () => {
   denied(hook({ tool_name: "Edit", tool_input: { file_path: "/repo/reference-source/handy/README.md" } }), "agent-reference-source");
   allowed(hook({ tool_name: "Write", tool_input: { file_path: "/repo/src/a.ts" } }));

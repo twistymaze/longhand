@@ -14,12 +14,14 @@ import { fileURLToPath } from "node:url";
 const LOG = join(dirname(fileURLToPath(import.meta.url)), "rules.log");
 
 // Split a shell command into segments at &&, ||, ;, | and line ends outside
-// quotes, and each segment into words without their quotes.
+// quotes, and each segment into words without their quotes. The body of a
+// here-document is text, not commands, so it is not in a segment.
 export function segments(command) {
   const result = [];
   let words = [];
   let word = null;
   let quote = null;
+  const heredocs = [];
   const endWord = () => {
     if (word !== null) words.push(word);
     word = null;
@@ -40,8 +42,40 @@ export function segments(command) {
       word ??= "";
     } else if (c === "\\" && i + 1 < command.length) {
       word = (word ?? "") + command[++i];
+    } else if (c === "<" && command[i + 1] === "<" && command[i + 2] !== "<") {
+      // A here-document: read its delimiter. Its body starts on the next line.
+      endWord();
+      i += 2;
+      const strip = command[i] === "-";
+      if (strip) i++;
+      while (command[i] === " " || command[i] === "\t") i++;
+      let delimiter = "";
+      while (i < command.length && !/[\s;&|<>()]/.test(command[i])) {
+        const d = command[i];
+        if (d === "'" || d === '"') {
+          const end = command.indexOf(d, i + 1);
+          delimiter += command.slice(i + 1, end === -1 ? command.length : end);
+          i = end === -1 ? command.length : end + 1;
+        } else {
+          if (d !== "\\") delimiter += d;
+          i++;
+        }
+      }
+      i--;
+      if (delimiter !== "") heredocs.push({ delimiter, strip });
     } else if (c === " " || c === "\t") endWord();
-    else if (c === "\n" || c === ";" || c === "&" || c === "|") endSegment();
+    else if (c === "\n" && heredocs.length > 0) {
+      endSegment();
+      // Skip each body up to the line that holds only its delimiter.
+      for (const { delimiter, strip } of heredocs.splice(0)) {
+        while (i < command.length) {
+          const end = command.indexOf("\n", i + 1);
+          const line = command.slice(i + 1, end === -1 ? command.length : end);
+          i = end === -1 ? command.length : end;
+          if ((strip ? line.replace(/^\t+/, "") : line) === delimiter) break;
+        }
+      }
+    } else if (c === "\n" || c === ";" || c === "&" || c === "|") endSegment();
     else word = (word ?? "") + c;
   }
   endSegment();

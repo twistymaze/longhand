@@ -172,6 +172,17 @@ test("with changes in the working tree, the script refuses to run and changes no
   assert.equal(readFileSync(join(root, "new.txt"), "utf8"), "new\n");
 });
 
+test("a file outside the patch that changes during the run is kept, and the run fails", () => {
+  const root = repo({
+    "rules/no-bad.toml": family("no-bad", negative("rules/negatives/bad.patch", "echo later > other.txt; node check.mjs")),
+  });
+  const r = check(root);
+  assert.equal(r.status, 1);
+  assert.match(r.out, /left changes outside its patch/);
+  assert.equal(readFileSync(join(root, "other.txt"), "utf8"), "later\n");
+  assert.equal(readFileSync(join(root, "src/a.txt"), "utf8"), A);
+});
+
 test("after a failed run, the tree is clean: edited files are restored and added files are removed", () => {
   const root = repo();
   write(root, "src/a.txt", `${A}BAD\n`);
