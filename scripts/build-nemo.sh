@@ -11,9 +11,11 @@ helper_build="${LONGHAND_NEMO_HELPER_BUILD:-$cache/helper-$backend}"
 tokenizer_source="${LONGHAND_SENTENCEPIECE_SOURCE:-$cache/sentencepiece}"
 tokenizer_build="${LONGHAND_SENTENCEPIECE_BUILD:-$cache/sentencepiece-build}"
 mkdir -p "$cache"
-# A build folder is configured again when it names a compiler that is not
-# there, or a source folder that is not the current one. An update of Xcode,
-# Visual Studio or a CI runner image can remove the compiler. A cache from
+# A build folder is configured again when it names a compiler, linker or
+# other build tool that is not there, or a source folder that is not the
+# current one. An update of Xcode, Visual Studio or a CI runner image can
+# remove a tool. CMake keeps each tool path apart, so the compiler can be
+# present while the linker is not. A cache from
 # another checkout path (for example another CI drive letter) names another
 # source folder, and CMake refuses that build folder. A build folder is also
 # configured again when it names a Vulkan SDK file or a toolchain file that is
@@ -24,7 +26,9 @@ missing_input() {
   local path
   while IFS= read -r path; do
     [[ "$path" == */* && ! -e "$path" ]] && return 0
-  done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
+  # The same keys as the check in .github/actions/sccache-setup/action.yml;
+  # scripts/cmake-cache-guards.test.ts holds the two lists together.
+  done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE|CMAKE_[A-Z]+_COMPILER|CMAKE_(LINKER|AR|MT)):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
   return 1
 }
 for pair in "$tokenizer_build|$tokenizer_source" "$sdk_build|$source_dir" "$helper_build|$root/native/nemo-helper"; do
