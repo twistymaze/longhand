@@ -103,8 +103,10 @@ runs:
           printf '%s' "$hash" > target/cmake-toolchain.sha256
         fi
         # A cache from a runner image with another MSVC version names a
-        # compiler that is not here. An older linker cannot always link the
-        # libraries of a newer compiler. A cache from a job with another Dev
+        # compiler, linker or other build tool that is not here. CMake keeps
+        # each tool path apart, so the compiler can be present while the
+        # linker is not. An older linker cannot always link the libraries of
+        # a newer compiler. A cache from a job with another Dev
         # Drive letter names a source folder that is not here, and CMake
         # refuses that build folder. A cache that names a Vulkan SDK file or
         # a toolchain file that is not here (main's cache from before the
@@ -115,7 +117,7 @@ runs:
           local path
           while IFS= read -r path; do
             [[ "$path" == */* && ! -e "$path" ]] && return 0
-          done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
+          done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE|CMAKE_[A-Z]+_COMPILER|CMAKE_(LINKER|AR|MT)):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
           return 1
         }
         /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
