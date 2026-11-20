@@ -51,6 +51,8 @@ Run local checks, including:
 - `npm test`: runs the frontend tests with Vitest. To run one file, use `npx vitest run src/<path>.test.ts`.
 - `npm run test:scripts`: runs the script tests with `node --test`. To run one file, use `node --test scripts/<name>.test.ts`. Run each script with `node scripts/<name>.ts`.
 - `scripts/check-windows.sh`: lints for Windows from macOS in seconds, except crates that build C or C++.
+- `node scripts/check-timing.ts`: finds short real-time limits in tests.
+- `node scripts/check-rules.ts`, after the commit: checks the rule ledger in `rules/` and proves that each check still fails on its negative example. It needs a clean tree. `rules/README.md` describes the ledger.
 - `scripts/check-licences.sh`: requires cargo-about 0.9.2. Fails if the stored full licence list in `licences/generated/` does not match dependencies. Run it after each change that adds or removes a dependency, and commit the files that it writes. It runs `npm ci` first, so `js-packages.json` gets the versions in `package-lock.json`. CI runs the full check only when a licence input changed (`scripts/licence-inputs-changed.sh` names them); otherwise it compares only `js-packages.json`.
 
 Dependency rules that apply to each change:

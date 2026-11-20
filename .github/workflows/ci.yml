@@ -332,6 +332,15 @@ jobs:
         if: runner.os == 'macOS'
         run: node --test "scripts/lib/**/*.test.ts" scripts/check-dependency-age.test.ts scripts/check-new-advisories.test.ts
 
+      # The rule ledger in rules/ and the scans that hold some of its rules.
+      - name: Rule ledger script tests
+        if: runner.os == 'macOS'
+        run: node --test scripts/check-rules.test.ts scripts/check-timing.test.ts scripts/command-errors.test.ts
+
+      - name: Short time limits in tests
+        if: runner.os == 'macOS'
+        run: node scripts/check-timing.ts
+
       - name: rustfmt
         if: runner.os == 'macOS'
         run: cargo fmt --all --check
@@ -380,6 +389,14 @@ jobs:
         run: |
           scripts/check-provenance.sh --self-test
           scripts/check-provenance.sh
+
+      # Each negative example in rules/ puts a past mistake back, and its
+      # check must fail. The Rust negatives use the flags of the test step
+      # above, so they reuse its build. The step needs a clean tree, so it
+      # runs before the Tauri builds.
+      - name: Rule ledger
+        if: runner.os == 'macOS'
+        run: node scripts/check-rules.ts
 
       # These builds prove the app bundles, not how fast it runs, so they
       # use the debug profile the tests just built: a release build compiles
