@@ -1,6 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
 import { describe, expect, test } from "vitest";
+import { lineAt, sourceFiles } from "./sourceScan";
 
 // Each rule names a pattern that only its owner files can use. Other files
 // call the shared function of the owner.
@@ -33,28 +32,12 @@ const OWNERS: Owner[] = [
   },
 ];
 
-const ROOT = join(__dirname, "..", "..");
-
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return sourceFiles(path);
-    if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) return [];
-    return [path];
-  });
-}
-
 /// Each use of the pattern outside the owner files, as "file:line: message".
 function usesOutsideOwners(rule: Owner): string[] {
   const found: string[] = [];
-  for (const path of sourceFiles(join(ROOT, "src"))) {
-    const file = relative(ROOT, path).split("\\").join("/");
+  for (const { file, text } of sourceFiles()) {
     if (rule.owners.includes(file)) continue;
-    const text = readFileSync(path, "utf8");
-    for (const hit of text.matchAll(rule.pattern)) {
-      const line = text.slice(0, hit.index).split("\n").length;
-      found.push(`${file}:${line}: ${rule.use}`);
-    }
+    for (const hit of text.matchAll(rule.pattern)) found.push(`${file}:${lineAt(text, hit.index)}: ${rule.use}`);
   }
   return found;
 }

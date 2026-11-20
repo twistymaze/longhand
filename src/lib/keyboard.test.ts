@@ -1,8 +1,7 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join, relative } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { isImeComposing } from "./keyboard";
+import { lineAt, sourceFiles } from "./sourceScan";
 
 describe("isImeComposing", () => {
   test("a key during a composition is for the input method", () => {
@@ -42,46 +41,30 @@ const GUARD = "isImeComposing(";
 
 /// A file that has known key checks without the guard. `count` is the number
 /// of these checks in the file. The list can only get shorter.
-type Exception = { file: string; count: number; reason: string };
+type Exception = { file: string; count: number };
 
 /// A key check without the guard: the file (relative to the repository root)
 /// and the line.
 type Hit = { file: string; line: number };
 
-// An Escape that cancels a composition must not close or cancel. These
-// handlers do not ignore a key for the input method yet. A separate PR fixes
-// them.
+// Known defects: these handlers close or cancel on an Escape that ends a
+// composition.
 const ESCAPE_EXCEPTIONS: Exception[] = [
-  { file: "src/home/ImportSheet.tsx", count: 1, reason: "known defect" },
-  { file: "src/lib/ConfirmDialog.tsx", count: 1, reason: "known defect" },
-  { file: "src/session/SessionMenu.tsx", count: 1, reason: "known defect" },
-  { file: "src/settings/chord.ts", count: 1, reason: "known defect" },
+  { file: "src/home/ImportSheet.tsx", count: 1 },
+  { file: "src/lib/ConfirmDialog.tsx", count: 1 },
+  { file: "src/session/SessionMenu.tsx", count: 1 },
+  { file: "src/settings/chord.ts", count: 1 },
 ];
-
-const ROOT = join(__dirname, "..", "..");
-
-function sourceFiles(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return sourceFiles(path);
-    if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) return [];
-    return [path];
-  });
-}
 
 /// Each key check without a call of the guard between the start of its
 /// handler (or the start of the file) and the check.
 function unguardedChecks(check: RegExp): Hit[] {
   const found: Hit[] = [];
-  for (const path of sourceFiles(join(ROOT, "src"))) {
-    const text = readFileSync(path, "utf8");
+  for (const { file, text } of sourceFiles()) {
     const starts = [...text.matchAll(HANDLER_START)].map((m) => m.index);
     for (const hit of text.matchAll(check)) {
       const start = Math.max(0, ...starts.filter((s) => s < hit.index));
-      if (!text.slice(start, hit.index).includes(GUARD)) {
-        const line = text.slice(0, hit.index).split("\n").length;
-        found.push({ file: relative(ROOT, path).split("\\").join("/"), line });
-      }
+      if (!text.slice(start, hit.index).includes(GUARD)) found.push({ file, line: lineAt(text, hit.index) });
     }
   }
   return found;
@@ -122,7 +105,7 @@ describe("Key checks", () => {
 });
 
 describe("exceptionProblems", () => {
-  const exception = (file: string, count: number): Exception => ({ file, count, reason: "known defect" });
+  const exception = (file: string, count: number): Exception => ({ file, count });
 
   test("a hit that no entry covers names its file, its line and the guard", () => {
     expect(exceptionProblems("Escape", [{ file: "src/a.tsx", line: 7 }], [])).toEqual([

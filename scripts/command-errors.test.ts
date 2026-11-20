@@ -8,7 +8,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 
-// The count on 2026-11-20. Lower it when a change removes some.
+// Lower it when a change removes some.
 const ALLOWED = 63;
 const PATTERN = "map_err(|e| e.to_string())";
 const DIR = join(import.meta.dirname, "../src-tauri/src/commands");

@@ -75,7 +75,7 @@ function readFamily(file: string, errors: string[]): Family | undefined {
 
   if (state === "enforced") {
     if (!isString(table.enforced_by)) fail("enforced_by", "an enforced family names the command that holds its rule");
-    if (negatives.length === 0 && (raw === undefined || (raw as TomlTable[]).length === 0))
+    if (raw === undefined || (Array.isArray(raw) && raw.length === 0))
       fail("negative", "an enforced family has at least one negative example");
   }
   if (state === "judgment" && !isString(table.judgment)) fail("judgment", "a judgment family says why no check can hold its rule");

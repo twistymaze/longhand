@@ -100,15 +100,17 @@ function stripRust(text: string): string {
   let out = "";
   let i = 0;
   const blank = (s: string) => s.replace(/[^\n]/g, " ");
+  const rawString = /b?r(#*)"/y;
+  const charLiteral = /'(?:\\u\{[0-9a-fA-F]+\}|\\.|[^\\'\n])'/y;
+  const at = (re: RegExp) => ((re.lastIndex = i), re.exec(text));
   while (i < text.length) {
-    const rest = text.slice(i);
     let m: RegExpExecArray | null;
-    if (rest.startsWith("//")) {
+    if (text.startsWith("//", i)) {
       const end = text.indexOf("\n", i);
       const stop = end === -1 ? text.length : end;
       out += blank(text.slice(i, stop));
       i = stop;
-    } else if (rest.startsWith("/*")) {
+    } else if (text.startsWith("/*", i)) {
       let depth = 0;
       let j = i;
       while (j < text.length) {
@@ -121,7 +123,7 @@ function stripRust(text: string): string {
       }
       out += blank(text.slice(i, j));
       i = j;
-    } else if ((m = /^b?r(#*)"/.exec(rest)) && !/\w/.test(text[i - 1] ?? "")) {
+    } else if ((text[i] === "r" || text[i] === "b") && (m = at(rawString)) && !/\w/.test(text[i - 1] ?? "")) {
       const close = `"${m[1]}`;
       const end = text.indexOf(close, i + m[0].length);
       const stop = end === -1 ? text.length : end + close.length;
@@ -132,7 +134,7 @@ function stripRust(text: string): string {
       while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
       out += `""${blank(text.slice(i + 2, j + 1))}`;
       i = j + 1;
-    } else if ((m = /^'(?:\\u\{[0-9a-fA-F]+\}|\\.|[^\\'\n])'/.exec(rest))) {
+    } else if (text[i] === "'" && (m = at(charLiteral))) {
       out += `''${blank(m[0].slice(2))}`;
       i += m[0].length;
     } else {
