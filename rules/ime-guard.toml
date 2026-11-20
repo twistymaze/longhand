@@ -1,0 +1,10 @@
+family = "ime-guard"
+rule = "Each keydown handler that checks Enter or Escape calls isImeComposing first and ignores a key for the input method."
+state = "enforced"
+enforced_by = "npx vitest run src/lib/keyboard.test.ts"
+lessons = ["docs/solutions/ui-bugs/webkit-ime-confirm-enter-has-iscomposing-false.md"]
+
+[[negative]]
+apply = "rules/negatives/ime-guard.patch"
+run = "npx vitest run src/lib/keyboard.test.ts"
+expect = "src/home/ImeGuardNegative.tsx:2: an Escape check without isImeComposing()"

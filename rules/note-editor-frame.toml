@@ -1,0 +1,10 @@
+family = "note-editor-frame"
+rule = "Only NoteEditor.tsx, MarkdownField.tsx, NotesTab.tsx and ImportSheet.tsx put a NoteEditor on the page, in a frame with px-3 side padding."
+state = "enforced"
+enforced_by = "npx vitest run src/lib/owners.test.ts"
+lessons = ["docs/solutions/ui-bugs/note-editor-frame-needs-px-3-or-it-shows-a-horizontal-scroll-bar.md"]
+
+[[negative]]
+apply = "rules/negatives/note-editor-frame.patch"
+run = "npx vitest run src/lib/owners.test.ts"
+expect = "src/home/NoteEditorFrameNegative.tsx:4: do not put NoteEditor here: the editor needs the px-3 frame"

@@ -1,0 +1,10 @@
+diff --git a/src/home/NoteEditorFrameNegative.tsx b/src/home/NoteEditorFrameNegative.tsx
+new file mode 100644
+--- /dev/null
++++ b/src/home/NoteEditorFrameNegative.tsx
+@@ -0,0 +1,5 @@
++import { NoteEditor } from "../editor/NoteEditor";
++
++export function BareEditor() {
++  return <NoteEditor markdown="" onChange={() => {}} />;
++}

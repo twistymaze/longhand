@@ -1,0 +1,10 @@
+family = "close-listener-owner"
+rule = "Only src/settings/closeSaves.ts calls onCloseRequested; other code calls registerCloseSave."
+state = "enforced"
+enforced_by = "npx vitest run src/lib/owners.test.ts"
+lessons = ["docs/solutions/ui-bugs/tauri-stale-close-listener-blocks-next-window.md"]
+
+[[negative]]
+apply = "rules/negatives/close-listener-owner.patch"
+run = "npx vitest run src/lib/owners.test.ts"
+expect = "src/home/CloseListenerNegative.ts:3: do not call onCloseRequested here: call registerCloseSave"
