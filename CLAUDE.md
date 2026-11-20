@@ -55,6 +55,18 @@ Code identifiers, comments, logs, docs, plans, and agent guidance follow ASD-STE
 
 UI text uses short, direct plain language with consistent terms, no metaphors, and no jargon. STE's controlled vocabulary does not apply.
 
+## Lessons become checks
+
+A lesson in prose gives no signal when an agent does not read it or when it becomes wrong. A check does. After `ce-debug` fixes a defect, after `ce-compound` writes a lesson, and after you accept a review finding or a correction from the user:
+
+1. Run pstack's `/correct` on the mistake, where it is installed.
+2. Put the rule at the highest level that works: a structure or type that makes the mistake impossible, then a lint whose message names the fix, then a test, then a runtime check, then a gate (CI step or hook). Use prose only for a real judgment.
+3. Add or update the mistake family in `rules/` with a negative example that puts the mistake back. Run `node scripts/check-rules.ts` after the commit. `rules/README.md` gives the format.
+
+A mistake seen for the first time, with no low-cost check, needs only the lesson document. When it repeats, do the steps above. Do not weaken a negative example to make it pass: fix the check. A known defect that a new check finds goes in the check's exception list, and a separate fix removes it.
+
+`.claude/hooks/rules.mjs` holds some of the rules below for Claude Code. Codex does not run Claude Code hooks, so for Codex these rules stay as text here.
+
 ## Working in this repo
 
 - Use Python only through `uv`, JavaScript packages only through npm, and Rust 1.95.0.

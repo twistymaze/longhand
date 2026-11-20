@@ -271,6 +271,17 @@ The list of the changes in each release since 1.0.0, grouped by calendar month (
 ### Update manifest
 The file that identifies the newest release: its version, date, archive address and signature. The app reads only this file when it checks for updates. The macOS app reads `latest.json` of the latest release in `twistymaze/longhand`, and the Windows app reads `latest-windows.json` of that release.
 
+## Development checks
+
+### Mistake family
+A class of mistake that agents or people made before, with one rule that prevents it. Each family has one file in `rules/`, the rule ledger. Its state is `enforced` (a check holds the rule) or `judgment` (no check can hold it, and the rule stays as text). `rules/README.md` gives the fields.
+
+### Negative example
+A patch in `rules/negatives/` that puts the mistake of a family back. `scripts/check-rules.ts` applies it and expects the family's check to fail with the expected text, so that a check that stops catching its mistake fails CI.
+
+### Exception list
+The known hits of a scan or a lint, each with a reason. The list can only get shorter: the scan fails on a new hit and on an entry that no longer matches. A known defect stays in the list until a separate fix removes it.
+
 ## Flagged ambiguities
 
 - "Gap" has two senses. A Gap (above) is audio with no live transcript, which gap fill transcribes. The gap line in a finished transcript is the time between two segments, for example after a Stop and a Resume: no audio exists there, and gap fill does not transcribe it. The time between two segments that a Pause and a Continue made is a pause line, never a gap line.
