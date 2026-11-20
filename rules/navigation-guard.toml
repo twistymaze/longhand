@@ -1,0 +1,12 @@
+family = "navigation-guard"
+rule = "A link in a window never replaces the app's page: the navigation decision keeps the app page and sends web and mail links to the browser."
+state = "enforced"
+enforced_by = "cargo test -p longhand --lib a_window_stays_on_the_app_page"
+lessons = ["docs/solutions/ui-bugs/read-only-note-link-replaced-the-app-window.md"]
+
+# The test checks the navigation decision. It does not check that each window
+# builder installs the guard; a new window without on_navigation is not caught.
+[[negative]]
+apply = "rules/negatives/navigation-guard.patch"
+run = "cargo test -p longhand --lib a_window_stays_on_the_app_page"
+expect = "window::tests::a_window_stays_on_the_app_page_and_sends_links_to_the_browser"

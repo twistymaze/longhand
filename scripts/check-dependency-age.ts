@@ -1,7 +1,7 @@
 // Fails a PR that adds a dependency version that is less than 7 days old
 // (docs/development-workflow.md). The `cargo deny` CI job runs it on each PR.
 //
-//   node scripts/check-dependency-age.ts <base-dir> <head-dir>
+//   node scripts/check-dependency-age.ts <base-dir> <head-dir> [--now <ISO date>]
 //
 // It compares Cargo.lock and package-lock.json of the base and the head.
 //
@@ -121,9 +121,18 @@ export function registryPublishDate(): PublishDate {
 }
 
 if (import.meta.main) {
-  const [baseDir, headDir] = process.argv.slice(2);
-  if (!baseDir || !headDir) {
-    console.error("usage: check-dependency-age.ts <base-dir> <head-dir>");
+  const args = process.argv.slice(2);
+  // `--now <date>` replaces the current time, so that a negative example in
+  // rules/ stays young for the check after 7 days.
+  let now = new Date();
+  const nowAt = args.indexOf("--now");
+  if (nowAt >= 0) {
+    now = new Date(args[nowAt + 1] ?? "");
+    args.splice(nowAt, 2);
+  }
+  const [baseDir, headDir] = args;
+  if (!baseDir || !headDir || Number.isNaN(now.getTime())) {
+    console.error("usage: check-dependency-age.ts <base-dir> <head-dir> [--now <ISO date>]");
     process.exit(2);
   }
   const lockfiles = (dir: string): Lockfiles => ({
@@ -141,7 +150,7 @@ if (import.meta.main) {
   }
   const added = addedVersions(base, head);
   const notes: string[] = [];
-  const problems = await checkAges(added, exceptions, new Date(), registryPublishDate(), notes);
+  const problems = await checkAges(added, exceptions, now, registryPublishDate(), notes);
   for (const note of notes) console.log(note);
   if (problems.length > 0) {
     console.log(`The head adds dependency versions that fail the ${MINIMUM_AGE_DAYS}-day rule:\n${problems.map((p) => `- ${p}`).join("\n")}`);

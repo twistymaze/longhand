@@ -1,0 +1,13 @@
+family = "migration-hashes"
+rule = "Never edit an applied migration: add a new one, and pin the hash of each new migration."
+state = "enforced"
+enforced_by = "cargo test -p session-core --test migrations"
+lessons = [
+  "docs/solutions/workflow-issues/edited-applied-migration-breaks-older-databases.md",
+  "docs/solutions/runtime-errors/older-build-panicked-on-newer-database-at-launch.md",
+]
+
+[[negative]]
+apply = "rules/negatives/migration-hashes.patch"
+run = "cargo test -p session-core --test migrations every_migration_has_a_pinned_hash"
+expect = "an applied migration changed, or a new migration has no pinned hash"

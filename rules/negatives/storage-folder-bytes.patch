@@ -1,0 +1,13 @@
+diff --git a/crates/session-core/src/note_record.rs b/crates/session-core/src/note_record.rs
+index 72d97e11..3b329608 100644
+--- a/crates/session-core/src/note_record.rs
++++ b/crates/session-core/src/note_record.rs
+@@ -153,7 +153,7 @@ impl NoteRecord {
+     /// spaces of indent, LF line ends and a final LF.
+     pub fn render(&self) -> String {
+         let value = serde_json::to_value(self).expect("note record serializes");
+-        let mut out = serde_json::to_string_pretty(&crate::json::sorted(value))
++        let mut out = serde_json::to_string_pretty(&value)
+             .expect("note record serializes");
+         out.push('\n');
+         out

@@ -1,0 +1,18 @@
+diff --git a/package-lock.json b/package-lock.json
+index 46e43df2..eb1a2e82 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -2503,6 +2503,13 @@
+         "node": ">=6"
+       }
+     },
++    "node_modules/left-pad": {
++      "version": "1.3.0",
++      "resolved": "https://registry.npmjs.org/left-pad/-/left-pad-1.3.0.tgz",
++      "integrity": "sha512-XI5MPzVNApjAyhQzphX8BkmKsKUxD4LdyK24iZeQGinBN9yTQT3bFlCBy/aVx2HrNcqQGsdot8ghrjyrvMCoEA==",
++      "dev": true,
++      "license": "WTFPL"
++    },
+     "node_modules/lightningcss": {
+       "version": "1.33.0",
+       "resolved": "https://registry.npmjs.org/lightningcss/-/lightningcss-1.33.0.tgz",

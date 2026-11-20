@@ -1,0 +1,12 @@
+family = "dependency-age"
+rule = "A change adds no dependency version that is less than 7 days old, unless min-age-exceptions.toml lists it with a reason."
+state = "enforced"
+enforced_by = "node scripts/check-dependency-age.ts <base-dir> <head-dir>"
+lessons = ["docs/development-workflow.md"]
+
+# The check reads publish dates from the npm registry, so this negative
+# example needs the network.
+[[negative]]
+apply = "rules/negatives/dependency-age.patch"
+run = "bash rules/negatives/dependency-age-run.sh"
+expect = "less than 7 days old: package left-pad 1.3.0"
