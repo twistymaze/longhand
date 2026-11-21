@@ -37,7 +37,7 @@ const ROOT = realFolder(resolve(HOOKS, "..", ".."));
 function inCheckout(folder) {
   if (folder === undefined) return true;
   const rel = relative(ROOT, folder);
-  return rel === "" || !(rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
+  return !(rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
 }
 
 // The folder after a `cd` segment, or undefined when it is not known: a

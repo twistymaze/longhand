@@ -125,8 +125,9 @@ runs:
     # and SQLite from scratch. The key follows Cargo.lock, the CMake
     # toolchain file (sccache-setup) and the MSVC toolset version. A
     # fallback restore can still bring a cache from another toolset; the
-    # guard in sccache-setup builds those CMake folders again. An exact hit is never saved again, so a change to how CI builds (flags,
-    # profiles, which cargo commands run) needs `prefix-key` bumped or its
+    # guard in sccache-setup builds those CMake folders again. An exact hit
+    # is never saved again, so a change to how CI builds (flags, profiles,
+    # which cargo commands run) needs `prefix-key` bumped or its
     # new artifacts are never cached. A self-hosted runner skips this: its target/
     # stays from the last job, and a cache save would prune it.
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2

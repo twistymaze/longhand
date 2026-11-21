@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -93,8 +93,15 @@ const outside = (root) => join(dirname(root), `${basename(root)}-other`);
 test("bun in the checkout is denied, also through a symbolic link to it", () => {
   denied(bashIn((root) => root, "bun install"), "agent-tool-choice");
   denied(bashIn((root) => join(root, "src"), "bun install"), "agent-tool-choice");
-  // tmpdir() on macOS is under /var, a symbolic link to /private/var.
-  denied(bashIn((root) => (realpathSync(root) === root ? root : root.replace(/^\/private/, "")), "bun install"), "agent-tool-choice");
+  denied(
+    bashIn((root) => {
+      const link = `${root}-link`;
+      symlinkSync(root, link);
+      dirs.push(link);
+      return link;
+    }, "bun install"),
+    "agent-tool-choice",
+  );
 });
 
 test("bun outside the checkout is allowed, also in a sibling whose name starts with the checkout's name", () => {
@@ -107,9 +114,9 @@ test("a cd before bun decides the folder", () => {
   allowed(bashIn((root) => root, `cd ${dirname(tmpdir())} && bun test`));
   allowed(bashIn((root) => root, "cd ../sibling && pnpm i"));
   denied(bashIn((root) => root, "cd src && pnpm i"), "agent-tool-choice");
-  denied(bashIn((root) => root, `cd /elsewhere && cd ${"$"}OLDPWD && bun x`), "agent-tool-choice");
+  denied(bashIn((root) => root, "cd /elsewhere && cd $OLDPWD && bun x"), "agent-tool-choice");
   denied(bashIn(outside, "cd ~/x; cd - && bun x"), "agent-tool-choice");
-  denied(bashIn((root) => dirname(root), `cd ${"$"}(pwd) && yarn`), "agent-tool-choice");
+  denied(bashIn((root) => dirname(root), "cd $(pwd) && yarn"), "agent-tool-choice");
 });
 
 test("a cd back into the checkout before bun is denied", () => {

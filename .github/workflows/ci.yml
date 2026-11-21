@@ -229,8 +229,7 @@ jobs:
       # changed, as it does in a folder that stays between jobs. The key
       # follows the MSVC toolset version (windows-build-setup reads it) and
       # the scripts that pin the revisions and patch the source: a cache from
-      # a runner image with another toolset names tools that are not here,
-      # and on 2026-11-21 such a cache failed a PR's NeMo build. Only
+      # a runner image with another toolset names tools that are not here. Only
       # main saves it (step "Save the NeMo cache"), so pull requests do not
       # fill the cache storage. A warm cache saves about 1.5 to 3 minutes.
       # The folder is on the Dev Drive, which is Z: on each runner type.
