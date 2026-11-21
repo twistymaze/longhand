@@ -7,11 +7,49 @@
 // Ask: exit 0, a permission decision "ask" on stdout.
 // Each deny or ask adds one line to rules.log next to this file (gitignored),
 // for the pilot review. An error in this script never blocks a command.
-import { appendFileSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, existsSync, readFileSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const LOG = join(dirname(fileURLToPath(import.meta.url)), "rules.log");
+const HOOKS = dirname(fileURLToPath(import.meta.url));
+const LOG = join(HOOKS, "rules.log");
+
+// The real path of a folder. A folder that is not there gets the real path
+// of its nearest existing parent, with the rest of the path added. Symbolic
+// links (macOS /tmp and /var) then compare equal.
+function realFolder(path) {
+  let head = path;
+  const rest = [];
+  while (!existsSync(head)) {
+    const parent = dirname(head);
+    if (parent === head) return path;
+    rest.unshift(basename(head));
+    head = parent;
+  }
+  return join(realpathSync(head), ...rest);
+}
+
+// The checkout root: two levels above .claude/hooks/.
+const ROOT = realFolder(resolve(HOOKS, "..", ".."));
+
+// True when the folder is in this checkout, or when the folder is not known.
+function inCheckout(folder) {
+  if (folder === undefined) return true;
+  const rel = relative(ROOT, folder);
+  return rel === "" || !(rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel));
+}
+
+// The folder after a `cd` segment, or undefined when it is not known: a
+// variable, a command substitution or `cd -`.
+function cdTarget(words, folder) {
+  const arg = words[1];
+  if (arg === undefined || arg === "~") return homedir();
+  if (arg === "-" || arg.includes("$") || arg.includes("`")) return undefined;
+  if (arg.startsWith("~/")) return realFolder(join(homedir(), arg.slice(2)));
+  if (isAbsolute(arg)) return realFolder(arg);
+  return folder === undefined ? undefined : realFolder(resolve(folder, arg));
+}
 
 // Split a shell command into segments at &&, ||, ;, | and line ends outside
 // quotes, and each segment into words without their quotes. The body of a
@@ -160,8 +198,10 @@ const RULES = [
   {
     family: "agent-tool-choice",
     action: "deny",
-    bash: (w) => ["bun", "bunx", "yarn", "pnpm"].includes(commandWord(w)),
-    message: "Use JavaScript packages only through npm.",
+    // Only this checkout uses npm. A command that runs in another
+    // repository is allowed; a command whose folder is not known is not.
+    bash: (w, folder) => ["bun", "bunx", "yarn", "pnpm"].includes(commandWord(w)) && inCheckout(folder),
+    message: "Use JavaScript packages only through npm in this checkout.",
   },
   {
     family: "agent-tool-choice",
@@ -182,9 +222,13 @@ export function decide(input) {
   const tool = input?.tool_name;
   const toolInput = input?.tool_input ?? {};
   if (tool === "Bash" && typeof toolInput.command === "string") {
+    // The folder that each segment runs in: the hook input's cwd, then each
+    // cd segment.
+    let folder = typeof input.cwd === "string" && isAbsolute(input.cwd) ? realFolder(input.cwd) : undefined;
     for (const words of segments(toolInput.command)) {
-      const rule = RULES.find((r) => r.bash?.(words));
+      const rule = RULES.find((r) => r.bash?.(words, folder));
       if (rule) return rule;
+      if (commandWord(words) === "cd") folder = cdTarget(words, folder);
     }
   } else if ((tool === "Edit" || tool === "Write" || tool === "MultiEdit") && typeof toolInput.file_path === "string") {
     return RULES.find((r) => r.edit?.(toolInput.file_path));

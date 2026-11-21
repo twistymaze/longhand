@@ -1,5 +1,5 @@
 family = "agent-tool-choice"
-rule = "Use Python only through uv and JavaScript packages only through npm, and do not run prettier."
+rule = "Use Python only through uv and JavaScript packages only through npm in this checkout, and do not run prettier. A bun, yarn or pnpm command that runs in another repository is allowed."
 state = "enforced"
 enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
 lessons = ["CLAUDE.md"]
