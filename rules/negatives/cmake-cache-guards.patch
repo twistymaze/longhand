@@ -1,9 +1,9 @@
 diff --git a/scripts/build-nemo.sh b/scripts/build-nemo.sh
-index 1a3966fc..b344dd88 100755
+index 1ac669a0..e088879f 100755
 --- a/scripts/build-nemo.sh
 +++ b/scripts/build-nemo.sh
-@@ -28,7 +28,7 @@ missing_input() {
-     [[ "$path" == */* && ! -e "$path" ]] && return 0
+@@ -35,7 +35,7 @@ missing_input() {
+     fi
    # The same keys as the check in .github/actions/sccache-setup/action.yml;
    # scripts/cmake-cache-guards.test.ts holds the two lists together.
 -  done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE|CMAKE_[A-Z]+_COMPILER|CMAKE_(LINKER|AR|MT)):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
