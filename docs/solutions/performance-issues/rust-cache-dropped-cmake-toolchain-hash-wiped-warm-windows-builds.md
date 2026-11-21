@@ -87,7 +87,11 @@ The cache key now holds the only input that the hash file held. A change of the 
 
 - Do not keep state that a CI step depends on in `target/` (or in another folder that a cache restores) unless the cache keeps that exact file. Put the input into the cache key.
 - To prove a warm run is warm, count the `Compiling` lines of non-workspace crates in the log. If a dependency compiles with no change to `Cargo.lock`, run once with `CARGO_LOG=cargo::core::compiler::fingerprint=info` and read the `dirty:` and `fingerprint error` lines. They name the missing file or the changed dependency.
-- A cached CMake build folder can come from another machine. Before reuse, check that the compiler and the source folder in its `CMakeCache.txt` exist (`CMAKE_CXX_COMPILER`, `CMAKE_HOME_DIRECTORY`). When it is a cargo build script's folder, remove the fingerprint too, or cargo keeps the old libraries.
+- A cached CMake build folder can come from another machine. Before reuse, check that each tool and input that its `CMakeCache.txt` names exists: the compilers, `CMAKE_LINKER`, `CMAKE_AR`, `CMAKE_MT`, the toolchain file and the Vulkan SDK files, and that `CMAKE_HOME_DIRECTORY` is the current source folder. When it is a cargo build script's folder, remove the fingerprint too, or cargo keeps the old libraries. `scripts/cmake-cache-guards.test.ts` (rule family `cmake-cache-guards`) holds the two copies of this check to the same keys.
+
+## Recurrence (2026-11-20, PR #103)
+
+The Windows check failed on a fresh GitHub runner: SentencePiece's CMake configure could not find `link.exe` in MSVC 14.51. The runner image (`windows-2025-vs2026` 20261116) had MSVC 14.52. The NeMo cache that `main` saved on an older image restored a `sentencepiece-build` folder whose `CMakeCache.txt` named the 14.51 linker. The guard in `.github/actions/sccache-setup/action.yml` already checked the linker, `ar` and `mt`, but its copy in `scripts/build-nemo.sh` checked only `CMAKE_CXX_COMPILER`, so it kept the stale folder. A re-run would have failed the same way, because the cache key follows only the NeMo scripts. `build-nemo.sh` now checks the same keys, and a test runs both copies against a cache that names each missing tool.
 - Compare runners on warm time from two or more runs. Two runs on one runner differed by up to 5 minutes in this measurement.
 
 ## Related Issues

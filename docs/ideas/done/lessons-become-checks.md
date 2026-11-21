@@ -90,3 +90,7 @@ About 60 % of all items fall into five low-cost mechanisms: `clippy.toml` with w
 ### Dependencies
 
 How to package this method for all projects comes first. It is a separate decision: combine compound engineering with pstack (`/correct`, `/create-verification-skill`, `/create-formal-verification-skill`). The per-row audit tables are local working files and are not in git.
+
+## Outcome
+
+Shipped as a pilot in PR #103 (2026-11-21): the rule ledger in `rules/` with 23 families, `scripts/check-rules.ts` and its CI step, the frontend source scans, the timing scan, two clippy bans, the Claude Code hook, and the "Lessons become checks" section in `CLAUDE.md`. Known defects that the new checks found stay in their exception lists; [Clear the rule exceptions](../someday/clear-rule-exceptions.md) removes them. The pilot review (U9 in the plan) is due 4–6 weeks after the merge, about 2026-12-19 to 2027-01-02: count new mistakes against the 8 weeks before the merge and decide whether to make the method a standalone tool.

@@ -14,7 +14,7 @@ execution: code
 
 - **Objective:** When an agent repeats a mistake that Longhand already has a lesson for, a check fails before the change merges, and each check proves that it still catches its mistake. After 4–6 weeks, a count of new mistakes shows whether this works better than prose.
 - **Means:** A rule ledger in `rules/`, one check script that runs each rule's negative example, five low-cost mechanisms, and an instruction section that sends each correction to pstack's `/correct` (KTD1–KTD6).
-- **Authority:** This plan, then `CLAUDE.md`. The audit in `docs/ideas/next/lessons-become-checks.md` gives the counts. A unit does not change app behaviour (KTD7).
+- **Authority:** This plan, then `CLAUDE.md`. The audit in `docs/ideas/done/lessons-become-checks.md` gives the counts. A unit does not change app behaviour (KTD7).
 - **Stop conditions:**
   - Stop and ask when a check finds a defect that the plan does not name (KTD7 lists the known ones).
   - Stop and ask when a negative example cannot make its check fail. Do not weaken the negative example.
@@ -317,7 +317,7 @@ flowchart TB
 - **Goal:** A count by hand shows if the method reduced repeated mistakes.
 - **Requirements:** R11
 - **Dependencies:** U1–U8 merged, then 4–6 weeks
-- **Files:** `docs/ideas/next/lessons-become-checks.md` (results section)
+- **Files:** `docs/ideas/done/lessons-become-checks.md` (results section)
 - **Approach:**
   1. At the merge, count the baseline: the new lessons in `docs/solutions/`, the accepted review findings in merged PRs and the user corrections recorded in memories in the 8 weeks before the merge. Give each a family, mark it covered or not covered by the pilot, and record the number of merged PRs. Write it in the idea file.
   2. After 4–6 weeks, count the same sources since the merge, plus two sources that show caught mistakes: PR CI runs in which a family's command failed with its expected text, and the hook log (U7).
