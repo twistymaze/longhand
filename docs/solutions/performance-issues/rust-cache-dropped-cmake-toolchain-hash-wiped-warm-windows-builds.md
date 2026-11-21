@@ -88,6 +88,7 @@ The cache key now holds the only input that the hash file held. A change of the 
 - Do not keep state that a CI step depends on in `target/` (or in another folder that a cache restores) unless the cache keeps that exact file. Put the input into the cache key.
 - To prove a warm run is warm, count the `Compiling` lines of non-workspace crates in the log. If a dependency compiles with no change to `Cargo.lock`, run once with `CARGO_LOG=cargo::core::compiler::fingerprint=info` and read the `dirty:` and `fingerprint error` lines. They name the missing file or the changed dependency.
 - A cached CMake build folder can come from another machine. Before reuse, check that each tool and input that its `CMakeCache.txt` names exists: the compilers, `CMAKE_LINKER`, `CMAKE_AR`, `CMAKE_MT`, the toolchain file and the Vulkan SDK files, and that `CMAKE_HOME_DIRECTORY` is the current source folder. When it is a cargo build script's folder, remove the fingerprint too, or cargo keeps the old libraries. `scripts/cmake-cache-guards.test.ts` (rule family `cmake-cache-guards`) holds the two copies of this check to the same keys.
+- The keys and the guards also follow the MSVC toolset version, because a runner image update can change it: see [A Windows cache from an older runner image called a linker that the new image does not have](../build-errors/windows-cache-from-another-msvc-toolset.md).
 
 ## Recurrence (2026-11-20, PR #103)
 
