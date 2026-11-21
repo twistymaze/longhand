@@ -227,7 +227,10 @@ jobs:
       # SentencePiece, SDK and helper builds) comes from the Actions cache.
       # build-nemo.sh checks the pinned revisions and builds only what
       # changed, as it does in a folder that stays between jobs. The key
-      # follows the scripts that pin the revisions and patch the source. Only
+      # follows the MSVC toolset version (windows-build-setup reads it) and
+      # the scripts that pin the revisions and patch the source: a cache from
+      # a runner image with another toolset names tools that are not here,
+      # and on 2026-11-21 such a cache failed a PR's NeMo build. Only
       # main saves it (step "Save the NeMo cache"), so pull requests do not
       # fill the cache storage. A warm cache saves about 1.5 to 3 minutes.
       # The folder is on the Dev Drive, which is Z: on each runner type.
@@ -239,7 +242,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DEV_DRIVE }}/longhand-nemo
-          key: nemo-${{ runner.os }}-${{ hashFiles('scripts/build-nemo.sh', 'scripts/patch-nemo.ts', 'scripts/prepare-nemo.ts', 'scripts/prepare-vulkan-runtime.ps1') }}
+          key: nemo-${{ runner.os }}-msvc-${{ env.LONGHAND_MSVC_TOOLSET }}-${{ hashFiles('scripts/build-nemo.sh', 'scripts/patch-nemo.ts', 'scripts/prepare-nemo.ts', 'scripts/prepare-vulkan-runtime.ps1') }}
 
       - name: Build and stage NeMo helper
         working-directory: ${{ env.DEV_DRIVE_WORKSPACE || github.workspace }}
