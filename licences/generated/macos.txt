@@ -2536,7 +2536,7 @@ infer 0.22.0
     Copyright (c) 2019 Bojan
 ipnet 2.12.2
     Copyright 2017 Juniper Networks, Inc.
-itoa 1.0.18
+itoa 1.0.19
 json-patch 4.2.0
     Copyright (c) 2017 Ivan Dubrov
 jsonptr 0.7.1
@@ -2793,7 +2793,7 @@ strsim 0.11.1
 swift-rs 1.0.9
     Copyright (c) 2023 The swift-rs Developers
 syn 2.0.119
-syn 3.0.9
+syn 3.0.10
 synstructure 0.14.0
     Copyright 2016 Nika Layzell
 system-configuration 0.7.0
@@ -2816,17 +2816,17 @@ tauri-plugin-fs 2.7.1
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-global-shortcut 2.4.1
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-plugin-log 2.10.1
+tauri-plugin-log 2.10.2
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-macos-permissions 2.3.0
     Copyright (c) 2024 ayang
 tauri-plugin-notification 2.7.0
     Copyright (c) 2017 - Present Tauri Apps Contributors
-tauri-plugin-opener 2.7.2
+tauri-plugin-opener 2.7.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-single-instance 2.5.5
     Copyright (c) 2017 - Present The Tauri Programme in the Commons Conservancy
-tauri-plugin-store 2.5.0
+tauri-plugin-store 2.5.1
     Copyright (c) 2017 - Present Tauri Apps Contributors
 tauri-plugin-updater 2.14.1
     Copyright (c) 2017 - Present Tauri Apps Contributors
