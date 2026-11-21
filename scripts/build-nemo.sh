@@ -23,9 +23,16 @@ mkdir -p "$cache"
 # stops the generate step.
 cmake_path() { if command -v cygpath >/dev/null; then cygpath -m "$1"; else echo "$1"; fi; }
 missing_input() {
-  local path
+  local path lower
   while IFS= read -r path; do
     [[ "$path" == */* && ! -e "$path" ]] && return 0
+    # In an MSVC environment, a tool of another toolset version is stale
+    # also when it exists: an older linker cannot always link the objects
+    # of a newer compiler.
+    if [[ -n "${VCToolsVersion:-}" ]]; then
+      lower="$(printf '%s' "$path" | tr 'A-Z\\' 'a-z/')"
+      [[ "$lower" =~ /vc/tools/msvc/([^/]+)/ ]] && [[ "${BASH_REMATCH[1]}" != "${VCToolsVersion//[[:space:]\\]/}" ]] && return 0
+    fi
   # The same keys as the check in .github/actions/sccache-setup/action.yml;
   # scripts/cmake-cache-guards.test.ts holds the two lists together.
   done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE|CMAKE_[A-Z]+_COMPILER|CMAKE_(LINKER|AR|MT)):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')

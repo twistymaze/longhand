@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, test } from "node:test";
@@ -32,13 +32,17 @@ function missingInput(file: string): string {
 }
 
 // Runs missing_input on a CMakeCache.txt with the given lines. True when the
-// function says the build folder must be configured again.
-function stale(file: string, lines: string[]): boolean {
+// function says the build folder must be configured again. vcTools is the
+// VCToolsVersion value of the MSVC environment, or undefined for none.
+function stale(file: string, lines: string[], vcTools?: string): boolean {
   const dir = mkdtempSync(join(tmpdir(), "cmake-guard-"));
   dirs.push(dir);
   const cache = join(dir, "CMakeCache.txt");
   writeFileSync(cache, `${lines.join("\n")}\n`);
-  const r = spawnSync("bash", ["-c", `${missingInput(file)}\nmissing_input "$1"`, "guard", cache], { encoding: "utf8" });
+  const env = { ...process.env };
+  delete env.VCToolsVersion;
+  if (vcTools !== undefined) env.VCToolsVersion = vcTools;
+  const r = spawnSync("bash", ["-c", `${missingInput(file)}\nmissing_input "$1"`, "guard", cache], { encoding: "utf8", env });
   assert.ok(r.status === 0 || r.status === 1, `${file}: ${r.stderr}`);
   return r.status === 0;
 }
@@ -56,4 +60,44 @@ for (const file of GUARDS) {
       assert.equal(stale(file, [`CMAKE_CXX_COMPILER:FILEPATH=${here}`, `${key}:FILEPATH=${gone}`]), true);
     });
   }
+}
+
+// A runner image can have two MSVC toolsets. A cached folder from the older
+// one names tools that are still there, and the older linker cannot always
+// link the objects of the newer compiler. So, in an MSVC environment, a
+// folder whose tools are under another toolset version is configured again.
+const TOOL_KEYS = ["CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER", "CMAKE_LINKER", "CMAKE_AR", "CMAKE_MT"];
+
+// An existing file under <tmp>/VS/VC/Tools/MSVC/<version>/bin/Hostx64/x64/.
+function msvcTool(version: string): string {
+  const dir = mkdtempSync(join(tmpdir(), "msvc-"));
+  dirs.push(dir);
+  const bin = join(dir, "VS", "VC", "Tools", "MSVC", version, "bin", "Hostx64", "x64");
+  mkdirSync(bin, { recursive: true });
+  const path = join(bin, "tool.exe");
+  writeFileSync(path, "");
+  return path.replace(/\\/g, "/");
+}
+
+for (const file of GUARDS) {
+  for (const key of TOOL_KEYS) {
+    test(`${file}: in MSVC 14.52.1, a cached ${key} from MSVC 14.51.1 that still exists is configured again`, () => {
+      assert.equal(stale(file, [`${key}:FILEPATH=${msvcTool("14.51.1")}`], "14.52.1"), true);
+    });
+  }
+
+  test(`${file}: in MSVC 14.52.1, a cached folder whose tools are all from 14.52.1 is kept`, () => {
+    const lines = TOOL_KEYS.map((key) => `${key}:FILEPATH=${msvcTool("14.52.1")}`);
+    assert.equal(stale(file, lines, "14.52.1"), false);
+  });
+
+  test(`${file}: with no MSVC environment, a cached tool from another toolset that exists is kept`, () => {
+    assert.equal(stale(file, [`CMAKE_LINKER:FILEPATH=${msvcTool("14.51.1")}`]), false);
+  });
+
+  test(`${file}: the toolset folder is found in any letter case`, () => {
+    // macOS volumes ignore letter case, so the changed path still exists.
+    const path = msvcTool("14.51.1").replace("/VC/Tools/MSVC/", "/vc/tools/Msvc/");
+    assert.equal(stale(file, [`CMAKE_LINKER:FILEPATH=${path}`], "14.52.1"), true);
+  });
 }

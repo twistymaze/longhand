@@ -114,9 +114,13 @@ runs:
         # case the step removes the output and the fingerprint of that build
         # script, and cargo builds it again.
         missing_input() {
-          local path
+          local path lower
           while IFS= read -r path; do
             [[ "$path" == */* && ! -e "$path" ]] && return 0
+            if [[ -n "${VCToolsVersion:-}" ]]; then
+              lower="$(printf '%s' "$path" | tr 'A-Z\\' 'a-z/')"
+              [[ "$lower" =~ /vc/tools/msvc/([^/]+)/ ]] && [[ "${BASH_REMATCH[1]}" != "${VCToolsVersion//[[:space:]\\]/}" ]] && return 0
+            fi
           done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE|CMAKE_[A-Z]+_COMPILER|CMAKE_(LINKER|AR|MT)):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
           return 1
         }
