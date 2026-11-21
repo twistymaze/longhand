@@ -117,7 +117,9 @@ function lastLines(text: string, count: number): string {
 function runNegative(n: Negative): string | undefined {
   const paths = patchPaths(join(root, n.apply));
   try {
-    const applied = git(["apply", "--3way", join(root, n.apply)]);
+    // No --3way: CI has no history, so a 3-way merge cannot run there, and a
+    // patch that applies only through it would pass locally and fail in CI.
+    const applied = git(["apply", join(root, n.apply)]);
     if (applied.status !== 0) return `the patch ${n.apply} does not apply; regenerate the negative example\n${lastLines(applied.stderr, 10)}`;
     const r = spawnSync("bash", ["-c", n.run], { cwd: root, encoding: "utf8", maxBuffer: MAX_OUTPUT_BYTES, timeout: RUN_LIMIT_MS });
     const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;

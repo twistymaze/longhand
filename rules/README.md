@@ -28,7 +28,7 @@ A patch adds a new file where the rule allows it, for example a new component or
 
 ## How the check runs
 
-The script applies each patch to the working tree with `git apply --3way`, runs the command, and restores the files of the patch. It reads the committed tree, so it refuses to run when the working tree has changes. Commit first, then run it. A command that changes other files fails the run, and the script keeps those changes. A command that runs longer than 30 minutes is stopped. On Ctrl+C, the script restores the tree and stops.
+The script applies each patch to the working tree with `git apply` (no 3-way merge, so the result is the same in a full clone and in the CI checkout with no history), runs the command, and restores the files of the patch. It reads the committed tree, so it refuses to run when the working tree has changes. Commit first, then run it. A command that changes other files fails the run, and the script keeps those changes. A command that runs longer than 30 minutes is stopped. On Ctrl+C, the script restores the tree and stops.
 
 - `node scripts/check-rules.ts` checks the ledger and runs every negative example.
 - `node scripts/check-rules.ts --validate` checks the ledger only.
