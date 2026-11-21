@@ -32,7 +32,9 @@ const CHECK = `import { readFileSync } from "node:fs";
 if (readFileSync("src/a.txt", "utf8").includes("BAD")) { console.error("BAD found in src/a.txt"); process.exit(1); }
 console.log("ok");
 `;
-const A = "one\ntwo\nthree\nfour\nfive\n";
+// "three" is in the middle, so the patch hunk is not at the start or the end
+// of the file: git apply anchors such a hunk there.
+const A = "a\nb\none\ntwo\nthree\nfour\nfive\nc\nd\n";
 
 function family(id: string, extra = "") {
   return `family = "${id}"
@@ -112,6 +114,19 @@ test("a patch that does not apply fails with a request to regenerate it", () => 
   git(root, "commit", "-q", "-am", "rewrite");
   const r = check(root);
   assert.equal(r.status, 1);
+  assert.match(r.out, /regenerate the negative example/);
+  assert.ok(clean(root));
+});
+
+// CI checks out one commit with no history, so a 3-way merge that needs the
+// patch's old blobs cannot run there. A full clone has those blobs. The
+// result must be the same in both, or a stale patch passes only locally.
+test("a patch whose context lines changed fails, also when the repository has the old blobs", () => {
+  const root = repo({ "rules/no-bad.toml": family("no-bad", negative("rules/negatives/bad.patch")) });
+  write(root, "src/a.txt", A.replace("one", "one and a half"));
+  git(root, "commit", "-q", "-am", "change a context line");
+  const r = check(root);
+  assert.equal(r.status, 1, r.out);
   assert.match(r.out, /regenerate the negative example/);
   assert.ok(clean(root));
 });
