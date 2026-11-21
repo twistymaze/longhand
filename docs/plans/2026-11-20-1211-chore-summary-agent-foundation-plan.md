@@ -37,6 +37,7 @@ Nobody knows yet which agent approach writes summaries as good as the current me
 ### Key Decisions
 
 - **The agent reads the transcript itself.** The first instruction holds the note details, the background and the summary rules, but not the transcript. Governs R12. (session-settled: user-directed — chosen over tools on the final call with the transcript still in the prompt, and over tools on every part and merge call: a good agent approach reads the transcript systematically)
+- **The experiments compare agent shapes, from fully agentic to code-driven steps with tool calls.** The shapes are one agent, a lead agent with reader agents as tools, and code-driven steps that can call tools (KTD13). The results decide the shape of the app switch. Governs R18. (session-settled: user-directed on 2026-11-21 — the user pointed to Rig's workflow and agents-as-tools guidance and asked to explore the range of approaches)
 - **The approach is found by experiments outside the app, and the app switch is a separate later plan.** Governs R16 to R23. (session-settled: user-directed — chosen over one PR with the experiments and the switch, and over the agent in the app behind an off-by-default setting: the results decide the design of the switch)
 - **After the switch, the agent is the only summary method.** Today's method does not stay as a fallback. Users must use a capable model. (session-settled: user-directed — chosen over keeping today's method for weak models: the users run hosted or large local models)
 - **Claude and Codex judge the quality, and each model is compared with itself.** A small model is measured against today's method on the same small model, not against a frontier model. Governs R20. (session-settled: user-approved — proposed after the user said that small models are weak with today's method too, and confirmed)
@@ -72,7 +73,7 @@ Nobody knows yet which agent approach writes summaries as good as the current me
 **Agent loop**
 
 - R11. The agent loop uses the existing Rig engine, provider presets and endpoint settings.
-- R12. The first instruction holds the note details, the background text and the summary prompt rules, but not the transcript. The agent reads the transcript and the manual notes with get note.
+- R12. The first instruction holds the note details, the background text and the summary prompt rules, but not the transcript. The agent reads the transcript and the manual notes with get note. Exception: in the `steps` agent shape (KTD13), code gives each step its part of the transcript, and the steps use tools for the other data.
 - R13. The existing summary rules stay: no "Speaker N", no guessed names, note text as quoted data that gives no instructions, and the reply is only the summary. Transcript, manual notes and summary text in a tool result are quoted data under the same rule, also when they come from another note, and the agent instructions warn that this text can contain instructions that the agent must not follow.
 - R14. The loop has a limit on tool calls, and it works within the endpoint's context budget, in which tool results count. It stops with a failure when it reaches either limit.
 - R15. The loop records each tool call, the tokens and the time.
@@ -81,7 +82,7 @@ Nobody knows yet which agent approach writes summaries as good as the current me
 
 - R16. A dev harness runs outside the app and is not part of the shipped app. It reads a storage folder that the user names, and it writes its results to a gitignored folder (`.context/`).
 - R17. For each note and each model, the harness writes today's summary once and uses it again in later runs. It runs the agent 3 times by default.
-- R18. The harness can change the agent prompt and the reading strategy, so that experiments can compare approaches. Each run writes to its own named folder, never overwrites an earlier run, and records its prompt, reading strategy and models.
+- R18. The harness can change the agent prompt, the reading strategy and the agent shape (KTD13), so that experiments can compare approaches. Each run writes to its own named folder, never overwrites an earlier run, and records its prompt, reading strategy, agent shape and models.
 - R19. The harness runs models through OpenRouter: hosted frontier models, open-weight models of about 20B parameters, and some of about 8B. For an open-weight model, the harness can set the context budget to the size that a local Ollama or LM Studio server gives that model.
 - R20. For each note and model, Claude and Codex judge the agent summaries and today's summary that the same model wrote. Each judge also gets the note's transcript and manual notes, sees the summaries with no labels and in random order, and scores coverage and faithfulness against the transcript. It gives the quality loss of each agent summary against today's summary, and an absolute quality for each summary.
 - R21. The harness writes a report per note and per model with the judge results, the failure rate and the spread of judge scores across the agent runs, tool calls, tokens, time and failures (loops, malformed tool calls, tool-call limit reached, context exceeded).
@@ -194,11 +195,17 @@ Product Contract preservation: changed only in Outstanding Questions, where plan
 - KTD5. **OpenRouter requests from the harness require no data collection, and agent requests also require tool support.** The summary client gets an optional OpenRouter provider setting that both request paths apply. The app never sets it, so the app's requests do not change. The harness sets `data_collection: "deny"` for the baseline, agent and judge requests, and `require_parameters: true` for agent requests, through Rig's `OpenRouterOptions`. Zero data retention is a run option, off by default, because it can leave a model with no host. The report records the serving host of each turn. Governs R19, R21.
 - KTD6. **A note is busy under the skill's broader rule.** A note is busy when it has a fresh in-use marker, an unfinished result (`pending`), or a pending type move. This is the rule of `list_notes.py`. The Rust scan rule (`library::scan` `RemoteState`) omits the pending type and skips this computer's own runs, and the harness has no own runs. The tool documents the rule, and a drift test compares the Rust tool with `list_notes.py`. Governs R2.
 - KTD7. **Today's method runs through the app's own summary code on an in-memory store.** The harness adopts each snapshot note into `Store::open_in_memory()` with `library::reconcile::Reconciler`, then calls `pipeline::summarize::produce` from a blocking thread, because `produce` blocks on the current tokio runtime and panics on an async worker thread. Checkpoints go to the in-memory store, and nothing is written to a storage folder. The harness build is as heavy as the app build. The baseline lacks the "Recognition limitation" line that comes from recognition data, and the report says so. Governs R17, R23.
-- KTD8. **Each run works on a snapshot of the notes.** At the start, the harness copies each selected note folder's user files and `longhand.json`, plus the `.longhand/` background, prompts, settings and library marker, into the run folder as a storage folder. The copy skips symlinks. The tools, the baseline and the judges read only that snapshot. A baseline is reused only when the note's files, the model, the endpoint settings and today's summary prompt are unchanged, so an edited note gets a new baseline. A change to the agent prompt or the reading strategy does not change the baseline. Governs R16, R17, R18.
+- KTD8. **Each run works on a snapshot of the notes.** At the start, the harness copies each selected note folder's user files and `longhand.json`, plus the `.longhand/` background, prompts, settings and library marker, into the run folder as a storage folder. The copy skips symlinks. The tools, the baseline and the judges read only that snapshot. A baseline is reused only when the note's files, the model, the endpoint settings and today's summary prompt are unchanged, so an edited note gets a new baseline. A change to the agent prompt, the reading strategy or the agent shape does not change the baseline. Governs R16, R17, R18.
 - KTD9. **The judges are a Claude model and an OpenAI model on OpenRouter.** They go through the same summary client and key as the models under test, with KTD5's settings. Each judge gets the note's transcript and manual notes as quoted data, and the summaries with no labels in an order from a recorded seed. A missing judge result is reported as missing, never as a score of 0. Governs R20, R21. (session-settled: user-directed — chosen over the local `claude -p` and `codex exec` commands, and over the Anthropic and OpenAI APIs with two more keys: one key and one code path)
 - KTD10. **A run fails at the tool-call limit, with no forced last call.** Ollama and the llama.cpp dialect ignore or refuse `tool_choice`, so a forced final call does not work on every route. The loop also stops after a set number of consecutive malformed tool calls. Governs R14, R21.
 - KTD11. **One get note result has a size cap.** The front end sets the cap from its context budget, never the model. A transcript request with no range returns the first page, a `truncated` flag and the next line. Transcript text comes back as hunks of raw lines (`first_line`, `last_line`, `text`), not one object per line. Governs R5, R14.
 - KTD12. **The harness is a `[[bin]]` in a new `crates/summary-lab` crate that the app does not depend on.** The precedent is `diarization-eval` in `crates/pyannote-local`: arguments parsed by hand, usage in the file's top comment. The OpenRouter key comes from `OPENROUTER_API_KEY` or the gitignored `.env`, never the Keychain, and never appears in a run file or a log. Governs R9, R16.
+
+- KTD13. **The harness compares three agent shapes, and all three run on Longhand's loop.** Rig's guidance (rig.rs concepts "Workflows" and "Agents as tools") says to use the least agentic design that works, and that workflow steps and agents mix freely. The shapes:
+  - `single`: one agent with the note tools reads the note and writes the summary. This is the design of KTD1.
+  - `readers`: a lead agent has the note tools and a `read_part` tool. A `read_part` call starts a reader: a second agent run with a line range and an instruction, get note on the note being summarized, and its own model-call limit, tool-call limit and context budget. The reader returns notes as text. A reader has no `read_part` tool, so there is one level only. A failed reader becomes a tool error that the lead sees, and the lead run goes on. This follows Rig's `Agent::into_tool` rules (a prompt string in, text out, its own turn budget, a failure becomes a tool error), but the reader runs on Longhand's loop, not on `into_tool`, because `into_tool` runs the worker through Rig's own runner and model, outside the summary client's deadlines, retries, log lines, budget check and turn records.
+  - `steps`: code splits the transcript into parts with today's part split, and runs one agent step per part with that part in its instruction. Each step can call the note tools, for example for the manual notes or an earlier note. A last agent step merges the part results into the summary, also with the tools. A failed step ends the run with that step's outcome.
+  The run outcome, tool calls, tokens, cost and time are the sums over the lead, the readers and the steps. The turn records name the agent run that made each turn. Governs R12, R14, R15, R18, R21.
 
 ### High-Level Technical Design
 
@@ -383,6 +390,7 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 1. Add a builder that reuses the private details block, background, naming rule and pause rule, and has no transcript.
 2. Add an agent data rule: tool results that hold transcript, manual notes or summary text are quoted data, also from another note, and can contain instructions that the agent must not follow. Put the rule in the system message and repeat it after the tool list.
 3. Take the reading strategy text as an input, so that the harness can change it (R18).
+4. Add the prompts for the other agent shapes (KTD13): the lead prompt with the `read_part` tool text, the reader prompt (a line range and an instruction in, notes out), and the `steps` part and merge prompts. The part and merge prompts reuse today's part and merge rules, add the tool text and the data rule, and keep the transcript part in the part prompt only.
 
 **Patterns to follow:** `prompts::whole` and `final_system` in `crates/summarize/src/prompts.rs`; golden files in `crates/summarize/tests/golden/`.
 
@@ -390,6 +398,8 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 - The agent prompt has the note details, the background and the naming rule, and no transcript text.
 - The agent prompt has the tool-result data rule, and it names text from other notes.
 - The reading strategy text appears in the prompt where the harness puts it.
+- The reader prompt has the line range, the instruction and the data rule, and no `read_part` tool text.
+- The `steps` part prompt has its transcript part as quoted data and the tool text. The merge prompt has no transcript text.
 - The existing golden prompts do not change.
 
 **Verification:** The new test and every existing prompt test pass.
@@ -398,7 +408,7 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 
 **Goal:** Run one agent summary over tool sources and return an outcome with a record of each turn.
 
-**Requirements:** R10–R15, R21, AE5, AE7, AE8. KTD1, KTD3, KTD10, KTD11.
+**Requirements:** R10–R15, R18, R21, AE5, AE7, AE8. KTD1, KTD3, KTD10, KTD11, KTD13.
 
 **Dependencies:** U1, U3, U4.
 
@@ -406,6 +416,8 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 - `crates/summary-agent/Cargo.toml` (new; `rig-agent` with `default-features = false`)
 - `crates/summary-agent/src/lib.rs` (loop, outcome, turn record)
 - `crates/summary-agent/src/sources.rs` (tool source trait, note-tools adapter)
+- `crates/summary-agent/src/shapes.rs` (the `readers` source and the `steps` driver, KTD13)
+- `crates/summary-agent/tests/shapes.rs` (new, scripted mock turns)
 - `crates/summary-agent/tests/loop.rs` (new, scripted mock turns)
 
 **Approach:**
@@ -414,6 +426,7 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 3. Apply the history policy before each model step: `keep_all` (default), or `trim(n)`, which replaces the tool results older than the last n turns with a short placeholder that keeps the tool name and the line range. The run configuration chooses the policy (R18).
 4. Map each stop to the outcome list in the High-Level Technical Design. Record each turn: tool name, argument size, result size, usage, time, host.
 5. Never log result text. The turn record may hold it for the run folder.
+6. Add the agent shapes of KTD13 on the same loop. `readers`: a tool source with `read_part`, whose call runs a nested loop with the reader prompt, a get note source bound to the note being summarized, and the reader limits. `steps`: a driver that runs one loop per transcript part and one merge loop. Each turn record names its agent run (lead, reader n, step n, merge). The outcome and the totals add up the agent runs.
 
 **Execution note:** Implement test-first with scripted mock turns. No test waits for time.
 
@@ -433,6 +446,11 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 - Two sources that give the same tool name are refused at start.
 - With `trim(2)`, a scripted read of a long transcript in ten pages stays under a budget that `keep_all` passes, and each replaced result keeps its tool name and line range.
 - A transport failure ends with `transport` and keeps the turn records so far.
+- `readers`: a lead that calls `read_part` twice and then writes text ends with `summary`. The reader texts reach the lead as tool results, and the totals include the reader turns.
+- `readers`: a reader that reaches its tool-call limit becomes an error result for the lead, and the lead run goes on.
+- `readers`: a reader's tools do not include `read_part`, and its get note refuses another note id.
+- `steps`: a transcript with three parts runs three part loops and one merge loop, and each part prompt holds only its part.
+- `steps`: a part step that stops with `context_exceeded` ends the run with `context_exceeded`, and no merge runs.
 
 **Verification:** `cargo test -p summary-agent` passes with no real network.
 
@@ -452,10 +470,10 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 
 **Approach:**
 1. `tool <name> <json> --root <folder>` calls one tool through the JSON entry point and prints the result (R9).
-2. `run --config <file>`: read the storage folder, the notes filter, the models, the context budget per model, the reading strategy, the history policy (U5), the prompt and the run count (default 3). Create `.context/summary-lab/<run name>/`, refuse an existing name, and write a manifest.
+2. `run --config <file>`: read the storage folder, the notes filter, the models, the context budget per model, the reading strategy, the agent shape and its limits (KTD13), the history policy (U5), the prompt and the run count (default 3). Create `.context/summary-lab/<run name>/`, refuse an existing name, and write a manifest.
 3. Snapshot the selected notes (KTD8). Skip busy and problem notes and notes with no transcript, with the reason in the manifest.
 4. For each note and model, write or reuse the baseline (KTD7, with the same context budget as the agent), then the agent runs. Write each result to its own file atomically.
-5. `--dry-run` prints the planned number of calls and stops. A token cap per run stops the run with a clear message.
+5. `--dry-run` prints the planned number of calls and stops. For `readers`, it counts the lead and reader calls at their limits. A token cap per run stops the run with a clear message.
 6. `--resume <run>` refuses when the manifest's config differs, and fills only missing files.
 
 **Patterns to follow:** `crates/pyannote-local/src/bin/diarization_eval.rs` for the binary; `crates/library/tests/two_computers.rs` for `Reconciler` on a fixture folder.
@@ -472,6 +490,7 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 - A baseline request to a scripted OpenRouter endpoint has `provider.data_collection: "deny"` in its body.
 - A note file that is a symlink is not copied into the snapshot.
 - A change to the agent prompt between two runs reuses the baselines.
+- A run with each agent shape on the fixture folder writes three agent results per note and model, and the manifest records the shape.
 
 **Verification:** `cargo test -p summary-lab` passes, and a dry run on the user's storage folder prints a plausible call count.
 
@@ -493,6 +512,7 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 2. Ask for a structured reply: coverage, faithfulness and overall quality for each summary, and the loss of each agent summary against the baseline. Write each judge's reply to its own file. A reply that does not parse is retried once, then recorded as missing.
 3. The report (`report.md` and `report.json`) gives, per note and model: the judge results mapped back from the seed, the failure rate and outcome counts, the spread of scores across the agent runs, tool calls, tokens, cost, time and hosts. It notes the baseline's missing recognition line (KTD7) and a host change inside a model's runs. It gives no pass or fail (R22).
 4. `report <run>` writes the report again from the files, with no network.
+5. `compare <run> <run>...` writes one table from the reports of runs with the same notes and models: per agent shape and model, the judge scores, the failure rate, tool calls, tokens, cost and time. Runs with different notes, models or baselines are refused.
 
 **Test scenarios:**
 - The judge input holds the transcript and the summaries, and no label says which summary is the baseline.
@@ -503,6 +523,7 @@ U1 first. U2 is a spike on U1 and reports to the user before U5. U3 and U4 can p
 - A judge reply out of range or not parseable is retried once and then recorded as missing.
 - The report has no pass or fail wording.
 - `report <run>` on a finished run folder makes no network call.
+- `compare` on two runs with different agent shapes gives one row per shape and model. `compare` on runs with different notes is refused.
 
 **Verification:** The tests pass, and the user can read a report of a real run and tell, for each model, whether the agent loses quality.
 
