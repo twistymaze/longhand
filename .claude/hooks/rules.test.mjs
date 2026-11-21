@@ -119,9 +119,15 @@ test("a cd before bun decides the folder", () => {
   denied(bashIn((root) => dirname(root), "cd $(pwd) && yarn"), "agent-tool-choice");
 });
 
-test("a cd back into the checkout before bun is denied", () => {
-  const r = hookIn((root) => ({ tool_name: "Bash", cwd: root, tool_input: { command: `cd /elsewhere && cd ${root} && bun x` } }));
-  denied(r, "agent-tool-choice");
+test("a cd back into the checkout before bun is denied, also with a cd option", () => {
+  denied(hookIn((root) => ({ tool_name: "Bash", cwd: root, tool_input: { command: `cd /elsewhere && cd ${root} && bun x` } })), "agent-tool-choice");
+  denied(hookIn((root) => ({ tool_name: "Bash", cwd: dirname(root), tool_input: { command: `cd -P ${root} && bun x` } })), "agent-tool-choice");
+});
+
+test("pushd into the checkout before bun is denied, and bun after popd is denied", () => {
+  denied(hookIn((root) => ({ tool_name: "Bash", cwd: dirname(root), tool_input: { command: `pushd ${root} >/dev/null && bun install` } })), "agent-tool-choice");
+  denied(hookIn((root) => ({ tool_name: "Bash", cwd: root, tool_input: { command: `pushd ${dirname(root)} && popd && bun install` } })), "agent-tool-choice");
+  allowed(bashIn((root) => root, `pushd ${dirname(tmpdir())} && bun test`));
 });
 
 test("bun with no known folder is denied", () => {

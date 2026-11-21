@@ -43,7 +43,8 @@ function inCheckout(folder) {
 // The folder after a `cd` segment, or undefined when it is not known: a
 // variable, a command substitution or `cd -`.
 function cdTarget(words, folder) {
-  const arg = words[1];
+  // The options -L, -P, -e and -@ come before the folder.
+  const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w));
   if (arg === undefined || arg === "~") return homedir();
   if (arg === "-" || arg.includes("$") || arg.includes("`")) return undefined;
   if (arg.startsWith("~/")) return realFolder(join(homedir(), arg.slice(2)));
@@ -228,7 +229,11 @@ export function decide(input) {
     for (const words of segments(toolInput.command)) {
       const rule = RULES.find((r) => r.bash?.(words, folder));
       if (rule) return rule;
-      if (commandWord(words) === "cd") folder = cdTarget(words, folder);
+      // pushd changes the folder as cd does. popd goes back to a folder
+      // that the hook does not record, so the folder is then not known.
+      const command = commandWord(words);
+      if (command === "cd" || command === "pushd") folder = cdTarget(words, folder);
+      else if (command === "popd") folder = undefined;
     }
   } else if ((tool === "Edit" || tool === "Write" || tool === "MultiEdit") && typeof toolInput.file_path === "string") {
     return RULES.find((r) => r.edit?.(toolInput.file_path));

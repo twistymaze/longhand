@@ -95,6 +95,14 @@ for (const file of GUARDS) {
     assert.equal(stale(file, [`CMAKE_LINKER:FILEPATH=${msvcTool("14.51.1")}`]), false);
   });
 
+  test(`${file}: the toolset folder is found in a Windows path with backslashes`, () => {
+    // The path has no "/", so the missing-path check does not apply, and only
+    // the toolset check can decide.
+    const windows = "C:\\VS\\VC\\Tools\\MSVC\\14.51.1\\bin\\Hostx64\\x64\\link.exe";
+    assert.equal(stale(file, [`CMAKE_LINKER:FILEPATH=${windows}`], "14.52.1"), true);
+    assert.equal(stale(file, [`CMAKE_LINKER:FILEPATH=${windows}`], "14.51.1"), false);
+  });
+
   test(`${file}: the toolset folder is found in any letter case`, () => {
     // macOS volumes ignore letter case, so the changed path still exists.
     const path = msvcTool("14.51.1").replace("/VC/Tools/MSVC/", "/vc/tools/Msvc/");
