@@ -97,19 +97,44 @@ runs:
       shell: bash
       run: echo "CARGO_PROFILE_DEV_DEBUG=line-tables-only" >> "$GITHUB_ENV"
 
+    # The CMake builds in the caches name the tools of one MSVC toolset
+    # version. An update of GitHub's runner image can install another
+    # version, and then the old cached builds call a linker that is not
+    # there. So the rust-cache key and the NeMo cache key (ci.yml) contain
+    # the toolset version. msvc-dev-cmd sets VCToolsVersion only after
+    # rust-cache runs, so this step reads the default toolset version, which
+    # msvc-dev-cmd then selects, from the Visual Studio install.
+    - name: Read the MSVC toolset version
+      if: runner.environment == 'github-hosted'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vsRoot = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vsRoot) { throw "vswhere found no Visual Studio installation with the MSVC tools" }
+        $file = Join-Path $vsRoot "VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt"
+        if (-not (Test-Path $file)) { throw "The default MSVC toolset version file is not there: $file" }
+        $version = (Get-Content $file).Trim()
+        if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "The MSVC toolset version is not valid: '$version'" }
+        Write-Output "MSVC toolset: $version"
+        Add-Content -Path $env:GITHUB_ENV -Value "LONGHAND_MSVC_TOOLSET=$version"
+
     # Saved even when a later step fails (unless the caller sets
     # cache-on-failure to false): otherwise a job that has never
     # passed never gets a cache, and every run compiles ggml, ONNX Runtime
-    # and SQLite from scratch. The key follows Cargo.lock and the CMake
-    # toolchain file (sccache-setup), and an exact hit is never saved again, so a change to how CI builds (flags,
-    # profiles, which cargo commands run) needs `prefix-key` bumped or its
+    # and SQLite from scratch. The key follows Cargo.lock, the CMake
+    # toolchain file (sccache-setup) and the MSVC toolset version. A
+    # fallback restore can still bring a cache from another toolset; the
+    # guard in sccache-setup builds those CMake folders again. An exact hit
+    # is never saved again, so a change to how CI builds (flags, profiles,
+    # which cargo commands run) needs `prefix-key` bumped or its
     # new artifacts are never cached. A self-hosted runner skips this: its target/
     # stays from the last job, and a cache save would prune it.
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       if: runner.environment == 'github-hosted'
       with:
         prefix-key: ${{ inputs.prefix-key }}
-        key: cmake-${{ hashFiles('.github/actions/sccache-setup/msvc-toolchain.cmake') }}
+        key: cmake-${{ hashFiles('.github/actions/sccache-setup/msvc-toolchain.cmake') }}-msvc-${{ env.LONGHAND_MSVC_TOOLSET }}
         cache-on-failure: ${{ inputs.cache-on-failure }}
         workspaces: ${{ env.DEV_DRIVE_WORKSPACE || '.' }}
 
