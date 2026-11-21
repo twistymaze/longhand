@@ -4,6 +4,11 @@
 //! KTD7, KTD13). Notes are saved through the real save stage into one
 //! storage folder, which one or two computers use.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a test Fs that fails on purpose calls the real rename_new; the code under test calls rename_new_waiting"
+)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

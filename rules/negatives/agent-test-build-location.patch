@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-test-build-location-input.json b/rules/negatives/agent-test-build-location-input.json
+new file mode 100644
+index 00000000..f21aa1f0
+--- /dev/null
++++ b/rules/negatives/agent-test-build-location-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"ditto Longhand.app /Applications/Longhand.app"}}

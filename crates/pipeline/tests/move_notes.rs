@@ -3,6 +3,11 @@
 //! complete copy and one listing. Notes are saved through the real save
 //! stage. A rename that crosses volumes is simulated.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a test Fs that fails on purpose calls the real rename_new; the code under test calls rename_new_waiting"
+)]
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

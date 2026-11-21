@@ -1,0 +1,11 @@
+family = "agent-reference-source"
+rule = "The clones in reference-source/ are read-only."
+state = "enforced"
+enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
+lessons = ["CLAUDE.md"]
+
+# Codex does not run Claude Code hooks; for Codex the rule stays as text in CLAUDE.md.
+[[negative]]
+apply = "rules/negatives/agent-reference-source.patch"
+run = "node .claude/hooks/rules.mjs < rules/negatives/agent-reference-source-input.json"
+expect = "agent-reference-source: reference-source/ holds read-only clones"

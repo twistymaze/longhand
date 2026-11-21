@@ -1,0 +1,13 @@
+diff --git a/scripts/build-nemo.sh b/scripts/build-nemo.sh
+index 1a3966fc..b344dd88 100755
+--- a/scripts/build-nemo.sh
++++ b/scripts/build-nemo.sh
+@@ -28,7 +28,7 @@ missing_input() {
+     [[ "$path" == */* && ! -e "$path" ]] && return 0
+   # The same keys as the check in .github/actions/sccache-setup/action.yml;
+   # scripts/cmake-cache-guards.test.ts holds the two lists together.
+-  done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE|CMAKE_[A-Z]+_COMPILER|CMAKE_(LINKER|AR|MT)):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
++  done < <(grep -E '^(Vulkan_[A-Za-z_]+|CMAKE_TOOLCHAIN_FILE):[A-Z]+=' "$1" | sed 's/^[^=]*=//' | tr -d '\r')
+   return 1
+ }
+ for pair in "$tokenizer_build|$tokenizer_source" "$sdk_build|$source_dir" "$helper_build|$root/native/nemo-helper"; do

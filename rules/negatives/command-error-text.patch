@@ -1,0 +1,10 @@
+diff --git a/src-tauri/src/commands/negative_errors.rs b/src-tauri/src/commands/negative_errors.rs
+new file mode 100644
+index 00000000..a67b02af
+--- /dev/null
++++ b/src-tauri/src/commands/negative_errors.rs
+@@ -0,0 +1,4 @@
++// A negative example: a command that sends an internal error text to the UI.
++pub fn read(path: &std::path::Path) -> Result<String, String> {
++    std::fs::read_to_string(path).map_err(|e| e.to_string())
++}

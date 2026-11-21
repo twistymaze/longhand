@@ -155,6 +155,10 @@ fn environment() -> Result<&'static Environment, Error> {
 // ort selects AutoDevicePolicy::MaxEfficiency by default, which adds Core ML
 // on macOS to each session. PreferCPU adds no provider, so a plain session and
 // the CPU fallback stay on CPU. commit_accelerated adds Core ML explicitly.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "this is the shared function that the ban points to"
+)]
 fn session_builder() -> Result<SessionBuilder, Error> {
     Ok(Session::builder(environment()?)?
         .with_auto_device(AutoDevicePolicy::PreferCPU)?

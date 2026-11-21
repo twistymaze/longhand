@@ -932,6 +932,34 @@ fn migrations_one_to_twenty_one_keep_their_hashes() {
     assert_eq!(inspect(dir.path()), Inspection::Own);
 }
 
+/// The hashes of migrations 22 and later, in order. Released builds applied
+/// them, so they must not change either.
+const LATER_HASHES: &[&str] = &[
+    "a7f2a880691b46c66601ef7814dc1109ec69385ff0e5128721cd53a081dfba44",
+    "8adb8e23cca605a8b7947ab1559be35737f1529e6673234cda46d9c051b30078",
+    "faf85e253c905a7daae39e6092f2f6c930f77249cefdbce288d9c8f8da855f02",
+    "401e05372263d6b8e094bec435b67891e465c8234caecd6a53ea9a5fabb5994d",
+    "d49b453ef09f1f232fa50f32307dbfccde424225cf0f28ceeec73ba154524c8a",
+];
+
+/// Each migration keeps the hash that a released build recorded, and each
+/// new migration gets a pinned hash. Edit an applied migration and an older
+/// database stops at launch (rules/migration-hashes.toml).
+#[test]
+fn every_migration_has_a_pinned_hash() {
+    let pinned: Vec<&str> = VERSION_21_HASHES
+        .iter()
+        .chain(LATER_HASHES)
+        .copied()
+        .collect();
+    assert_eq!(
+        session_core::schema::migration_hashes(),
+        pinned,
+        "an applied migration changed, or a new migration has no pinned hash. \
+         Never edit an applied migration: add a new one. Add the hash of a new migration to LATER_HASHES."
+    );
+}
+
 // ------------------------------------------------ migration 0023: imports
 
 /// The migration count of the last release before the audio import, which

@@ -1,0 +1,10 @@
+family = "command-error-text"
+rule = "A Tauri command does not send the text of an internal error to the UI; the count of map_err(|e| e.to_string()) in the commands can only go down."
+state = "enforced"
+enforced_by = "node --test scripts/command-errors.test.ts"
+lessons = ["docs/solutions/ui-bugs/one-capture-failure-gave-two-messages.md"]
+
+[[negative]]
+apply = "rules/negatives/command-error-text.patch"
+run = "node --test scripts/command-errors.test.ts"
+expect = "1 new map_err(|e| e.to_string()) in src-tauri/src/commands"

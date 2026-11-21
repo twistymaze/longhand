@@ -1,0 +1,10 @@
+family = "markdown-parser-owner"
+rule = "Only src/editor/markdown/parser.ts and src/session/copy.ts import markdown-it; other code calls parseMarkdown."
+state = "enforced"
+enforced_by = "npx vitest run src/lib/owners.test.ts"
+lessons = ["docs/solutions/ui-bugs/summary-list-nesting-differs-from-commonmark.md"]
+
+[[negative]]
+apply = "rules/negatives/markdown-parser-owner.patch"
+run = "npx vitest run src/lib/owners.test.ts"
+expect = "src/home/MarkdownParserNegative.ts:1: do not import markdown-it here: call parseMarkdown"

@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { checkAges, parseExceptions, type PublishDate } from "./check-dependency-age.ts";
 import { addedVersions, registryTarball, type PackageLockEntry } from "./lockfiles.ts";
@@ -171,4 +175,28 @@ test("a version in the lockfile at two paths is checked once", async () => {
   });
   assert.equal(lookups, 1);
   assert.equal(problems.length, 1);
+});
+
+// The command line. Base and head have the same lockfiles, so no version is
+// added and the check reaches no registry.
+function runCli(...args: string[]) {
+  const dir = mkdtempSync(join(tmpdir(), "dependency-age-cli-"));
+  try {
+    writeFileSync(join(dir, "package-lock.json"), packageLock({}));
+    const r = spawnSync(process.execPath, [join(import.meta.dirname, "check-dependency-age.ts"), dir, dir, ...args], { encoding: "utf8" });
+    return { status: r.status, out: `${r.stdout}${r.stderr}` };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test("--now with a date replaces the current time", () => {
+  const r = runCli("--now", "2018-04-11T00:00:00Z");
+  assert.equal(r.status, 0, r.out);
+  assert.match(r.out, /Checked 0 added dependency versions/);
+});
+
+test("--now without a valid date is a usage error", () => {
+  assert.equal(runCli("--now", "not a date").status, 2);
+  assert.equal(runCli("--now").status, 2);
 });

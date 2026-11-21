@@ -461,6 +461,10 @@ impl Mover<'_> {
             }
         }
         std::fs::create_dir(&from).map_err(|e| pause_for(&e, old))?;
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a probe on an empty folder: it must fail at once on another volume, not wait"
+        )]
         let cross = match self.fs.rename_new(&from, &to) {
             Ok(()) => {
                 let _ = std::fs::remove_dir(&to);

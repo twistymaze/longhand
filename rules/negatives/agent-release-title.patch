@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-release-title-input.json b/rules/negatives/agent-release-title-input.json
+new file mode 100644
+index 00000000..c2b7e429
+--- /dev/null
++++ b/rules/negatives/agent-release-title-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"gh pr create --title \"fix!: drop the old store\""}}

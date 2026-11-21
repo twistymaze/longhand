@@ -1,0 +1,11 @@
+family = "agent-test-build-location"
+rule = "Never put a test build in /Applications."
+state = "enforced"
+enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
+lessons = ["CLAUDE.md"]
+
+# Codex does not run Claude Code hooks; for Codex the rule stays as text in CLAUDE.md.
+[[negative]]
+apply = "rules/negatives/agent-test-build-location.patch"
+run = "node .claude/hooks/rules.mjs < rules/negatives/agent-test-build-location-input.json"
+expect = "agent-test-build-location: Never put a test build in /Applications"

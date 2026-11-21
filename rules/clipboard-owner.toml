@@ -1,0 +1,10 @@
+family = "clipboard-owner"
+rule = "Only src/lib/clipboard.ts uses navigator.clipboard or execCommand; other code calls copyText, writeCopyEvent or copySelection."
+state = "enforced"
+enforced_by = "npx vitest run src/lib/owners.test.ts"
+lessons = ["docs/solutions/ui-bugs/webkit-clipboard-html-kept-dark-mode-text-colour.md"]
+
+[[negative]]
+apply = "rules/negatives/clipboard-owner.patch"
+run = "npx vitest run src/lib/owners.test.ts"
+expect = "src/home/ClipboardNegative.ts:2: do not use the clipboard here: call copyText, writeCopyEvent or copySelection"

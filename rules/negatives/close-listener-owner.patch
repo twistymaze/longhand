@@ -1,0 +1,8 @@
+diff --git a/src/home/CloseListenerNegative.ts b/src/home/CloseListenerNegative.ts
+new file mode 100644
+--- /dev/null
++++ b/src/home/CloseListenerNegative.ts
+@@ -0,0 +1,3 @@
++import { getCurrentWindow } from "@tauri-apps/api/window";
++
++export const stop = getCurrentWindow().onCloseRequested(() => {});

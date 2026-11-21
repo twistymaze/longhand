@@ -898,9 +898,17 @@ fn rename_case(
                 });
             }
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "known defect: does not wait while the folder is in use (rules/rename-waits.toml)"
+        )]
         ctx.fs.rename_new(&folder, &temp)?;
         session_save::fsync::sync_dir(root)?;
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "known defect: does not wait while the folder is in use (rules/rename-waits.toml)"
+    )]
     if let Err(e) = ctx.fs.rename_new(&temp, &target) {
         // The folder never stays under the hidden name.
         let old = if resumed { root.join(from) } else { folder };

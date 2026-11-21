@@ -1,0 +1,20 @@
+family = "test-timing-limits"
+rule = "A test waits for the event that it checks; a real-time limit in a test only stops a hang and is 60 s."
+state = "enforced"
+enforced_by = "node scripts/check-timing.ts"
+lessons = [
+  "docs/solutions/test-failures/tests-with-speed-limits-failed-on-a-loaded-runner.md",
+  "docs/solutions/test-failures/watcher-test-gave-up-while-fseventsd-was-busy.md",
+  "docs/solutions/test-failures/runner-test-stopped-before-the-title-job-that-the-save-queued.md",
+  "docs/solutions/test-failures/closed-port-test-reached-another-tests-server.md",
+]
+
+[[negative]]
+apply = "rules/negatives/test-timing-rust-elapsed.patch"
+run = "node scripts/check-timing.ts"
+expect = "short time limit in a test"
+
+[[negative]]
+apply = "rules/negatives/test-timing-frontend-waitfor.patch"
+run = "node scripts/check-timing.ts"
+expect = "short time limit in a test"

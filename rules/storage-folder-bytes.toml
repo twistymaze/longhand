@@ -1,0 +1,13 @@
+family = "storage-folder-bytes"
+rule = "The files that Longhand writes to the storage folder keep the same bytes: write JSON through json::sorted, and change the format only on purpose."
+state = "enforced"
+enforced_by = "cargo test --workspace --features nemo-runtime/test-helper the_checked_in_folder_matches_what_the_writers_make"
+lessons = [
+  "docs/solutions/integration-issues/dependency-feature-changed-json-key-order.md",
+  "docs/solutions/integration-issues/app-owned-note-record-file.md",
+]
+
+[[negative]]
+apply = "rules/negatives/storage-folder-bytes.patch"
+run = "cargo test --workspace --features nemo-runtime/test-helper the_checked_in_folder_matches_what_the_writers_make"
+expect = "differs from what the writers make"

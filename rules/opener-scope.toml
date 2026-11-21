@@ -1,0 +1,10 @@
+family = "opener-scope"
+rule = "The opener of each window allows only the schemes that isOpenableHref accepts (http, https, mailto), and the main window allows exactly these."
+state = "enforced"
+enforced_by = "npx vitest run src/lib/links.test.ts"
+lessons = ["docs/solutions/tooling-decisions/opener-url-scope-glob-matching.md"]
+
+[[negative]]
+apply = "rules/negatives/opener-scope.patch"
+run = "npx vitest run src/lib/links.test.ts"
+expect = "negative-opener.json: opener scope"

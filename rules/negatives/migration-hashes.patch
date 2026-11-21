@@ -1,0 +1,10 @@
+diff --git a/crates/session-core/migrations/0001_init.sql b/crates/session-core/migrations/0001_init.sql
+index 395ad09d..ba108911 100644
+--- a/crates/session-core/migrations/0001_init.sql
++++ b/crates/session-core/migrations/0001_init.sql
+@@ -54,3 +54,5 @@ CREATE TABLE checkpoints (
+     payload         TEXT NOT NULL,
+     PRIMARY KEY (session_id, stage, key)
+ );
++
++CREATE INDEX negative_example ON stage_outputs (stage);

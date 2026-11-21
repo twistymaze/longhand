@@ -1,0 +1,10 @@
+family = "cmake-cache-guards"
+rule = "A script that reuses a cached CMake build folder configures it again when the folder names a compiler, linker, ar, mt, toolchain file or Vulkan SDK file that is not there. build-nemo.sh and the sccache setup action check the same keys."
+state = "enforced"
+enforced_by = "node --test scripts/cmake-cache-guards.test.ts"
+lessons = ["docs/solutions/performance-issues/rust-cache-dropped-cmake-toolchain-hash-wiped-warm-windows-builds.md"]
+
+[[negative]]
+apply = "rules/negatives/cmake-cache-guards.patch"
+run = "node --test scripts/cmake-cache-guards.test.ts"
+expect = "scripts/build-nemo.sh: a cached folder that names a missing CMAKE_LINKER is configured again"

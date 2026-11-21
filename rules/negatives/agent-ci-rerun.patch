@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-ci-rerun-input.json b/rules/negatives/agent-ci-rerun-input.json
+new file mode 100644
+index 00000000..3ecf0947
+--- /dev/null
++++ b/rules/negatives/agent-ci-rerun-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"gh run rerun 123 --failed"}}

@@ -1,0 +1,11 @@
+family = "agent-ideas-move"
+rule = "Move an idea file only with node scripts/ideas.ts move."
+state = "enforced"
+enforced_by = "node .claude/hooks/rules.mjs (Claude Code PreToolUse hook)"
+lessons = ["CLAUDE.md"]
+
+# Codex does not run Claude Code hooks; for Codex the rule stays as text in CLAUDE.md.
+[[negative]]
+apply = "rules/negatives/agent-ideas-move.patch"
+run = "node .claude/hooks/rules.mjs < rules/negatives/agent-ideas-move-input.json"
+expect = "agent-ideas-move: Move an idea only with"

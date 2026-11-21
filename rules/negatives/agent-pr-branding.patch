@@ -1,0 +1,7 @@
+diff --git a/rules/negatives/agent-pr-branding-input.json b/rules/negatives/agent-pr-branding-input.json
+new file mode 100644
+index 00000000..238517bf
+--- /dev/null
++++ b/rules/negatives/agent-pr-branding-input.json
+@@ -0,0 +1 @@
++{"tool_name":"Bash","tool_input":{"command":"gh pr create --title \"fix: x\" --body \"Made with Compound Engineering\""}}

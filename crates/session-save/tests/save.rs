@@ -1,5 +1,10 @@
 //! Saving step by step, with renames that can be made to cross devices.
 
+#![expect(
+    clippy::disallowed_methods,
+    reason = "a test Fs that fails on purpose calls the real rename_new; the code under test calls rename_new_waiting"
+)]
+
 use std::cell::Cell;
 use std::io;
 use std::path::{Path, PathBuf};

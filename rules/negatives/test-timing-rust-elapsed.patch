@@ -1,0 +1,12 @@
+diff --git a/crates/supervisor/tests/short_limit.rs b/crates/supervisor/tests/short_limit.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/supervisor/tests/short_limit.rs
+@@ -0,0 +1,7 @@
++use std::time::{Duration, Instant};
++
++#[test]
++fn ends_fast() {
++    let started = Instant::now();
++    assert!(started.elapsed() < Duration::from_secs(2));
++}
