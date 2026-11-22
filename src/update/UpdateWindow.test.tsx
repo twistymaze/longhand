@@ -10,6 +10,8 @@ import { UpdateWindow } from "./UpdateWindow";
 
 const CURRENT = "1.0.3";
 const NEW = "1.0.4";
+/// The text of the offer's download link, with its screen-reader note.
+const DOWNLOAD_LINK = "Download installer (opens in your browser)";
 
 function open(state: UpdateState, withKey = false) {
   const tauri = mockTauri({ update_state: () => ({ state, with_key: withKey }), choose_update: () => null });
@@ -31,7 +33,7 @@ describe("the update window", () => {
   test("the offer names both versions, with Remind Me Later and Install and Relaunch", async () => {
     open({ state: "offered", version: NEW, current: CURRENT });
     expect(await screen.findByText(`Longhand ${NEW} is available. You have ${CURRENT}.`)).toBeTruthy();
-    expect(buttons()).toEqual(["Remind Me Later", "Install and Relaunch"]);
+    expect(buttons()).toEqual([DOWNLOAD_LINK, "Remind Me Later", "Install and Relaunch"]);
   });
 
   test("Install and Relaunch sends the choice, and the state event shows the progress", async () => {
@@ -75,6 +77,58 @@ describe("the update window", () => {
     ).toBeTruthy();
     await userEvent.setup().click(screen.getByRole("button", { name: "Try Again" }));
     expect(choices(tauri)).toEqual(["try_again"]);
+  });
+
+  test("the failed view also offers Download Installer, and Try Again stays the default button", async () => {
+    const tauri = open({ state: "failed", version: NEW, error: "the installer was blocked" }, true);
+    const tryAgain = await screen.findByRole("button", { name: "Try Again" });
+    expect(buttons()).toEqual(["Download Installer", "Close", "Try Again"]);
+    await waitFor(() => expect(document.activeElement).toBe(tryAgain));
+    await userEvent.setup().click(screen.getByRole("button", { name: "Download Installer" }));
+    expect(choices(tauri)).toEqual(["download_installer"]);
+  });
+
+  test("in a failed view that the user asked for, Return on Download Installer still chooses Try Again", async () => {
+    const tauri = open({ state: "failed", version: NEW, error: "the installer was blocked" }, true);
+    const tryAgain = await screen.findByRole("button", { name: "Try Again" });
+    await waitFor(() => expect(document.activeElement).toBe(tryAgain));
+    screen.getByRole("button", { name: "Download Installer" }).focus();
+    await userEvent.setup().keyboard("{Enter}");
+    expect(choices(tauri)).toEqual(["try_again"]);
+  });
+
+  test("a click on the offer's download link sends the choice", async () => {
+    const tauri = open({ state: "offered", version: NEW, current: CURRENT });
+    await userEvent.setup().click(await screen.findByRole("button", { name: /Download installer/ }));
+    expect(choices(tauri)).toEqual(["download_installer"]);
+  });
+
+  test("in an offer that the user opened, Return on the download link downloads and does not install", async () => {
+    const tauri = open({ state: "offered", version: NEW, current: CURRENT }, true);
+    const install = await screen.findByRole("button", { name: "Install and Relaunch" });
+    await waitFor(() => expect(document.activeElement).toBe(install));
+    screen.getByRole("button", { name: /Download installer/ }).focus();
+    await userEvent.setup().keyboard("{Enter}");
+    expect(choices(tauri)).toEqual(["download_installer"]);
+  });
+
+  test("in an automatic offer, Return and Space on the download link send no choice", async () => {
+    const tauri = open({ state: "offered", version: NEW, current: CURRENT });
+    const link = await screen.findByRole("button", { name: /Download installer/ });
+    link.focus();
+    await userEvent.setup().keyboard("{Enter} ");
+    expect(choices(tauri)).toEqual([]);
+  });
+
+  test.each<[string, UpdateState]>([
+    ["up to date", { state: "up_to_date", current: CURRENT }],
+    ["check failed", { state: "check_failed", error: "the network is down" }],
+    ["ready", { state: "ready", version: NEW }],
+    ["downloading", { state: "downloading", version: NEW, downloaded: 0, total: null }],
+  ])("the %s view shows no download", async (_, state) => {
+    open(state);
+    await screen.findByRole("heading");
+    expect(screen.queryByRole("button", { name: /Download installer/i })).toBeNull();
   });
 
   test("a manual check says up to date, or that local builds get no updates", async () => {
@@ -225,7 +279,7 @@ describe("the changes in an offer (U6 of the monthly changelog plan)", () => {
     const tauri = openOffer(() => new Promise(() => {}));
     expect(await screen.findByText("A new version of Longhand is available")).toBeTruthy();
     expect(screen.getByText(`Longhand ${NEW} is available. You have ${CURRENT}.`)).toBeTruthy();
-    expect(buttons()).toEqual(["Remind Me Later", "Install and Relaunch"]);
+    expect(buttons()).toEqual([DOWNLOAD_LINK, "Remind Me Later", "Install and Relaunch"]);
     expect((await area()).textContent).toBe("");
     await waitFor(() => expect(tauri.calls.find((c) => c.cmd === "offered_changes")?.args).toEqual({ version: NEW }));
   });
