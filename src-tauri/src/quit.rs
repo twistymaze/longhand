@@ -101,6 +101,37 @@ async fn wait_for_answer(answer: oneshot::Receiver<()>, limit: Duration) -> Wait
     }
 }
 
+/// Start a quit on `quit`. `ask` sends the save request to the main window
+/// and returns false when no main window can answer. Returns the receiver of
+/// the answer that the quit waits for, or `None` when the quit continues at
+/// once: a quit already started, or no main window can answer.
+fn start_quit(quit: &Quit, ask: impl FnOnce() -> bool) -> Option<oneshot::Receiver<()>> {
+    let Some(answer) = quit.begin() else {
+        log::info!("quit: a second quit request; the app quits now");
+        return None;
+    };
+    if !ask() {
+        return None;
+    }
+    log::info!("quit: the main window saves the notes");
+    Some(answer)
+}
+
+/// Send the save request to the main window. False when no main window can
+/// answer.
+fn ask_main_window(app: &AppHandle) -> bool {
+    if app.get_webview_window(MAIN_WINDOW).is_none() {
+        return false;
+    }
+    match tauri_specta::Event::emit_to(&QuitRequested, app, MAIN_WINDOW) {
+        Ok(()) => true,
+        Err(e) => {
+            log::error!("quit: the save request could not be sent: {e}");
+            false
+        }
+    }
+}
+
 /// Ask the main window to save the notes, then run `then`. `then` runs after
 /// the answer or after `QUIT_SAVE_LIMIT`. When a quit already started, or
 /// when no main window can answer, `then` runs at once.
@@ -108,21 +139,10 @@ pub fn save_notes_then<F>(app: &AppHandle, then: F)
 where
     F: FnOnce(&AppHandle) + Send + 'static,
 {
-    let Some(answer) = QUIT.begin() else {
-        log::info!("quit: a second quit request; the app quits now");
+    let Some(answer) = start_quit(&QUIT, || ask_main_window(app)) else {
         then(app);
         return;
     };
-    if app.get_webview_window(MAIN_WINDOW).is_none() {
-        then(app);
-        return;
-    }
-    if let Err(e) = tauri_specta::Event::emit_to(&QuitRequested, app, MAIN_WINDOW) {
-        log::error!("quit: the save request could not be sent: {e}");
-        then(app);
-        return;
-    }
-    log::info!("quit: the main window saves the notes");
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         match wait_for_answer(answer, QUIT_SAVE_LIMIT).await {
@@ -239,22 +259,32 @@ mod terminate {
         if super::QUIT.started() {
             return TERMINATE_NOW;
         }
+        // `then` can run before this method returns (no main window), and
+        // `run_on_main_thread` runs at once on the main thread. AppKit
+        // ignores a reply that comes before `NSTerminateLater`, so the reply
+        // is queued from another thread.
         super::save_notes_then(app, |app| {
-            let queued = app.run_on_main_thread(|| {
-                // SAFETY: this runs on the main thread, after AppKit got
-                // `NSTerminateLater`.
-                unsafe {
-                    let ns_app: *mut AnyObject =
-                        msg_send![class!(NSApplication), sharedApplication];
-                    let _: () = msg_send![ns_app, replyToApplicationShouldTerminate: Bool::YES];
-                }
-            });
-            if let Err(e) = queued {
-                log::error!("quit: the terminate reply could not be queued: {e}");
-                app.exit(0);
-            }
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move { queue_reply(&app) });
         });
         TERMINATE_LATER
+    }
+
+    /// Queue `replyToApplicationShouldTerminate: YES` on the main thread. If
+    /// it cannot be queued, the app quits through the event loop.
+    fn queue_reply(app: &AppHandle) {
+        let queued = app.run_on_main_thread(|| {
+            // SAFETY: this runs on the main thread, after AppKit got
+            // `NSTerminateLater`.
+            unsafe {
+                let ns_app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+                let _: () = msg_send![ns_app, replyToApplicationShouldTerminate: Bool::YES];
+            }
+        });
+        if let Err(e) = queued {
+            log::error!("quit: the terminate reply could not be queued: {e}");
+            app.exit(0);
+        }
     }
 
     #[cfg(test)]
@@ -312,9 +342,15 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_answer_ends_the_wait() {
+    async fn a_quit_asks_once_and_waits_for_the_answer() {
         let quit = Quit::new();
-        let answer = quit.begin().expect("the first request");
+        let mut asked = 0;
+        let answer = start_quit(&quit, || {
+            asked += 1;
+            true
+        })
+        .expect("the first request waits");
+        assert_eq!(asked, 1);
         quit.answer();
         assert_eq!(
             wait_for_answer(answer, QUIT_SAVE_LIMIT).await,
@@ -325,13 +361,36 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn with_no_answer_the_wait_ends_at_the_limit() {
         let quit = Quit::new();
-        let answer = quit.begin().expect("the first request");
+        let answer = start_quit(&quit, || true).expect("the first request waits");
         let start = tokio::time::Instant::now();
         assert_eq!(
             wait_for_answer(answer, QUIT_SAVE_LIMIT).await,
             Waited::Limit
         );
         assert_eq!(start.elapsed(), QUIT_SAVE_LIMIT);
+    }
+
+    #[test]
+    fn a_second_request_continues_at_once_and_does_not_ask() {
+        let quit = Quit::new();
+        let _wait = start_quit(&quit, || true).expect("the first request waits");
+        let mut asked = false;
+        assert!(
+            start_quit(&quit, || {
+                asked = true;
+                true
+            })
+            .is_none()
+        );
+        assert!(!asked);
+    }
+
+    #[test]
+    fn with_no_main_window_the_quit_continues_at_once() {
+        let quit = Quit::new();
+        assert!(start_quit(&quit, || false).is_none());
+        // A later request does not wait either.
+        assert!(start_quit(&quit, || true).is_none());
     }
 
     #[tokio::test(start_paused = true)]
