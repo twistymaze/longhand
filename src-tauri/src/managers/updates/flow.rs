@@ -72,6 +72,10 @@ pub enum Choice {
     Later,
     TryAgain,
     Close,
+    /// Open the installer download of the newest release in the browser
+    /// (R1 of the manual installer download plan). It closes the window as
+    /// Close does, and the offer as Remind Me Later does.
+    DownloadInstaller,
 }
 
 /// The delays that stay across a restart (KTD8), in `updates.json`.
@@ -131,6 +135,8 @@ pub enum Effect {
     Restart,
     /// Write the delays to the store.
     SaveDelays,
+    /// Open the installer download of the newest release in the browser.
+    OpenInstallerDownload,
 }
 
 /// The purposes that wait for the one check in flight. A result serves
@@ -680,6 +686,19 @@ impl Flow {
                 self.delays.remind_until = Some(facts.now + DELAY_SECONDS);
                 self.state = UpdateState::Idle;
                 vec![Effect::SaveDelays]
+            }
+            // The download is the user's way around an automatic update
+            // that fails (R4): the offer waits as after Remind Me Later,
+            // and an install error closes as after Close.
+            (Choice::DownloadInstaller, UpdateState::Offered { .. }) => {
+                let mut effects = self.choice(Choice::RemindLater, facts);
+                effects.push(Effect::OpenInstallerDownload);
+                effects
+            }
+            (Choice::DownloadInstaller, UpdateState::Failed { .. }) => {
+                let mut effects = self.choice(Choice::Close, facts);
+                effects.push(Effect::OpenInstallerDownload);
+                effects
             }
             (Choice::Close, UpdateState::Downloading { .. }) => {
                 self.download_hidden = true;
@@ -2136,5 +2155,61 @@ mod tests {
         f.step(Input::Timer, facts(NINE));
         f.step(Input::Checked(Ok(Some(NEWER.into()))), facts(NINE));
         assert_eq!(f.state(), &offered(NEWER));
+    }
+
+    #[test]
+    fn covers_ae2_download_installer_on_the_offer_opens_the_download_and_reminds_later() {
+        let mut f = offering(NEW);
+        assert_eq!(
+            f.step(Input::Choice(Choice::DownloadInstaller), facts(NINE)),
+            vec![Effect::SaveDelays, Effect::OpenInstallerDownload]
+        );
+        assert_eq!(f.state(), &UpdateState::Idle);
+        assert_eq!(f.delays().remind_until, Some(NINE + DELAY_SECONDS));
+    }
+
+    #[test]
+    fn covers_ae1_download_installer_on_an_install_error_opens_the_download_and_closes() {
+        let mut f = Flow::new(CURRENT, Delays::default(), Some(NEW.into()));
+        f.install_failed(NEW.into(), Some("the installer was blocked".into()));
+        assert_eq!(f.state(), &failed("the installer was blocked"));
+        assert_eq!(
+            f.step(Input::Choice(Choice::DownloadInstaller), facts(NINE)),
+            vec![Effect::OpenInstallerDownload]
+        );
+        assert_eq!(f.state(), &UpdateState::Idle);
+        assert_eq!(f.delays(), &Delays::default());
+    }
+
+    #[test]
+    fn download_installer_does_nothing_where_the_window_shows_no_download() {
+        let mut idle = flow();
+        assert!(
+            idle.step(Input::Choice(Choice::DownloadInstaller), facts(NINE))
+                .is_empty()
+        );
+        assert_eq!(idle.state(), &UpdateState::Idle);
+
+        let mut f = ready();
+        assert!(
+            f.step(Input::Choice(Choice::DownloadInstaller), facts(NINE))
+                .is_empty()
+        );
+        assert_eq!(
+            f.state(),
+            &UpdateState::Ready {
+                version: NEW.into()
+            }
+        );
+
+        let mut f = offering(NEW);
+        f.step(Input::Choice(Choice::Install), facts(NINE));
+        let downloading = f.state().clone();
+        assert!(matches!(downloading, UpdateState::Downloading { .. }));
+        assert!(
+            f.step(Input::Choice(Choice::DownloadInstaller), facts(NINE))
+                .is_empty()
+        );
+        assert_eq!(f.state(), &downloading);
     }
 }

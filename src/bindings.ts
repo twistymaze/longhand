@@ -1905,7 +1905,13 @@ export type CheckTimeSetting = { kind: "off" } |
 /**
  * A choice in the update window. A close of the window is `Close`.
  */
-export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close"
+export type Choice = "install" | "remind_later" | "relaunch_now" | "later" | "try_again" | "close" | 
+/**
+ * Open the installer download of the newest release in the browser
+ * (R1 of the manual installer download plan). It closes the window as
+ * Close does, and the offer as Remind Me Later does.
+ */
+"download_installer"
 /**
  * The Convert notice of Home (R11, F3). It shows only while the storage
  * folder has a note in the old layout.
