@@ -10,7 +10,6 @@ import { UpdateWindow } from "./UpdateWindow";
 
 const CURRENT = "1.0.3";
 const NEW = "1.0.4";
-/// The text of the offer's download link, with its screen-reader note.
 const DOWNLOAD_LINK = "Download installer (opens in your browser)";
 
 function open(state: UpdateState, withKey = false) {

@@ -241,6 +241,7 @@ export function UpdateWindow() {
   // The fraction is null only when bytes arrive and the server sent no size.
   // Before the first bytes arrive, the bar is empty.
   const progress = view.progress;
+  const left = view.left;
   const fraction = !progress
     ? null
     : progress.total
@@ -299,15 +300,13 @@ export function UpdateWindow() {
         {state?.state === "offered" && <OfferedChanges key={state.version} version={state.version} />}
         {/* The offer's link and its two buttons do not fit on one line in
             the 480px window, so the link has its own line at the left. */}
-        {view.left?.link && (
+        {left?.link && (
           <div className="pt-2.5">
-            <ChoiceLink label={view.left.label} onClick={() => choose(view.left!.choice)} />
+            <ChoiceLink label={left.label} onClick={() => choose(left.choice)} />
           </div>
         )}
         <div className="flex items-center gap-2 pt-4">
-          {view.left && !view.left.link && (
-            <Button onClick={() => choose(view.left!.choice)}>{view.left.label}</Button>
-          )}
+          {left && !left.link && <Button onClick={() => choose(left.choice)}>{left.label}</Button>}
           <div className="flex-1" />
           {view.buttons.map((b) => (
             <Button
