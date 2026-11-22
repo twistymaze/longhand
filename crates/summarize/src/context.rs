@@ -116,8 +116,6 @@ pub fn catalog_output_max(provider: Provider, model: &str) -> Option<u32> {
         Provider::Ollama | Provider::LmStudio | Provider::Custom => return None,
     };
     let model = model.strip_prefix("models/").unwrap_or(model);
-    // The output limit held to the context window: some catalog rows list
-    // an output limit larger than the window.
     Catalog::builtin()
         .get(ProviderId::catalog(vendor)?, model)
         .and_then(|found| found.spec.output_limit())

@@ -14,8 +14,8 @@ specta-typescript = "0.0.9"
 tauri-specta = { version = "=2.0.0-rc.21", features = ["derive", "typescript"] }
 
 serde = { version = "1", features = ["derive"] }
-# preserve_order keeps object keys in insertion order. rig-core 0.47 no longer
-# turns it on, and request bodies and the JSON files Longhand writes depend on it.
+# preserve_order keeps object keys in insertion order. Request bodies and the
+# JSON files that Longhand writes depend on it.
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 log = "0.4"

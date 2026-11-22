@@ -9,8 +9,8 @@
 //! The transport does not apply the total deadline. The caller puts each
 //! Rig call under a `tokio` timeout.
 //!
-//! Each error is a [`TransportError`] in [`Error::Transient`] or
-//! [`Error::Permanent`]. Its text is written by Longhand and has no URL. Use [`TransportError::find`] to get
+//! Each error is a [`TransportError`] in [`Error::Permanent`]. Its text is
+//! written by Longhand and has no URL. Use [`TransportError::find`] to get
 //! it back from a Rig error.
 
 use std::future::Future;
@@ -62,25 +62,15 @@ impl TransportError {
     /// The transport error in `error`, if `error` came from [`Transport`].
     pub fn find(error: &Error) -> Option<&TransportError> {
         match error {
-            Error::Transient(inner) | Error::Permanent(inner) => inner.downcast_ref(),
+            Error::Permanent(inner) => inner.downcast_ref(),
             _ => None,
         }
     }
 
-    /// A new try can work after a lost connection or a deadline. It meets
-    /// the same failure after any other kind.
+    /// Longhand decides which requests it sends again (see the client's
+    /// retry rules). A permanent error tells Rig not to send one again.
     fn into_rig(self) -> Error {
-        match self {
-            Self::Unreachable(_)
-            | Self::Connection(_)
-            | Self::ResponseDeadline
-            | Self::IdleDeadline => Error::transient(self),
-            Self::Redirect { .. }
-            | Self::Tls(_)
-            | Self::Request(_)
-            | Self::TooLarge(_)
-            | Self::Unsupported(_) => Error::permanent(self),
-        }
+        Error::permanent(self)
     }
 }
 
