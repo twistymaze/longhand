@@ -18,7 +18,7 @@
 //! The quick save at a quit is anarlog's (commit 0a9b725, #8238); see
 //! src-tauri/PROVENANCE.md.
 
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
@@ -28,7 +28,7 @@ use crate::window::MAIN_WINDOW;
 
 /// The longest time that a quit waits for the main window to save the
 /// notes. A webview that does not answer must not stop the quit.
-pub const QUIT_SAVE_LIMIT: Duration = Duration::from_secs(3);
+const QUIT_SAVE_LIMIT: Duration = Duration::from_secs(3);
 
 /// The app quits. The main window sends each waiting note change, waits for
 /// the saves, and then calls `notes_saved_for_quit`.
@@ -52,10 +52,14 @@ impl Quit {
         }))
     }
 
+    fn state(&self) -> MutexGuard<'_, QuitState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Start the quit. Returns the receiver of the answer for the first
     /// call, and `None` when a quit already started.
     fn begin(&self) -> Option<oneshot::Receiver<()>> {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.state();
         if state.started {
             return None;
         }
@@ -67,17 +71,12 @@ impl Quit {
 
     /// True when a quit started.
     fn started(&self) -> bool {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).started
+        self.state().started
     }
 
     /// The main window answered: the quit continues.
     fn answer(&self) {
-        let sender = self
-            .0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .answer
-            .take();
+        let sender = self.state().answer.take();
         if let Some(sender) = sender {
             let _ = sender.send(());
         }
@@ -200,7 +199,7 @@ mod terminate {
 
     /// Add `applicationShouldTerminate:` to `class`. False when `class`
     /// already has the method; the method then does not change.
-    pub(super) fn add_should_terminate(class: &AnyClass) -> bool {
+    fn add_should_terminate(class: &AnyClass) -> bool {
         let types = CString::new(format!(
             "{}{}{}{}",
             NSUInteger::ENCODING,
@@ -304,6 +303,8 @@ mod tests {
     #[test]
     fn only_the_first_request_starts_a_quit() {
         let quit = Quit::new();
+        // An answer with no quit does not start one.
+        quit.answer();
         assert!(!quit.started());
         assert!(quit.begin().is_some());
         assert!(quit.started());
@@ -331,14 +332,15 @@ mod tests {
             Waited::Limit
         );
         assert_eq!(start.elapsed(), QUIT_SAVE_LIMIT);
-        // An answer after the limit changes nothing.
-        quit.answer();
     }
 
-    #[test]
-    fn an_answer_with_no_quit_does_nothing() {
-        let quit = Quit::new();
-        quit.answer();
-        assert!(!quit.started());
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_answer_sender_ends_the_wait() {
+        let (sender, answer) = oneshot::channel();
+        drop(sender);
+        assert_eq!(
+            wait_for_answer(answer, QUIT_SAVE_LIMIT).await,
+            Waited::Answered
+        );
     }
 }

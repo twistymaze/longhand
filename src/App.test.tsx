@@ -540,12 +540,14 @@ describe("a leave that waits (R18)", () => {
     const box = await screen.findByRole("textbox", { name: "My Notes" });
     await userEvent.setup().type(box, "x");
 
-    // Less than 500 ms after the key: the editor has not sent the change.
-    expect(args(tauri, "save_session_notes")).toEqual([]);
+    // The answer waits for the save of the change, whether the quit or the
+    // editor's own wait sent it. A quit that does not send the change
+    // answers before the editor's wait sends it.
     await act(() => tauri.emit("quit-requested", null));
+    await waitFor(() =>
+      expect(args(tauri, "save_session_notes")).toEqual([{ noteId: "a", markdown: "x", loadedFingerprint: "f" }]),
+    );
     await act(async () => {});
-    // Sent by the quit, not by the editor's wait, which has not ended.
-    expect(args(tauri, "save_session_notes")).toEqual([{ noteId: "a", markdown: "x", loadedFingerprint: "f" }]);
     expect(args(tauri, "notes_saved_for_quit")).toEqual([]);
 
     await act(async () => finishSave());
