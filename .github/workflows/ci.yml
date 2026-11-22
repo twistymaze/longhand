@@ -791,7 +791,8 @@ jobs:
             | grep -qxF "version:$VERSION" \
             || { echo "the updater signature does not name version $VERSION"; exit 1; }
           # The cache can keep older transcribe-cpp builds; the newest is this one.
-          cache=$(ls -t target/release/build/transcribe-cpp-sys-*/out/build/CMakeCache.txt | head -n 1)
+          # Cargo keeps each build script run in build/<package>/<hash>/.
+          cache=$(ls -t target/release/build/transcribe-cpp-sys/*/out/build/CMakeCache.txt | head -n 1)
           grep -q '^GGML_NATIVE:BOOL=OFF$' "$cache" \
             || { echo "transcribe-cpp was built for the CPU of the runner: $cache"; exit 1; }
 
