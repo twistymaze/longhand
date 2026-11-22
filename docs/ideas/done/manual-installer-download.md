@@ -17,4 +17,4 @@ The "The update could not be installed" window gets a "Download Installer" butto
 Security software on a company PC (Carbon Black App Control) blocked the installer that the automatic update started, although the installer was signed. Try Again fails in the same way, and the user had to find the download by hand.
 
 ## Notes / Current state
-Brainstormed. The plan has the requirements.
+Shipped in PR #111. The offer's link has its own line, because the link and both buttons did not fit in the 480px window. Lesson: `docs/solutions/integration-issues/carbon-black-blocked-the-signed-update-installer.md`.
