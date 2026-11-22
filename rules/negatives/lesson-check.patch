@@ -1,0 +1,11 @@
+diff --git a/docs/solutions/workflow-issues/negative-lesson-without-check.md b/docs/solutions/workflow-issues/negative-lesson-without-check.md
+new file mode 100644
+index 00000000..885350b2
+--- /dev/null
++++ b/docs/solutions/workflow-issues/negative-lesson-without-check.md
+@@ -0,0 +1,5 @@
++---
++title: A lesson that names no check
++---
++
++# A lesson that names no check

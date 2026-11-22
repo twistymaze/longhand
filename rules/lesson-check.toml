@@ -1,0 +1,9 @@
+family = "lesson-check"
+rule = "Each lesson in docs/solutions/ names its check: a rules/ family lists it in `lessons`, or its front matter says `check: none: <reason>`. Run the correct-lesson skill after each lesson; do not leave the step as prose."
+state = "enforced"
+enforced_by = "node scripts/check-rules.ts --validate"
+
+[[negative]]
+apply = "rules/negatives/lesson-check.patch"
+run = "node scripts/check-rules.ts --validate"
+expect = "negative-lesson-without-check.md: the lesson names no check"

@@ -160,6 +160,42 @@ test("ledger problems fail with the file and the field", () => {
   assert.match(r.out, /rules\/no-judgment.toml: judgment: a judgment family says why/);
 });
 
+const LESSON = "docs/solutions/build-errors/a-lesson.md";
+
+test("a lesson that no family lists and that has no check: none reason fails and names the fix", () => {
+  const root = repo({ [LESSON]: "---\ntitle: A lesson\n---\n# A lesson\n" });
+  const r = check(root, "--validate");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /docs\/solutions\/build-errors\/a-lesson.md: the lesson names no check/);
+});
+
+test("a lesson that a family lists passes", () => {
+  const root = repo({
+    [LESSON]: "# A lesson\n",
+    "rules/no-bad.toml": family("no-bad", negative("rules/negatives/bad.patch")).replace("docs/lesson.md", LESSON),
+  });
+  const r = check(root, "--validate");
+  assert.equal(r.status, 0, r.out);
+});
+
+test("a lesson with a check: none reason passes, and one with no reason fails", () => {
+  const ok = repo({ [LESSON]: "---\ntitle: A lesson\ncheck: \"none: first case, no low-cost check\"\n---\n" });
+  assert.equal(check(ok, "--validate").status, 0);
+  const empty = repo({ [LESSON]: "---\ntitle: A lesson\ncheck: none\n---\n" });
+  assert.equal(check(empty, "--validate").status, 1);
+});
+
+test("an exception list entry that is not needed any more fails", () => {
+  const root = repo({
+    [LESSON]: "---\ncheck: none: first case\n---\n",
+    "rules/lessons-without-check.txt": `# old lessons\n${LESSON}\ndocs/solutions/gone.md\n`,
+  });
+  const r = check(root, "--validate");
+  assert.equal(r.status, 1, r.out);
+  assert.match(r.out, /a-lesson.md now names its check; remove it from the list/);
+  assert.match(r.out, /gone.md does not exist; remove it from the list/);
+});
+
 test("--validate does not run the negative examples", () => {
   const root = repo({ "rules/no-bad.toml": family("no-bad", negative("rules/negatives/bad.patch", "true")) });
   const r = check(root, "--validate");

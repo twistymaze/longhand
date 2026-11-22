@@ -1,0 +1,13 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 94a270d9..f747c4f7 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -792,7 +792,7 @@ jobs:
+             || { echo "the updater signature does not name version $VERSION"; exit 1; }
+           # The cache can keep older transcribe-cpp builds; the newest is this one.
+           # Cargo keeps each build script run in build/<package>/<hash>/.
+-          cache=$(ls -t target/release/build/transcribe-cpp-sys/*/out/build/CMakeCache.txt | head -n 1)
++          cache=$(ls -t target/release/build/transcribe-cpp-sys-*/out/build/CMakeCache.txt | head -n 1)
+           grep -q '^GGML_NATIVE:BOOL=OFF$' "$cache" \
+             || { echo "transcribe-cpp was built for the CPU of the runner: $cache"; exit 1; }
+ 
