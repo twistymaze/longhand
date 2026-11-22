@@ -47,7 +47,7 @@ fn voiced_runs(samples: &[f32]) -> Vec<(f64, f64)> {
     let mut runs = Vec::new();
     let mut open: Option<f64> = None;
     let mut last_emitted_end = 0.0;
-    for (i, frame) in samples.chunks_exact(FRAME).enumerate() {
+    for (i, frame) in samples.as_chunks::<FRAME>().0.iter().enumerate() {
         let frame_end = (i + 1) as f64 * frame_secs;
         match vad.push_frame(frame).unwrap() {
             VadFrame::Speech(out) => {

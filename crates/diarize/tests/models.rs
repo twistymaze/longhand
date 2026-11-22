@@ -57,7 +57,9 @@ fn voiced_frames(audio: &[f32]) -> Vec<bool> {
     use vad::VoiceActivityDetector;
     let mut detector = vad::EarshotVad::new(0.5).unwrap();
     audio
-        .chunks_exact(256)
+        .as_chunks::<256>()
+        .0
+        .iter()
         .map(|f| detector.is_voice(f).unwrap_or(false))
         .collect()
 }

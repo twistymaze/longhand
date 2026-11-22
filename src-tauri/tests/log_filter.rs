@@ -103,14 +103,6 @@ fn path_for(provider: Provider) -> &'static str {
     }
 }
 
-/// The path with the query that the mock server records for `provider`.
-fn route_for(provider: Provider) -> &'static str {
-    match provider {
-        Provider::Gemini => "/v1beta/models/m:generateContent?key=k-secret-4c1",
-        other => path_for(other),
-    }
-}
-
 fn reply_for(provider: Provider) -> String {
     match provider {
         Provider::Anthropic => anthropic_reply(REPLY_TEXT, "end_turn"),
@@ -165,7 +157,7 @@ async fn a_summary_request_writes_no_rig_line_and_no_request_content() {
     capture();
     for provider in Provider::ALL {
         let mock = serve(HashMap::from([(
-            route_for(provider),
+            path_for(provider),
             Reply::Json(200, reply_for(provider)),
         )]))
         .await;

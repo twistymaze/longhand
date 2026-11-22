@@ -44,8 +44,10 @@ pub fn read_frame(reader: &mut impl Read) -> io::Result<Frame> {
     let mut bytes = vec![0; pcm_len];
     reader.read_exact(&mut bytes)?;
     let pcm: Vec<_> = bytes
-        .chunks_exact(4)
-        .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|v| f32::from_le_bytes(*v))
         .collect();
     if pcm.iter().any(|v| !v.is_finite()) {
         return Err(invalid("non-finite PCM"));

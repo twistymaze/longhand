@@ -15,7 +15,7 @@ use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::provider::ThinkingLevel;
 use summarize::{Client, Endpoint, Limits, Provider, SummarizeError, prompts};
 
-const GEMINI_PATH: &str = "/v1beta/models/m:generateContent?key=k-secret";
+const GEMINI_PATH: &str = "/v1beta/models/m:generateContent";
 
 fn endpoint(provider: Provider, base: &str, key: Option<&str>) -> Endpoint {
     Endpoint {
@@ -297,7 +297,9 @@ async fn gemini_sends_the_key_where_rig_puts_it_and_a_refused_key_is_unauthorize
         .unwrap();
     assert_eq!(reply.text, "fine");
     let sent = mock.seen.lock().unwrap()[0].clone();
+    // The key goes in a header, never in the URL.
     assert_eq!(sent.path, GEMINI_PATH);
+    assert_eq!(sent.header("x-goog-api-key"), Some("k-secret"));
     assert_eq!(sent.json()["generationConfig"]["maxOutputTokens"], 100);
 
     let refused = json!({"error": {
@@ -676,6 +678,20 @@ async fn ollama_sends_the_thinking_level_as_think() {
     )
     .await;
     assert_eq!(off["think"], false, "{off}");
+}
+
+/// Thinking level Off on a Claude model that reasons sends thinking
+/// disabled, as before rig-core 0.47.
+#[tokio::test]
+async fn thinking_off_on_a_reasoning_claude_model_sends_thinking_disabled() {
+    let off = body_with(
+        Provider::Anthropic,
+        "claude-haiku-4-5",
+        1_000,
+        thinking(ThinkingLevel::Off, true),
+    )
+    .await;
+    assert_eq!(off["thinking"], json!({"type": "disabled"}), "{off}");
 }
 
 /// KTD5: a model that takes only a thinking budget gets 1,024, 4,096 or

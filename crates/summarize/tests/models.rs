@@ -507,7 +507,7 @@ async fn anthropic_lists_its_models_through_rig() {
     assert_eq!(seen[0].header("x-api-key"), Some("ak"));
 }
 
-const GEMINI_MODELS: &str = "/v1beta/models?pageSize=1000&key=gk";
+const GEMINI_MODELS: &str = "/v1beta/models?pageSize=1000";
 
 fn gemini(base: &str) -> Client {
     Client::new(Endpoint {

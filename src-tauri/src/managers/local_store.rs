@@ -162,6 +162,20 @@ mod tests {
     }
 
     #[test]
+    fn a_write_keeps_the_keys_in_the_order_of_the_map() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let mut map = Map::new();
+        map.insert("zeta".into(), json!(1));
+        map.insert("alpha".into(), json!(2));
+        write(&path, &map).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "{\n  \"zeta\": 1,\n  \"alpha\": 2\n}"
+        );
+    }
+
+    #[test]
     fn a_missing_file_reads_as_none() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(

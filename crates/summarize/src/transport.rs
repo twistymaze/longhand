@@ -9,7 +9,7 @@
 //! The transport does not apply the total deadline. The caller puts each
 //! Rig call under a `tokio` timeout.
 //!
-//! Each error is a [`TransportError`] in [`Error::Instance`]. Its text is
+//! Each error is a [`TransportError`] in [`Error::Permanent`]. Its text is
 //! written by Longhand and has no URL. Use [`TransportError::find`] to get
 //! it back from a Rig error.
 
@@ -62,13 +62,15 @@ impl TransportError {
     /// The transport error in `error`, if `error` came from [`Transport`].
     pub fn find(error: &Error) -> Option<&TransportError> {
         match error {
-            Error::Instance(inner) => inner.downcast_ref(),
+            Error::Permanent(inner) => inner.downcast_ref(),
             _ => None,
         }
     }
 
+    /// Longhand decides which requests it sends again (see the client's
+    /// retry rules). A permanent error tells Rig not to send one again.
     fn into_rig(self) -> Error {
-        Error::instance(self)
+        Error::permanent(self)
     }
 }
 
@@ -96,7 +98,7 @@ impl Transport {
         http: reqwest::Client,
         limits: Limits,
         request: Request<Bytes>,
-    ) -> Result<Response<LazyBody<Bytes>>, TransportError> {
+    ) -> Result<Response<LazyBody>, TransportError> {
         let request = reqwest::Request::try_from(request)
             .map_err(|e| TransportError::Request(without_url(e)))?;
         let response = timeout(limits.response, http.execute(request))
@@ -126,7 +128,7 @@ impl Transport {
         if let Some(headers) = builder.headers_mut() {
             headers.extend(response.headers().clone());
         }
-        let body: LazyBody<Bytes> = Box::pin(async move {
+        let body: LazyBody = Box::pin(async move {
             read_body(response, limits)
                 .await
                 .map_err(TransportError::into_rig)
@@ -184,90 +186,66 @@ impl Recording {
 }
 
 impl HttpClientExt for Recording {
-    fn send<T, U>(
+    fn send(
         &self,
-        req: Request<T>,
-    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
-    where
-        T: Into<Bytes> + Send,
-        U: From<Bytes> + Send + 'static,
-    {
-        let sending = self.inner.send::<T, Bytes>(req);
+        req: Request<Bytes>,
+    ) -> impl Future<Output = Result<Response<LazyBody>, Error>> + Send + 'static {
+        let sending = self.inner.send(req);
         let slot = Arc::clone(&self.body);
         async move {
             let response = sending.await?;
             let success = response.status().is_success();
-            Ok(response.map(|body| -> LazyBody<U> {
+            Ok(response.map(|body| -> LazyBody {
                 Box::pin(async move {
                     let bytes = body.await?;
                     if success && let Ok(mut kept) = slot.lock() {
                         *kept = Some(bytes.clone());
                     }
-                    Ok(U::from(bytes))
+                    Ok(bytes)
                 })
             }))
         }
     }
 
-    fn send_multipart<U>(
+    fn send_multipart(
         &self,
         req: Request<MultipartForm>,
-    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
-    where
-        U: From<Bytes> + Send + 'static,
-    {
+    ) -> impl Future<Output = Result<Response<LazyBody>, Error>> + Send + 'static {
         self.inner.send_multipart(req)
     }
 
-    fn send_streaming<T>(
+    fn send_streaming(
         &self,
-        req: Request<T>,
-    ) -> impl Future<Output = Result<StreamingResponse, Error>> + Send
-    where
-        T: Into<Bytes> + Send,
-    {
+        req: Request<Bytes>,
+    ) -> impl Future<Output = Result<StreamingResponse, Error>> + Send {
         self.inner.send_streaming(req)
     }
 }
 
 impl HttpClientExt for Transport {
-    fn send<T, U>(
+    fn send(
         &self,
-        req: Request<T>,
-    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
-    where
-        T: Into<Bytes> + Send,
-        U: From<Bytes> + Send + 'static,
-    {
-        let (parts, body) = req.into_parts();
-        let request = Request::from_parts(parts, body.into());
+        req: Request<Bytes>,
+    ) -> impl Future<Output = Result<Response<LazyBody>, Error>> + Send + 'static {
         let (http, limits) = (self.http.clone(), self.limits);
         async move {
-            let response = Self::send_bytes(http, limits, request)
+            Self::send_bytes(http, limits, req)
                 .await
-                .map_err(TransportError::into_rig)?;
-            Ok(response
-                .map(|body| -> LazyBody<U> { Box::pin(async move { body.await.map(U::from) }) }))
+                .map_err(TransportError::into_rig)
         }
     }
 
-    fn send_multipart<U>(
+    fn send_multipart(
         &self,
         _req: Request<MultipartForm>,
-    ) -> impl Future<Output = Result<Response<LazyBody<U>>, Error>> + Send + 'static
-    where
-        U: From<Bytes> + Send + 'static,
-    {
+    ) -> impl Future<Output = Result<Response<LazyBody>, Error>> + Send + 'static {
         std::future::ready(Err(TransportError::Unsupported("multipart").into_rig()))
     }
 
-    fn send_streaming<T>(
+    fn send_streaming(
         &self,
-        _req: Request<T>,
-    ) -> impl Future<Output = Result<StreamingResponse, Error>> + Send
-    where
-        T: Into<Bytes> + Send,
-    {
+        _req: Request<Bytes>,
+    ) -> impl Future<Output = Result<StreamingResponse, Error>> + Send {
         std::future::ready(Err(TransportError::Unsupported("streamed").into_rig()))
     }
 }

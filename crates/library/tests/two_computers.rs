@@ -1856,7 +1856,7 @@ fn a_removed_destination_of_a_waiting_other_version_drops_the_wait() {
 
     a.sync_roots_at(&[&other], start);
     assert_eq!(a.reconciler.next_due(), Some(start + OTHER_VERSION_WAIT));
-    a.reconciler.retain_roots(&[other.to_path_buf()]);
+    a.reconciler.retain_roots(std::slice::from_ref(&other));
     a.sync_roots_at(&[&other], start);
     assert_eq!(a.reconciler.next_due(), None);
     a.sync_roots_at(&[&other], start + OTHER_VERSION_WAIT);
@@ -1881,7 +1881,7 @@ fn a_removed_destination_of_a_mismatch_drops_the_wait() {
 
     a.sync_roots_at(&[&other], start);
     assert_eq!(a.reconciler.next_due(), Some(start + HAND_EDIT_WAIT));
-    a.reconciler.retain_roots(&[other.to_path_buf()]);
+    a.reconciler.retain_roots(std::slice::from_ref(&other));
     a.sync_roots_at(&[&other], start);
     assert_eq!(a.reconciler.next_due(), None);
 }

@@ -1,0 +1,1 @@
+{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"max_tokens":100,"system":[{"type":"text","text":"the rules"}]}

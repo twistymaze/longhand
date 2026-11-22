@@ -464,6 +464,10 @@ impl RigClient {
     }
 
     /// The models that the provider lists, every page read (KTD5).
+    #[expect(
+        clippy::result_large_err,
+        reason = "Rig's own error type, passed on as Rig returns it"
+    )]
     async fn list_models(&self) -> Result<RigModelList, ProviderError> {
         match self {
             Self::OpenAi(client) => client.list_models().await,
@@ -492,6 +496,10 @@ impl Engine {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "Rig's own error type, passed on as Rig returns it"
+    )]
     async fn call(&self, request: CompletionRequest) -> Result<CompletionResponse, ProviderError> {
         match self {
             Self::Chat(model) => model.call(request).await,

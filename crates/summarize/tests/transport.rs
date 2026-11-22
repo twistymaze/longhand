@@ -7,16 +7,20 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use common::{Reply, serve};
-use rig_core::http_client::{self, HttpClientExt, Request};
+use rig_core::http_client::{self, Bytes, HttpClientExt, Request};
 use summarize::{Limits, Transport, TransportError};
 
 /// Send a POST to `url` and read the whole body.
+#[expect(
+    clippy::result_large_err,
+    reason = "Rig's own error type, passed on as Rig returns it"
+)]
 async fn post(transport: &Transport, url: &str) -> Result<(u16, Vec<u8>), http_client::Error> {
-    let request = Request::post(url).body(b"{}".to_vec()).unwrap();
-    let response = transport.send::<_, Vec<u8>>(request).await?;
+    let request = Request::post(url).body(Bytes::from_static(b"{}")).unwrap();
+    let response = transport.send(request).await?;
     let status = response.status().as_u16();
     let body = response.into_body().await?;
-    Ok((status, body))
+    Ok((status, body.to_vec()))
 }
 
 /// The transport error in `error`.
@@ -220,7 +224,7 @@ async fn a_transport_error_has_no_url_path_and_no_query() {
 async fn streamed_and_multipart_requests_are_refused() {
     let transport = Transport::new().unwrap();
     let url = format!("{}/chat/completions", common::closed_base());
-    let request = Request::post(&url).body(b"{}".to_vec()).unwrap();
+    let request = Request::post(&url).body(Bytes::from_static(b"{}")).unwrap();
     let Err(err) = transport.send_streaming(request).await else {
         panic!("a streamed request was sent");
     };
@@ -230,7 +234,7 @@ async fn streamed_and_multipart_requests_are_refused() {
     );
     let form = http_client::MultipartForm::new();
     let request = Request::post(&url).body(form).unwrap();
-    let Err(err) = transport.send_multipart::<Vec<u8>>(request).await else {
+    let Err(err) = transport.send_multipart(request).await else {
         panic!("a multipart request was sent");
     };
     assert!(

@@ -387,7 +387,7 @@ fn the_ollama_context_length_is_read_without_the_architecture_name() {
 #[tokio::test]
 async fn a_gemini_model_reports_the_input_token_limit_of_its_model_list_entry() {
     let mock = serve(HashMap::from([(
-        "/v1beta/models?pageSize=1000&key=gk",
+        "/v1beta/models?pageSize=1000",
         Reply::Json(
             200,
             r#"{"models":[
@@ -518,6 +518,12 @@ fn the_catalog_gives_the_output_maximum_of_a_known_hosted_model() {
     assert_eq!(
         context::catalog_output_max(Provider::Gemini, "models/gemini-2.5-flash"),
         Some(65_536)
+    );
+    // A catalog row whose output limit (16,384) is larger than its context
+    // window (8,192) gives the window.
+    assert_eq!(
+        context::catalog_output_max(Provider::Gemini, "gemini-2.5-flash-preview-tts"),
+        Some(8_192)
     );
     // Local servers are not in the catalog.
     assert_eq!(

@@ -70,14 +70,12 @@ pub fn parse_ids(body: &Value) -> Option<Vec<String>> {
             })
             .map(str::to_string)
             .collect()
-    } else if let Some(items) = body.as_array() {
-        items
+    } else {
+        body.as_array()?
             .iter()
             .filter_map(Value::as_str)
             .map(str::to_string)
             .collect()
-    } else {
-        return None;
     };
     Some(tidy(ids))
 }
