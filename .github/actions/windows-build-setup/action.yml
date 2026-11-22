@@ -86,7 +86,7 @@ runs:
         version: 1.4.309.0
         cache: false
 
-    - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+    - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0
       with:
         components: rustfmt, clippy
 

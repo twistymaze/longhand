@@ -293,8 +293,10 @@ pub fn read_analysis(path: &Path) -> std::io::Result<Analysis> {
             local_speaker: usize::from(local_speaker),
             anchor: anchor != 0,
             embedding: raw
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().expect("four bytes")))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| f32::from_le_bytes(*c))
                 .collect(),
         });
     }

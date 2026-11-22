@@ -1000,8 +1000,10 @@ mod stereo {
         let mut pcm = Vec::new();
         while reader.read(&mut pcm).unwrap() {}
         let sum: Vec<f32> = pcm
-            .chunks_exact(2)
-            .map(|p| (p[0] + p[1]).clamp(-1.0, 1.0))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|[l, r]| (l + r).clamp(-1.0, 1.0))
             .collect();
         let mut want = Vec::new();
         let mut resampler = pipeline::resample::StreamResampler::new(48_000, PROC_RATE);

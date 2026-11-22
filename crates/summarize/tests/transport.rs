@@ -11,6 +11,10 @@ use rig_core::http_client::{self, HttpClientExt, Request};
 use summarize::{Limits, Transport, TransportError};
 
 /// Send a POST to `url` and read the whole body.
+#[expect(
+    clippy::result_large_err,
+    reason = "Rig's own error type, passed on as Rig returns it"
+)]
 async fn post(transport: &Transport, url: &str) -> Result<(u16, Vec<u8>), http_client::Error> {
     let request = Request::post(url).body(b"{}".to_vec()).unwrap();
     let response = transport.send::<_, Vec<u8>>(request).await?;

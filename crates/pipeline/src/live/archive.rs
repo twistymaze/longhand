@@ -128,8 +128,10 @@ impl ArchiveReader {
             }
         }
         let samples: Vec<f32> = bytes
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f32 / 32768.0)
             .collect();
         let pcm: Arc<[f32]> = if chunk.channels == 2 {
             let left: Vec<_> = samples.iter().step_by(2).copied().collect();

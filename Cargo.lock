@@ -316,7 +316,6 @@ name = "audio"
 version = "0.1.0"
 dependencies = [
  "futures-util",
- "log",
  "rubato",
  "thiserror 2.0.21",
 ]
@@ -357,7 +356,6 @@ dependencies = [
  "audio",
  "futures-util",
  "hound",
- "log",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -3423,9 +3421,7 @@ dependencies = [
 name = "nemo-runtime"
 version = "0.1.0"
 dependencies = [
- "serde",
  "serde_json",
- "thiserror 2.0.21",
  "windows-sys 0.61.2",
 ]
 

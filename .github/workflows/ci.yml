@@ -121,7 +121,7 @@ jobs:
           # each run configured the CMake crates again.
           prefix-key: v5-rust
 
-      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0
         if: runner.os == 'macOS'
         with:
           components: rustfmt, clippy
@@ -489,7 +489,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: v1-soak
@@ -535,7 +535,7 @@ jobs:
           path: base
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0
         if: github.event_name == 'pull_request'
 
       # The base gives the check scripts and the Node and npm versions, so a
@@ -694,7 +694,7 @@ jobs:
           name: release-data
           path: ${{ runner.temp }}/release-data
 
-      - uses: dtolnay/rust-toolchain@035fceb3c12fb0c6a9461b52775e16473133e591 # 1.95.0
+      - uses: dtolnay/rust-toolchain@d5e4d57b030548f435d0befec15ff413a2c60eff # 1.100.0
 
       # A release build has its own artifacts, so it has its own cache key.
       # It saves the cache only on success. A failed build would save a

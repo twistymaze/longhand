@@ -40,7 +40,7 @@ Download Longhand [for Mac](https://github.com/twistymaze/longhand/releases/late
 You need:
 
 - macOS 15 or later
-- Rust 1.95.0 (the repository's `rust-toolchain.toml` selects it)
+- Rust 1.100.0 (the repository's `rust-toolchain.toml` selects it)
 - [Node](https://nodejs.org) 24.15 or later, or Node 26
 - npm 12.2 or later (`npm install --global npm@12`)
 - CMake, Ninja and Git
