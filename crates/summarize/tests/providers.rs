@@ -15,7 +15,7 @@ use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::provider::ThinkingLevel;
 use summarize::{Client, Endpoint, Limits, Provider, SummarizeError, prompts};
 
-const GEMINI_PATH: &str = "/v1beta/models/m:generateContent?key=k-secret";
+const GEMINI_PATH: &str = "/v1beta/models/m:generateContent";
 
 fn endpoint(provider: Provider, base: &str, key: Option<&str>) -> Endpoint {
     Endpoint {

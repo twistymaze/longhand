@@ -387,7 +387,7 @@ fn the_ollama_context_length_is_read_without_the_architecture_name() {
 #[tokio::test]
 async fn a_gemini_model_reports_the_input_token_limit_of_its_model_list_entry() {
     let mock = serve(HashMap::from([(
-        "/v1beta/models?pageSize=1000&key=gk",
+        "/v1beta/models?pageSize=1000",
         Reply::Json(
             200,
             r#"{"models":[

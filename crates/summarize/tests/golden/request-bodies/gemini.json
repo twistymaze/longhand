@@ -1,0 +1,1 @@
+{"contents":[{"parts":[{"text":"hello","thought":false}],"role":"user"}],"generationConfig":{"maxOutputTokens":100},"safetySettings":null,"toolConfig":null,"systemInstruction":{"parts":[{"text":"the rules","thought":false}],"role":"model"}}
