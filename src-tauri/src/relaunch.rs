@@ -128,15 +128,18 @@ fn start_helper(app: &AppHandle) -> bool {
     }
 }
 
-/// Quit through the event loop (`RunEvent::Exit` runs), then start the app
-/// again.
+/// Save the notes, quit through the event loop (`RunEvent::Exit` runs), then
+/// start the app again. The helper starts after the save, so its wait for
+/// this process does not include the save.
 pub fn request_relaunch(app: &AppHandle) {
-    #[cfg(target_os = "macos")]
-    if start_helper(app) {
-        app.exit(0);
-        return;
-    }
-    app.request_restart();
+    crate::quit::save_notes_then(app, |app| {
+        #[cfg(target_os = "macos")]
+        if start_helper(app) {
+            app.exit(0);
+            return;
+        }
+        app.request_restart();
+    });
 }
 
 /// Quit now without the event loop, then start the app again. For the main

@@ -1645,6 +1645,12 @@ async widgetHide(noteId: string) : Promise<void> {
  */
 async widgetOpenNote() : Promise<void> {
     await TAURI_INVOKE("widget_open_note");
+},
+/**
+ * The main window sent each waiting note change and the saves completed.
+ */
+async notesSavedForQuit() : Promise<void> {
+    await TAURI_INVOKE("notes_saved_for_quit");
 }
 }
 
@@ -1666,6 +1672,7 @@ movePaused: MovePaused,
 moveProgress: MoveProgress,
 processingUpdate: ProcessingUpdate,
 promisedFiles: PromisedFiles,
+quitRequested: QuitRequested,
 recordingChanged: RecordingChanged,
 recordingPrompt: RecordingPrompt,
 settingsChanged: SettingsChanged,
@@ -1692,6 +1699,7 @@ movePaused: "move-paused",
 moveProgress: "move-progress",
 processingUpdate: "processing-update",
 promisedFiles: "promised-files",
+quitRequested: "quit-requested",
 recordingChanged: "recording-changed",
 recordingPrompt: "recording-prompt",
 settingsChanged: "settings-changed",
@@ -2676,6 +2684,11 @@ thinking: ThinkingLevel | null;
  * set it (R12). `None` uses the default of the provider kind (KTD7).
  */
 requests_at_once: number | null }
+/**
+ * The app quits. The main window sends each waiting note change, waits for
+ * the saves, and then calls `notes_saved_for_quit`.
+ */
+export type QuitRequested = null
 /**
  * Why the shared settings are read-only.
  */

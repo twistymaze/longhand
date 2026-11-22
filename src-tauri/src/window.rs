@@ -677,7 +677,7 @@ pub fn on_window_event(window: &Window, event: &WindowEvent) {
                 crate::tray::is_recording(app),
             ) {
                 CloseAction::Hide => hide_main_window(window),
-                CloseAction::Quit => app.exit(0),
+                CloseAction::Quit => crate::quit::quit(app),
             }
         }
         // The Settings page stops the close while it saves, and then
