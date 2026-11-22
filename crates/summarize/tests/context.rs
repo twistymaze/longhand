@@ -519,6 +519,12 @@ fn the_catalog_gives_the_output_maximum_of_a_known_hosted_model() {
         context::catalog_output_max(Provider::Gemini, "models/gemini-2.5-flash"),
         Some(65_536)
     );
+    // A catalog row whose output limit (16,384) is larger than its context
+    // window (8,192) gives the window.
+    assert_eq!(
+        context::catalog_output_max(Provider::Gemini, "gemini-2.5-flash-preview-tts"),
+        Some(8_192)
+    );
     // Local servers are not in the catalog.
     assert_eq!(
         context::catalog_output_max(Provider::LmStudio, "claude-haiku-4-5"),

@@ -295,6 +295,66 @@ async fn a_rate_limited_request_with_no_header_uses_the_retry_waits() {
     assert_eq!(mock.seen.lock().unwrap().len(), 3);
 }
 
+/// A 200 reply whose body is an error with the numeric code `code`, for
+/// the first request, and a summary for the next requests. OpenRouter and
+/// llama.cpp send such replies.
+fn in_band_error_once(code: u16) -> Reply {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    Reply::Await(Arc::new(move |_| {
+        let k = count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            common::Answer {
+                status: 200,
+                headers: String::new(),
+                body: if k == 0 {
+                    format!(r#"{{"error":{{"code":{code},"message":"upstream said no"}}}}"#)
+                } else {
+                    completion("After the error.")
+                },
+            }
+        })
+    }))
+}
+
+/// A rate limit inside a 200 body gets the retry of a 429 reply.
+#[tokio::test]
+async fn a_rate_limit_inside_a_success_reply_is_sent_again_after_the_retry_wait() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        in_band_error_once(429),
+    )]))
+    .await;
+    let client = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 2]);
+    let reply = client
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap();
+    assert_eq!(reply.text, "After the error.");
+    assert_eq!(mock.seen.lock().unwrap().len(), 2);
+}
+
+/// Another error code inside a 200 body is the HTTP error of that code.
+#[tokio::test]
+async fn an_error_code_inside_a_success_reply_is_the_http_error_of_that_code() {
+    let mock = serve(HashMap::from([(
+        "/v1/chat/completions",
+        in_band_error_once(502),
+    )]))
+    .await;
+    let err = Client::new(endpoint(&mock.base, None))
+        .unwrap()
+        .with_retry_waits(vec![Duration::ZERO; 2])
+        .complete(&label(), &hello(), 100, None)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, SummarizeError::Http { status: 502, .. }),
+        "{err:?}"
+    );
+}
+
 /// A 429 reply that names a quota fails at once: a new try gets the same
 /// reply until the user changes the account.
 #[tokio::test]
