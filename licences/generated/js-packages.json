@@ -36,7 +36,7 @@
   },
   {
     "name": "@tauri-apps/plugin-opener",
-    "version": "2.7.2",
+    "version": "2.7.3",
     "license": "MIT OR Apache-2.0",
     "licenseText": "SPDXVersion: SPDX-2.1\nDataLicense: CC0-1.0\nPackageName: tauri\nDataFormat: SPDXRef-1\nPackageSupplier: Organization: The Tauri Programme in the Commons Conservancy\nPackageHomePage: https://tauri.app\nPackageLicenseDeclared: Apache-2.0\nPackageLicenseDeclared: MIT\nPackageCopyrightText: 2019-2022, The Tauri Programme in the Commons Conservancy\nPackageSummary: <text>Tauri is a rust project that enables developers to make secure\nand small desktop applications using a web frontend.\n                </text>\nPackageComment: <text>The package includes the following libraries; see\nRelationship information.\n                </text>\nCreated: 2019-05-20T09:00:00Z\nPackageDownloadLocation: git://github.com/tauri-apps/tauri\nPackageDownloadLocation: git+https://github.com/tauri-apps/tauri.git\nPackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git\nCreator: Person: Daniel Thompson-Yvetot",
     "noticeText": null
@@ -113,7 +113,7 @@
   },
   {
     "name": "prosemirror-inputrules",
-    "version": "1.5.1",
+    "version": "1.6.0",
     "license": "MIT",
     "licenseText": "Copyright (C) 2015-2017 by Marijn Haverbeke <marijn@haverbeke.berlin> and others\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in\nall copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN\nTHE SOFTWARE.\n",
     "noticeText": null
