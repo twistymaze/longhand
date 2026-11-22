@@ -98,7 +98,7 @@ runs:
           /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
             dir="${cache%%/out/build/*}"
             echo "Removing $dir"
-            rm -rf "$dir" "${dir%/build/*}/.fingerprint/${dir##*/}"
+            rm -rf "$dir"
           done
           printf '%s' "$hash" > target/cmake-toolchain.sha256
         fi
@@ -112,7 +112,8 @@ runs:
         # a toolchain file that is not here (main's cache from before the
         # SDK moved to the Dev Drive) stops the CMake generate step. In each
         # case the step removes the output and the fingerprint of that build
-        # script, and cargo builds it again.
+        # script, and cargo builds it again. Cargo keeps both in the folder
+        # of the build script run, build/<package>/<hash>/.
         missing_input() {
           local path lower
           while IFS= read -r path; do
@@ -132,7 +133,7 @@ runs:
             { [ -n "$source" ] && [ ! -e "$source" ]; } || missing_input "$cache"; then
             dir="${cache%%/out/build/*}"
             echo "Removing $dir"
-            rm -rf "$dir" "${dir%/build/*}/.fingerprint/${dir##*/}"
+            rm -rf "$dir"
           elif ! grep -q '^CMAKE_GENERATOR:INTERNAL=Ninja$' "$cache"; then
             echo "Removing $(dirname "$cache")"
             rm -rf "$(dirname "$cache")"
