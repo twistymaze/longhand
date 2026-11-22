@@ -1,0 +1,15 @@
+family = "target-paths"
+rule = "CI and scripts use Cargo's build folder layout of Rust 1.100: build/<package>/<hash>/ holds out/, run/ and fingerprint/. Do not glob build/<package>-*/ or use .fingerprint/."
+state = "enforced"
+enforced_by = "node --test scripts/target-paths.test.ts"
+lessons = ["docs/solutions/build-errors/cargo-1-100-build-script-folder-layout.md"]
+
+[[negative]]
+apply = "rules/negatives/target-paths.patch"
+run = "node --test scripts/target-paths.test.ts"
+expect = ".github/workflows/ci.yml:795: old Cargo build folder layout"
+
+[[negative]]
+apply = "rules/negatives/target-paths-fingerprint.patch"
+run = "node --test scripts/target-paths.test.ts"
+expect = ".github/actions/sccache-setup/action.yml:101: old Cargo build folder layout"

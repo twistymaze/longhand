@@ -26,7 +26,7 @@ const familyKeys = ["family", "rule", "state", "enforced_by", "lessons", "judgme
 const negativeKeys = ["apply", "run", "expect"];
 
 type Negative = { apply: string; run: string; expect: string };
-type Family = { id: string; file: string; state: string; negatives: Negative[] };
+type Family = { id: string; file: string; state: string; lessons: string[]; negatives: Negative[] };
 
 function isString(v: TomlValue | undefined): v is string {
   return typeof v === "string" && v.trim() !== "";
@@ -80,7 +80,60 @@ function readFamily(file: string, errors: string[]): Family | undefined {
   }
   if (state === "judgment" && !isString(table.judgment)) fail("judgment", "a judgment family says why no check can hold its rule");
 
-  return { id, file, state: isString(state) ? state : "", negatives };
+  const lessons = Array.isArray(table.lessons) ? (table.lessons as TomlValue[]).filter((l): l is string => typeof l === "string") : [];
+  return { id, file, state: isString(state) ? state : "", lessons, negatives };
+}
+
+// A lesson in docs/solutions/ gives no signal when an agent does not read it.
+// So each lesson names its check: a family lists it in `lessons`, or its
+// front matter says `check: none: <reason>`. The exception file lists the
+// lessons from before this rule. The list can only get shorter.
+const solutionsDir = join(root, "docs", "solutions");
+const exceptionsFile = "rules/lessons-without-check.txt";
+
+function markdownFiles(dir: string, base: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${base}/${entry.name}`;
+    if (entry.isDirectory()) return markdownFiles(join(dir, entry.name), path);
+    return entry.name.endsWith(".md") && entry.name !== "README.md" ? [path] : [];
+  });
+}
+
+// The reason after `check: none:` in the front matter, or undefined.
+function noCheckReason(text: string): string | undefined {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!match) return undefined;
+  for (const line of match[1].split(/\r?\n/)) {
+    const value = /^check:\s*(.*)$/.exec(line)?.[1].trim().replace(/^["']|["']$/g, "");
+    const reason = value === undefined ? undefined : /^none:\s*(.+)$/.exec(value)?.[1].trim();
+    if (reason) return reason;
+  }
+  return undefined;
+}
+
+function checkLessons(covered: Set<string>, errors: string[]) {
+  const lessons = markdownFiles(solutionsDir, "docs/solutions");
+  const exceptionsPath = join(root, exceptionsFile);
+  const exceptions = existsSync(exceptionsPath)
+    ? readFileSync(exceptionsPath, "utf8")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l !== "" && !l.startsWith("#"))
+    : [];
+  const known = new Set(lessons);
+  for (const path of exceptions) {
+    if (!known.has(path)) errors.push(`${exceptionsFile}: ${path} does not exist; remove it from the list`);
+    else if (covered.has(path) || noCheckReason(readFileSync(join(root, path), "utf8")))
+      errors.push(`${exceptionsFile}: ${path} now names its check; remove it from the list`);
+  }
+  const excepted = new Set(exceptions);
+  for (const path of lessons) {
+    if (covered.has(path) || excepted.has(path) || noCheckReason(readFileSync(join(root, path), "utf8"))) continue;
+    errors.push(
+      `${path}: the lesson names no check. Add it to the \`lessons\` of the rules/ family whose check stops the mistake (rules/README.md), or add \`check: none: <why no low-cost check can hold it>\` to its front matter`,
+    );
+  }
 }
 
 function git(args: string[]) {
@@ -152,6 +205,7 @@ function main(args: string[]): number {
   const errors: string[] = [];
   const families = files.map((f) => readFamily(f, errors)).filter((f): f is Family => f !== undefined);
   if (only && !families.some((f) => f.id === only)) errors.push(`--family: no family "${only}" in rules/`);
+  checkLessons(new Set(families.flatMap((f) => f.lessons)), errors);
   if (errors.length > 0) {
     for (const e of errors) console.error(e);
     console.error(`${errors.length} ledger problem(s).`);

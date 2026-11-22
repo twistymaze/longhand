@@ -44,3 +44,12 @@ A failure says one of these things:
 ## Exception lists
 
 A scan or a lint holds its own list of known exceptions, each with a reason. The list can only get shorter: a scan fails on a new hit with no entry, and on an entry that no longer matches. In Rust, an exception is `#[expect(clippy::disallowed_methods, reason = "...")]`, which fails when it is no longer needed.
+
+## Lessons name their check
+
+A lesson in `docs/solutions/` gives no signal when an agent does not read it. So `--validate` fails on a lesson that names no check. A lesson names its check in one of two ways:
+
+- A family lists the lesson in `lessons`.
+- The lesson's front matter has `check: none: <reason>`, for a first-time mistake with no low-cost check.
+
+`rules/lessons-without-check.txt` lists the lessons from before this rule. The list can only get shorter: the script fails on an entry that names its check now, or that no longer exists. The `correct-lesson` skill gives the steps that turn a lesson into a check.

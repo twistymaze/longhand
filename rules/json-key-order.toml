@@ -1,0 +1,15 @@
+family = "json-key-order"
+rule = "The workspace Cargo.toml turns on serde_json's preserve_order itself. Do not depend on a dependency to turn it on: request bodies and the JSON files that Longhand writes keep insertion key order only with this feature."
+state = "enforced"
+enforced_by = "cargo test -p summarize --test request_bodies"
+lessons = [
+  "docs/solutions/integration-issues/dependency-feature-changed-json-key-order.md",
+]
+
+# Without the feature, cargo also removes indexmap from serde_json in
+# Cargo.lock. The command puts Cargo.lock back, so the patch changes only
+# Cargo.toml and still applies after a serde_json update.
+[[negative]]
+apply = "rules/negatives/json-key-order.patch"
+run = "cargo test -p summarize --test request_bodies; s=$?; git checkout -q -- Cargo.lock; exit $s"
+expect = "panicked at crates/summarize/tests/request_bodies.rs"

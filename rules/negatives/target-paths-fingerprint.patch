@@ -1,0 +1,13 @@
+diff --git a/.github/actions/sccache-setup/action.yml b/.github/actions/sccache-setup/action.yml
+index 5bbe005d..b55852ac 100644
+--- a/.github/actions/sccache-setup/action.yml
++++ b/.github/actions/sccache-setup/action.yml
+@@ -98,7 +98,7 @@ runs:
+           /usr/bin/find target -name CMakeCache.txt -path '*/out/build/*' | while read -r cache; do
+             dir="${cache%%/out/build/*}"
+             echo "Removing $dir"
+-            rm -rf "$dir"
++            rm -rf "$dir" "${dir%/build/*}/.fingerprint/${dir##*/}"
+           done
+           printf '%s' "$hash" > target/cmake-toolchain.sha256
+         fi
