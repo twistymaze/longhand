@@ -2324,8 +2324,6 @@ async-stream-impl 0.3.6
 atomic-waker 1.1.2
 auto-launch 0.6.0
     Copyright (c) 2022 zzzgydi
-base64 0.22.1
-    Copyright (c) 2015 Alice Maz
 base64 0.23.1
     Copyright (c) 2025 Alice Maz, Marshall Pierce
 bit-set 0.8.0
@@ -2336,6 +2334,8 @@ bitflags 2.13.2
     Copyright (c) 2014 The Rust Project Developers
 block-buffer 0.10.4
     Copyright (c) 2018-2019 The RustCrypto Project Developers
+block-buffer 0.12.1
+    Copyright (c) 2018-2025 The RustCrypto Project Developers
 brotli 9.1.1
     Copyright (c) 2009, 2010, 2013-2016 by the Brotli Authors.
 brotli-decompressor 6.3.0
@@ -2353,11 +2353,15 @@ cfb 0.14.0
 cfg-if 1.0.5
     Copyright (c) 2014 Alex Crichton
 chrono 0.4.45
+const-oid 0.10.2
+    Copyright (c) 2020-2026 The RustCrypto Project Developers
 cookie 0.18.2
     Copyright (c) 2014 Alex Crichton
     Copyright (c) 2017 Sergio Benitez
 cpufeatures 0.2.17
     Copyright (c) 2020-2025 The RustCrypto Project Developers
+cpufeatures 0.3.1
+    Copyright (c) 2020-2026 The RustCrypto Project Developers
 crc32fast 1.5.4
     Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 crossbeam-channel 0.5.17
@@ -2366,6 +2370,8 @@ crossbeam-utils 0.8.23
     Copyright (c) 2019 The Crossbeam Project Developers
 crypto-common 0.1.7
     Copyright (c) 2021 RustCrypto Developers
+crypto-common 0.2.2
+    Copyright (c) 2021-2026 RustCrypto Developers
 ctor 1.0.13
 darling 0.20.11
     Copyright (c) 2017 Ted Driggs
@@ -2394,6 +2400,9 @@ derive_more-impl 2.1.1
     Copyright (c) 2016 Jelte Fennema
 digest 0.10.7
     Copyright (c) 2017 Artyom Pavlov
+digest 0.11.3
+    Copyright (c) 2017 Artyom Pavlov
+    Copyright (c) 2017-2025 RustCrypto Developers
 dirs 7.0.0
     Copyright (c) 2018-2019 dirs-rs contributors
 dirs-sys 0.5.0
@@ -2483,6 +2492,10 @@ http-body-util 0.1.5
     Copyright (c) 2019-2026 Sean McArthur & Hyper Contributors
 httparse 1.10.1
     Copyright (c) 2015-2025 Sean McArthur
+httpdate 1.0.3
+    Copyright (c) 2016 Pyfisch
+hybrid-array 0.4.15
+    Copyright (c) 2022-2026 The RustCrypto Project Developers
 hyper 1.12.0
     Copyright (c) 2014-2026 Sean McArthur
 hyper-rustls 0.27.10
@@ -2651,9 +2664,9 @@ reqwest 0.13.5
 rfd 0.17.2
     Copyright (c) 2020 Bilal Elmoussaoui
     Copyright (c) 2022 Bartłomiej Maryńczak
-rig-core 0.44.0
+rig-core 0.47.0
     Copyright (c) 2024, Playgrounds Analytics Inc.
-rig-http 0.44.0
+rig-http 0.47.0
 rtrb 0.4.1
 rubato 0.16.2
     Copyright (c) 2020 Henrik Enquist
@@ -2688,6 +2701,7 @@ serde_derive 1.0.229
 serde_derive_internals 0.29.1
 serde_derive_internals 0.30.0
 serde_json 1.0.154
+serde_path_to_error 0.1.20
 serde_repr 0.1.21
 serde_spanned 1.1.3
     Copyright (c) Individual contributors
@@ -2705,6 +2719,11 @@ sha2 0.10.9
     Copyright (c) 2006-2009 Graydon Hoare
     Copyright (c) 2009-2013 Mozilla Foundation
     Copyright (c) 2016 Artyom Pavlov
+sha2 0.11.1
+    Copyright (c) 2006-2009 Graydon Hoare
+    Copyright (c) 2009-2013 Mozilla Foundation
+    Copyright (c) 2016 Artyom Pavlov
+    Copyright (c) 2016-2026 The RustCrypto Project Developers
 simd-adler32 0.3.10
     Copyright (c) [2021] [Marvin Countryman]
 siphasher 1.0.4
