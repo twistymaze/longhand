@@ -1436,7 +1436,7 @@ For these and/or other purposes and motivations, and without any expectation of 
 
 ------------------------------------------------------------------------
 
-rustls-webpki 0.103.16
+rustls-webpki 0.103.17
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -2563,7 +2563,7 @@ miniz_oxide 0.9.1
     Copyright (c) 2017-2024 oyvindln
     Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
     Copyright 2013-2014 RAD Game Tools and Valve Software
-mio 1.2.4
+mio 1.2.5
     Copyright (c) 2014 Carl Lerche and other MIO contributors
 muda 0.20.0
     Copyright (c) 2022-2022 Tauri Programme within The Commons Conservancy
@@ -2577,7 +2577,7 @@ new_debug_unreachable 1.0.6
     Copyright (c) 2015 Jonathan Reem
 notify-debouncer-full 0.7.0
     Copyright (c) 2023 Notify Contributors
-notify-rust 4.18.2
+notify-rust 4.19.0
     Copyright (c) 2017 Hendrik Sollich
 notify-types 2.2.0
     Copyright (c) 2023 Notify Contributors
@@ -2676,7 +2676,7 @@ rustc-hash 2.1.3
 rustfft 6.4.1
     Copyright (c) 2015 The RustFFT Developers
 rustls 0.23.46
-rustls-pki-types 1.15.1
+rustls-pki-types 1.16.0
 rustls-platform-verifier 0.7.1
     Copyright (c) 2022 1Password
 same-file 1.0.6
@@ -2877,7 +2877,7 @@ utf8_iter 1.1.0
     Copyright Mozilla Foundation
 utf_types 1.0.0
     Copyright Mozilla Foundation
-uuid 1.29.1
+uuid 1.29.2
     Copyright (c) 2014 The Rust Project Developers
     Copyright (c) 2018 Ashley Mannix, Christopher Armstrong, Dylan DPC, Hunar Roop Kahlon
 walkdir 2.5.0
@@ -2910,6 +2910,7 @@ windows-numerics 0.3.1
 windows-registry 0.6.1
 windows-result 0.4.1
 windows-strings 0.5.1
+windows-sys 0.52.0
 windows-sys 0.59.0
 windows-sys 0.60.2
 windows-sys 0.61.2
@@ -3295,7 +3296,7 @@ Interface packages
 ------------------------------------------------------------------------
 
 @tauri-apps/api 2.12.4
-@tauri-apps/plugin-opener 2.7.2
+@tauri-apps/plugin-opener 2.7.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 
                                  Apache License
@@ -3548,7 +3549,7 @@ IN THE SOFTWARE.
     Copyright (c) 2021-present Floating UI contributors
 @floating-ui/utils 0.2.12
     Copyright (c) 2021-present Floating UI contributors
-@tauri-apps/plugin-opener 2.7.2
+@tauri-apps/plugin-opener 2.7.3
     Copyright (c) 2017 - Present Tauri Apps Contributors
 classnames 2.5.1
     Copyright (c) 2018 Jed Watson
@@ -3561,7 +3562,7 @@ prosemirror-commands 1.7.2
 prosemirror-dropcursor 1.8.4
 prosemirror-gapcursor 1.4.0
 prosemirror-history 1.5.1
-prosemirror-inputrules 1.5.1
+prosemirror-inputrules 1.6.0
 prosemirror-keymap 1.2.3
 prosemirror-markdown 1.13.9
 prosemirror-model 1.25.13
