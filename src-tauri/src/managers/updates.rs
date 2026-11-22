@@ -66,6 +66,16 @@ fn manifest_url(windows: bool) -> &'static str {
     }
 }
 
+/// The installer download of the latest release for the target OS. The
+/// README and the website link to the same files.
+fn installer_url(windows: bool) -> &'static str {
+    if windows {
+        "https://github.com/twistymaze/longhand/releases/latest/download/Longhand_x64-setup.exe"
+    } else {
+        "https://github.com/twistymaze/longhand/releases/latest/download/Longhand_aarch64.dmg"
+    }
+}
+
 /// True when a check error means "no update" (KTD2 of the Windows releases
 /// plan). On Windows, a release from before the unified release can have
 /// no Windows manifest or no Windows entry. On macOS, the
@@ -586,6 +596,13 @@ impl UpdateManager {
                 Effect::QuickCheck => self.start_check(QUICK_CHECK_TIMEOUT),
                 Effect::Download { version } => self.start_download(version),
                 Effect::SaveDelays => write_delays(&self.app, &delays),
+                Effect::OpenInstallerDownload => {
+                    use tauri_plugin_opener::OpenerExt;
+                    let url = installer_url(cfg!(windows));
+                    if let Err(e) = self.app.opener().open_url(url, None::<&str>) {
+                        log::error!("updates: could not open the installer download: {e}");
+                    }
+                }
                 // The `RunEvent::Exit` arm stops processing and installs
                 // (`install_at_exit`), then `relaunch::request_relaunch` starts
                 // the new build (on Windows, the installer starts it). A
@@ -854,6 +871,21 @@ mod tests {
         );
         for windows in [false, true] {
             assert!(tauri::Url::parse(manifest_url(windows)).is_ok());
+        }
+    }
+
+    #[test]
+    fn covers_ae4_each_os_downloads_its_own_installer_of_the_latest_release() {
+        assert_eq!(
+            installer_url(false),
+            "https://github.com/twistymaze/longhand/releases/latest/download/Longhand_aarch64.dmg"
+        );
+        assert_eq!(
+            installer_url(true),
+            "https://github.com/twistymaze/longhand/releases/latest/download/Longhand_x64-setup.exe"
+        );
+        for windows in [false, true] {
+            assert!(tauri::Url::parse(installer_url(windows)).is_ok());
         }
     }
 

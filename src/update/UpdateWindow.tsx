@@ -16,7 +16,7 @@ import { commands, events, type Choice, type UpdateState } from "../bindings";
 import { ChangelogMonths } from "../changelog/ChangelogMonths";
 import { byMonth, type ChangelogMonth, PAGES_URL } from "../changelog/months";
 import { WebLink } from "../settings/About";
-import { AppIcon } from "../settings/icons";
+import { AppIcon, ExternalIcon } from "../settings/icons";
 import { sentence } from "../processing/describe";
 import { Button, formatBytes } from "../settings/ui";
 import { isImeComposing } from "../lib/keyboard";
@@ -24,9 +24,19 @@ import { isImeComposing } from "../lib/keyboard";
 /// A prominent button is blue, as the default button of a macOS alert.
 type Action = { label: string; choice: Choice; prominent?: boolean };
 
+/// A third action at the left of the button row, as a macOS alert places
+/// it: a button, or a link that opens a page in the browser.
+type LeftAction = { label: string; choice: Choice; link?: boolean };
+
 /// The text and the buttons of one state. The last button is at the right,
 /// as the default button of a macOS alert.
-type View = { title: string; message?: string; progress?: { downloaded: number; total: number | null }; buttons: Action[] };
+type View = {
+  title: string;
+  message?: string;
+  progress?: { downloaded: number; total: number | null };
+  left?: LeftAction;
+  buttons: Action[];
+};
 
 const ok: Action ={ label: "OK", choice: "close", prominent: true };
 
@@ -38,6 +48,7 @@ export function viewOf(state: UpdateState): View | null {
       return {
         title: "A new version of Longhand is available",
         message: `Longhand ${state.version} is available. You have ${state.current}.`,
+        left: { label: "Download installer", choice: "download_installer", link: true },
         buttons: [
           { label: "Remind Me Later", choice: "remind_later" },
           { label: "Install and Relaunch", choice: "install", prominent: true },
@@ -53,6 +64,7 @@ export function viewOf(state: UpdateState): View | null {
       return {
         title: "The update could not be installed",
         message: `${sentence(state.error)} Your installed version did not change.`,
+        left: { label: "Download Installer", choice: "download_installer" },
         buttons: [
           { label: "Close", choice: "close" },
           { label: "Try Again", choice: "try_again", prominent: true },
@@ -80,6 +92,24 @@ export function viewOf(state: UpdateState): View | null {
     default:
       return null;
   }
+}
+
+/// A choice that opens a page in the browser, in the form of `WebLink`.
+/// `data-link` lets Return in a window that the user asked for click it, as
+/// Return opens a link in the list of changes.
+function ChoiceLink({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-link
+      onClick={onClick}
+      className="inline-flex items-center gap-0.5 rounded-[3px] text-[0.85rem] font-semibold whitespace-nowrap text-accent hover:underline active:opacity-70 outline-offset-2 focus-visible:outline-2 focus-visible:outline-accent"
+    >
+      {label}
+      <ExternalIcon className="size-3" />
+      <span className="sr-only"> (opens in your browser)</span>
+    </button>
+  );
 }
 
 /// Before the first bytes arrive, the text is a no-break space. The line then
@@ -211,6 +241,7 @@ export function UpdateWindow() {
   // The fraction is null only when bytes arrive and the server sent no size.
   // Before the first bytes arrive, the bar is empty.
   const progress = view.progress;
+  const left = view.left;
   const fraction = !progress
     ? null
     : progress.total
@@ -233,7 +264,7 @@ export function UpdateWindow() {
         if (isImeComposing(e)) return;
         if (e.key !== "Enter" && e.key !== " ") return;
         if (e.key === " " && withKey) return;
-        if (withKey && e.target instanceof Element && e.target.closest("section")) return;
+        if (withKey && e.target instanceof Element && e.target.closest("section, [data-link]")) return;
         e.preventDefault();
         if (e.key === "Enter" && withKey && defaultAction) choose(defaultAction.choice);
       }}
@@ -267,7 +298,16 @@ export function UpdateWindow() {
           </div>
         )}
         {state?.state === "offered" && <OfferedChanges key={state.version} version={state.version} />}
-        <div className="flex justify-end gap-2 pt-4">
+        {/* The offer's link and its two buttons do not fit on one line in
+            the 480px window, so the link has its own line at the left. */}
+        {left?.link && (
+          <div className="pt-2.5">
+            <ChoiceLink label={left.label} onClick={() => choose(left.choice)} />
+          </div>
+        )}
+        <div className="flex items-center gap-2 pt-4">
+          {left && !left.link && <Button onClick={() => choose(left.choice)}>{left.label}</Button>}
+          <div className="flex-1" />
           {view.buttons.map((b) => (
             <Button
               key={b.choice}
