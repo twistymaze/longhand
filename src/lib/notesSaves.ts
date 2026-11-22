@@ -44,3 +44,14 @@ export async function notesSaved(id: string): Promise<void> {
     await Promise.allSettled([...saves]);
   }
 }
+
+/// Send each waiting change, then wait until no save of the notes of any
+/// note runs. A quit calls this; the backend limits how long it waits.
+export async function allNotesSaved(): Promise<void> {
+  for (;;) {
+    for (const send of sends) send();
+    const saves = [...running.values()].flatMap((s) => [...s]);
+    if (saves.length === 0) return;
+    await Promise.allSettled(saves);
+  }
+}

@@ -11,7 +11,8 @@ import { Home } from "./home/Home";
 import { RecentChangesWindow } from "./changelog/RecentChangesWindow";
 import { LicencesWindow } from "./licences/LicencesWindow";
 import { ScopeTonesProvider } from "./lib/Labels";
-import { notesSaved } from "./lib/notesSaves";
+import { log, logText } from "./lib/log";
+import { allNotesSaved, notesSaved } from "./lib/notesSaves";
 import { formatChord } from "./lib/timeline";
 import { StillRecordingBar } from "./recording/StillRecording";
 import { useCapture } from "./recording/useCapture";
@@ -92,6 +93,20 @@ function MainWindow() {
     const report = commands.setShownNote(shown);
     if (previous !== null && previous !== shown) void report.then(() => leave(previous));
   }, [shown, leave]);
+  // A quit sends each change that the editors hold, waits for the notes
+  // saves, and then answers. The backend quits after the answer, or after
+  // its limit when no answer comes.
+  useEffect(() => {
+    const unlisten = events.quitRequested.listen(async () => {
+      try {
+        await allNotesSaved();
+      } catch (e) {
+        log("error", `the notes save at quit failed: ${logText(e)}`);
+      }
+      await commands.notesSavedForQuit();
+    });
+    return () => void unlisten.then((f) => f());
+  }, []);
   // A hide or close of the main window leaves the shown note too. The
   // window that comes back reports its note again.
   useEffect(() => {
