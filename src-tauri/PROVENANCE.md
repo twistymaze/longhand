@@ -137,3 +137,12 @@ Handy-derived modules in the application crate, one record per file (R27).
 - Copyright: Copyright (c) 2023-present Fastrepl, Inc.
 - Licence: MIT, licences/sources/anarlog-MIT.txt
 - Status: modified — the flow asks before it downloads, holds offers while busy, and installs at quit or at the next launch; the decisions are in `src/managers/updates/flow.rs`, which is Longhand's own
+
+## `src/quit.rs`
+
+- Repository: https://github.com/fastrepl/anarlog
+- Revision: 0a9b72568f5b23a32121a9cf55fe401cca845842
+- Source paths: `apps/desktop/src-tauri/src/lib.rs` (the save request to the main window at a quit, with a time limit in Rust), `plugins/dock/src/ext.rs` (`register_termination_handler`: `applicationShouldTerminate:` added to the app delegate class with `class_addMethod`)
+- Copyright: Copyright (c) 2023-present Fastrepl, Inc.
+- Licence: MIT, licences/sources/anarlog-MIT.txt
+- Status: modified — no `RunEvent::ExitRequested` or `prevent_exit()`: each quit path calls one function that waits on the async runtime for the answer command; `applicationShouldTerminate:` answers `NSTerminateLater` and replies after the save, so a logout waits; the delegate is set again after the method is added; the front end sends the waiting editor changes through the existing notes-save registry

@@ -131,4 +131,4 @@ tempfile = "3"
 # tauri-plugin-log builds, and the mock server of crates/summarize uses the
 # tokio network types. Cargo.lock holds both crates already.
 fern = "0.7"
-tokio = { version = "1", features = ["macros", "net", "io-util", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "net", "io-util", "rt-multi-thread", "test-util"] }

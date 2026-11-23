@@ -7,6 +7,7 @@ mod managers;
 #[cfg(target_os = "macos")]
 mod menu;
 mod notify_prompt;
+mod quit;
 mod relaunch;
 mod shortcut;
 mod startup;
@@ -189,6 +190,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             commands::webview_log::log_from_webview,
             commands::widget::widget_hide,
             commands::widget::widget_open_note,
+            quit::notes_saved_for_quit,
         ])
         .events(collect_events![
             managers::models::ModelDownloadEvent,
@@ -213,6 +215,7 @@ pub fn specta_builder() -> Builder<tauri::Wry> {
             widget::WidgetPointer,
             widget::WidgetShown,
             window::MainWindowHidden,
+            quit::QuitRequested,
             window::SettingsPaneRequested,
             managers::updates::UpdateStateChanged,
             managers::updates::UpdateOfferChanged,
@@ -436,6 +439,10 @@ fn setup_app(
     tray::create_tray(&handle)?;
     #[cfg(target_os = "macos")]
     menu::set_app_menu(&handle)?;
+    // A `terminate:` (the app menu Quit, Cmd+Q, the Dock Quit, a logout)
+    // saves the notes first.
+    #[cfg(target_os = "macos")]
+    quit::install_terminate_handler(&handle);
     shortcut::register(&handle);
     // After the tray exists, so the restored alert can mark it.
     alerts.restore(&handle, &capture);

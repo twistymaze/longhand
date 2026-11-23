@@ -526,6 +526,44 @@ describe("a leave that waits (R18)", () => {
     await waitFor(() => expect(args(tauri, "leave_note")).toEqual([{ noteId: "a" }]));
     await finish();
   });
+
+  test("a quit saves the notes that the user typed just before, then answers", async () => {
+    let finishSave = () => {};
+    const { tauri } = waitingLeave({
+      save_session_notes: () =>
+        new Promise((resolve) => {
+          finishSave = () => resolve({ kind: "saved", fingerprint: "f1" });
+        }),
+      notes_saved_for_quit: () => null,
+    });
+    await openAlpha(tauri);
+    const box = await screen.findByRole("textbox", { name: "My Notes" });
+    await userEvent.setup().type(box, "x");
+
+    // The answer waits for the save of the change, whether the quit or the
+    // editor's own wait sent it. A quit that does not send the change
+    // answers before the editor's wait sends it.
+    await act(() => tauri.emit("quit-requested", null));
+    await waitFor(() =>
+      expect(args(tauri, "save_session_notes")).toEqual([{ noteId: "a", markdown: "x", loadedFingerprint: "f" }]),
+    );
+    await act(async () => {});
+    expect(args(tauri, "notes_saved_for_quit")).toEqual([]);
+
+    await act(async () => finishSave());
+    await waitFor(() => expect(args(tauri, "notes_saved_for_quit")).toHaveLength(1));
+    // The quit sends nothing more.
+    expect(args(tauri, "save_session_notes")).toHaveLength(1);
+  });
+
+  test("a quit with no waiting change answers at once", async () => {
+    const { tauri } = waitingLeave({ notes_saved_for_quit: () => null });
+    await openAlpha(tauri);
+
+    await act(() => tauri.emit("quit-requested", null));
+    await waitFor(() => expect(args(tauri, "notes_saved_for_quit")).toHaveLength(1));
+    expect(args(tauri, "save_session_notes")).toEqual([]);
+  });
 });
 
 describe("a failed shortcut press", () => {

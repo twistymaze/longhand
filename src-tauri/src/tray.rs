@@ -268,7 +268,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             "settings" => open_settings(app),
             "check-updates" => crate::managers::updates::check_for_updates(app),
             "update" => crate::managers::updates::tray_open(app),
-            "quit" => app.exit(0),
+            "quit" => crate::quit::quit(app),
             _ => {}
         })
         .build(app)?;
