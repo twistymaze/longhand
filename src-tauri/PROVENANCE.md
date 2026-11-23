@@ -33,10 +33,10 @@ Handy-derived modules in the application crate, one record per file (R27).
 
 - Repository: https://github.com/cjpais/Handy
 - Revision: 8f9cf53cd1410cda26beea39ff802ac306e39585
-- Source paths: `src-tauri/src/lib.rs` (tray builder, Windows click convention)
+- Source paths: `src-tauri/src/lib.rs` (tray builder, Windows click convention); `src-tauri/src/tray.rs` at revision 9e57a0d7929fcc6417ea0d6e54c1b57f62635edd (`windows_taskbar_theme`, the read of `SystemUsesLightTheme`)
 - Copyright: Copyright (c) 2025 CJ Pais
 - Licence: MIT, licences/sources/Handy-MIT.txt
-- Status: modified — menu reduced to open, Settings and quit; the recording-time title is Longhand's own
+- Status: modified — menu reduced to open, Settings and quit; the recording-time title is Longhand's own; the taskbar theme read has no fallback to the window theme, and the registry watch that changes the icon is Longhand's own
 
 ## `src/managers/settings.rs`
 
