@@ -17,7 +17,7 @@ tags:
   - appkit
   - quit
   - notes-save
-check: "none: first case. A clippy disallowed-methods ban on AppHandle::exit and AppHandle::request_restart outside quit.rs and relaunch.rs is a possible check; it is a code change and goes in its own PR"
+check: "rules/quit-saves-notes.toml"
 ---
 
 # On macOS, AppHandle::exit does not send terminate:

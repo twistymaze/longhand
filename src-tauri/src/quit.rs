@@ -158,7 +158,13 @@ where
 
 /// Save the notes, then quit.
 pub fn quit(app: &AppHandle) {
-    save_notes_then(app, |app| app.exit(0));
+    save_notes_then(app, |app| {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the exit runs after save_notes_then saved the notes"
+        )]
+        app.exit(0);
+    });
 }
 
 /// The main window sent each waiting note change and the saves completed.
@@ -283,6 +289,10 @@ mod terminate {
         });
         if let Err(e) = queued {
             log::error!("quit: the terminate reply could not be queued: {e}");
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "queue_reply runs after save_notes_then saved the notes"
+            )]
             app.exit(0);
         }
     }

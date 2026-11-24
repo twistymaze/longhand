@@ -135,9 +135,17 @@ pub fn request_relaunch(app: &AppHandle) {
     crate::quit::save_notes_then(app, |app| {
         #[cfg(target_os = "macos")]
         if start_helper(app) {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "the exit runs after save_notes_then saved the notes"
+            )]
             app.exit(0);
             return;
         }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the restart runs after save_notes_then saved the notes"
+        )]
         app.request_restart();
     });
 }

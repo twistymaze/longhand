@@ -3,4 +3,6 @@
 disallowed-methods = [
   { path = "session_save::rename::Fs::rename_new", reason = "Use session_save::rename::rename_new_waiting: it waits while another app holds the folder, and it decides a new name only with is_name_taken (rules/rename-waits.toml)." },
   { path = "ort::session::Session::builder", reason = "Build each ONNX session through session_builder in crates/onnx: it keeps the session on CPU unless the caller adds Core ML (rules/ort-cpu-builder.toml)." },
+  { path = "tauri::AppHandle::exit", reason = "Use crate::quit::quit or crate::quit::save_notes_then, which save the notes first (rules/quit-saves-notes.toml)." },
+  { path = "tauri::AppHandle::request_restart", reason = "Use crate::quit::quit or crate::quit::save_notes_then, which save the notes first (rules/quit-saves-notes.toml)." },
 ]

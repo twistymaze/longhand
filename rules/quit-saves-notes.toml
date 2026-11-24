@@ -1,0 +1,10 @@
+family = "quit-saves-notes"
+rule = "Quit or restart the app only through crate::quit::quit or crate::quit::save_notes_then, which save the notes first; a direct AppHandle::exit or AppHandle::request_restart does not send terminate: on macOS and loses the waiting note change."
+state = "enforced"
+enforced_by = "cargo clippy --workspace --all-targets -- -D warnings"
+lessons = ["docs/solutions/integration-issues/app-exit-does-not-send-terminate-on-macos.md"]
+
+[[negative]]
+apply = "rules/negatives/quit-saves-notes.patch"
+run = "cargo clippy --workspace --all-targets -- -D warnings"
+expect = "use of a disallowed method `tauri::AppHandle::exit`"
