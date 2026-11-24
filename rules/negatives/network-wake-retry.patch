@@ -1,0 +1,13 @@
+diff --git a/src-tauri/src/managers/updates.rs b/src-tauri/src/managers/updates.rs
+index ae7fd1b1..8dbec093 100644
+--- a/src-tauri/src/managers/updates.rs
++++ b/src-tauri/src/managers/updates.rs
+@@ -408,7 +408,7 @@ async fn retry_not_reached<T, E, F: Future<Output = Result<T, E>>>(
+ 
+ /// True when the request got no connection, for example with no network.
+ fn no_connection(e: &tauri_plugin_updater::Error) -> bool {
+-    matches!(e, tauri_plugin_updater::Error::Reqwest(e) if e.is_connect())
++    matches!(e, tauri_plugin_updater::Error::Network(_))
+ }
+ 
+ /// The error with each of its causes. reqwest's own text is often only
