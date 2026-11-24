@@ -363,8 +363,68 @@ async fn check(app: &AppHandle, timeout: Duration) -> Result<Option<Update>, Str
             log::info!("updates: no Windows update in the latest release: {e}");
             Ok(None)
         }
-        result => result.map_err(|e| e.to_string()),
+        result => result.map_err(|e| {
+            // The manager logs the error text. Log the causes that it omits.
+            let causes = with_causes(&e);
+            if causes != e.to_string() {
+                log::info!("updates: the cause of the check failure: {causes}");
+            }
+            e.to_string()
+        }),
     }
+}
+
+/// The waits before each new try of a download that got no connection:
+/// about 2 minutes in total. A Mac that wakes from sleep can have no network
+/// for some seconds, and the user can click Install in that time.
+const DOWNLOAD_RETRY_WAITS: [Duration; 6] = [
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+];
+
+/// Run `attempt`, and run it again after each of `waits` while it fails
+/// with an error that `not_reached` accepts. Other errors and the error of
+/// the last try go to the caller.
+async fn retry_not_reached<T, E, F: Future<Output = Result<T, E>>>(
+    waits: &[Duration],
+    not_reached: impl Fn(&E) -> bool,
+    mut attempt: impl FnMut() -> F,
+) -> Result<T, E> {
+    let mut waits = waits.iter();
+    loop {
+        match attempt().await {
+            Err(e) if not_reached(&e) => match waits.next() {
+                Some(wait) => tokio::time::sleep(*wait).await,
+                None => return Err(e),
+            },
+            result => return result,
+        }
+    }
+}
+
+/// True when the request got no connection, for example with no network.
+fn no_connection(e: &tauri_plugin_updater::Error) -> bool {
+    matches!(e, tauri_plugin_updater::Error::Reqwest(e) if e.is_connect())
+}
+
+/// The error with each of its causes. reqwest's own text is often only
+/// "error sending request", which does not tell why.
+fn with_causes(e: &dyn std::error::Error) -> String {
+    let mut text = e.to_string();
+    let mut cause = e.source();
+    while let Some(c) = cause {
+        let part = c.to_string();
+        if !text.ends_with(&part) {
+            text.push_str(": ");
+            text.push_str(&part);
+        }
+        cause = c.source();
+    }
+    text
 }
 
 /// Write the attempt record, then install. On Windows a started install
@@ -663,21 +723,28 @@ impl UpdateManager {
             .filter(|u| u.version == version)
             .ok_or_else(|| format!("no update to {version} is known; check again"))?;
         let dir = updates_dir(&self.app).ok_or("the app has no cache folder")?;
-        let mut downloaded = 0u64;
-        let mut sent = 0u64;
-        let bytes = update
-            .download(
-                |chunk, total| {
-                    downloaded += chunk as u64;
-                    if downloaded - sent >= PROGRESS_STEP {
-                        sent = downloaded;
-                        self.send(Message::Progress { downloaded, total });
-                    }
-                },
-                || {},
-            )
-            .await
-            .map_err(|e| e.to_string())?;
+        let bytes = retry_not_reached(&DOWNLOAD_RETRY_WAITS, no_connection, || async {
+            let mut downloaded = 0u64;
+            let mut sent = 0u64;
+            let result = update
+                .download(
+                    |chunk, total| {
+                        downloaded += chunk as u64;
+                        if downloaded - sent >= PROGRESS_STEP {
+                            sent = downloaded;
+                            self.send(Message::Progress { downloaded, total });
+                        }
+                    },
+                    || {},
+                )
+                .await;
+            if let Err(e) = &result {
+                log::info!("updates: a download try failed: {}", with_causes(e));
+            }
+            result
+        })
+        .await
+        .map_err(|e| e.to_string())?;
         archive::save(&dir, version, &bytes, &update.signature)
     }
 
@@ -857,6 +924,71 @@ mod tests {
         assert!(offer_changed(&mut last, Some("1.2.16")), "a newer offer");
         assert!(offer_changed(&mut last, None), "the offer goes away");
         assert!(!offer_changed(&mut last, None), "still no offer");
+    }
+
+    const OFFLINE: &str = "no connection";
+    const WAITS: [Duration; 3] = [
+        Duration::from_secs(2),
+        Duration::from_secs(5),
+        Duration::from_secs(10),
+    ];
+
+    /// Each call takes the next result of `results`.
+    async fn retried(results: &[Result<u8, &'static str>]) -> (Result<u8, &'static str>, usize) {
+        let mut tries = 0;
+        let result = retry_not_reached(
+            &WAITS,
+            |e: &&str| *e == OFFLINE,
+            || {
+                tries += 1;
+                std::future::ready(results[tries - 1])
+            },
+        )
+        .await;
+        (result, tries)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_download_with_no_network_after_a_wake_tries_again_until_the_network_is_back() {
+        let start = tokio::time::Instant::now();
+        let (result, tries) = retried(&[Err(OFFLINE), Err(OFFLINE), Ok(7)]).await;
+        assert_eq!(result, Ok(7));
+        assert_eq!(tries, 3);
+        assert_eq!(start.elapsed(), WAITS[0] + WAITS[1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_download_that_never_gets_a_connection_fails_after_the_last_wait() {
+        let start = tokio::time::Instant::now();
+        let (result, tries) = retried(&[Err(OFFLINE); 4]).await;
+        assert_eq!(result, Err(OFFLINE));
+        assert_eq!(tries, 4);
+        assert_eq!(start.elapsed(), WAITS.iter().sum::<Duration>());
+    }
+
+    #[tokio::test]
+    async fn a_refused_connection_counts_as_no_connection_and_its_log_names_the_cause() {
+        // A closed local port refuses at once, as a Mac with no network does.
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let e = reqwest::get(format!("http://127.0.0.1:{port}/Longhand.app.tar.gz"))
+            .await
+            .unwrap_err();
+        let e = tauri_plugin_updater::Error::from(e);
+        assert!(no_connection(&e), "{e}");
+        assert!(with_causes(&e).len() > e.to_string().len(), "{e}");
+        let other = tauri_plugin_updater::Error::Network("status 404".into());
+        assert!(!no_connection(&other));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_download_error_with_a_connection_is_not_tried_again() {
+        let (result, tries) = retried(&[Err("bad signature"), Ok(7)]).await;
+        assert_eq!(result, Err("bad signature"));
+        assert_eq!(tries, 1);
     }
 
     #[test]

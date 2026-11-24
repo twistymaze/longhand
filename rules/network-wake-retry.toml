@@ -1,0 +1,10 @@
+family = "network-wake-retry"
+rule = "A network request whose failure shows a message tries again after a connection failure (no network after a wake); the update download does this through retry_not_reached and no_connection in src-tauri/src/managers/updates.rs."
+state = "enforced"
+enforced_by = "cargo test -p longhand --lib managers::updates"
+lessons = ["docs/solutions/logic-errors/update-download-with-no-network-after-a-wake-failed-at-once.md"]
+
+[[negative]]
+apply = "rules/negatives/network-wake-retry.patch"
+run = "cargo test -p longhand --lib managers::updates"
+expect = "a_refused_connection_counts_as_no_connection_and_its_log_names_the_cause"
