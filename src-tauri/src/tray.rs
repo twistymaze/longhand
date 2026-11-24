@@ -237,10 +237,12 @@ fn system_uses_light_theme() -> Option<u32> {
 /// window open. When the wait fails, the image from launch stays.
 #[cfg(windows)]
 fn watch_taskbar_theme(app: &AppHandle, shown: &'static [u8]) {
-    use windows::Win32::Foundation::ERROR_SUCCESS;
+    use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, WAIT_OBJECT_0};
     use windows::Win32::System::Registry::{
         HKEY, REG_NOTIFY_CHANGE_LAST_SET, RegNotifyChangeKeyValue,
     };
+    use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+    use windows::core::PCWSTR;
 
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -255,35 +257,54 @@ fn watch_taskbar_theme(app: &AppHandle, shown: &'static [u8]) {
                     return;
                 }
             };
+            // SAFETY: no attributes and no name; an auto-reset event that
+            // starts unsignalled.
+            let event = match unsafe { CreateEventW(None, false, false, PCWSTR::null()) } {
+                Ok(event) => event,
+                Err(e) => {
+                    log::warn!("the tray cannot watch the taskbar colour: {e}");
+                    return;
+                }
+            };
+            // Each pass starts the watch before it reads the value, so a
+            // change during the read or the icon change signals the event
+            // and is not lost. The first pass also catches a change after
+            // the launch read.
             let mut shown = shown;
-            loop {
-                // SAFETY: `key` is an open key that this thread owns for the
-                // whole call. With no event and no async flag, the call waits
-                // until a value of the key changes.
+            let failure = loop {
+                // SAFETY: `key` and `event` stay open while this thread runs.
+                // The asynchronous call returns at once and signals `event`
+                // at the next change of a value of the key.
                 let status = unsafe {
                     RegNotifyChangeKeyValue(
                         HKEY(key.raw_handle()),
                         false,
                         REG_NOTIFY_CHANGE_LAST_SET,
-                        None,
-                        false,
+                        Some(event),
+                        true,
                     )
                 };
                 if status != ERROR_SUCCESS {
-                    log::warn!("the tray stopped watching the taskbar colour: {status:?}");
-                    return;
+                    break format!("{status:?}");
                 }
-                let Some(icon) = icon_change(shown, system_uses_light_theme()) else {
-                    continue;
-                };
-                let Some(tray) = app.tray_by_id("main") else {
-                    continue;
-                };
-                match Image::from_bytes(icon).and_then(|image| tray.set_icon(Some(image))) {
-                    Ok(()) => shown = icon,
-                    Err(e) => log::warn!("the tray icon could not change: {e}"),
+                if let (Some(icon), Some(tray)) = (
+                    icon_change(shown, system_uses_light_theme()),
+                    app.tray_by_id("main"),
+                ) {
+                    match Image::from_bytes(icon).and_then(|image| tray.set_icon(Some(image))) {
+                        Ok(()) => shown = icon,
+                        Err(e) => log::warn!("the tray icon could not change: {e}"),
+                    }
                 }
-            }
+                // SAFETY: `event` is an open event handle.
+                let waited = unsafe { WaitForSingleObject(event, INFINITE) };
+                if waited != WAIT_OBJECT_0 {
+                    break format!("{waited:?}");
+                }
+            };
+            log::warn!("the tray stopped watching the taskbar colour: {failure}");
+            // SAFETY: `event` is open, and nothing uses it after this call.
+            let _ = unsafe { CloseHandle(event) };
         });
     if let Err(e) = spawned {
         log::warn!("the tray cannot watch the taskbar colour: {e}");
