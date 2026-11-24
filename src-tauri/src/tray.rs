@@ -14,7 +14,13 @@ use tauri_specta::Event as _;
 use crate::managers::capture::CaptureManager;
 use crate::window::{open_settings, show_main_window};
 
+/// The black glyph: the macOS template image, and the Windows image for a
+/// light taskbar.
 const TRAY_ICON: &[u8] = include_bytes!("../icons/tray.png");
+/// The same glyph in white, for a dark Windows taskbar. Windows has no
+/// template images, so it shows the black glyph as it is.
+#[cfg_attr(not(windows), allow(dead_code))]
+const TRAY_ICON_WHITE: &[u8] = include_bytes!("../icons/tray-white.png");
 const OPEN: &str = "Open Longhand";
 const ALERT_TITLE: &str = "Interrupted";
 /// The title while the open note is paused (R10), in place of the time.
@@ -193,6 +199,118 @@ fn show_recording_page(app: &AppHandle) {
     }
 }
 
+/// The tray image for the Windows taskbar, from its `SystemUsesLightTheme`
+/// value. Only 1 is a light taskbar. The value is absent on Windows 10,
+/// whose default taskbar is dark.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn taskbar_icon(system_uses_light_theme: Option<u32>) -> &'static [u8] {
+    match system_uses_light_theme {
+        Some(1) => TRAY_ICON,
+        _ => TRAY_ICON_WHITE,
+    }
+}
+
+/// The new tray image after a taskbar change, or `None` when `shown` is
+/// still correct.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn icon_change(shown: &[u8], system_uses_light_theme: Option<u32>) -> Option<&'static [u8]> {
+    let icon = taskbar_icon(system_uses_light_theme);
+    (icon != shown).then_some(icon)
+}
+
+/// The registry key that holds the Windows colour modes.
+#[cfg(windows)]
+const PERSONALIZE: &str = r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
+
+/// The taskbar colour mode: `SystemUsesLightTheme`, which is separate from
+/// the app colour mode (`AppsUseLightTheme`). As in Handy's tray.
+#[cfg(windows)]
+fn system_uses_light_theme() -> Option<u32> {
+    winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+        .open_subkey(PERSONALIZE)
+        .and_then(|key| key.get_value::<u32, _>("SystemUsesLightTheme"))
+        .ok()
+}
+
+/// Change the tray image when the user changes the taskbar colour. A
+/// thread waits for a change of the colour mode key, so it works with no
+/// window open. When the wait fails, the image from launch stays.
+#[cfg(windows)]
+fn watch_taskbar_theme(app: &AppHandle, shown: &'static [u8]) {
+    use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, WAIT_OBJECT_0};
+    use windows::Win32::System::Registry::{
+        HKEY, REG_NOTIFY_CHANGE_LAST_SET, RegNotifyChangeKeyValue,
+    };
+    use windows::Win32::System::Threading::{CreateEventW, INFINITE, WaitForSingleObject};
+    use windows::core::PCWSTR;
+
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("tray-taskbar-theme".into())
+        .spawn(move || {
+            let key = match winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER)
+                .open_subkey(PERSONALIZE)
+            {
+                Ok(key) => key,
+                Err(e) => {
+                    log::warn!("the tray cannot watch the taskbar colour: {e}");
+                    return;
+                }
+            };
+            // SAFETY: no attributes and no name; an auto-reset event that
+            // starts unsignalled.
+            let event = match unsafe { CreateEventW(None, false, false, PCWSTR::null()) } {
+                Ok(event) => event,
+                Err(e) => {
+                    log::warn!("the tray cannot watch the taskbar colour: {e}");
+                    return;
+                }
+            };
+            // Each pass starts the watch before it reads the value, so a
+            // change during the read or the icon change signals the event
+            // and is not lost. The first pass also catches a change after
+            // the launch read.
+            let mut shown = shown;
+            let failure = loop {
+                // SAFETY: `key` and `event` stay open while this thread runs.
+                // The asynchronous call returns at once and signals `event`
+                // at the next change of a value of the key.
+                let status = unsafe {
+                    RegNotifyChangeKeyValue(
+                        HKEY(key.raw_handle()),
+                        false,
+                        REG_NOTIFY_CHANGE_LAST_SET,
+                        Some(event),
+                        true,
+                    )
+                };
+                if status != ERROR_SUCCESS {
+                    break format!("{status:?}");
+                }
+                if let (Some(icon), Some(tray)) = (
+                    icon_change(shown, system_uses_light_theme()),
+                    app.tray_by_id("main"),
+                ) {
+                    match Image::from_bytes(icon).and_then(|image| tray.set_icon(Some(image))) {
+                        Ok(()) => shown = icon,
+                        Err(e) => log::warn!("the tray icon could not change: {e}"),
+                    }
+                }
+                // SAFETY: `event` is an open event handle.
+                let waited = unsafe { WaitForSingleObject(event, INFINITE) };
+                if waited != WAIT_OBJECT_0 {
+                    break format!("{waited:?}");
+                }
+            };
+            log::warn!("the tray stopped watching the taskbar colour: {failure}");
+            // SAFETY: `event` is open, and nothing uses it after this call.
+            let _ = unsafe { CloseHandle(event) };
+        });
+    if let Err(e) = spawned {
+        log::warn!("the tray cannot watch the taskbar colour: {e}");
+    }
+}
+
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     app.manage(TitleState(Mutex::new(TrayTitle::default())));
     let open = MenuItem::with_id(app, "open", OPEN, true, None::<&str>)?;
@@ -220,8 +338,12 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&quit)?;
 
+    #[cfg(windows)]
+    let icon = taskbar_icon(system_uses_light_theme());
+    #[cfg(not(windows))]
+    let icon = TRAY_ICON;
     let mut builder = TrayIconBuilder::with_id("main")
-        .icon(Image::from_bytes(TRAY_ICON)?)
+        .icon(Image::from_bytes(icon)?)
         .icon_as_template(true)
         .tooltip("Longhand")
         .menu(&menu);
@@ -273,6 +395,8 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         })
         .build(app)?;
     app.manage(tray);
+    #[cfg(windows)]
+    watch_taskbar_theme(app, icon);
     Ok(())
 }
 
@@ -420,6 +544,33 @@ fn show_title(_app: &AppHandle) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_light_taskbar_gets_the_black_icon() {
+        assert_eq!(taskbar_icon(Some(1)), TRAY_ICON);
+        assert_eq!(taskbar_icon(Some(0)), TRAY_ICON_WHITE);
+        // The value is absent on a Windows 10 dark taskbar.
+        assert_eq!(taskbar_icon(None), TRAY_ICON_WHITE);
+        assert_eq!(taskbar_icon(Some(2)), TRAY_ICON_WHITE);
+    }
+
+    #[test]
+    fn a_taskbar_change_sets_a_new_icon_only_when_the_icon_changes() {
+        assert_eq!(icon_change(TRAY_ICON, Some(0)), Some(TRAY_ICON_WHITE));
+        assert_eq!(icon_change(TRAY_ICON_WHITE, Some(1)), Some(TRAY_ICON));
+        assert_eq!(icon_change(TRAY_ICON_WHITE, Some(0)), None);
+        assert_eq!(icon_change(TRAY_ICON, Some(1)), None);
+    }
+
+    #[test]
+    fn both_tray_icons_are_44_pixel_rgba_images() {
+        for bytes in [TRAY_ICON, TRAY_ICON_WHITE] {
+            let image = Image::from_bytes(bytes).expect("the tray icon decodes");
+            assert_eq!((image.width(), image.height()), (44, 44));
+            assert_eq!(image.rgba().len(), 44 * 44 * 4);
+        }
+        assert_ne!(TRAY_ICON, TRAY_ICON_WHITE);
+    }
 
     #[test]
     fn the_widget_item_names_the_next_press_and_is_unavailable_with_no_open_note() {
