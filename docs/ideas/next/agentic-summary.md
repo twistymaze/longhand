@@ -5,7 +5,6 @@ area: transcript-and-summary
 added: 2026-09-28
 source: "the user, in the idea review of 2026-09-28; includes the earlier idea 'carry context from the previous session'"
 related: [summary-prompt-by-note-type, note-folders, library-and-browsing]
-plan: docs/plans/2026-11-20-1211-chore-summary-agent-foundation-plan.md
 ---
 
 # A summary agent with tools
@@ -30,3 +29,4 @@ The summary model works as an agent. It can call tools while it writes the summa
 - The fixed rules of the summary prompts (no "Speaker N", no guessed names, the transcript as quoted data) still apply.
 - Out of scope: tools that reach outside the machine, such as a calendar, and a general plug-in system for tools (MCP or other). The user wants to keep those as a separate idea. They touch the Ruled out items "Calendar integration" and "Anything that writes into Longhand from outside".
 - 2026-10-18: The research of that date recommends Rig with a small set of read-only file tools that Longhand writes (`list`, `read`, `glob`, `grep`), confined to the storage folder, and no shell tool. The first step is the Rig engine plan (`docs/plans/2026-10-18-0955-feat-rig-engine-and-provider-presets-plan.md`). This plan also adds the Anthropic format for Custom and measures prompt caching.
+- 2026-11-25: PR #113 merged the foundation (plan `docs/plans/2026-11-20-1211-chore-summary-agent-foundation-plan.md`): the read-only note tools, the summary agent, a timeline pipeline with a review pass, and the `summary-lab` dev tool. The app does not use them yet. On 12 held-out notes the pipeline scored higher than the current method with two large-context models. At 32k it wrote a summary for every note, where the current method failed on the two longest notes. In 34 blind pairs, the user preferred neither method clearly: the longer summary won. The next step is a plan that replaces the current method in the app with the pipeline (no setting) and keeps the agent's tools for the writer.
