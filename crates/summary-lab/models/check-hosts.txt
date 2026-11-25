@@ -1,0 +1,32 @@
+# Models for `summary-lab check-hosts`. OpenRouter lists each one with
+# tool support (2026-11-21). The check shows whether a host that stores no
+# request data runs the tool calls.
+
+# Strong hosted models: the models that the user uses
+anthropic/claude-haiku-5.5
+openai/gpt-6-luna
+
+# Larger hosted models
+anthropic/claude-sonnet-5.5
+openai/gpt-6.1-terra
+
+# Other models. `litellm:` sends to the user's LiteLLM server.
+litellm:halogen-qwen3.8-flash-next
+google/gemini-3.8-flash
+deepseek/deepseek-v4.1-flash
+
+# Open-weight models of about 20B parameters
+openai/gpt-oss-20b
+qwen/qwen3.8-27b
+qwen/qwen3.6-35b-a3b
+qwen/qwen3-30b-a3b-instruct-2507
+google/gemma-4-26b-a4b-it
+google/gemma-4-31b-it
+mistralai/ministral-14b-2512
+liquid/lfm-2.5-24b-a2b
+
+# Open-weight models of about 8B parameters
+qwen/qwen3.5-9b
+ibm-granite/granite-4.2-8b
+mistralai/ministral-8b-2512
+meta-llama/llama-3.1-8b-instruct

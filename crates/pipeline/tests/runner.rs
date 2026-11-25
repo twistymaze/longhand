@@ -491,6 +491,7 @@ fn endpoint(base: &str) -> SummaryEndpoint {
         thinking: summarize::Thinking::default(),
         requests_at_once: 1,
         retry_waits: Vec::new(),
+        openrouter: None,
     }
 }
 
@@ -6074,6 +6075,7 @@ async fn a_summary_waits_for_the_endpoint_to_come_back_and_completes() {
     *r.script.summary.lock().unwrap() = Some(Ok(SummaryEndpoint {
         // The tries go on for 60 s, much longer than the endpoint is closed.
         retry_waits: vec![std::time::Duration::from_millis(50); 1_200],
+        openrouter: None,
         ..endpoint(&format!("http://127.0.0.1:{port}/v1"))
     }));
     let events = Arc::clone(&r.events);

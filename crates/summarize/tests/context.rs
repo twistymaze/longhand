@@ -532,6 +532,32 @@ fn the_catalog_gives_the_output_maximum_of_a_known_hosted_model() {
     );
 }
 
+/// The summary agent takes the input limit of a known hosted model from
+/// Rig's catalog, also for OpenAI and Anthropic, which report no limit.
+#[test]
+fn the_catalog_gives_the_input_limit_of_a_known_hosted_model() {
+    assert_eq!(
+        context::catalog_input_limit(Provider::Anthropic, "claude-haiku-4-5"),
+        Some(200_000)
+    );
+    assert_eq!(
+        context::catalog_input_limit(Provider::OpenAi, "gpt-6-luna"),
+        Some(922_000)
+    );
+    assert_eq!(
+        context::catalog_input_limit(Provider::OpenRouter, "anthropic/claude-haiku-5.5"),
+        Some(1_000_000)
+    );
+    assert_eq!(
+        context::catalog_input_limit(Provider::Anthropic, "claude-unknown-9"),
+        None
+    );
+    assert_eq!(
+        context::catalog_input_limit(Provider::Custom, "gpt-6-luna"),
+        None
+    );
+}
+
 // ------------------------------------------------------- reply allowance (U4)
 
 use summarize::tokens::{Allowance, ReplyKind, reply_allowance, split_reserve, with_margin};

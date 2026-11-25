@@ -441,6 +441,7 @@ fn endpoint_from_settings(
         thinking,
         requests_at_once,
         retry_waits: summarize::client::RETRY_WAITS.to_vec(),
+        openrouter: None,
     })
 }
 
