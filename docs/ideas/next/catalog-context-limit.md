@@ -5,6 +5,7 @@ area: transcript-and-summary
 added: 2026-11-21
 source: "summary agent foundation session, 2026-11-21 (KTD14 of docs/plans/2026-11-20-1211-chore-summary-agent-foundation-plan.md)"
 related: [agentic-summary]
+plan: docs/plans/2026-11-25-1735-feat-summary-pipeline-in-app-plan.md
 ---
 
 # Context limit from Rig's catalog in automatic detection

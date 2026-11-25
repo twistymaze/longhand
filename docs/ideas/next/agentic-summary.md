@@ -5,6 +5,7 @@ area: transcript-and-summary
 added: 2026-09-28
 source: "the user, in the idea review of 2026-09-28; includes the earlier idea 'carry context from the previous session'"
 related: [summary-prompt-by-note-type, note-folders, library-and-browsing]
+plan: docs/plans/2026-11-25-1735-feat-summary-pipeline-in-app-plan.md
 ---
 
 # A summary agent with tools
