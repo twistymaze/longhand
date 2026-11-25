@@ -70,7 +70,7 @@ The pipeline was built for the lab. It reads notes from a saved storage folder, 
 
 **Unchanged behaviour**
 
-- R16. The prompts, the Background, the note details and the user's summary prompt reach the model as the lab measured. The user's prompt text goes to the writer and the merge step only.
+- R16. The prompts, the Background, the note details and the user's summary prompt reach the model as the lab measured. The user's prompt text goes to the writer, the merge step and the title request only.
 - R17. A note with nothing transcribed gets today's text and sends no request.
 - R18. The store holds no note text after the save and the title, as today.
 - R19. No time limit stops a run beyond today's request deadlines.
@@ -303,6 +303,7 @@ U1 and U2 change `crates/summary-agent` and can go first. U3 builds the turn lay
 - Covers R5: the requests hold no text of another note in the storage folder.
 - Covers R7: cancel during the review publishes nothing and gives `Cancelled`.
 - Covers R6: a run that fails at the writer sends only the writer turn and later turns on Retry.
+- Covers R6: a runner stopped after one finished turn, then a new runner on the same store, skips that turn and continues.
 - Covers R10: a "prompt too long" reply stops with the Context limit message; a prompt and Background that do not fit alone give the prompt-too-long message; a deadline gives the no-reply-in-time message; a first probe that cannot connect fails before `budget` is saved.
 - Covers R10: a writer cut off, then a no-tools writer with an empty reply, gives "the model did not write a summary", not the cut-off message.
 - Covers R11: the title job after the summary sends one title request built from the writer turn.
