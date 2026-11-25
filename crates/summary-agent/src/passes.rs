@@ -6,16 +6,19 @@
 //! - The review pass: auditors check the draft summary against the
 //!   transcript, part by part, each in a new context with no tools. Then a
 //!   reviser corrects the draft with their findings ([`Pass::review`]).
-
-use std::path::PathBuf;
+//!
+//! The passes read the transcript from the note in memory, not from a
+//! storage folder (KTD2).
 
 use summarize::chunk::OVERLAP;
 use summarize::client::{Label, Message};
-use summarize::prompts::{self, Details, UserText};
+use summarize::prompts::{self, UserText};
 use summarize::tokens::BYTES_PER_TOKEN;
 
-use crate::shapes::{free_tokens, transcript_lines};
-use crate::{Agent, HistoryPolicy, Limits, Model, Outcome, RunResult, RunTotals, ToolSet};
+use crate::shapes::free_tokens;
+use crate::{
+    Agent, HistoryPolicy, Limits, MemoryNoteSource, Model, Outcome, RunResult, RunTotals, ToolSet,
+};
 
 /// The smallest room in tokens for transcript lines in one audit.
 const AUDIT_ROOM_MIN: u64 = 1_000;
@@ -23,11 +26,10 @@ const AUDIT_ROOM_MIN: u64 = 1_000;
 /// The data of the passes of one note.
 pub struct Pass<'a> {
     pub model: &'a dyn Model,
-    pub root: PathBuf,
-    pub note_id: String,
+    /// The note: its transcript, manual notes and details. A writer can
+    /// read it as a tool source.
+    pub note: MemoryNoteSource,
     pub background: String,
-    pub details: Details,
-    pub manual_notes: String,
     /// The summary prompt's text.
     pub text: String,
     pub limits: Limits,
@@ -54,7 +56,7 @@ impl Pass<'_> {
     fn user(&self) -> UserText<'_> {
         UserText {
             background: &self.background,
-            details: &self.details,
+            details: &self.note.details,
         }
     }
 
@@ -101,7 +103,7 @@ impl Pass<'_> {
     /// notes and the people list, and at most four times the output
     /// maximum, because a timeline is about a quarter of its lines.
     fn part_lines(&self, lines: usize, chars: usize) -> usize {
-        let notes = (self.manual_notes.len() as f64 / BYTES_PER_TOKEN) as u64;
+        let notes = (self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN) as u64;
         let mut tokens = free_tokens(&self.limits).saturating_sub(notes + PEOPLE_TOKENS);
         if let Some(output) = self.limits.output_max {
             tokens = tokens.min(u64::from(output) * 4);
@@ -137,7 +139,7 @@ impl Pass<'_> {
         let mut first = 1;
         while first <= lines {
             let last = (first + size - 1).min(lines);
-            let text = match transcript_lines(&self.root, &self.note_id, first, last) {
+            let text = match self.note.lines(first, last) {
                 Ok(text) => text,
                 Err(error) => return failed(done, error),
             };
@@ -146,7 +148,7 @@ impl Pass<'_> {
                 last,
                 lines,
                 &text,
-                &self.manual_notes,
+                &self.note.manual_notes,
                 &people,
                 self.user(),
             );
@@ -191,15 +193,15 @@ impl Pass<'_> {
                 format!("People:\n{people}\n\n{timeline}")
             }
         };
-        let notes = self.manual_notes.len() as f64 / BYTES_PER_TOKEN;
+        let notes = self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN;
         let room = free_tokens(&self.limits).saturating_sub(notes as u64);
         let tokens = |text: &str| (text.len() as f64 / BYTES_PER_TOKEN) as u64;
         let whole = with_people(&parts.join("\n"));
         if tokens(&whole) <= room * 2 / 3 {
             let messages = prompts::from_timeline(
                 &whole,
-                &self.manual_notes,
-                &self.note_id,
+                &self.note.manual_notes,
+                &self.note.note_id,
                 None,
                 &self.text,
                 self.user(),
@@ -217,8 +219,8 @@ impl Pass<'_> {
         for (index, group) in groups.iter().enumerate() {
             let messages = prompts::from_timeline(
                 &with_people(group),
-                &self.manual_notes,
-                &self.note_id,
+                &self.note.manual_notes,
+                &self.note.note_id,
                 Some((index, count, words)),
                 prompts::GROUP_TEXT,
                 self.user(),
@@ -246,7 +248,7 @@ impl Pass<'_> {
             }
         }
         let notes: Vec<&str> = group_notes.iter().map(String::as_str).collect();
-        let messages = prompts::step_merge(&notes, &self.note_id, &self.text, self.user());
+        let messages = prompts::step_merge(&notes, &self.note.note_id, &self.text, self.user());
         join(done, self.writer(tools, messages, "merge").await)
     }
 
@@ -259,7 +261,7 @@ impl Pass<'_> {
             Ok(tools) => tools,
             Err(error) => return self.kept(draft, RunResult::empty(), error),
         };
-        let fixed = (draft.len() + self.manual_notes.len()) as f64 / BYTES_PER_TOKEN;
+        let fixed = (draft.len() + self.note.manual_notes.len()) as f64 / BYTES_PER_TOKEN;
         let room = free_tokens(&self.limits).saturating_sub(fixed as u64);
         let mut done = RunResult::empty();
         if room < AUDIT_ROOM_MIN || lines == 0 {
@@ -273,7 +275,7 @@ impl Pass<'_> {
         while first <= lines {
             let last = (first + part - 1).min(lines);
             number += 1;
-            let text = match transcript_lines(&self.root, &self.note_id, first, last) {
+            let text = match self.note.lines(first, last) {
                 Ok(text) => text,
                 Err(error) => return self.kept(draft, done, error),
             };
@@ -283,7 +285,7 @@ impl Pass<'_> {
                 lines,
                 &text,
                 draft,
-                &self.manual_notes,
+                &self.note.manual_notes,
                 self.user(),
             );
             let result = self
@@ -312,8 +314,12 @@ impl Pass<'_> {
             done.detail = None;
             return done;
         }
-        let messages =
-            prompts::revise(draft, &findings.join("\n"), &self.manual_notes, self.user());
+        let messages = prompts::revise(
+            draft,
+            &findings.join("\n"),
+            &self.note.manual_notes,
+            self.user(),
+        );
         let result = self.agent(&no_tools, messages, "reviser").await;
         let reply = result
             .summary

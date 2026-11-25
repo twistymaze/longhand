@@ -36,7 +36,7 @@ use summary_agent::passes::{self, Pass};
 use summary_agent::shapes::{
     ReadPart, Steps, largest_part, reader_notes_tokens, run_steps, transcript_fits,
 };
-use summary_agent::{Agent, Limits, NoteSource, Outcome, RunResult, ToolSet};
+use summary_agent::{Agent, Limits, MemoryNoteSource, NoteSource, Outcome, RunResult, ToolSet};
 
 use crate::run_config::{RunConfig, Shape, model_folder, result_chars};
 use crate::snapshot::{self, Selected, Skipped};
@@ -866,6 +866,18 @@ fn part(root: &Path, note: &ManifestNote, name: &str) -> String {
     std::fs::read_to_string(root.join(&note.note.folder).join(name)).unwrap_or_default()
 }
 
+/// The start time of the note `note_id` in the storage folder `root`, as
+/// get note gives it.
+fn started(root: &Path, note_id: &str) -> Result<String, String> {
+    let output = NoteTools::new(0)
+        .call(root, "get_note", serde_json::json!({"note_id": note_id}))
+        .map_err(|e| format!("the details of {note_id}: {e}"))?;
+    output["started"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{note_id} has no start time"))
+}
+
 /// The transcript parts of the `steps` shape for a context budget.
 fn step_chunks(transcript: &str, prompt: &Prompt, limits: &Limits, user: UserText) -> Vec<Chunk> {
     let lines = pipeline::summarize::lines_of(transcript);
@@ -922,11 +934,15 @@ async fn agent_run(
     };
     let pass = Pass {
         model: client,
-        root: root.to_path_buf(),
-        note_id: note_id.to_string(),
+        note: MemoryNoteSource {
+            note_id: note_id.to_string(),
+            started: started(root, note_id)?,
+            transcript: transcript.clone(),
+            manual_notes: part(root, note, NOTES_FILE),
+            details: details.clone(),
+            max_chars,
+        },
         background: prompt.background.clone(),
-        details: details.clone(),
-        manual_notes: part(root, note, NOTES_FILE),
         text: prompt.text.clone(),
         limits,
         label: label.clone(),

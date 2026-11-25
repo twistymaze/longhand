@@ -2,42 +2,34 @@
 
 mod common;
 
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use common::{Fixed, Script, label, reply, text};
+use common::{Fixed, Script, call, label, reply, text, tool_results};
+use serde_json::json;
 use summarize::prompts::Details;
 use summary_agent::passes::Pass;
-use summary_agent::{Limits, Outcome, ToolSet};
+use summary_agent::{Limits, MemoryNoteSource, Outcome, ToolSet};
 
-fn copy_dir(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), &target).unwrap();
-        }
-    }
+/// The transcript of the budget review note of the fixture: 8 lines.
+fn transcript() -> String {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testdata/storage-folder/2026-10-01 0900 Budget review/transcript.md");
+    std::fs::read_to_string(fixture).unwrap()
 }
 
-fn storage() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/storage-folder");
-    copy_dir(&fixture, dir.path());
-    dir
-}
-
-fn pass<'a>(model: &'a Script, root: &Path, limits: Limits) -> Pass<'a> {
+/// The pass of a note that is in memory only: no storage folder has it.
+fn pass(model: &Script, limits: Limits) -> Pass<'_> {
     Pass {
         model,
-        root: root.to_path_buf(),
-        note_id: "note-budget-review".into(),
+        note: MemoryNoteSource {
+            note_id: "note-budget-review".into(),
+            started: "2026-10-01T09:00:00-05:00".into(),
+            transcript: transcript(),
+            manual_notes: "budget first".into(),
+            details: Details::default(),
+            max_chars: 5_000,
+        },
         background: String::new(),
-        details: Details::default(),
-        manual_notes: "budget first".into(),
         text: "Write a summary.".into(),
         limits,
         label: label(),
@@ -46,9 +38,8 @@ fn pass<'a>(model: &'a Script, root: &Path, limits: Limits) -> Pass<'a> {
 
 #[tokio::test]
 async fn a_review_with_no_findings_keeps_the_draft() {
-    let dir = storage();
     let model = Script::new(vec![Ok(reply(vec![text("NONE")], 10, 2))]);
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .review("The draft.", 8, 400)
         .await;
     assert_eq!(result.outcome, Outcome::Summary);
@@ -60,7 +51,6 @@ async fn a_review_with_no_findings_keeps_the_draft() {
 
 #[tokio::test]
 async fn findings_go_to_a_reviser_whose_edits_change_only_their_text() {
-    let dir = storage();
     let edits = r#"{"edits": [
         {"find": "Budget is flat.", "replace": "Budget is flat. The training line stays."},
         {"find": "Sam owns it.", "replace": ""},
@@ -75,9 +65,7 @@ async fn findings_go_to_a_reviser_whose_edits_change_only_their_text() {
         Ok(reply(vec![text(edits)], 10, 5)),
     ]);
     let draft = "# Summary\n\nBudget is flat. Sam owns it.\n\n- Next review in May.";
-    let result = pass(&model, dir.path(), Limits::default())
-        .review(draft, 8, 400)
-        .await;
+    let result = pass(&model, Limits::default()).review(draft, 8, 400).await;
     assert_eq!(result.outcome, Outcome::Summary);
     assert_eq!(
         result.summary.as_deref(),
@@ -96,12 +84,11 @@ async fn findings_go_to_a_reviser_whose_edits_change_only_their_text() {
 
 #[tokio::test]
 async fn a_reviser_reply_that_is_not_json_keeps_the_draft() {
-    let dir = storage();
     let model = Script::new(vec![
         Ok(reply(vec![text("missed [00:00:31] a thing")], 10, 5)),
         Ok(reply(vec![text("Here is a new summary.")], 10, 5)),
     ]);
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .review("The draft.", 8, 400)
         .await;
     assert_eq!(result.summary.as_deref(), Some("The draft."));
@@ -110,7 +97,6 @@ async fn a_reviser_reply_that_is_not_json_keeps_the_draft() {
 
 #[tokio::test]
 async fn a_small_context_audits_the_transcript_in_parts() {
-    let dir = storage();
     // About 1,035 free tokens hold 5 lines of 700 bytes: two parts.
     let limits = Limits {
         context_tokens: 4_000 + 1_000 + 40,
@@ -121,20 +107,17 @@ async fn a_small_context_audits_the_transcript_in_parts() {
         Ok(reply(vec![text("NONE")], 10, 2)),
         Ok(reply(vec![text("NONE")], 10, 2)),
     ]);
-    let result = pass(&model, dir.path(), limits)
-        .review("Draft.", 8, 5_600)
-        .await;
+    let result = pass(&model, limits).review("Draft.", 8, 5_600).await;
     assert_eq!(result.summary.as_deref(), Some("Draft."));
     assert_eq!(model.turns().len(), 2, "two auditors");
 }
 
 #[tokio::test]
 async fn a_failed_auditor_keeps_the_draft_and_says_why() {
-    let dir = storage();
     let model = Script::new(vec![Err(summarize::SummarizeError::Transport(
         "refused".into(),
     ))]);
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .review("The draft.", 8, 400)
         .await;
     assert_eq!(result.outcome, Outcome::Summary);
@@ -144,14 +127,13 @@ async fn a_failed_auditor_keeps_the_draft_and_says_why() {
 
 #[tokio::test]
 async fn a_timeline_that_fits_goes_to_one_writer() {
-    let dir = storage();
     let model = Script::new(vec![
         Ok(reply(vec![text("- [00:00:01] budget talk")], 10, 5)),
         Ok(reply(vec![text("The summary.")], 10, 5)),
     ]);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .timeline(&tools, 8, 400)
         .await;
     assert_eq!(result.outcome, Outcome::Summary);
@@ -169,7 +151,6 @@ async fn a_timeline_that_fits_goes_to_one_writer() {
 
 #[tokio::test]
 async fn a_timeline_that_does_not_fit_goes_to_group_writers_and_a_merge() {
-    let dir = storage();
     // 1,500 free tokens, less 1,000 for the people list and 3 for the
     // notes: parts of 2 lines of 770 bytes, so 4 parts. Four timelines of
     // 1,000 bytes pass two thirds of the writer's room: groups of two.
@@ -191,9 +172,7 @@ async fn a_timeline_that_does_not_fit_goes_to_group_writers_and_a_merge() {
     let model = Script::new(replies);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), limits)
-        .timeline(&tools, 8, 5_600)
-        .await;
+    let result = pass(&model, limits).timeline(&tools, 8, 5_600).await;
     assert_eq!(result.summary.as_deref(), Some("The merged summary."));
     let turns = model.turns();
     assert_eq!(turns.len(), 7);
@@ -206,11 +185,10 @@ async fn a_timeline_that_does_not_fit_goes_to_group_writers_and_a_merge() {
 
 #[tokio::test]
 async fn a_failed_timeline_part_ends_the_run_with_no_summary() {
-    let dir = storage();
     let model = Script::new(vec![Err(summarize::SummarizeError::ContextExceeded)]);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .timeline(&tools, 8, 400)
         .await;
     assert_eq!(result.outcome, Outcome::ContextExceeded);
@@ -220,7 +198,6 @@ async fn a_failed_timeline_part_ends_the_run_with_no_summary() {
 
 #[tokio::test]
 async fn the_people_list_goes_from_part_to_part_and_to_the_writer() {
-    let dir = storage();
     // Parts of 4 lines: 2 parts.
     let limits = Limits {
         context_tokens: 3_000 + 1_000 + 1_000 + 1_000,
@@ -246,9 +223,7 @@ async fn the_people_list_goes_from_part_to_part_and_to_the_writer() {
     ]);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), limits)
-        .timeline(&tools, 8, 8 * 790)
-        .await;
+    let result = pass(&model, limits).timeline(&tools, 8, 8 * 790).await;
     assert_eq!(result.summary.as_deref(), Some("The summary."));
     let turns = model.turns();
     assert_eq!(turns.len(), 3);
@@ -275,7 +250,6 @@ async fn the_people_list_goes_from_part_to_part_and_to_the_writer() {
 
 #[tokio::test]
 async fn a_cut_off_part_runs_again_with_half_the_lines() {
-    let dir = storage();
     let model = Script::new(vec![
         Err(summarize::SummarizeError::ReplyCutOff),
         Ok(reply(vec![text("- [00:00:01] first half")], 10, 5)),
@@ -284,7 +258,7 @@ async fn a_cut_off_part_runs_again_with_half_the_lines() {
     ]);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .timeline(&tools, 8, 400)
         .await;
     assert_eq!(result.summary.as_deref(), Some("The summary."));
@@ -296,7 +270,6 @@ async fn a_cut_off_part_runs_again_with_half_the_lines() {
 
 #[tokio::test]
 async fn the_next_part_repeats_about_a_tenth_of_the_part_before() {
-    let dir = storage();
     // About 997 free tokens hold 5 lines of 660 bytes: lines 1-5, then the
     // next part repeats line 5.
     let limits = Limits {
@@ -311,9 +284,7 @@ async fn the_next_part_repeats_about_a_tenth_of_the_part_before() {
     ]);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), limits)
-        .timeline(&tools, 8, 8 * 600)
-        .await;
+    let result = pass(&model, limits).timeline(&tools, 8, 8 * 600).await;
     assert_eq!(result.summary.as_deref(), Some("The summary."));
     let turns = model.turns();
     assert_eq!(turns.len(), 3);
@@ -325,7 +296,6 @@ async fn the_next_part_repeats_about_a_tenth_of_the_part_before() {
 
 #[tokio::test]
 async fn a_writer_whose_context_fills_runs_again_with_no_tools() {
-    let dir = storage();
     let model = Script::new(vec![
         Ok(reply(vec![text("- [00:00:01] budget talk")], 10, 5)),
         Err(summarize::SummarizeError::ContextExceeded),
@@ -333,7 +303,7 @@ async fn a_writer_whose_context_fills_runs_again_with_no_tools() {
     ]);
     let source = Fixed::notes("x");
     let tools = ToolSet::new(vec![&source]).unwrap();
-    let result = pass(&model, dir.path(), Limits::default())
+    let result = pass(&model, Limits::default())
         .timeline(&tools, 8, 400)
         .await;
     assert_eq!(result.outcome, Outcome::Summary);
@@ -342,4 +312,37 @@ async fn a_writer_whose_context_fills_runs_again_with_no_tools() {
     assert_eq!(turns.len(), 3);
     assert!(!turns[1].tools.is_empty());
     assert!(turns[2].tools.is_empty(), "the second try has no tools");
+}
+
+#[tokio::test]
+async fn a_writer_reads_lines_of_a_note_that_no_storage_folder_has() {
+    let model = Script::new(vec![
+        Ok(reply(vec![text("- [00:00:09] travel")], 10, 5)),
+        Ok(reply(
+            vec![call(
+                "c1",
+                "get_note",
+                json!({"note_id": "note-budget-review", "transcript": {"from_line": 4, "to_line": 4}}),
+            )],
+            10,
+            5,
+        )),
+        Ok(reply(vec![text("The draft.")], 10, 5)),
+    ]);
+    let pass = pass(&model, Limits::default());
+    let tools = ToolSet::new(vec![&pass.note]).unwrap();
+    let result = pass.timeline(&tools, 8, 400).await;
+    assert_eq!(result.outcome, Outcome::Summary);
+    assert_eq!(result.summary.as_deref(), Some("The draft."));
+    let turns = model.turns();
+    assert_eq!(turns.len(), 3);
+    assert!(format!("{:?}", turns[0].prompt).contains("We have three items on the budget"));
+    let results = tool_results(&turns[2]);
+    assert_eq!(results.len(), 1);
+    assert!(results[0].contains("\"first_line\":4"), "{}", results[0]);
+    assert!(
+        results[0].contains("The travel line is lower"),
+        "{}",
+        results[0]
+    );
 }

@@ -32,7 +32,7 @@ use summarize::{AgentReply, AgentTurn, Client, SummarizeError};
 use crate::compaction::Compacted;
 
 pub use history::HistoryPolicy;
-pub use sources::{BoxFuture, CallResult, NoteSource, ToolSource};
+pub use sources::{BoxFuture, CallResult, MemoryNoteSource, NoteSource, ToolSource};
 
 /// A model that answers agent turns. The summary client is one; a test
 /// gives scripted turns.
