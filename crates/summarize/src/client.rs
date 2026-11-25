@@ -27,6 +27,7 @@ use reqwest::Url;
 use rig_core::ProviderError;
 use rig_core::completion::{
     CompletionRequest, CompletionResponse, Effort, FinishReason, Message as RigMessage, Reasoning,
+    ToolDefinition,
 };
 use rig_core::driver::Model;
 use rig_core::http_client::HttpClientExt;
@@ -38,6 +39,9 @@ use rig_core::providers::gemini::{Gemini, GeminiConfig};
 use rig_core::providers::ollama::{Chat as OllamaChat, Ollama, OllamaConfig};
 use rig_core::providers::openai::wire::{Auth, Chat, LLAMACPP, OPENAI, OPENROUTER};
 use rig_core::providers::openai::{OpenAI, OpenAIConfig};
+use rig_core::providers::openrouter::extension::{
+    DataCollection, OpenRouterExt, OpenRouterOptions, ProviderPreferences,
+};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use tokio::time::timeout;
@@ -128,6 +132,8 @@ pub enum RequestKind {
     /// The one-token chat request that checks a server with no model list
     /// in Settings (KTD9).
     Check,
+    /// One model call of a summary agent, with tool definitions.
+    AgentTurn,
 }
 
 impl RequestKind {
@@ -140,6 +146,7 @@ impl RequestKind {
             Self::Title => "title",
             Self::Models => "models",
             Self::Check => "check",
+            Self::AgentTurn => "agent turn",
         }
     }
 }
@@ -271,7 +278,7 @@ fn result_text(result: &Result<(reqwest::StatusCode, Vec<u8>), SummarizeError>) 
 
 /// The result of a summary request for the end line. Rig gives a success
 /// reply only for a 2xx status.
-fn completion_text(result: &Result<Completion, SummarizeError>) -> String {
+fn completion_text<T>(result: &Result<T, SummarizeError>) -> String {
     match result {
         Ok(_) => "HTTP 2xx".into(),
         Err(e) => error_text(e),
@@ -279,7 +286,7 @@ fn completion_text(result: &Result<Completion, SummarizeError>) -> String {
 }
 
 /// The kind of an error, for the end line.
-pub(crate) fn error_text(error: &SummarizeError) -> String {
+pub fn error_text(error: &SummarizeError) -> String {
     match error {
         SummarizeError::Redirect { status, .. } => format!("redirect, HTTP {status}"),
         SummarizeError::Unauthorized(status) => format!("unauthorized, HTTP {status}"),
@@ -375,6 +382,45 @@ impl Default for Thinking {
             chosen: false,
         }
     }
+}
+
+/// The OpenRouter routing rules of a client's requests. The app sets none,
+/// so its requests do not change. A dev tool sets them to keep note text
+/// away from hosts that store request data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OpenRouterRouting {
+    /// Send only to hosts that store no request data.
+    pub deny_data_collection: bool,
+    /// Send only to hosts with zero data retention. This can leave a model
+    /// with no host.
+    pub zero_retention: bool,
+}
+
+/// One model call of a summary agent: the system text, the history, the
+/// latest message and the tools that the model can call.
+#[derive(Debug, Clone)]
+pub struct AgentTurn {
+    pub preamble: String,
+    /// The messages before `prompt`, as Rig keeps them.
+    pub history: Vec<RigMessage>,
+    pub prompt: RigMessage,
+    pub tools: Vec<ToolDefinition>,
+    /// The reply allowance.
+    pub max_tokens: u32,
+    /// The context size for an Ollama request (KTD7).
+    pub num_ctx: Option<u32>,
+}
+
+/// The reply to an [`AgentTurn`]: the whole Rig response, so that the
+/// caller can build the next turn from it, with the host that served it
+/// and its cost.
+#[derive(Debug, Clone)]
+pub struct AgentReply {
+    pub response: CompletionResponse,
+    /// The upstream host that OpenRouter chose. `None` on other providers.
+    pub served_by: Option<String>,
+    /// The cost in USD, when the provider reports it.
+    pub cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -533,6 +579,9 @@ pub struct Client {
     retry_waits: Vec<Duration>,
     /// The Thinking level of the summary requests.
     thinking: Thinking,
+    /// The OpenRouter routing rules. `None`: requests have no `provider`
+    /// field.
+    openrouter: Option<OpenRouterRouting>,
 }
 
 impl Client {
@@ -572,6 +621,7 @@ impl Client {
             probe,
             retry_waits: Vec::new(),
             thinking: Thinking::default(),
+            openrouter: None,
         })
     }
 
@@ -589,8 +639,143 @@ impl Client {
         self
     }
 
+    /// Send each request with the OpenRouter routing rules `routing`. The
+    /// rules apply only when the provider is OpenRouter.
+    pub fn with_openrouter(mut self, routing: OpenRouterRouting) -> Self {
+        self.openrouter = Some(routing);
+        self
+    }
+
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// The OpenRouter provider preferences of a request, or `None` when the
+    /// request gets no `provider` field. An agent turn also requires a host
+    /// that accepts every parameter, so that a host with no tool support is
+    /// not chosen.
+    fn preferences(&self, agent: bool) -> Option<ProviderPreferences> {
+        if self.endpoint.provider != Provider::OpenRouter {
+            return None;
+        }
+        let routing = self.openrouter?;
+        let mut preferences = ProviderPreferences::new();
+        if routing.deny_data_collection {
+            preferences = preferences.data_collection(DataCollection::Deny);
+        }
+        if routing.zero_retention {
+            preferences = preferences.zdr(true);
+        }
+        if agent {
+            preferences = preferences.require_parameters(true);
+        }
+        Some(preferences)
+    }
+
+    /// Send one agent turn and return the whole reply. The request has the
+    /// Thinking level of the client as an effort, with no fallback. A reply
+    /// with only tool calls is a success. A reply that the endpoint cut off
+    /// is [`SummarizeError::ReplyCutOff`], and a prompt that filled the
+    /// context is [`SummarizeError::ContextExceeded`].
+    pub async fn agent_turn(
+        &self,
+        label: &Label,
+        turn: &AgentTurn,
+    ) -> Result<AgentReply, SummarizeError> {
+        let key = ModelKey::of(self);
+        let max_tokens = key
+            .learned()
+            .output_cap
+            .map_or(turn.max_tokens, |cap| turn.max_tokens.min(cap));
+        let reasoning = effort(self.thinking.level);
+        let send = |max_tokens| async move {
+            let with =
+                |cap_field| self.agent_turn_with(label, turn, cap_field, max_tokens, reasoning);
+            match with(CapField::MaxTokens).await {
+                Err(SummarizeError::Http {
+                    status: 400,
+                    excerpt,
+                }) if self.route == Route::OpenAiChat
+                    && excerpt.contains("max_completion_tokens") =>
+                {
+                    with(CapField::MaxCompletionTokens).await
+                }
+                other => other,
+            }
+        };
+        // A model that refuses the reply allowance and names its own cap
+        // gets the turn again with that cap, as in `complete_at`.
+        let result = send(max_tokens).await;
+        let cap = match &result {
+            Err(SummarizeError::Http {
+                status: 400,
+                excerpt,
+            }) => named_cap(&without_model(excerpt, &self.endpoint.model), max_tokens),
+            _ => None,
+        };
+        let response = match cap {
+            Some(cap) => {
+                log::info!(
+                    "{} refused {max_tokens} reply tokens for model {}; sending the agent turn again with {cap}",
+                    self.host(),
+                    self.endpoint.model
+                );
+                key.remember_cap(cap);
+                send(cap).await
+            }
+            None => result,
+        }?;
+        let extras = response.extras_lossy::<OpenRouterExt>();
+        let cost = response.usage.cost.map(|cost| cost.total).or(extras.cost);
+        Ok(AgentReply {
+            response,
+            served_by: extras.provider,
+            cost,
+        })
+    }
+
+    async fn agent_turn_with(
+        &self,
+        label: &Label,
+        turn: &AgentTurn,
+        cap_field: CapField,
+        max_tokens: u32,
+        reasoning: Option<Reasoning>,
+    ) -> Result<CompletionResponse, SummarizeError> {
+        let mut request = CompletionRequest::new(turn.prompt.clone())
+            .messages(turn.history.clone())
+            .tools(turn.tools.clone());
+        if !turn.preamble.is_empty() {
+            request = request.preamble(turn.preamble.clone());
+        }
+        let request = limited(
+            self.route,
+            request,
+            cap_field,
+            max_tokens,
+            reasoning,
+            turn.num_ctx,
+            self.preferences(true),
+        );
+        let (host, model) = (self.host(), &self.endpoint.model);
+        log::info!("{}", start_line(label, &host, model));
+        let mut guard = EndGuard::new(label, &host, model);
+        let result = match self.call_raw(request).await {
+            Ok(response) => agent_reply(self.route, response),
+            Err(e) => Err(e),
+        };
+        log::info!(
+            "{}",
+            end_line(
+                label,
+                &host,
+                model,
+                guard.elapsed(),
+                &completion_text(&result)
+            )
+        );
+        guard.disarm();
+        result
     }
 
     pub fn host(&self) -> String {
@@ -874,7 +1059,14 @@ impl Client {
         max_tokens: u32,
         reasoning: Option<Reasoning>,
     ) -> Result<Completion, SummarizeError> {
-        let rig = rig_request(self.route, request, cap_field, max_tokens, reasoning);
+        let rig = rig_request(
+            self.route,
+            request,
+            cap_field,
+            max_tokens,
+            reasoning,
+            self.preferences(false),
+        );
         let label = request.label;
         let (host, model) = (self.host(), &self.endpoint.model);
         log::info!("{}", start_line(label, &host, model));
@@ -918,13 +1110,21 @@ impl Client {
         &self,
         request: CompletionRequest,
     ) -> Result<Completion, SummarizeError> {
+        completion(self.route, &self.call_raw(request).await?)
+    }
+
+    /// [`Self::call_with_retries`] that returns the whole Rig reply.
+    async fn call_raw(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, SummarizeError> {
         let mut waits = self.retry_waits.iter();
         loop {
             let reply = timeout(self.completion.total, self.engine.call(request.clone()))
                 .await
                 .map_err(|_| SummarizeError::Deadline("complete reply"))?;
             let error = match reply {
-                Ok(response) => return completion(self.route, &response),
+                Ok(response) => return Ok(response),
                 Err(error) => error,
             };
             if let Some(retry_after) = rate_limit(&error)
@@ -1367,6 +1567,7 @@ fn rig_request(
     cap_field: CapField,
     max_tokens: u32,
     reasoning: Option<Reasoning>,
+    preferences: Option<ProviderPreferences>,
 ) -> CompletionRequest {
     let num_ctx = request.num_ctx;
     let mut history: Vec<RigMessage> = request
@@ -1379,7 +1580,32 @@ fn rig_request(
         })
         .collect();
     let prompt = history.pop().unwrap_or_else(|| RigMessage::user(""));
-    let mut request = CompletionRequest::new(prompt).messages(history);
+    let request = CompletionRequest::new(prompt).messages(history);
+    limited(
+        route,
+        request,
+        cap_field,
+        max_tokens,
+        reasoning,
+        num_ctx,
+        preferences,
+    )
+}
+
+/// `request` with the reply cap, the reasoning option, the Ollama options
+/// and the OpenRouter provider preferences of [`rig_request`].
+fn limited(
+    route: Route,
+    mut request: CompletionRequest,
+    cap_field: CapField,
+    max_tokens: u32,
+    reasoning: Option<Reasoning>,
+    num_ctx: Option<u32>,
+    preferences: Option<ProviderPreferences>,
+) -> CompletionRequest {
+    if let Some(preferences) = preferences {
+        request = request.provider_option(OpenRouterOptions::new().provider(preferences));
+    }
     if let Some(reasoning) = reasoning {
         request = request.reasoning(reasoning);
     }
@@ -1408,21 +1634,8 @@ fn rig_request(
 /// The completion in a Rig reply on `route`, or the error that the reply
 /// signals (KTD4).
 fn completion(route: Route, response: &CompletionResponse) -> Result<Completion, SummarizeError> {
-    let raw = &response.raw;
-    match route {
-        // llama.cpp says so when it cut the prompt to fit.
-        Route::OpenAiChat if raw.get("truncated").and_then(Value::as_bool) == Some(true) => {
-            return Err(SummarizeError::ContextExceeded);
-        }
-        // Rig reads this stop reason as `Length`, but the prompt filled the
-        // context window: a bigger reply cap does not help.
-        Route::Anthropic
-            if raw.get("stop_reason").and_then(Value::as_str)
-                == Some("model_context_window_exceeded") =>
-        {
-            return Err(SummarizeError::ContextExceeded);
-        }
-        _ => {}
+    if context_filled(route, &response.raw) {
+        return Err(SummarizeError::ContextExceeded);
     }
     let finish_reason = response.finish_reason();
     if finish_reason == Some(FinishReason::Length) {
@@ -1436,6 +1649,37 @@ fn completion(route: Route, response: &CompletionResponse) -> Result<Completion,
         text,
         finish_reason: finish_reason.map(finish_name),
     })
+}
+
+/// The Rig reply of an agent turn on `route`, or the error that it signals.
+/// The context and cut-off rules are those of [`completion`]. An empty
+/// text is not an error: the reply can have only tool calls, and the agent
+/// loop decides what an empty final reply means.
+fn agent_reply(
+    route: Route,
+    response: CompletionResponse,
+) -> Result<CompletionResponse, SummarizeError> {
+    if context_filled(route, &response.raw) {
+        return Err(SummarizeError::ContextExceeded);
+    }
+    if response.finish_reason() == Some(FinishReason::Length) {
+        return Err(SummarizeError::ReplyCutOff);
+    }
+    Ok(response)
+}
+
+/// True when the raw reply says that the prompt filled the context.
+fn context_filled(route: Route, raw: &Value) -> bool {
+    match route {
+        // llama.cpp says so when it cut the prompt to fit.
+        Route::OpenAiChat => raw.get("truncated").and_then(Value::as_bool) == Some(true),
+        // Rig reads this stop reason as `Length`, but the prompt filled the
+        // context window: a bigger reply cap does not help.
+        Route::Anthropic => {
+            raw.get("stop_reason").and_then(Value::as_str) == Some("model_context_window_exceeded")
+        }
+        _ => false,
+    }
 }
 
 /// The wire name of a finish reason, as OpenAI spells it.
@@ -1607,6 +1851,16 @@ mod tests {
              model qwen3-30b, 4200 ms in the queue, 91000 ms, HTTP 200"
         );
         assert!(!end.contains("secret"));
+    }
+
+    #[test]
+    fn the_request_log_names_an_agent_turn() {
+        let label = Label::note("2026-10-14-0900", RequestKind::AgentTurn);
+        assert_eq!(
+            start_line(&label, "openrouter.ai", "m"),
+            "request start: note 2026-10-14-0900, agent turn, host openrouter.ai, \
+             model m, 0 ms in the queue"
+        );
     }
 
     #[test]

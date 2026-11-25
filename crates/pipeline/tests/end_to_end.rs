@@ -77,6 +77,7 @@ impl EngineProvider for RealModel {
                 },
                 requests_at_once: summarize::Provider::Custom.default_requests_at_once(),
                 retry_waits: Vec::new(),
+                openrouter: None,
             }),
             _ => Err(pipeline::EndpointProblem::Unconfigured(
                 "no summary endpoint in the environment".into(),

@@ -3454,6 +3454,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "note-tools"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "library",
+ "regex",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "session-core",
+ "session-save",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "notify"
 version = "8.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4291,6 +4307,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "pin-project"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6c2123f4708bbd422630a6dae7c03f678b1ce1f1c99e4c4b3beac69c8174cc9"
+dependencies = [
+ "pin-project-internal",
+]
+
+[[package]]
+name = "pin-project-internal"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "358938fd6df944c1e44bb328b60fb275f13c804aac47ba26a1165d45a3f87756"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+]
+
+[[package]]
 name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4844,6 +4880,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "rig-agent"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea6b192f9c616fdf289a63419142d9322bd66a3336a4f64f9253064e36f7f3e1"
+dependencies = [
+ "async-stream",
+ "futures",
+ "http",
+ "indexmap 2.14.2",
+ "rig-core",
+ "rig-memory",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-futures",
+]
+
+[[package]]
 name = "rig-core"
 version = "0.47.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4887,6 +4943,20 @@ dependencies = [
  "mime",
  "thiserror 2.0.21",
  "url",
+]
+
+[[package]]
+name = "rig-memory"
+version = "0.47.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2f13b53e3b513ebd44e9cb9faf897d3792ec312751052e6788e5f4af7735114"
+dependencies = [
+ "base64 0.23.1",
+ "memchr",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -5843,6 +5913,7 @@ dependencies = [
  "log",
  "native-tls",
  "reqwest",
+ "rig-agent",
  "rig-core",
  "serde",
  "serde_json",
@@ -5850,6 +5921,43 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "summary-agent"
+version = "0.1.0"
+dependencies = [
+ "note-tools",
+ "rig-agent",
+ "rig-core",
+ "rig-memory",
+ "serde",
+ "serde_json",
+ "summarize",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "summary-lab"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "library",
+ "note-tools",
+ "pipeline",
+ "rig-core",
+ "serde",
+ "serde_json",
+ "session-core",
+ "session-save",
+ "sha2 0.10.9",
+ "shared-settings",
+ "summarize",
+ "summary-agent",
+ "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -7025,6 +7133,18 @@ checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
  "valuable",
+]
+
+[[package]]
+name = "tracing-futures"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "97d095ae15e245a057c8e8451bab9b3ee1e1f68e9ba2b4fbc18d0ac5237835f2"
+dependencies = [
+ "futures",
+ "futures-task",
+ "pin-project",
+ "tracing",
 ]
 
 [[package]]

@@ -1,0 +1,34 @@
+[package]
+name = "summary-lab"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# A dev harness that compares agent summaries with today's summaries. The
+# app does not depend on this crate.
+[[bin]]
+name = "summary-lab"
+path = "src/main.rs"
+
+[dependencies]
+chrono = "0.4"
+# The models of a run run at the same time (join_all).
+futures-util = "0.3"
+library = { path = "../library" }
+note-tools = { path = "../note-tools" }
+# Today's summary on an in-memory store is the baseline (KTD7).
+pipeline = { path = "../pipeline" }
+rig-core = { version = "=0.47.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+session-core = { path = "../session-core" }
+session-save = { path = "../session-save" }
+sha2 = "0.10"
+shared-settings = { path = "../shared-settings" }
+summarize = { path = "../summarize" }
+summary-agent = { path = "../summary-agent" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"

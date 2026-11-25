@@ -12,7 +12,7 @@
 //! `/api/show`. OpenAI and Anthropic report no limit, so no request is
 //! sent for them.
 
-use rig_core::catalog::Catalog;
+use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::model::ModelInfo;
 use rig_core::providers::registry::ProviderId;
 use serde::{Deserialize, Serialize};
@@ -108,18 +108,41 @@ fn litellm_limits(body: &Value, model: &str) -> Option<(u32, Option<u32>)> {
 /// built-in catalog (KTD3). `None` for a model that the catalog does not
 /// know, and for the local providers and Custom, which serve any model.
 pub fn catalog_output_max(provider: Provider, model: &str) -> Option<u32> {
-    let vendor = match provider {
-        Provider::OpenAi => "openai",
-        Provider::Anthropic => "anthropic",
-        Provider::Gemini => "gcp.gemini",
-        Provider::OpenRouter => "openrouter",
-        Provider::Ollama | Provider::LmStudio | Provider::Custom => return None,
-    };
+    catalog_limit(provider, model, |spec| spec.output_limit())
+}
+
+/// The input limit of `model` on the hosted `provider` in Rig's built-in
+/// catalog: the most tokens that one request can send. `None` for a model
+/// that the catalog does not know, and for the local providers and Custom.
+/// Only the summary agent uses it: the app's summary path does not.
+pub fn catalog_input_limit(provider: Provider, model: &str) -> Option<u32> {
+    catalog_limit(provider, model, |spec| spec.input_limit())
+}
+
+/// A limit of `model` on the hosted `provider` in Rig's built-in catalog,
+/// from `limit` of its spec. A limit of 0 is no limit.
+fn catalog_limit(
+    provider: Provider,
+    model: &str,
+    limit: impl FnOnce(&ModelSpec) -> Option<u32>,
+) -> Option<u32> {
+    let vendor = catalog_vendor(provider)?;
     let model = model.strip_prefix("models/").unwrap_or(model);
     Catalog::builtin()
         .get(ProviderId::catalog(vendor)?, model)
-        .and_then(|found| found.spec.output_limit())
+        .and_then(|found| limit(found.spec))
         .filter(|&n| n > 0)
+}
+
+/// The catalog vendor of a hosted provider.
+fn catalog_vendor(provider: Provider) -> Option<&'static str> {
+    match provider {
+        Provider::OpenAi => Some("openai"),
+        Provider::Anthropic => Some("anthropic"),
+        Provider::Gemini => Some("gcp.gemini"),
+        Provider::OpenRouter => Some("openrouter"),
+        Provider::Ollama | Provider::LmStudio | Provider::Custom => None,
+    }
 }
 
 /// LM Studio `/api/v0/models`: the context the model is loaded with.

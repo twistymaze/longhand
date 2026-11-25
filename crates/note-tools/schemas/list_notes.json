@@ -1,0 +1,260 @@
+{
+  "name": "list_notes",
+  "description": "List the notes in the Longhand storage folder, newest first. Filter by note type, tags, a date range, title text, busy state or a keyword. A keyword result says whether the keyword is in the title, tags, manual notes, summary or transcript. Use get_note with a note_id to read a note.",
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "note_type": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Only notes of this note type. \"General\" gives the notes that are not\nin a type folder. Case does not count.",
+        "default": null
+      },
+      "tags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Only notes with each of these tags. Case and the spaces around `::`\ndo not count. A tag that ends in `::`, for example \"Person::\",\nmatches each tag with that scope.",
+        "default": []
+      },
+      "since": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Only notes that started on this day or later, as YYYY-MM-DD.",
+        "default": null
+      },
+      "until": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Only notes that started on this day or earlier, as YYYY-MM-DD.",
+        "default": null
+      },
+      "title": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Only notes whose title contains this text. Case does not count.",
+        "default": null
+      },
+      "keyword": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Only notes that contain this text in the title, the tags, the manual\nnotes, the summary or the transcript. Case does not count. Each\nresult says where the text is.",
+        "default": null
+      },
+      "busy": {
+        "type": [
+          "boolean",
+          "null"
+        ],
+        "description": "Only busy notes (true) or only notes that are not busy (false). A\nnote is busy when a computer records or processes it, when its\nrecording is not saved yet, or when a move to another type waits.",
+        "default": null
+      },
+      "limit": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "format": "uint32",
+        "minimum": 0,
+        "description": "The most notes in the result, from 1 to 200. The default is 50. The\nnewest notes come first.",
+        "default": null
+      }
+    },
+    "description": "The input of list notes. Every filter is optional, and a note must\nmatch all the filters that the input gives.",
+    "title": "ListNotesInput",
+    "$schema": "https://json-schema.org/draft/2020-12/schema"
+  },
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "notes": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/NoteItem"
+        }
+      },
+      "matching": {
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0,
+        "description": "The number of notes that match, also those over the limit."
+      },
+      "truncated": {
+        "type": "boolean",
+        "description": "True when more notes match than the result holds."
+      },
+      "keyword_search_incomplete": {
+        "type": "boolean",
+        "description": "True when the keyword search stopped at its time limit, so that\nsome notes were not searched."
+      },
+      "problems": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/ProblemFolder"
+        },
+        "description": "Folders that look like note folders but give no note, for example a\nnote that a newer Longhand wrote."
+      }
+    },
+    "required": [
+      "notes",
+      "matching",
+      "truncated",
+      "keyword_search_incomplete",
+      "problems"
+    ],
+    "description": "The result of list notes.",
+    "title": "ListNotesOutput",
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$defs": {
+      "NoteItem": {
+        "type": "object",
+        "properties": {
+          "note_id": {
+            "type": "string",
+            "description": "The id to give to get note."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "note_type": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "started": {
+            "type": "string",
+            "description": "The start time, as RFC 3339."
+          },
+          "date": {
+            "type": "string",
+            "description": "The start day, as YYYY-MM-DD."
+          },
+          "busy": {
+            "type": "boolean"
+          },
+          "busy_reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Why the note is busy."
+          },
+          "duplicate_folders": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0,
+            "description": "Other folders with the same note id. Get note refuses such an id."
+          },
+          "keyword_in": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/$defs/MatchPart"
+            },
+            "description": "Where the keyword is. Only with a keyword."
+          }
+        },
+        "required": [
+          "note_id",
+          "note_type",
+          "tags",
+          "started",
+          "date",
+          "busy",
+          "busy_reasons",
+          "duplicate_folders"
+        ],
+        "description": "One note in the result."
+      },
+      "MatchPart": {
+        "type": "string",
+        "enum": [
+          "title",
+          "tags",
+          "manual_notes",
+          "summary",
+          "transcript"
+        ],
+        "description": "A part of a note where the keyword is."
+      },
+      "ProblemFolder": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "The folder, relative to the storage folder."
+          },
+          "note_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "kind": {
+            "$ref": "#/$defs/ProblemFolderKind"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "folder",
+          "kind",
+          "reason"
+        ],
+        "description": "A folder that looks like a note folder but gives no note."
+      },
+      "ProblemFolderKind": {
+        "oneOf": [
+          {
+            "type": "string",
+            "const": "unreadable",
+            "description": "A file cannot be read."
+          },
+          {
+            "type": "string",
+            "const": "invalid",
+            "description": "`session.md` or `longhand.json` is not valid."
+          },
+          {
+            "type": "string",
+            "const": "newer_layout",
+            "description": "A newer Longhand wrote `longhand.json`."
+          },
+          {
+            "type": "string",
+            "const": "waiting_for_record",
+            "description": "The records have not come from the sync yet."
+          },
+          {
+            "type": "string",
+            "const": "link",
+            "description": "The folder, or a file that defines the note, links to another\nplace."
+          }
+        ],
+        "description": "The kind of a folder that gives no note."
+      }
+    }
+  }
+}

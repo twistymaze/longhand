@@ -1,0 +1,23 @@
+[package]
+name = "summary-agent"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# The summary agent loop (KTD1, KTD13). The app does not depend on this
+# crate in this pass.
+
+[dependencies]
+note-tools = { path = "../note-tools" }
+rig-agent = { version = "=0.47.0", default-features = false }
+rig-core = { version = "=0.47.0", default-features = false }
+rig-memory = { version = "=0.47.0", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+summarize = { path = "../summarize" }
+tokio = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -15,12 +15,24 @@
 
 [[exception]]
 ecosystem = "crate"
-name = "rig-core"
+name = "rig-agent"
 version = "0.47.0"
-reason = "The summary agent work needs Rig 0.47. No advisory in OSV or RustSec on 2026-11-22. Remove after 2026-11-27."
+reason = "The summary agent loop runs on rig-agent's AgentRun. No advisory in OSV or RustSec on 2026-11-22. Remove after 2026-11-27."
 
 [[exception]]
 ecosystem = "crate"
-name = "rig-http"
+name = "rig-memory"
 version = "0.47.0"
-reason = "Comes with rig-core 0.47.0, which the summary agent work needs. No advisory in OSV or RustSec on 2026-11-22. Remove after 2026-11-27."
+reason = "The summary agent uses rig-memory's token estimates. No advisory in OSV or RustSec on 2026-11-22. Remove after 2026-11-27."
+
+[[exception]]
+ecosystem = "crate"
+name = "pin-project"
+version = "1.2.0"
+reason = "Comes with rig-agent 0.47.0 through tracing-futures. No advisory in OSV or RustSec on 2026-11-22. Remove after 2026-11-26."
+
+[[exception]]
+ecosystem = "crate"
+name = "pin-project-internal"
+version = "1.2.0"
+reason = "Comes with pin-project 1.2.0, which rig-agent 0.47.0 needs. No advisory in OSV or RustSec on 2026-11-22. Remove after 2026-11-26."

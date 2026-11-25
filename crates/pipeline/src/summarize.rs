@@ -32,8 +32,8 @@ use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
 use summarize::tokens::ReplyKind;
 use summarize::{
-    Budget, BudgetSource, Client, Endpoint, Provider, SummarizeError, THINKING_SETTING, context,
-    prompts, tokens,
+    Budget, BudgetSource, Client, Endpoint, OpenRouterRouting, Provider, SummarizeError,
+    THINKING_SETTING, context, prompts, tokens,
 };
 
 use crate::join::TRANSCRIPT_FILE;
@@ -95,6 +95,15 @@ const SMALLEST_CONTEXT: u32 = 4_096;
 const MAX_SHRINKS: usize = 6;
 const CANCEL_POLL: Duration = Duration::from_millis(250);
 
+/// `client` with the OpenRouter routing rules of `endpoint`, when it has
+/// any.
+fn with_routing(client: Client, endpoint: &SummaryEndpoint) -> Client {
+    match endpoint.openrouter {
+        Some(routing) => client.with_openrouter(routing),
+        None => client,
+    }
+}
+
 /// Where the summary goes, from the app's settings and secret store.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummaryEndpoint {
@@ -116,6 +125,10 @@ pub struct SummaryEndpoint {
     /// The waits before each new try of a request that could not reach the
     /// endpoint ([`summarize::client::RETRY_WAITS`] in the app).
     pub retry_waits: Vec<Duration>,
+    /// The OpenRouter routing rules of the requests. The app sets none; a
+    /// dev tool sets them to keep note text away from hosts that store
+    /// request data.
+    pub openrouter: Option<OpenRouterRouting>,
 }
 
 /// The layer structure a run committed to, so a resumed run reuses the
@@ -312,7 +325,7 @@ pub fn send_title_request(
     // endpoint that cannot be reached does not stop the other jobs of the
     // summary queue.
     let client = match Client::new(client_endpoint(endpoint)) {
-        Ok(client) => client.with_thinking(endpoint.thinking),
+        Ok(client) => with_routing(client.with_thinking(endpoint.thinking), endpoint),
         Err(e) => return Ok(Err(e.to_string())),
     };
     if client.crosses_network_unencrypted() {
@@ -413,7 +426,7 @@ fn read_transcript(folder: &Path) -> Result<String, StageError> {
 /// model sees each pause at its position (R13). A line in free text
 /// (KTD7 of the safe agent edits plan) is a turn with no speaker at the
 /// position of the turn before it, so the model also gets that text.
-fn lines_of(text: &str) -> Vec<Line> {
+pub fn lines_of(text: &str) -> Vec<Line> {
     let mut position = 0;
     Transcript::parse(text)
         .lines
@@ -475,7 +488,7 @@ pub(crate) fn note_record(store: &SharedStore, note_id: &str) -> Result<SessionR
 /// can be a pending type (KTD3), the tags, and the title when the user
 /// typed it. A title that processing proposed is not a detail. A run reads
 /// them once, when it starts, and sends that copy with every call.
-fn note_details(store: &SharedStore, note_id: &str) -> Result<Details, StageError> {
+pub fn note_details(store: &SharedStore, note_id: &str) -> Result<Details, StageError> {
     let record = note_record(store, note_id)?;
     Ok(Details {
         note_type: crate::type_move::shown_type(&record).0,
@@ -631,6 +644,7 @@ pub fn produce(
         .map_err(|e| StageError::Failed(e.to_string()))?
         .with_retry_waits(endpoint.retry_waits.clone())
         .with_thinking(endpoint.thinking);
+    let client = with_routing(client, &endpoint);
     if client.crosses_network_unencrypted() {
         log::warn!(
             "summarizing {note_id} over plain HTTP to {}: the transcript crosses the network unencrypted",
