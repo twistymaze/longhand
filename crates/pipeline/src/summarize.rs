@@ -39,6 +39,8 @@ use summarize::{
 use crate::join::TRANSCRIPT_FILE;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
+pub mod turns;
+
 pub use summarize::Prompt;
 
 pub const SUMMARY_FILE: &str = "summary.md";

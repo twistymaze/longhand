@@ -5,8 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# The summary agent loop (KTD1, KTD13). The app does not depend on this
-# crate in this pass.
+# The summary agent loop (KTD1, KTD13). The `pipeline` crate runs it for
+# each summary that the app writes.
 
 [dependencies]
 futures-util = "0.3"

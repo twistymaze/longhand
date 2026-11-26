@@ -41,6 +41,11 @@ tokio-util = "0.7"
 # The id of an imported note, as capture makes it.
 uuid.workspace = true
 summarize = { path = "../summarize" }
+# The timeline pipeline of the summary step (KTD3).
+summary-agent = { path = "../summary-agent" }
+# The messages of an agent turn, for the turn key (KTD4). The version is
+# the one that `summarize` uses.
+rig-core = { version = "=0.47.0", default-features = false }
 
 [dev-dependencies]
 pyannote-local = { path = "../pyannote-local" }

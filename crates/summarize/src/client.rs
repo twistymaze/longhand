@@ -321,7 +321,7 @@ pub fn error_text(error: &SummarizeError) -> String {
 /// The `location` of a redirect that has no `Location` header.
 pub(crate) const NO_LOCATION: &str = "an unnamed location";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum SummarizeError {
     #[error("the summarization endpoint is not a valid http(s) URL: {0}")]
     BadUrl(String),
@@ -662,6 +662,11 @@ impl Client {
 
     pub fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// The Thinking level of the requests.
+    pub fn thinking(&self) -> Thinking {
+        self.thinking
     }
 
     /// The OpenRouter provider preferences of a request, or `None` when the
