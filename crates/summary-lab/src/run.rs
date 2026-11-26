@@ -946,6 +946,9 @@ async fn agent_run(
         text: prompt.text.clone(),
         limits,
         label: label.clone(),
+        // The lab runs one auditor at a time and reports no progress.
+        at_once: 1,
+        progress: None,
     };
     let result = match shape {
         Shape::Auto => unreachable!("auto is resolved above"),
@@ -1025,6 +1028,7 @@ async fn agent_run(
             let tools = ToolSet::new(vec![&source])?;
             pass.timeline(&tools, facts.transcript_lines, facts.transcript_chars)
                 .await
+                .result
         }
     };
     let mut result = result;

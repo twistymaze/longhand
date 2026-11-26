@@ -134,6 +134,16 @@ pub enum RequestKind {
     Check,
     /// One model call of a summary agent, with tool definitions.
     AgentTurn,
+    /// The timeline of one transcript part.
+    Timeline,
+    /// A writer that writes the summary or the notes of a group of
+    /// timeline parts, or the merge step that joins those notes.
+    Writer,
+    /// An auditor that checks a summary against one transcript part.
+    Audit,
+    /// The reviser that corrects a summary with the findings of the
+    /// auditors.
+    Revise,
 }
 
 impl RequestKind {
@@ -147,6 +157,10 @@ impl RequestKind {
             Self::Models => "models",
             Self::Check => "check",
             Self::AgentTurn => "agent turn",
+            Self::Timeline => "timeline",
+            Self::Writer => "writer",
+            Self::Audit => "audit",
+            Self::Revise => "revise",
         }
     }
 }
@@ -1861,6 +1875,24 @@ mod tests {
             "request start: note 2026-10-14-0900, agent turn, host openrouter.ai, \
              model m, 0 ms in the queue"
         );
+    }
+
+    #[test]
+    fn the_request_log_names_each_step_of_the_timeline_pipeline() {
+        for (kind, name) in [
+            (RequestKind::Timeline, "timeline"),
+            (RequestKind::Writer, "writer"),
+            (RequestKind::Audit, "audit"),
+            (RequestKind::Revise, "revise"),
+        ] {
+            let label = Label::note("2026-10-14-0900", kind);
+            assert_eq!(
+                start_line(&label, "h", "m"),
+                format!(
+                    "request start: note 2026-10-14-0900, {name}, host h, model m, 0 ms in the queue"
+                )
+            );
+        }
     }
 
     #[test]

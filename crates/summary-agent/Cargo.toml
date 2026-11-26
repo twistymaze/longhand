@@ -9,6 +9,7 @@ publish.workspace = true
 # crate in this pass.
 
 [dependencies]
+futures-util = "0.3"
 note-tools = { path = "../note-tools" }
 rig-agent = { version = "=0.47.0", default-features = false }
 rig-core = { version = "=0.47.0", default-features = false }
@@ -20,4 +21,4 @@ tokio = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 tempfile = "3"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

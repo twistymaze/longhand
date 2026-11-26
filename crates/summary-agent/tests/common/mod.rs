@@ -50,6 +50,8 @@ pub fn malformed(id: &str, name: &str) -> AssistantContent {
 pub struct Script {
     replies: Mutex<VecDeque<Result<AgentReply, SummarizeError>>>,
     pub seen: Mutex<Vec<AgentTurn>>,
+    /// The label of each turn, in the order of `seen`.
+    pub labels: Mutex<Vec<Label>>,
 }
 
 impl Script {
@@ -57,21 +59,28 @@ impl Script {
         Self {
             replies: Mutex::new(replies.into()),
             seen: Mutex::default(),
+            labels: Mutex::default(),
         }
     }
 
     pub fn turns(&self) -> Vec<AgentTurn> {
         self.seen.lock().unwrap().clone()
     }
+
+    /// The request kind of each turn.
+    pub fn kinds(&self) -> Vec<RequestKind> {
+        self.labels.lock().unwrap().iter().map(|l| l.kind).collect()
+    }
 }
 
 impl Model for Script {
     fn turn<'a>(
         &'a self,
-        _label: &'a Label,
+        label: &'a Label,
         turn: &'a AgentTurn,
     ) -> BoxFuture<'a, Result<AgentReply, SummarizeError>> {
         self.seen.lock().unwrap().push(turn.clone());
+        self.labels.lock().unwrap().push(label.clone());
         let next = self
             .replies
             .lock()

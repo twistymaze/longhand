@@ -10,10 +10,12 @@
 //! The passes read the transcript from the note in memory, not from a
 //! storage folder (KTD2).
 
+use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use summarize::chunk::OVERLAP;
-use summarize::client::{Label, Message};
+use summarize::client::{Label, Message, RequestKind};
 use summarize::prompts::{self, UserText};
-use summarize::tokens::BYTES_PER_TOKEN;
+use summarize::tokens::{BYTES_PER_TOKEN, ReplyKind};
 
 use crate::shapes::free_tokens;
 use crate::{
@@ -33,7 +35,37 @@ pub struct Pass<'a> {
     /// The summary prompt's text.
     pub text: String,
     pub limits: Limits,
+    /// The label of the turns. Each step sets its own request kind.
     pub label: Label,
+    /// The most auditor requests that are open at the same time.
+    pub at_once: usize,
+    /// The progress hook (R9): the step, the requests done and the
+    /// requests of the step. The hook runs on the task of the pass, so it
+    /// does not need `Send`; a caller with an `FnMut` puts it in a
+    /// `RefCell`.
+    pub progress: Option<&'a dyn Fn(Step, usize, usize)>,
+}
+
+/// A step of the passes, for the progress hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// The timeline parts. The total grows when a part is halved.
+    Parts,
+    /// The writers of the groups of timeline parts.
+    Groups,
+    /// The writer or the merge step that writes the summary.
+    Final,
+    /// The auditors, then the reviser with a total of one.
+    Review,
+}
+
+/// The result of the timeline pipeline.
+pub struct Timeline {
+    pub result: RunResult,
+    /// The messages of the last writing step (the writer, or the merge
+    /// step when groups ran), for the title request. `None` when no
+    /// writing step ran.
+    pub writer: Option<Vec<Message>>,
 }
 
 /// `first`, then `then`: the outcome and the summary of `then`, with the
@@ -60,7 +92,19 @@ impl Pass<'_> {
         }
     }
 
-    async fn agent(&self, tools: &ToolSet<'_>, messages: Vec<Message>, name: &str) -> RunResult {
+    fn report(&self, step: Step, done: usize, total: usize) {
+        if let Some(hook) = self.progress {
+            hook(step, done, total);
+        }
+    }
+
+    async fn agent(
+        &self,
+        tools: &ToolSet<'_>,
+        messages: Vec<Message>,
+        name: &str,
+        kind: RequestKind,
+    ) -> RunResult {
         Agent {
             model: self.model,
             tools,
@@ -68,7 +112,10 @@ impl Pass<'_> {
             prompt: messages[1].content.clone(),
             limits: self.limits,
             history: HistoryPolicy::default(),
-            label: self.label.clone(),
+            label: Label {
+                kind,
+                ..self.label.clone()
+            },
             name: name.into(),
         }
         .run()
@@ -78,19 +125,25 @@ impl Pass<'_> {
     /// A writer or a merge step, which can call `tools` to check one point.
     /// A reply with no tool call is a summary. When the model cannot use
     /// the tools, or a tool result fills the context, or the reply is cut
-    /// off, the step runs again with no tools: its first request fits by
-    /// design, so the step can still end with a summary.
+    /// off, or the run reaches a call limit, the step runs again with no
+    /// tools: its first request fits by design, so the step can still end
+    /// with a summary.
     async fn writer(&self, tools: &ToolSet<'_>, messages: Vec<Message>, name: &str) -> RunResult {
-        let mut result = self.agent(tools, messages.clone(), name).await;
+        let mut result = self
+            .agent(tools, messages.clone(), name, RequestKind::Writer)
+            .await;
         if matches!(
             result.outcome,
             Outcome::NoToolSupport
                 | Outcome::MalformedCalls
                 | Outcome::ContextExceeded
                 | Outcome::CutOff
+                | Outcome::ToolCallLimit
         ) && let Ok(no_tools) = ToolSet::new(Vec::new())
         {
-            let again = self.agent(&no_tools, messages, name).await;
+            let again = self
+                .agent(&no_tools, messages, name, RequestKind::Writer)
+                .await;
             result = join(result, again);
         }
         if result.outcome == Outcome::NoReads {
@@ -101,10 +154,15 @@ impl Pass<'_> {
 
     /// The lines of one timeline part: the free context less the manual
     /// notes and the people list, and at most four times the output
-    /// maximum, because a timeline is about a quarter of its lines.
+    /// maximum, because a timeline is about a quarter of its lines. The
+    /// lines get at least a quarter of the free context, also when the
+    /// notes are near the budget (KTD8).
     fn part_lines(&self, lines: usize, chars: usize) -> usize {
         let notes = (self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN) as u64;
-        let mut tokens = free_tokens(&self.limits).saturating_sub(notes + PEOPLE_TOKENS);
+        let free = free_tokens(&self.limits);
+        let mut tokens = free
+            .saturating_sub(notes + PEOPLE_TOKENS)
+            .max(free / PART_FLOOR_SHARE);
         if let Some(output) = self.limits.output_max {
             tokens = tokens.min(u64::from(output) * 4);
         }
@@ -120,20 +178,31 @@ impl Pass<'_> {
     ///    in one context goes to a new agent with no tools, with the manual
     ///    notes and the people list of the part before. It writes the people
     ///    list so far and the timeline of its lines. A part whose reply is
-    ///    cut off runs again with half the lines.
+    ///    cut off runs again with half the lines, at most [`MAX_SHRINKS`]
+    ///    times in a run. With a local reply kind, the request already had
+    ///    all the room of the context, so a cut-off ends the run at once
+    ///    (KTD9).
     /// 2. When the joined timeline fits in a writer's context, one writer
     ///    writes the summary from it. Otherwise one writer for each group of
     ///    parts writes notes, and a merge step writes the summary.
     ///
     /// The writers and the merge step can call `tools` to check a point. A
     /// failed step ends the run with its outcome.
-    pub async fn timeline(&self, tools: &ToolSet<'_>, lines: usize, chars: usize) -> RunResult {
+    pub async fn timeline(&self, tools: &ToolSet<'_>, lines: usize, chars: usize) -> Timeline {
+        let ended = |result| Timeline {
+            result,
+            writer: None,
+        };
         let no_tools = match ToolSet::new(Vec::new()) {
             Ok(tools) => tools,
-            Err(error) => return failed(RunResult::empty(), error),
+            Err(error) => return ended(failed(RunResult::empty(), error)),
         };
+        let local = matches!(self.limits.reply_kind, ReplyKind::Full | ReplyKind::Ollama);
         let mut done = RunResult::empty();
         let mut size = self.part_lines(lines, chars);
+        let mut shrinks = 0;
+        let mut total = parts_from(1, lines, size);
+        self.report(Step::Parts, 0, total);
         let mut parts = Vec::new();
         let mut people = String::new();
         let mut first = 1;
@@ -141,7 +210,7 @@ impl Pass<'_> {
             let last = (first + size - 1).min(lines);
             let text = match self.note.lines(first, last) {
                 Ok(text) => text,
-                Err(error) => return failed(done, error),
+                Err(error) => return ended(failed(done, error)),
             };
             let messages = prompts::timeline_part(
                 first,
@@ -153,7 +222,9 @@ impl Pass<'_> {
                 self.user(),
             );
             let name = format!("timeline {}", parts.len() + 1);
-            let result = self.agent(&no_tools, messages, &name).await;
+            let result = self
+                .agent(&no_tools, messages, &name, RequestKind::Timeline)
+                .await;
             let cut_off = result.outcome == Outcome::CutOff;
             let part = result
                 .summary
@@ -167,24 +238,23 @@ impl Pass<'_> {
                         people = list;
                     }
                     parts.push(timeline);
+                    self.report(Step::Parts, parts.len(), total);
                 }
-                None if cut_off && last > first => {
+                None if cut_off && last > first && !local && shrinks < MAX_SHRINKS => {
+                    shrinks += 1;
                     size = (last - first).div_ceil(2);
+                    total = parts.len() + parts_from(first, lines, size);
                     continue;
                 }
                 None => {
                     done.summary = None;
-                    return done;
+                    return ended(done);
                 }
             }
             if last == lines {
                 break;
             }
-            // The next part repeats about a tenth of this part, as the app's
-            // chunks do, so that no exchange is cut in two. The parts get no
-            // extra instruction for it; the writer merges the repeats.
-            let repeat = ((last - first + 1) as f64 * OVERLAP).round() as usize;
-            first = (last + 1 - repeat).max(first + 1);
+            first = next_first(first, last);
         }
         let with_people = |timeline: &str| {
             if people.is_empty() {
@@ -206,7 +276,12 @@ impl Pass<'_> {
                 &self.text,
                 self.user(),
             );
-            return join(done, self.writer(tools, messages, "writer").await);
+            self.report(Step::Final, 0, 1);
+            let written = self.writer(tools, messages.clone(), "writer").await;
+            return Timeline {
+                result: join(done, written),
+                writer: Some(messages),
+            };
         }
         let groups = groups(&parts, room / 2, tokens);
         let count = groups.len();
@@ -216,6 +291,7 @@ impl Pass<'_> {
         let words = (share * 3 / 4).max(1) as usize;
         let most = ((share as f64 * BYTES_PER_TOKEN) as usize).max(1);
         let mut group_notes = Vec::new();
+        self.report(Step::Groups, 0, count);
         for (index, group) in groups.iter().enumerate() {
             let messages = prompts::from_timeline(
                 &with_people(group),
@@ -243,18 +319,26 @@ impl Pass<'_> {
                 Some(notes) => group_notes.push(notes),
                 None => {
                     done.summary = None;
-                    return done;
+                    return ended(done);
                 }
             }
+            self.report(Step::Groups, index + 1, count);
         }
         let notes: Vec<&str> = group_notes.iter().map(String::as_str).collect();
         let messages = prompts::step_merge(&notes, &self.note.note_id, &self.text, self.user());
-        join(done, self.writer(tools, messages, "merge").await)
+        self.report(Step::Final, 0, 1);
+        let merged = self.writer(tools, messages.clone(), "merge").await;
+        Timeline {
+            result: join(done, merged),
+            writer: Some(messages),
+        }
     }
 
     /// Check `draft` against the transcript of `lines` lines and `chars`
-    /// characters, and correct it. The result has the corrected summary, or
-    /// the draft when the auditors find no error. A failed auditor or
+    /// characters, and correct it. The auditors are independent: up to
+    /// [`Pass::at_once`] of them run at the same time, and their findings
+    /// join in part order (KTD11). The result has the corrected summary,
+    /// or the draft when the auditors find no error. A failed auditor or
     /// reviser keeps the draft, and the detail says why.
     pub async fn review(&self, draft: &str, lines: usize, chars: usize) -> RunResult {
         let no_tools = match ToolSet::new(Vec::new()) {
@@ -269,45 +353,67 @@ impl Pass<'_> {
         }
         let line_bytes = chars.max(1) as f64 / lines as f64;
         let part = ((room as f64 * BYTES_PER_TOKEN / line_bytes) as usize).max(1);
-        let mut findings = Vec::new();
-        let mut first = 1;
-        let mut number = 0;
-        while first <= lines {
-            let last = (first + part - 1).min(lines);
-            number += 1;
-            let text = match self.note.lines(first, last) {
-                Ok(text) => text,
-                Err(error) => return self.kept(draft, done, error),
+        let ranges: Vec<(usize, usize)> = (1..=lines)
+            .step_by(part)
+            .map(|first| (first, (first + part - 1).min(lines)))
+            .collect();
+        let total = ranges.len();
+        self.report(Step::Review, 0, total);
+        let no_tools = &no_tools;
+        let mut found: Vec<Option<String>> = vec![None; total];
+        let mut finished = 0;
+        let mut open = FuturesUnordered::new();
+        let mut next = ranges.iter().enumerate();
+        loop {
+            while open.len() < self.at_once.max(1) {
+                let Some((slot, &(first, last))) = next.next() else {
+                    break;
+                };
+                let text = match self.note.lines(first, last) {
+                    Ok(text) => text,
+                    Err(error) => return self.kept(draft, done, error),
+                };
+                let messages = prompts::audit(
+                    first,
+                    last,
+                    lines,
+                    &text,
+                    draft,
+                    &self.note.manual_notes,
+                    self.user(),
+                );
+                open.push(async move {
+                    let name = format!("auditor {}", slot + 1);
+                    let result = self
+                        .agent(no_tools, messages, &name, RequestKind::Audit)
+                        .await;
+                    (slot, result)
+                });
+            }
+            let Some((slot, result)) = open.next().await else {
+                break;
             };
-            let messages = prompts::audit(
-                first,
-                last,
-                lines,
-                &text,
-                draft,
-                &self.note.manual_notes,
-                self.user(),
-            );
-            let result = self
-                .agent(&no_tools, messages, &format!("auditor {number}"))
-                .await;
-            let found = result
+            let reply = result
                 .summary
                 .clone()
                 .filter(|_| result.outcome.has_summary());
             let failed = format!("{:?}", result.outcome);
             done = join(done, result);
-            match found {
+            match reply {
                 Some(text) if !text.trim().trim_matches('.').eq_ignore_ascii_case("none") => {
-                    findings.push(text.trim().to_string());
+                    found[slot] = Some(text.trim().to_string());
                 }
                 Some(_) => {}
                 None => {
-                    return self.kept(draft, done, format!("auditor {number} stopped: {failed}"));
+                    // The auditors that are still open stop here.
+                    let detail = format!("auditor {} stopped: {failed}", slot + 1);
+                    return self.kept(draft, done, detail);
                 }
             }
-            first = last + 1;
+            finished += 1;
+            self.report(Step::Review, finished, total);
         }
+        let findings: Vec<String> = found.into_iter().flatten().collect();
         if findings.is_empty() {
             done.outcome = Outcome::Summary;
             done.summary = Some(draft.to_string());
@@ -320,7 +426,10 @@ impl Pass<'_> {
             &self.note.manual_notes,
             self.user(),
         );
-        let result = self.agent(&no_tools, messages, "reviser").await;
+        self.report(Step::Review, 0, 1);
+        let result = self
+            .agent(no_tools, messages, "reviser", RequestKind::Revise)
+            .await;
         let reply = result
             .summary
             .clone()
@@ -348,6 +457,38 @@ impl Pass<'_> {
         done.detail = Some(detail);
         done
     }
+}
+
+/// How many times a run halves a timeline part whose reply is cut off, as
+/// in the app's summary step.
+pub const MAX_SHRINKS: usize = 6;
+
+/// The lines of a timeline part get at least this share of the free
+/// context: one quarter (KTD8).
+const PART_FLOOR_SHARE: u64 = 4;
+
+/// The first line of the part after the part `first`..=`last`. The next
+/// part repeats about a tenth of this part, as the app's chunks do, so
+/// that no exchange is cut in two. The parts get no extra instruction for
+/// it; the writer merges the repeats.
+fn next_first(first: usize, last: usize) -> usize {
+    let repeat = ((last - first + 1) as f64 * OVERLAP).round() as usize;
+    (last + 1 - repeat).max(first + 1)
+}
+
+/// The number of timeline parts of `size` lines from the line `first` to
+/// the line `lines`.
+fn parts_from(mut first: usize, lines: usize, size: usize) -> usize {
+    let mut count = 0;
+    while first <= lines {
+        count += 1;
+        let last = (first + size - 1).min(lines);
+        if last == lines {
+            break;
+        }
+        first = next_first(first, last);
+    }
+    count
 }
 
 /// The tokens kept free for the people list in a timeline part.

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use summarize::provider::ThinkingLevel;
+use summarize::tokens::ReplyKind;
 use summary_agent::{HistoryPolicy, Limits};
 
 /// The agent shape of a run (KTD13).
@@ -122,6 +123,8 @@ impl LimitsConfig {
             reply_tokens: self.reply_tokens,
             output_max,
             num_ctx: None,
+            // The lab measured the hosted rule.
+            reply_kind: ReplyKind::Hosted,
         }
     }
 }
