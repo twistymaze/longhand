@@ -2153,7 +2153,12 @@ async fn a_summary_names_its_host_and_model_and_no_file_holds_the_credential() {
             mock.base.as_str(),
             &r.dest.to_string_lossy(),
         ] {
-            assert!(!text.contains(secret), "{} holds {secret}", file.display());
+            // The message names no secret, so a failure does not log it.
+            assert!(
+                !text.contains(secret),
+                "{} holds the credential or a setting",
+                file.display()
+            );
         }
     }
 }
