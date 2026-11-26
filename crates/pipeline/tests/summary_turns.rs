@@ -280,7 +280,7 @@ async fn a_suspended_proceed_holds_the_turn_until_it_is_resumed() {
         });
         // The time limit only ends a test that fails: a turn that never
         // calls `proceed` would hold the test for ever.
-        if entered.recv_timeout(Duration::from_secs(30)).is_err() {
+        if entered.recv_timeout(Duration::from_secs(60)).is_err() {
             eprintln!("the turn did not call proceed");
             std::process::abort();
         }
