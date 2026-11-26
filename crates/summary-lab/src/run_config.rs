@@ -207,18 +207,11 @@ pub fn default_judges() -> Vec<String> {
     ]
 }
 
-/// The largest `get_note` result in tokens when the run sets no
-/// `max_chars`: about the 25,000-token cap of Claude Code's file read tool.
-pub const RESULT_TOKENS: u64 = 25_000;
-
 /// The size cap of one `get_note` result for a model with a context of
-/// `context_tokens`: `max_chars` when set, else [`RESULT_TOKENS`] and at
-/// most a quarter of the context, in characters.
+/// `context_tokens`: `max_chars` when set, else the app's rule
+/// ([`summarize::tokens::result_chars`]).
 pub fn result_chars(max_chars: Option<usize>, context_tokens: u32) -> usize {
-    max_chars.unwrap_or_else(|| {
-        let tokens = RESULT_TOKENS.min(u64::from(context_tokens) / 4);
-        ((tokens as f64 * summarize::tokens::BYTES_PER_TOKEN) as usize).max(1)
-    })
+    max_chars.unwrap_or_else(|| summarize::tokens::result_chars(context_tokens))
 }
 
 impl RunConfig {

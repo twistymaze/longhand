@@ -1,4 +1,4 @@
-//! The passes around an agent run that the lab tests:
+//! The passes of the app's summary pipeline, which the lab also runs:
 //!
 //! - The timeline pipeline: agents write the timeline of each transcript
 //!   part, then writers write the summary from the timeline
@@ -101,15 +101,15 @@ impl Pass<'_> {
     async fn agent(
         &self,
         tools: &ToolSet<'_>,
-        messages: Vec<Message>,
+        mut messages: Vec<Message>,
         name: &str,
         kind: RequestKind,
     ) -> RunResult {
         Agent {
             model: self.model,
             tools,
-            preamble: messages[0].content.clone(),
-            prompt: messages[1].content.clone(),
+            preamble: std::mem::take(&mut messages[0].content),
+            prompt: std::mem::take(&mut messages[1].content),
             limits: self.limits,
             history: HistoryPolicy::default(),
             label: Label {
@@ -139,8 +139,8 @@ impl Pass<'_> {
                 | Outcome::ContextExceeded
                 | Outcome::CutOff
                 | Outcome::ToolCallLimit
-        ) && let Ok(no_tools) = ToolSet::new(Vec::new())
-        {
+        ) {
+            let no_tools = ToolSet::empty();
             let again = self
                 .agent(&no_tools, messages, name, RequestKind::Writer)
                 .await;
@@ -152,13 +152,18 @@ impl Pass<'_> {
         result
     }
 
+    /// The tokens of the manual notes.
+    fn notes_tokens(&self) -> u64 {
+        (self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN) as u64
+    }
+
     /// The lines of one timeline part: the free context less the manual
     /// notes and the people list, and at most four times the output
     /// maximum, because a timeline is about a quarter of its lines. The
     /// lines get at least a quarter of the free context, also when the
     /// notes are near the budget (KTD8).
     fn part_lines(&self, lines: usize, chars: usize) -> usize {
-        let notes = (self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN) as u64;
+        let notes = self.notes_tokens();
         let free = free_tokens(&self.limits);
         let mut tokens = free
             .saturating_sub(notes + PEOPLE_TOKENS)
@@ -193,10 +198,7 @@ impl Pass<'_> {
             result,
             writer: None,
         };
-        let no_tools = match ToolSet::new(Vec::new()) {
-            Ok(tools) => tools,
-            Err(error) => return ended(failed(RunResult::empty(), error)),
-        };
+        let no_tools = ToolSet::empty();
         let local = matches!(self.limits.reply_kind, ReplyKind::Full | ReplyKind::Ollama);
         let mut done = RunResult::empty();
         let mut size = self.part_lines(lines, chars);
@@ -226,10 +228,7 @@ impl Pass<'_> {
                 .agent(&no_tools, messages, &name, RequestKind::Timeline)
                 .await;
             let cut_off = result.outcome == Outcome::CutOff;
-            let part = result
-                .summary
-                .clone()
-                .filter(|_| result.outcome.has_summary());
+            let part = result.written();
             done = join(done, result);
             match part {
                 Some(part) => {
@@ -263,8 +262,7 @@ impl Pass<'_> {
                 format!("People:\n{people}\n\n{timeline}")
             }
         };
-        let notes = self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN;
-        let room = free_tokens(&self.limits).saturating_sub(notes as u64);
+        let room = free_tokens(&self.limits).saturating_sub(self.notes_tokens());
         let tokens = |text: &str| (text.len() as f64 / BYTES_PER_TOKEN) as u64;
         let whole = with_people(&parts.join("\n"));
         if tokens(&whole) <= room * 2 / 3 {
@@ -304,10 +302,7 @@ impl Pass<'_> {
             let result = self
                 .writer(tools, messages, &format!("writer {}", index + 1))
                 .await;
-            let notes = result
-                .summary
-                .clone()
-                .filter(|_| result.outcome.has_summary());
+            let notes = result.written();
             done = join(done, result);
             match notes {
                 // Notes longer than their share of the merge request are
@@ -341,10 +336,7 @@ impl Pass<'_> {
     /// or the draft when the auditors find no error. A failed auditor or
     /// reviser keeps the draft, and the detail says why.
     pub async fn review(&self, draft: &str, lines: usize, chars: usize) -> RunResult {
-        let no_tools = match ToolSet::new(Vec::new()) {
-            Ok(tools) => tools,
-            Err(error) => return self.kept(draft, RunResult::empty(), error),
-        };
+        let no_tools = ToolSet::empty();
         let fixed = (draft.len() + self.note.manual_notes.len()) as f64 / BYTES_PER_TOKEN;
         let room = free_tokens(&self.limits).saturating_sub(fixed as u64);
         let mut done = RunResult::empty();
@@ -393,10 +385,7 @@ impl Pass<'_> {
             let Some((slot, result)) = open.next().await else {
                 break;
             };
-            let reply = result
-                .summary
-                .clone()
-                .filter(|_| result.outcome.has_summary());
+            let reply = result.written();
             let failed = format!("{:?}", result.outcome);
             done = join(done, result);
             match reply {
@@ -405,7 +394,6 @@ impl Pass<'_> {
                 }
                 Some(_) => {}
                 None => {
-                    // The auditors that are still open stop here.
                     let detail = format!("auditor {} stopped: {failed}", slot + 1);
                     return self.kept(draft, done, detail);
                 }
@@ -430,10 +418,7 @@ impl Pass<'_> {
         let result = self
             .agent(no_tools, messages, "reviser", RequestKind::Revise)
             .await;
-        let reply = result
-            .summary
-            .clone()
-            .filter(|_| result.outcome.has_summary());
+        let reply = result.written();
         let failed = format!("the reviser stopped: {:?}", result.outcome);
         let mut done = join(done, result);
         let Some(reply) = reply else {
@@ -567,6 +552,11 @@ fn failed(mut done: RunResult, detail: String) -> RunResult {
 }
 
 impl RunResult {
+    /// The summary when the outcome has one, else `None`.
+    pub fn written(&self) -> Option<String> {
+        self.summary.clone().filter(|_| self.outcome.has_summary())
+    }
+
     /// A result with no turns, to add other results to.
     pub fn empty() -> Self {
         RunResult {

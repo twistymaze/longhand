@@ -14,6 +14,18 @@ pub const BYTES_PER_TOKEN: f64 = 3.5;
 pub const MESSAGE_FRAMING: usize = 8;
 pub const MARGIN: f64 = 0.15;
 
+/// The most tokens in one result of a read tool of the transcript: about
+/// the 25,000-token cap of Claude Code's file read tool.
+pub const RESULT_TOKENS: u64 = 25_000;
+
+/// The size cap of one result of a read tool of the transcript for a
+/// context of `limit` tokens, in characters: [`RESULT_TOKENS`], and at
+/// most a quarter of the context.
+pub fn result_chars(limit: u32) -> usize {
+    let tokens = RESULT_TOKENS.min(u64::from(limit) / 4);
+    ((tokens as f64 * BYTES_PER_TOKEN) as usize).max(1)
+}
+
 pub fn estimate(text: &str) -> usize {
     estimate_bytes(text.len())
 }

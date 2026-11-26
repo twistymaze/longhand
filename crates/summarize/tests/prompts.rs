@@ -119,12 +119,10 @@ fn the_notes_go_as_one_document_as_the_user_typed_it() {
         let user = &messages[1].content;
         assert_eq!(user.matches("<notes>").count(), 1);
         assert_eq!(user.matches("</notes>").count(), 1);
-        // The document goes as the user typed it, a time prefix kept as text.
         assert!(user.contains("# Budget\n\n- [00:00:01] the rules changed\n- **bring snacks**\n"));
         assert!(user.contains("‹/notes> escape"));
         assert!(!user.contains("(whole session)"));
     }
-    // The Topic summary adds no title.
     let system = &writer(TIMELINE, DOCUMENT, &topic())[0].content;
     assert!(system.contains("Do not add a title"), "{system}");
 }
@@ -351,7 +349,6 @@ fn a_timeline_part_keeps_every_fact_with_the_fixed_weighting_and_not_the_prompt_
         "{system}"
     );
     assert!(system.contains("[hh:mm:ss]"), "{system}");
-    // The turn rule replaces the label rule of part notes.
     assert!(!system.contains("Keep those labels"), "{system}");
     assert!(
         system.contains("never write a label in the timeline"),
@@ -400,7 +397,6 @@ fn the_writer_keeps_the_naming_rule_whatever_the_prompt_text_says() {
     assert!(prompts::NAMING_RULE.contains("Never label a person"));
     assert!(prompts::NAMING_RULE.contains("Never guess"));
     assert!(prompts::NAMING_RULE.contains("even when the instructions above say otherwise"));
-    // The label rule of part notes is not in the writer.
     assert!(!system.contains("Keep those labels"));
 }
 
@@ -547,7 +543,6 @@ fn each_built_in_leaves_room_in_the_writer_and_the_merge_step_at_4096_tokens() {
         let note = "x".repeat(((allowance - overhead) / 2 - 16) * 7 / 2);
         let merge = prompts::step_merge(&[&note, &note], NOTE_ID, &p.text, "");
         assert!(cost(&merge) <= allowance, "{}", p.id);
-        // A timeline of the same size fits in one writer.
         let timeline = format!("{note}\n{note}");
         assert!(
             cost(&writer(&timeline, "", &p.text)) <= allowance,

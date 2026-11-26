@@ -104,7 +104,11 @@ pub struct MemoryNoteSource {
     pub started: String,
     /// The text of the transcript file. Line numbers count its raw lines
     /// from 1.
-    pub transcript: String,
+    transcript: String,
+    /// The number of lines of the transcript.
+    transcript_lines: usize,
+    /// The number of characters of the transcript.
+    transcript_chars: usize,
     pub manual_notes: String,
     pub details: Details,
     /// The size cap of the text in one get note result.
@@ -112,6 +116,39 @@ pub struct MemoryNoteSource {
 }
 
 impl MemoryNoteSource {
+    /// The note `note_id` with the start time `started` (RFC 3339), the
+    /// text of its transcript file, its manual notes and its details.
+    /// `max_chars` is the size cap of the text in one get note result.
+    pub fn new(
+        note_id: String,
+        started: String,
+        transcript: String,
+        manual_notes: String,
+        details: Details,
+        max_chars: usize,
+    ) -> Self {
+        Self {
+            note_id,
+            started,
+            transcript_lines: transcript.lines().count(),
+            transcript_chars: transcript.chars().count(),
+            transcript,
+            manual_notes,
+            details,
+            max_chars,
+        }
+    }
+
+    /// The number of lines of the transcript.
+    pub fn transcript_lines(&self) -> usize {
+        self.transcript_lines
+    }
+
+    /// The number of characters of the transcript.
+    pub fn transcript_chars(&self) -> usize {
+        self.transcript_chars
+    }
+
     /// The transcript lines `first` to `last`, with their time stamps. The
     /// size cap of a tool result does not apply.
     pub fn lines(&self, first: usize, last: usize) -> Result<String, String> {
@@ -167,8 +204,8 @@ impl MemoryNoteSource {
             busy: false,
             busy_reasons: Vec::new(),
             transcript_state: PartState::Present,
-            transcript_lines: Some(self.transcript.lines().count()),
-            transcript_chars: Some(self.transcript.chars().count()),
+            transcript_lines: Some(self.transcript_lines),
+            transcript_chars: Some(self.transcript_chars),
             manual_notes,
             summary: None,
             transcript,

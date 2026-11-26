@@ -278,6 +278,15 @@ impl<'a> ToolSet<'a> {
         })
     }
 
+    /// A tool set with no tools.
+    pub fn empty() -> Self {
+        Self {
+            sources: Vec::new(),
+            by_name: BTreeMap::new(),
+            definitions: Vec::new(),
+        }
+    }
+
     pub fn names(&self) -> BTreeSet<String> {
         self.by_name.keys().cloned().collect()
     }

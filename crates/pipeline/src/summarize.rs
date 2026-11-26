@@ -58,6 +58,8 @@ pub const BUDGET: &str = "budget";
 /// (KTD4). It is saved before the first request, and a resumed run uses it
 /// in place of the active prompt.
 pub const PROMPT: &str = "prompt";
+/// The fingerprint of the raw manual notes that the run read, a string.
+pub const SOURCE_NOTES: &str = "source-notes";
 /// The keys of the part, merge and final method of older builds (KTD7):
 /// the plan and the whole-transcript call. Their part and merge calls have
 /// the keys of [`is_layer_key`]. This build deletes them.
@@ -108,10 +110,6 @@ const CONTEXT_STEP: usize = 2_048;
 /// The smallest Ollama context size, unless the context limit is smaller
 /// (KTD7).
 const SMALLEST_CONTEXT: u32 = 4_096;
-/// The most tokens in one result of the writer's read tool. A quarter of
-/// the context is the limit for a smaller context. The summary lab uses
-/// the same rule.
-const RESULT_TOKENS: u64 = 25_000;
 const CANCEL_POLL: Duration = Duration::from_millis(250);
 
 /// `client` with the OpenRouter routing rules of `endpoint`, when it has
@@ -334,7 +332,7 @@ pub fn send_title_request(
     let num_ctx = (endpoint.provider == Provider::Ollama).then(|| {
         request.num_ctx.unwrap_or_else(|| {
             context_size(
-                tokens::with_margin(cost(&request.messages)) + request.cap as usize,
+                tokens::with_margin(prompts::cost(&request.messages)) + request.cap as usize,
                 request.limit.or(endpoint.context_limit).unwrap_or(u32::MAX),
             )
         })
@@ -620,7 +618,7 @@ pub fn produce(
         store,
         note_id,
         Stage::Summarize,
-        "source-notes",
+        SOURCE_NOTES,
         &session_core::folder::fingerprint(raw_notes.as_bytes()),
     )?;
     let details = note_details(store, note_id)?;
@@ -716,7 +714,6 @@ pub fn produce(
     };
     let reply_kind = ReplyKind::of(endpoint.provider, budget.budget.source);
     let turns = turns::Turns::new(store, note_id, &client, control);
-    // The pipeline reports its steps through a shared reference.
     let steps = RefCell::new(progress);
     let report = |step: Step, done: usize, total: usize| {
         let step = match step {
@@ -729,14 +726,14 @@ pub fn produce(
     };
     let pass = Pass {
         model: &turns,
-        note: MemoryNoteSource {
-            note_id: note_id.to_string(),
+        note: MemoryNoteSource::new(
+            note_id.to_string(),
             started,
-            transcript: transcript.clone(),
-            manual_notes: notes,
-            details: details.clone(),
-            max_chars: result_chars(limit),
-        },
+            transcript,
+            notes,
+            details.clone(),
+            tokens::result_chars(limit),
+        ),
         background: prompt.background.clone(),
         text: prompt.text.clone(),
         limits: Limits {
@@ -750,9 +747,8 @@ pub fn produce(
         at_once: endpoint.requests_at_once.max(1) as usize,
         progress: Some(&report),
     };
-    // The writer reads this note only (R5).
     let tools = ToolSet::new(vec![&pass.note as &dyn ToolSource]).map_err(StageError::Failed)?;
-    let (lines, chars) = (transcript.lines().count(), transcript.chars().count());
+    let (lines, chars) = (pass.note.transcript_lines(), pass.note.transcript_chars());
 
     turns.clear_error();
     let timeline = runtime.block_on(pass.timeline(&tools, lines, chars), control)?;
@@ -762,11 +758,7 @@ pub fn produce(
         return Err(StageError::Cancelled);
     }
     let result = timeline.result;
-    let Some(draft) = result
-        .summary
-        .clone()
-        .filter(|_| result.outcome.has_summary())
-    else {
+    let Some(draft) = result.written() else {
         log::warn!(
             "the summary of {note_id} stopped: {:?} ({})",
             result.outcome,
@@ -791,14 +783,10 @@ pub fn produce(
     if turns.cancelled() || control.is_cancelled() {
         return Err(StageError::Cancelled);
     }
-    // A failed review keeps the draft, and the user sees no message (R3).
     if let Some(detail) = &review.detail {
         log::info!("the review of the summary of {note_id}: {detail}");
     }
-    let body = review
-        .summary
-        .filter(|_| review.outcome.has_summary())
-        .unwrap_or(draft);
+    let body = review.written().unwrap_or(draft);
 
     // A title problem never fails the summary (R14): an error is logged,
     // and the note keeps its title.
@@ -913,14 +901,6 @@ fn context_limit_message(budget: &Budget) -> String {
     )
 }
 
-/// The size cap of one result of the writer's read tool for a context of
-/// `limit` tokens, in characters: [`RESULT_TOKENS`], and at most a quarter
-/// of the context.
-fn result_chars(limit: u32) -> usize {
-    let tokens = RESULT_TOKENS.min(u64::from(limit) / 4);
-    ((tokens as f64 * tokens::BYTES_PER_TOKEN) as usize).max(1)
-}
-
 /// True for the key of a part or merge call of an older build: `l`, two
 /// digits, `-` and five digits (KTD7). A turn key never has this form.
 fn is_layer_key(key: &str) -> bool {
@@ -1012,7 +992,7 @@ fn store_title_request(
     let limit = turn.budget.budget.limit;
     let cap = tokens::reply_allowance(
         limit,
-        tokens::with_margin(cost(&messages)),
+        tokens::with_margin(prompts::cost(&messages)),
         turn.budget.output_max,
         turn.reply_kind,
     )
@@ -1046,10 +1026,6 @@ fn input_value(transcript: &str, notes: &str, details: &Details) -> Result<Strin
         "{METHOD}:{}",
         input_fingerprint(transcript, notes, details)?
     ))
-}
-
-fn cost(messages: &[Message]) -> usize {
-    tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
 }
 
 /// Stages run on the blocking pool; the client is async. Inside the app's
@@ -1312,7 +1288,7 @@ mod tests {
             "budget",
             "prompt",
             "input",
-            "source-notes",
+            super::SOURCE_NOTES,
             "title",
             "title_request",
             "meta",

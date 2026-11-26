@@ -21,18 +21,18 @@ fn file(name: &str) -> String {
 
 /// The budget review note of the fixture, in memory.
 fn source(max_chars: usize) -> MemoryNoteSource {
-    MemoryNoteSource {
-        note_id: NOTE.into(),
-        started: "2026-10-01T09:00:00-05:00".into(),
-        transcript: file("transcript.md"),
-        manual_notes: file("notes.md"),
-        details: Details {
+    MemoryNoteSource::new(
+        NOTE.into(),
+        "2026-10-01T09:00:00-05:00".into(),
+        file("transcript.md"),
+        file("notes.md"),
+        Details {
             note_type: None,
             tags: vec!["Finance".into(), "Team::Planning".into()],
             title: Some("Budget review".into()),
         },
         max_chars,
-    }
+    )
 }
 
 async fn memory_call(source: &MemoryNoteSource, name: &str, arguments: Value) -> (Value, bool) {

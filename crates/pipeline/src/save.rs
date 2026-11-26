@@ -667,7 +667,7 @@ fn stage_publication(
     let summary_notes: Option<String> = guard
         .checkpoints(note_id, Stage::Summarize)?
         .into_iter()
-        .find(|(key, _)| key == "source-notes")
+        .find(|(key, _)| key == crate::summarize::SOURCE_NOTES)
         .map(|(_, value)| serde_json::from_str(&value))
         .transpose()?;
     let current_notes = folder::fingerprint(guard.notes(note_id)?.as_bytes());

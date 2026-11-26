@@ -203,10 +203,7 @@ impl<'a> ReadPart<'a> {
         // About 0.75 words for each token.
         let words = self.notes_tokens.map(|t| (t as usize * 3 / 4).max(1));
         let messages = prompts::reader(first, last, &lines, instruction, words, user);
-        let tools = match ToolSet::new(Vec::new()) {
-            Ok(tools) => tools,
-            Err(error) => return CallResult::error(error),
-        };
+        let tools = ToolSet::empty();
         let result = Box::pin(
             Agent {
                 model: self.model,

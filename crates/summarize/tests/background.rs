@@ -182,7 +182,6 @@ fn a_step_part_with_a_pause_holds_the_pause_lines_between_the_turns_and_the_paus
 recorded, with its length. The parts of the meeting before and after a pause line are separate \
 parts of the meeting.";
     assert_eq!(user.matches(rule).count(), 1, "{user}");
-    // The rule is the app's text, not quoted data.
     assert!(user.find(rule) < user.find("<transcript"), "{user}");
     // No pause, no rule.
     let plain = prompts::step_part(&one_chunk(), 0, 3, NOTE_ID, "");
@@ -336,7 +335,6 @@ fn an_instruction_shaped_background_goes_in_as_it_is_with_the_rules_after_it() {
         "{system}"
     );
     assert!(system.ends_with(ABOVE_WINS), "{system}");
-    // The timeline frame in the user message is not changed.
     let user = &messages[1].content;
     assert_eq!(user.matches("<timeline>").count(), 1);
     assert_eq!(user.matches("</timeline>").count(), 1);

@@ -52,14 +52,14 @@ fn pass_of<'a>(
 ) -> Pass<'a> {
     Pass {
         model,
-        note: MemoryNoteSource {
-            note_id: "note-budget-review".into(),
-            started: "2026-10-01T09:00:00-05:00".into(),
+        note: MemoryNoteSource::new(
+            "note-budget-review".into(),
+            "2026-10-01T09:00:00-05:00".into(),
             transcript,
-            manual_notes: manual_notes.into(),
-            details: Details::default(),
-            max_chars: 5_000,
-        },
+            manual_notes.into(),
+            Details::default(),
+            5_000,
+        ),
         background: String::new(),
         text: "Write a summary.".into(),
         limits,
@@ -326,7 +326,6 @@ async fn each_step_gives_its_turns_its_own_request_kind() {
     );
     let labels = model.labels.lock().unwrap().clone();
     assert!(labels.iter().all(|l| l.note.as_deref() == Some("n1")));
-    // The title request gets the writer's messages.
     let messages = timeline.writer.expect("the writer's messages");
     let turns = model.turns();
     assert_eq!(messages[0].content, turns[1].preamble);
@@ -480,7 +479,6 @@ async fn a_timeline_that_does_not_fit_goes_to_group_writers_and_a_merge() {
     assert!(merge.contains("notes one") && merge.contains("notes two"));
     assert!(merge.contains("These notes were cut here."));
     assert!(!merge.contains(&"n".repeat(1_400)));
-    // The title request gets the merge step's messages.
     let messages = timeline.writer.expect("the merge step's messages");
     assert_eq!(messages[0].content, turns[6].preamble);
     assert!(messages[1].content.contains("notes two"));

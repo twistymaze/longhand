@@ -945,14 +945,14 @@ async fn agent_run(
     };
     let pass = Pass {
         model: client,
-        note: MemoryNoteSource {
-            note_id: note_id.to_string(),
-            started: started(root, note_id)?,
-            transcript: transcript.clone(),
-            manual_notes: part(root, note, NOTES_FILE),
-            details: details.clone(),
+        note: MemoryNoteSource::new(
+            note_id.to_string(),
+            started(root, note_id)?,
+            transcript.clone(),
+            part(root, note, NOTES_FILE),
+            details.clone(),
             max_chars,
-        },
+        ),
         background: prompt.background.clone(),
         text: prompt.text.clone(),
         limits,
@@ -1044,11 +1044,7 @@ async fn agent_run(
     };
     let mut result = result;
     if config.review {
-        let Some(draft) = result
-            .summary
-            .clone()
-            .filter(|_| result.outcome.has_summary())
-        else {
+        let Some(draft) = result.written() else {
             return Ok((shape, result));
         };
         let reviewed = pass

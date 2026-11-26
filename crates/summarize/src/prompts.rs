@@ -656,6 +656,11 @@ pub fn title_reserve<'a>(title_text: &str, user: impl Into<UserText<'a>>) -> usi
         + TITLE_REPLY_MIN as usize
 }
 
+/// The token estimate of `messages`.
+pub fn cost(messages: &[Message]) -> usize {
+    crate::tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
+}
+
 /// A note id for [`overhead`]. It is longer than a note id that the app
 /// makes, so the estimate is not too small.
 const OVERHEAD_NOTE_ID: &str = "0000-00-00-0000-000000000";
@@ -676,8 +681,6 @@ pub fn overhead<'a>(notes: &str, text: &str, user: impl Into<UserText<'a>>) -> u
         lines: Vec::new(),
         first_new: 0,
     };
-    let cost =
-        |m: &[Message]| crate::tokens::estimate_messages(m.iter().map(|m| m.content.as_str()));
     cost(&from_timeline("", notes, id, None, text, user))
         .max(cost(&step_merge(&[], id, text, user)))
         .max(cost(&step_part(&empty, 9_999, 9_999, id, user)))
