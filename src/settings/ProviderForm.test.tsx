@@ -819,6 +819,18 @@ describe("Thinking", () => {
 });
 
 describe("Requests at the same time", () => {
+  test("Covers R12. The detail text says what the number does", async () => {
+    const b = backend({ active: "openrouter", check: () => listed() });
+    const user = userEvent.setup();
+    render(<Harness initial={b.initial} />);
+    await openAdvanced(user);
+    expect(
+      screen.getByText(
+        "The check of a summary sends its parts to the model at the same time, up to this number. The server must be able to run this many requests at once.",
+      ),
+    ).toBeTruthy();
+  });
+
   test("the field shows the default of the provider as its placeholder", async () => {
     const b = backend({ active: "openrouter", check: () => listed() });
     const user = userEvent.setup();

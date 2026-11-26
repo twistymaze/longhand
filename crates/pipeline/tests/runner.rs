@@ -2157,10 +2157,10 @@ async fn a_summary_names_its_host_and_model_and_no_file_holds_the_credential() {
         }
     }
 }
-/// Covers R9, KTD13 (Parts, Groups, Final): a timeline too long for one
-/// writer goes to group writers and a merge step. The progress names the
-/// step of each request: the timeline parts, then the group writers, then
-/// the merge step. The counts never go back.
+/// Covers R9, KTD13: a timeline too long for one writer goes to group
+/// writers and a merge step. The progress names the step of each request:
+/// the timeline parts, then the group writers, then the merge step, then
+/// the auditors. The counts never go back.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_long_timeline_goes_to_group_writers_and_a_merge_and_each_step_reports_progress() {
     let r = rig().await;
@@ -2207,20 +2207,36 @@ async fn a_long_timeline_goes_to_group_writers_and_a_merge_and_each_step_reports
             && steps.contains(&(SummaryStep::Groups, groups, groups)),
         "{steps:?}"
     );
-    assert_eq!(steps.last(), Some(&(SummaryStep::Final, 0, 1)), "{steps:?}");
+    assert!(steps.contains(&(SummaryStep::Final, 0, 1)), "{steps:?}");
+    // The auditors report the parts that are done, after the summary.
+    let audits = steps
+        .iter()
+        .find(|s| s.0 == SummaryStep::Review)
+        .map(|s| s.2)
+        .expect("a review step");
+    assert!(
+        steps.contains(&(SummaryStep::Review, 0, audits))
+            && steps.contains(&(SummaryStep::Review, audits, audits)),
+        "{steps:?}"
+    );
+    assert_eq!(steps.last().map(|s| s.0), Some(SummaryStep::Review));
     let order = |s: &SummaryStep| match s {
         SummaryStep::Parts => 0,
         SummaryStep::Groups => 1,
         SummaryStep::Final => 2,
+        SummaryStep::Review => 3,
     };
     assert!(
         steps.windows(2).all(|w| order(&w[0].0) <= order(&w[1].0)),
         "{steps:?}"
     );
+    // The reviser starts a count of its own, so (Review, 0, 1) can follow
+    // the last auditor.
+    let reviser = (SummaryStep::Review, 0, 1);
     assert!(
         steps
             .windows(2)
-            .all(|w| w[0].0 != w[1].0 || w[0].1 <= w[1].1),
+            .all(|w| w[0].0 != w[1].0 || w[0].1 <= w[1].1 || w[1] == reviser),
         "a count never goes back: {steps:?}"
     );
 }

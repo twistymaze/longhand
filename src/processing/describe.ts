@@ -20,10 +20,13 @@ export function stageLabel(stage: string): string {
   return stageLabels[stage as StageName] ?? stage;
 }
 
-/// The step of a summary in parts: "Summarizing part 5 of 16", then
-/// "Combining summaries 3 of 9" for the calls that combine the part
-/// summaries in groups, then "Writing the final summary". `done` counts the
-/// calls of the step that are done, so the call that runs is the next one.
+/// The step of the summary pipeline (KTD13): "Writing the timeline, part 5
+/// of 16", then "Writing section 3 of 9" for the writers of the groups of
+/// timeline parts, then "Writing the summary", then "Checking the summary,
+/// 2 of 4 done". For parts and sections, `done` counts the requests that are
+/// done, so the request that runs is the next one. The auditors run at the
+/// same time, so the check shows the count that is done. The reviser
+/// reports a total of one, and its label has no count.
 export function summaryStepLabel({
   summary_step,
   done,
@@ -36,11 +39,13 @@ export function summaryStepLabel({
   const current = Math.min(done + 1, total);
   switch (summary_step) {
     case "parts":
-      return total > 1 ? `Summarizing part ${current} of ${total}` : stageLabel("summarize");
+      return total > 1 ? `Writing the timeline, part ${current} of ${total}` : "Writing the timeline";
     case "groups":
-      return total > 1 ? `Combining summaries ${current} of ${total}` : "Combining summaries";
+      return `Writing section ${current} of ${total}`;
     case "final":
-      return "Writing the final summary";
+      return "Writing the summary";
+    case "review":
+      return total > 1 ? `Checking the summary, ${done} of ${total} done` : "Checking the summary";
     default:
       return stageLabel("summarize");
   }

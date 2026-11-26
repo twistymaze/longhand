@@ -59,7 +59,7 @@ function progressOf(row: StageRow, detail: SessionDetail, live: Live | undefined
   return null;
 }
 
-/// The label of `row`. A running summary in parts names its step.
+/// The label of `row`. A running summary names its pipeline step (KTD13).
 function labelOf(row: StageRow, live: Live | undefined): StageRow {
   if (row.stage !== "summarize" || row.status !== "running" || live?.stage !== "summarize") return row;
   return { ...row, label: summaryStepLabel(live) };

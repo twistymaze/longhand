@@ -8,6 +8,7 @@ import {
   sentence,
   sessionTitle,
   speakerMeter,
+  summaryStepLabel,
   stageRows,
   stoppedAt,
   waitText,
@@ -122,6 +123,33 @@ describe("speaker meter", () => {
     const failed = running(progress("a", 50, true));
     failed.entry = { ...failed.entry, state: "processing_failed" };
     expect(speakerMeter(failed, progress("a", 50, true))).toBeNull();
+  });
+});
+
+describe("summary step labels (KTD13)", () => {
+  const label = (summary_step: string | null, done: number, total: number) =>
+    summaryStepLabel({ summary_step, done, total });
+
+  test("each step gives its label with its counts", () => {
+    expect(label("parts", 4, 16)).toBe("Writing the timeline, part 5 of 16");
+    expect(label("groups", 0, 9)).toBe("Writing section 1 of 9");
+    expect(label("final", 0, 1)).toBe("Writing the summary");
+    expect(label("review", 2, 5)).toBe("Checking the summary, 2 of 5 done");
+  });
+
+  test("a part total that grows shows the new total", () => {
+    expect(label("parts", 3, 8)).toBe("Writing the timeline, part 4 of 8");
+    expect(label("parts", 3, 9)).toBe("Writing the timeline, part 4 of 9");
+  });
+
+  test("the review counts the parts that are done, and the reviser shows no count", () => {
+    expect(label("review", 0, 2)).toBe("Checking the summary, 0 of 2 done");
+    expect(label("review", 2, 2)).toBe("Checking the summary, 2 of 2 done");
+    expect(label("review", 0, 1)).toBe("Checking the summary");
+  });
+
+  test("a step of one request shows no count", () => {
+    expect(label("parts", 0, 1)).toBe("Writing the timeline");
   });
 });
 

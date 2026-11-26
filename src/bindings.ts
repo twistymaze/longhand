@@ -2548,8 +2548,9 @@ name: string; problem: NoteProblemView }
 export type ProcessingMode = "during_recording" | "after_stop"
 export type ProcessingStep = { kind: "stage_started"; stage: string } | 
 /**
- * `summary_step` is the step of a summary in parts: "parts", "groups"
- * or "final". It is `None` for the transcribe stage.
+ * `summary_step` is the step of the summary pipeline: "parts",
+ * "groups", "final" or "review". It is `None` for the transcribe
+ * stage.
  */
 { kind: "progress"; stage: string; segment: number; summary_step: string | null; done: number; total: number } | 
 /**

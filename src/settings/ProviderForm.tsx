@@ -558,7 +558,7 @@ function AdvancedRows({
       {thinkingError && <ErrorText>{thinkingError}</ErrorText>}
       <Row
         label="Requests at the same time"
-        detail="Long notes go to the model in parts. The server must be able to run this many requests at once."
+        detail="The check of a summary sends its parts to the model at the same time, up to this number. The server must be able to run this many requests at once."
       >
         <CommitField
           label="Requests at the same time"

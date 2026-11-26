@@ -369,6 +369,9 @@ pub enum SummaryStep {
     Groups,
     /// The writer or the merge step, which writes the summary.
     Final,
+    /// The auditors, which run at the same time. `done` is the number of
+    /// audit parts that are complete. The reviser reports a total of one.
+    Review,
 }
 
 impl SummaryStep {
@@ -377,6 +380,7 @@ impl SummaryStep {
             Self::Parts => "parts",
             Self::Groups => "groups",
             Self::Final => "final",
+            Self::Review => "review",
         }
     }
 }
@@ -712,15 +716,14 @@ pub fn produce(
     };
     let reply_kind = ReplyKind::of(endpoint.provider, budget.budget.source);
     let turns = turns::Turns::new(store, note_id, &client, control);
-    // The pipeline reports its steps through a shared reference. The
-    // review step has no view yet, so its reports go nowhere.
+    // The pipeline reports its steps through a shared reference.
     let steps = RefCell::new(progress);
     let report = |step: Step, done: usize, total: usize| {
         let step = match step {
             Step::Parts => SummaryStep::Parts,
             Step::Groups => SummaryStep::Groups,
             Step::Final => SummaryStep::Final,
-            Step::Review => return,
+            Step::Review => SummaryStep::Review,
         };
         (*steps.borrow_mut())(step, done, total);
     };

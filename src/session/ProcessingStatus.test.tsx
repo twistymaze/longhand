@@ -133,7 +133,7 @@ describe("the summarize stage", () => {
     expect(tauri.calls.filter((c) => c.cmd === "open_settings").map((c) => c.args)).toEqual([{ pane: "provider" }]);
   });
 
-  test("a summary in parts names the part, then the combining, then the final summary", () => {
+  test("Covers R9. The summary names the timeline part, the section, the summary, then the check", () => {
     const step = (summary_step: string, done: number, total: number) => ({
       stage: "summarize",
       segment: 0,
@@ -145,16 +145,31 @@ describe("the summarize stage", () => {
       <ProcessingStatus detail={processing({})} live={live} onChanged={() => {}} />
     );
     const { rerender } = render(view(step("parts", 4, 16)));
-    expect(screen.getByText("Summarizing part 5 of 16")).toBeTruthy();
+    expect(screen.getByText("Writing the timeline, part 5 of 16")).toBeTruthy();
     expect(screen.getByText("25%")).toBeTruthy();
 
+    // A halved part makes the total grow.
+    rerender(view(step("parts", 4, 20)));
+    expect(screen.getByText("Writing the timeline, part 5 of 20")).toBeTruthy();
+    expect(screen.getByText("20%")).toBeTruthy();
+
     rerender(view(step("groups", 0, 9)));
-    expect(screen.getByText("Combining summaries 1 of 9")).toBeTruthy();
+    expect(screen.getByText("Writing section 1 of 9")).toBeTruthy();
     expect(screen.getByText("0%")).toBeTruthy();
 
-    // The final summary is one call: no count and no bar.
+    // The summary is one request: no count and no bar.
     rerender(view(step("final", 0, 1)));
-    expect(screen.getByText("Writing the final summary")).toBeTruthy();
+    expect(screen.getByText("Writing the summary")).toBeTruthy();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+
+    // Two auditors run at the same time: the count is the parts done.
+    rerender(view(step("review", 1, 2)));
+    expect(screen.getByText("Checking the summary, 1 of 2 done")).toBeTruthy();
+    expect(screen.getByText("50%")).toBeTruthy();
+
+    // The reviser is one request: the label with no count, and no bar.
+    rerender(view(step("review", 0, 1)));
+    expect(screen.getByText("Checking the summary")).toBeTruthy();
     expect(screen.queryByRole("progressbar")).toBeNull();
   });
 
