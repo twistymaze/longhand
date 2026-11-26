@@ -39,7 +39,7 @@ async fn body_of(provider: Provider, path: &'static str, reply: String) -> Strin
     Client::new(endpoint)
         .unwrap()
         .complete(
-            &Label::note("s1", RequestKind::Single),
+            &Label::note("s1", RequestKind::Writer),
             &messages,
             100,
             Some(4096),

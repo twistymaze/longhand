@@ -235,22 +235,3 @@ pub fn chunk(lines: &[Line], allowance: usize) -> Vec<Chunk> {
     }
     chunks
 }
-
-/// Group consecutive summaries for one merge call: as many as fit
-/// `allowance`, and never fewer than two while two remain, so each layer
-/// shrinks. A lone summary left at a layer's end passes up unchanged.
-pub fn merge_groups(costs: &[usize], allowance: usize) -> Vec<std::ops::Range<usize>> {
-    let mut groups = Vec::new();
-    let mut start = 0;
-    while start < costs.len() {
-        let mut end = start;
-        let mut cost = 0;
-        while end < costs.len() && (end - start < 2 || cost + costs[end] <= allowance) {
-            cost += costs[end];
-            end += 1;
-        }
-        groups.push(start..end);
-        start = end;
-    }
-    groups
-}

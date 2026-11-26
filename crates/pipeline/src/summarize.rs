@@ -1344,10 +1344,10 @@ mod tests {
         .into()
     }
 
-    /// Covers R13: the summary input holds the pause line between the
-    /// turns before and after it.
+    /// Covers R13: the lines of a transcript hold the pause line between
+    /// the turns before and after it.
     #[test]
-    fn a_pause_line_stays_between_its_turns_in_the_summary_input() {
+    fn a_pause_line_stays_between_its_turns_in_the_lines() {
         let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- pause 00:14:00 ---\n\n- [00:01:00] Speaker 2: After.\n";
         let lines = lines_of(text);
         assert_eq!(
@@ -1359,12 +1359,6 @@ mod tests {
                 },
                 turn(60_000, 2, "After."),
             ]
-        );
-        let input = &summarize::prompts::whole(&lines, "", "Summarize.", "")[1].content;
-        assert_eq!(
-            input.matches("\n--- pause 00:14:00 ---\n").count(),
-            1,
-            "{input}"
         );
     }
 

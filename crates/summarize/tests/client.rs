@@ -20,7 +20,7 @@ fn endpoint(base: &str, credential: Option<&str>) -> Endpoint {
 }
 
 fn label() -> Label {
-    Label::note("s1", RequestKind::Single)
+    Label::note("s1", RequestKind::Writer)
 }
 
 fn hello() -> Vec<Message> {

@@ -119,12 +119,6 @@ impl Limits {
 pub enum RequestKind {
     /// A request for the model's context limit.
     Probe,
-    /// The summary of one part of a transcript that does not fit in one call.
-    Chunk,
-    /// A request that combines the summaries of the parts.
-    Merge,
-    /// The summary of a transcript that fits in one call.
-    Single,
     /// The title turn after a summary.
     Title,
     /// The request for the list of models in Settings.
@@ -144,15 +138,14 @@ pub enum RequestKind {
     /// The reviser that corrects a summary with the findings of the
     /// auditors.
     Revise,
+    /// A judge of the summary lab that scores a summary.
+    Judge,
 }
 
 impl RequestKind {
     fn name(self) -> &'static str {
         match self {
             Self::Probe => "probe",
-            Self::Chunk => "chunk",
-            Self::Merge => "merge",
-            Self::Single => "single",
             Self::Title => "title",
             Self::Models => "models",
             Self::Check => "check",
@@ -161,6 +154,7 @@ impl RequestKind {
             Self::Writer => "writer",
             Self::Audit => "audit",
             Self::Revise => "revise",
+            Self::Judge => "judge",
         }
     }
 }
@@ -1890,12 +1884,12 @@ mod tests {
 
     #[test]
     fn the_request_log_names_the_request_and_not_its_content() {
-        let label =
-            Label::note("2026-10-14-0900", RequestKind::Chunk).queued(Duration::from_millis(4_200));
+        let label = Label::note("2026-10-14-0900", RequestKind::Timeline)
+            .queued(Duration::from_millis(4_200));
         let start = start_line(&label, "llm.example.net", "qwen3-30b");
         assert_eq!(
             start,
-            "request start: note 2026-10-14-0900, chunk, host llm.example.net, \
+            "request start: note 2026-10-14-0900, timeline, host llm.example.net, \
              model qwen3-30b, 4200 ms in the queue"
         );
         let reply = Ok((reqwest::StatusCode::OK, b"secret summary text".to_vec()));
@@ -1908,7 +1902,7 @@ mod tests {
         );
         assert_eq!(
             end,
-            "request end: note 2026-10-14-0900, chunk, host llm.example.net, \
+            "request end: note 2026-10-14-0900, timeline, host llm.example.net, \
              model qwen3-30b, 4200 ms in the queue, 91000 ms, HTTP 200"
         );
         assert!(!end.contains("secret"));
@@ -1983,10 +1977,10 @@ mod tests {
     fn a_dropped_request_gives_a_cancelled_end_line_unless_it_ended() {
         // `block_on` drops the send future when a note is resumed or the
         // app quits. The log must then show that the request stopped.
-        let label = Label::note("2026-10-14-0900", RequestKind::Chunk);
+        let label = Label::note("2026-10-14-0900", RequestKind::Timeline);
         let armed = EndGuard::new(&label, "h", "m");
         let text = armed.cancelled_text().expect("an armed guard gives a line");
-        assert!(text.starts_with("request end: note 2026-10-14-0900, chunk, host h, model m,"));
+        assert!(text.starts_with("request end: note 2026-10-14-0900, timeline, host h, model m,"));
         assert!(text.ends_with(" ms, cancelled"));
 
         let mut ended = EndGuard::new(&label, "h", "m");

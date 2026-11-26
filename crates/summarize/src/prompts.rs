@@ -7,11 +7,11 @@
 //! the reply is only ever written to `summary.md`.
 //!
 //! Each system message has fixed rules that the app owns. The call that
-//! writes the final summary (the whole-transcript call, or the last merge)
+//! writes the final summary (the writer of the pipeline, or its merge step)
 //! also gets the text of a summary prompt, which sets the weighting, the
-//! shape and the level of detail (KTD1). The part notes and the
-//! intermediate merges never get that text: they keep every fact, so that
-//! only the final call selects (KTD3).
+//! shape and the level of detail (KTD1). The timeline parts and the notes
+//! of groups never get that text: they keep every fact, so that only the
+//! final call selects (KTD3).
 //!
 //! The title turn comes after the final call, in the same conversation: the
 //! final call's messages, the summary reply, then a title request with the
@@ -169,14 +169,14 @@ description that fits, such as \"your team member\" or \"someone in the \
 group\", or \"the group\" when everyone is meant. Never guess or invent a name. \
 These rules apply even when the instructions above say otherwise.";
 
-/// The label rule for part notes and intermediate merges (KTD2): the labels
+/// The label rule for part notes of the reader and the steps (KTD2): the labels
 /// and times stay, so the parts merge correctly.
 const PART_LABELS: &str = "Speakers are labelled Speaker 1, Speaker 2 and so on. \
 Keep those labels. When the transcript makes clear who a speaker is, write the \
 name beside the label, such as \"Speaker 2 (Sam)\"; never guess a name. Refer to \
 moments by their [hh:mm:ss] time.";
 
-/// The fixed weighting for part notes and intermediate merges.
+/// The fixed weighting for part notes and timeline parts.
 const PART_WEIGHTING: &str = "The notes are one document that the person who \
 recorded the session typed. They mark what that person found important. They \
 have no times and do not point to a moment in the transcript. Give the subjects \
@@ -459,10 +459,6 @@ const MERGE_RULE: &str = "The <summary> blocks are notes on consecutive parts \
 of one session, in order. Neighbouring parts overlap slightly: merge what they \
 repeat.";
 
-/// Only for the intermediate merges: the last merge takes its rule for
-/// times from the prompt text.
-const MERGE_TIMES: &str = "Keep the [hh:mm:ss] times.";
-
 /// Tag names in the data are defused, so no text a participant said can
 /// close a block and speak outside it.
 fn quote(text: &str) -> String {
@@ -562,7 +558,7 @@ pub fn fit_notes<'a>(
     cut(end)
 }
 
-/// The system message for a part note or an intermediate merge: the
+/// The system message for a part note of a reader or a step: the
 /// opening with the Background, the part rules, the `rules` of the call,
 /// then the part shape.
 fn part_system(background: &Background, rules: &[&str]) -> Message {
@@ -615,91 +611,6 @@ fn transcript_block(attributes: &str, lines: &[Line]) -> String {
     }
 }
 
-/// The whole transcript in one call: the normal case (KTD16). `text` is
-/// the summary prompt's text.
-pub fn whole<'a>(
-    lines: &[Line],
-    notes: &str,
-    text: &str,
-    user: impl Into<UserText<'a>>,
-) -> Vec<Message> {
-    let background = Background::new(user);
-    vec![
-        final_system(&background, &[], text),
-        Message {
-            role: "user",
-            content: format!(
-                "{}{}{}\nSummarize this session.",
-                background.details_block(),
-                transcript_block("", lines),
-                notes_block(notes)
-            ),
-        },
-    ]
-}
-
-/// One chunk of a transcript too long for one call.
-pub fn part<'a>(
-    chunk: &Chunk,
-    index: usize,
-    total: usize,
-    notes: &str,
-    user: impl Into<UserText<'a>>,
-) -> Vec<Message> {
-    let background = Background::new(user);
-    vec![
-        part_system(&background, &[]),
-        Message {
-            role: "user",
-            content: format!(
-                "{}{}{}\nWrite notes on part {} of {total}.",
-                background.details_block(),
-                transcript_block(&format!(" part=\"{}\"", index + 1), &chunk.lines),
-                notes_block(notes),
-                index + 1
-            ),
-        },
-    ]
-}
-
-/// Consecutive summaries combined; `last` when the result is the summary.
-/// Only the last merge uses the summary prompt's `text`.
-pub fn merge<'a>(
-    summaries: &[&str],
-    last: bool,
-    notes: &str,
-    text: &str,
-    user: impl Into<UserText<'a>>,
-) -> Vec<Message> {
-    let background = Background::new(user);
-    let mut content = background.details_block();
-    for (i, s) in summaries.iter().enumerate() {
-        content.push_str(&block(
-            "summary",
-            &format!(" part=\"{}\"", i + 1),
-            s.lines().map(str::to_string),
-        ));
-    }
-    content.push_str(&notes_block(notes));
-    content.push_str(if last {
-        "\nCombine these into the summary of the whole session."
-    } else {
-        "\nCombine these into notes on the whole stretch they cover."
-    });
-    let system = if last {
-        final_system(&background, &[MERGE_RULE], text)
-    } else {
-        part_system(&background, &[MERGE_RULE, MERGE_TIMES])
-    };
-    vec![
-        system,
-        Message {
-            role: "user",
-            content,
-        },
-    ]
-}
-
 /// The title turn: the `final_call` messages unchanged, the `summary` reply
 /// as an assistant message, then the title request with the summary
 /// prompt's `title_text` and the fixed title rules. The prefix is the final
@@ -745,30 +656,31 @@ pub fn title_reserve<'a>(title_text: &str, user: impl Into<UserText<'a>>) -> usi
         + TITLE_REPLY_MIN as usize
 }
 
-/// What a prompt costs with no transcript and no summaries: its fixed
-/// parts, `notes`, the summary prompt's `text` and the `user` text: the
-/// Background and the note details. The chunk allowance subtracts it.
-/// Every merge layer reserves the room for `text`, because the grouping
-/// does not know which layer is last (KTD8). Every call carries the
-/// Background and the note details, so every call counts them (KTD11).
+/// A note id for [`overhead`]. It is longer than a note id that the app
+/// makes, so the estimate is not too small.
+const OVERHEAD_NOTE_ID: &str = "0000-00-00-0000-000000000";
+
+/// What a prompt costs with no timeline, no transcript and no notes of
+/// parts: its fixed parts, `notes`, the summary prompt's `text` and the
+/// `user` text: the Background and the note details. It is the largest
+/// cost of the calls that write the summary ([`from_timeline`],
+/// [`step_merge`]) and of a step part ([`step_part`]). The writer's
+/// allowance and the chunk allowance of the steps subtract it. The
+/// timeline parts get their size from the limits of the pipeline, not
+/// from it. Every call carries the Background and the note details, so
+/// every call counts them (KTD11).
 pub fn overhead<'a>(notes: &str, text: &str, user: impl Into<UserText<'a>>) -> usize {
     let user = user.into();
-    let messages = part(
-        &Chunk {
-            lines: Vec::new(),
-            first_new: 0,
-        },
-        9_999,
-        9_999,
-        notes,
-        user,
-    );
+    let id = OVERHEAD_NOTE_ID;
+    let empty = Chunk {
+        lines: Vec::new(),
+        first_new: 0,
+    };
     let cost =
         |m: &[Message]| crate::tokens::estimate_messages(m.iter().map(|m| m.content.as_str()));
-    cost(&messages)
-        .max(cost(&merge(&[], true, notes, text, user)))
-        .max(cost(&merge(&[], false, notes, text, user)))
-        .max(cost(&whole(&[], notes, text, user)))
+    cost(&from_timeline("", notes, id, None, text, user))
+        .max(cost(&step_merge(&[], id, text, user)))
+        .max(cost(&step_part(&empty, 9_999, 9_999, id, user)))
 }
 
 // ---------------------------------------------------------------- summary agent

@@ -10,7 +10,6 @@ use std::time::{Duration, Instant};
 
 use common::{Reply, anthropic_reply, chat_reply, closed_base, gemini_reply, ollama_reply, serve};
 use serde_json::{Value, json};
-use summarize::chunk::{Line, Turn};
 use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::provider::ThinkingLevel;
 use summarize::{Client, Endpoint, Limits, Provider, SummarizeError, prompts};
@@ -31,7 +30,7 @@ fn client(provider: Provider, base: &str, key: Option<&str>) -> Client {
 }
 
 fn label() -> Label {
-    Label::note("s1", RequestKind::Single)
+    Label::note("s1", RequestKind::Writer)
 }
 
 fn sys_and_user() -> Vec<Message> {
@@ -81,17 +80,6 @@ async fn complete_with(provider: Provider, reply: Reply) -> Result<String, Summa
         .map(|c| c.text)
 }
 
-fn one_turn() -> Vec<Line> {
-    vec![
-        Turn {
-            position_ms: 0,
-            speaker: Some(1),
-            text: "We agreed on the budget.".into(),
-        }
-        .into(),
-    ]
-}
-
 /// The text of one message in a Chat Completions body. Rig can send the
 /// content as a string or as an array of text parts.
 fn text_of(content: &Value) -> String {
@@ -133,17 +121,24 @@ async fn custom_sends_a_chat_completions_body_built_by_rig_with_the_bearer_key()
     )]))
     .await;
     let topic = prompts::topic_summary();
-    let whole = prompts::whole(&one_turn(), "# Notes\n", &topic.text, "");
-    let title = prompts::title_turn(&whole, "A summary.", &topic.title_text, "");
+    let writer = prompts::from_timeline(
+        "- [00:00:00] The group agreed on the budget.",
+        "# Notes\n",
+        "2026-10-14-0900",
+        None,
+        &topic.text,
+        "",
+    );
+    let title = prompts::title_turn(&writer, "A summary.", &topic.title_text, "");
     let client = client(Provider::Custom, &mock.base, Some("sk-test"));
-    for messages in [&whole, &title] {
+    for messages in [&writer, &title] {
         client
             .complete(&label(), messages, 900, None)
             .await
             .unwrap();
     }
     let seen = mock.seen.lock().unwrap();
-    for (sent, messages) in seen.iter().zip([&whole, &title]) {
+    for (sent, messages) in seen.iter().zip([&writer, &title]) {
         assert_eq!(sent.method, "POST");
         assert_eq!(sent.path, "/v1/chat/completions");
         assert_eq!(sent.authorization.as_deref(), Some("Bearer sk-test"));

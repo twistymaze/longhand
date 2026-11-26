@@ -11869,8 +11869,8 @@ async fn an_ollama_run_sends_the_same_context_size_with_every_turn_and_the_title
     }
 }
 
-/// Covers R6, KTD7: the context limit is the largest size, also under the
-/// smallest size.
+/// Covers R6, KTD7: a small context limit is the size of each request,
+/// also when a request needs less.
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ollama_model_with_a_small_context_limit_gets_that_limit() {
     let r = rig().await;
@@ -11882,10 +11882,11 @@ async fn an_ollama_model_with_a_small_context_limit_gets_that_limit() {
         Some("m"),
         &[(16_000, speech())],
     );
-    let bodies = ollama_run(&r, ollama_summary(), 2_048).await;
+    // The pipeline's prompts need more than a 2,048-token context.
+    let bodies = ollama_run(&r, ollama_summary(), 4_096).await;
     assert!(!bodies.is_empty());
     for body in &bodies {
-        assert_eq!(num_ctx(body), Some(2_048));
+        assert_eq!(num_ctx(body), Some(4_096));
     }
 }
 
