@@ -450,7 +450,7 @@ impl<'a> Background<'a> {
         if self.details.is_empty() {
             String::new()
         } else {
-            block("session_details", "", self.details.lines())
+            block(Tag::SessionDetails, "", self.details.lines())
         }
     }
 }
@@ -459,6 +459,57 @@ const MERGE_RULE: &str = "The <summary> blocks are notes on consecutive parts \
 of one session, in order. Neighbouring parts overlap slightly: merge what they \
 repeat.";
 
+/// Declares [`Tag`] and [`Tag::ALL`] from one list, so each block that
+/// [`block`] writes is also a tag that [`quote`] defuses.
+macro_rules! tags {
+    ($($variant:ident => $name:literal),* $(,)?) => {
+        /// The name of a data block in a prompt. Add a new block here: then
+        /// [`quote`] also defuses its tag.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Tag {
+            $($variant),*
+        }
+
+        impl Tag {
+            /// Each tag, in the order that [`quote`] tries them.
+            const ALL: &[Tag] = &[$(Tag::$variant),*];
+
+            /// The tag name in the prompt.
+            fn name(self) -> &'static str {
+                match self {
+                    $(Tag::$variant => $name),*
+                }
+            }
+        }
+    };
+}
+
+tags! {
+    Transcript => "transcript",
+    Notes => "notes",
+    Summary => "summary",
+    SessionDetails => "session_details",
+    Timeline => "timeline",
+    People => "people",
+    Draft => "draft",
+    Findings => "findings",
+    Instruction => "instruction",
+}
+
+/// The length of the opening or closing tag of a [`Tag`] at the start of
+/// `rest`, or `None`. `rest` is lower case.
+fn tag_at(rest: &str) -> Option<usize> {
+    let after = rest.strip_prefix('<')?;
+    let (slash, after) = match after.strip_prefix('/') {
+        Some(after) => (1, after),
+        None => (0, after),
+    };
+    Tag::ALL
+        .iter()
+        .find(|t| after.starts_with(t.name()))
+        .map(|t| 1 + slash + t.name().len())
+}
+
 /// Tag names in the data are defused, so no text a participant said can
 /// close a block and speak outside it.
 fn quote(text: &str) -> String {
@@ -466,34 +517,11 @@ fn quote(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
     let mut i = 0;
     while i < text.len() {
-        let rest = &lower[i..];
-        let tag = [
-            "<transcript",
-            "</transcript",
-            "<notes",
-            "</notes",
-            "<summary",
-            "</summary",
-            "<session_details",
-            "</session_details",
-            "<timeline",
-            "</timeline",
-            "<people",
-            "</people",
-            "<draft",
-            "</draft",
-            "<findings",
-            "</findings",
-            "<instruction",
-            "</instruction",
-        ]
-        .iter()
-        .find(|t| rest.starts_with(**t));
-        if let Some(tag) = tag {
+        if let Some(len) = tag_at(&lower[i..]) {
             // `<` becomes a look-alike that closes nothing.
             out.push('‹');
-            out.push_str(&text[i + 1..i + tag.len()]);
-            i += tag.len();
+            out.push_str(&text[i + 1..i + len]);
+            i += len;
         } else {
             let c = text[i..].chars().next().expect("in bounds");
             out.push(c);
@@ -503,7 +531,10 @@ fn quote(text: &str) -> String {
     out
 }
 
-fn block(tag: &str, attributes: &str, lines: impl IntoIterator<Item = String>) -> String {
+/// The block `tag` with `lines` as quoted data. A block takes a [`Tag`],
+/// not a name, so [`quote`] defuses each block that a prompt writes.
+fn block(tag: Tag, attributes: &str, lines: impl IntoIterator<Item = String>) -> String {
+    let tag = tag.name();
     let mut out = format!("<{tag}{attributes}>\n");
     for line in lines {
         out.push_str(&quote(&line));
@@ -613,7 +644,7 @@ before and after a pause line are separate parts of the meeting.";
 /// The transcript block for `lines`, after [`PAUSE_RULE`] when a line is a
 /// pause line.
 fn transcript_block(attributes: &str, lines: &[Line]) -> String {
-    let block = block("transcript", attributes, lines.iter().map(render_line));
+    let block = block(Tag::Transcript, attributes, lines.iter().map(render_line));
     if lines.iter().any(|l| matches!(l, Line::Pause { .. })) {
         format!("{PAUSE_RULE}\n{block}")
     } else {
@@ -811,7 +842,11 @@ pub fn reader<'a>(
     } else {
         format!(
             "\n\nThe lead summarizer asks:\n{}",
-            block("instruction", "", instruction.lines().map(str::to_string))
+            block(
+                Tag::Instruction,
+                "",
+                instruction.lines().map(str::to_string)
+            )
         )
     };
     vec![
@@ -825,7 +860,7 @@ pub fn reader<'a>(
                  times.{length}{instruction}\n\n{AGENT_DATA_RULE}",
                 background.details_block(),
                 block(
-                    "transcript",
+                    Tag::Transcript,
                     &format!(" lines=\"{first}-{last}\""),
                     lines.lines().map(str::to_string)
                 ),
@@ -874,7 +909,7 @@ pub fn step_merge<'a>(
     let mut content = background.details_block();
     for (i, s) in summaries.iter().enumerate() {
         content.push_str(&block(
-            "summary",
+            Tag::Summary,
             &format!(" part=\"{}\"", i + 1),
             s.lines().map(str::to_string),
         ));
@@ -927,13 +962,13 @@ pub fn timeline_part<'a>(
     content.push_str(&notes_block(manual_notes));
     if !people.trim().is_empty() {
         content.push_str(&block(
-            "people",
+            Tag::People,
             "",
             people.trim().lines().map(str::to_string),
         ));
     }
     content.push_str(&block(
-        "transcript",
+        Tag::Transcript,
         &format!(" lines=\"{first}-{last}\""),
         lines.lines().map(str::to_string),
     ));
@@ -1011,7 +1046,11 @@ pub fn from_timeline<'a>(
     let background = Background::new(user);
     let mut content = background.details_block();
     content.push_str(&notes_block(manual_notes));
-    content.push_str(&block("timeline", "", timeline.lines().map(str::to_string)));
+    content.push_str(&block(
+        Tag::Timeline,
+        "",
+        timeline.lines().map(str::to_string),
+    ));
     let task = match group {
         None => "Write the summary of the session.".to_string(),
         Some((index, count, words)) => format!(
@@ -1082,9 +1121,9 @@ pub fn audit<'a>(
     ));
     let mut content = background.details_block();
     content.push_str(&notes_block(manual_notes));
-    content.push_str(&block("draft", "", draft.lines().map(str::to_string)));
+    content.push_str(&block(Tag::Draft, "", draft.lines().map(str::to_string)));
     content.push_str(&block(
-        "transcript",
+        Tag::Transcript,
         &format!(" lines=\"{first}-{last}\""),
         lines.lines().map(str::to_string),
     ));
@@ -1128,8 +1167,12 @@ pub fn revise<'a>(
     let background = Background::new(user);
     let mut content = background.details_block();
     content.push_str(&notes_block(manual_notes));
-    content.push_str(&block("draft", "", draft.lines().map(str::to_string)));
-    content.push_str(&block("findings", "", findings.lines().map(str::to_string)));
+    content.push_str(&block(Tag::Draft, "", draft.lines().map(str::to_string)));
+    content.push_str(&block(
+        Tag::Findings,
+        "",
+        findings.lines().map(str::to_string),
+    ));
     content.push_str("\nReply with the edits.");
     let system = format!(
         "{}\n\n{AGENT_DATA_RULE}\n\n{PASS_DATA_RULE}\n\n{EDIT_RULE}\n\n{}",
@@ -1146,4 +1189,20 @@ pub fn revise<'a>(
             content,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Tag, quote};
+
+    /// Text in a block cannot open or close any block that a prompt writes.
+    #[test]
+    fn quote_defuses_each_block_tag() {
+        for tag in Tag::ALL {
+            let name = tag.name();
+            let text = format!("<{name}> </{name}> <{}>", name.to_uppercase());
+            let quoted = quote(&text);
+            assert!(!quoted.contains('<'), "{name}: {quoted}");
+        }
+    }
 }
