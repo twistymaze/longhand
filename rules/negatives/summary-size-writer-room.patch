@@ -1,0 +1,13 @@
+diff --git a/crates/summary-agent/src/passes.rs b/crates/summary-agent/src/passes.rs
+index b48ce532..6d4bb01c 100644
+--- a/crates/summary-agent/src/passes.rs
++++ b/crates/summary-agent/src/passes.rs
+@@ -162,7 +162,7 @@ impl Pass<'_> {
+                 "", notes, id, None, &self.text, user,
+             )) as u64
+         };
+-        request(&self.note.manual_notes, self.user()).saturating_sub(request("", "".into()))
++        request(&self.note.manual_notes, "".into()).saturating_sub(request("", "".into()))
+     }
+ 
+     /// The lines of one timeline part: the free context less the note's

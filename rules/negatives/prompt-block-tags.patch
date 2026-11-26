@@ -1,0 +1,13 @@
+diff --git a/crates/summarize/src/prompts.rs b/crates/summarize/src/prompts.rs
+index c182708b..9ffe678b 100644
+--- a/crates/summarize/src/prompts.rs
++++ b/crates/summarize/src/prompts.rs
+@@ -1169,7 +1169,7 @@ pub fn revise<'a>(
+     content.push_str(&notes_block(manual_notes));
+     content.push_str(&block(Tag::Draft, "", draft.lines().map(str::to_string)));
+     content.push_str(&block(
+-        Tag::Findings,
++        "verdict",
+         "",
+         findings.lines().map(str::to_string),
+     ));

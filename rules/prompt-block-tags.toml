@@ -1,0 +1,9 @@
+family = "prompt-block-tags"
+rule = "A data block in a summary prompt takes a Tag from the tags! list in crates/summarize/src/prompts.rs, so quote() defuses its name; add a new block name to that list, not as a string."
+state = "enforced"
+enforced_by = "cargo check -p summarize"
+
+[[negative]]
+apply = "rules/negatives/prompt-block-tags.patch"
+run = "cargo check -p summarize"
+expect = "expected `Tag`, found `&str`"

@@ -1,0 +1,19 @@
+family = "summary-size-check"
+rule = "Size a summary pipeline request from the prompt that the code sends, with the Background, the note details and the manual notes; when the agent's own size check stops a run before a request, say that the prompt is too long, not that the model refused the text."
+state = "enforced"
+enforced_by = "cargo test -p summary-agent --test passes a_large_background && cargo test -p pipeline --lib the_typed_error_of_the_last_turn_gives_the_failure_message"
+
+[[negative]]
+apply = "rules/negatives/summary-size-part-lines.patch"
+run = "cargo test -p summary-agent --test passes a_large_background_leaves_each_timeline_part_inside_the_budget"
+expect = "more than the budget of 20000"
+
+[[negative]]
+apply = "rules/negatives/summary-size-writer-room.patch"
+run = "cargo test -p summary-agent --test passes a_large_background_sends_a_timeline_that_does_not_fit_to_group_writers"
+expect = "more than the budget of 20000"
+
+[[negative]]
+apply = "rules/negatives/summary-size-own-check-message.patch"
+run = "cargo test -p pipeline --lib the_typed_error_of_the_last_turn_gives_the_failure_message"
+expect = "the model did not accept 32000 tokens of text"
