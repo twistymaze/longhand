@@ -29,7 +29,7 @@ The app writes every summary with the timeline pipeline that PR #113 added and t
 
 ### Problem Frame
 
-Today the app summarizes a long transcript in parts, merges the part summaries in layers, and writes the summary in a final call. In the lab (`docs/ideas/next/agentic-summary.md`), the timeline pipeline scored higher on 12 held-out notes with two large-context models. At a 32k context it wrote a summary for every note, where today's method failed on the two longest notes with "the reply did not fit in its context". Users get none of this until the app uses the pipeline.
+Today the app summarizes a long transcript in parts, merges the part summaries in layers, and writes the summary in a final call. In the lab (`docs/ideas/done/agentic-summary.md`), the timeline pipeline scored higher on 12 held-out notes with two large-context models. At a 32k context it wrote a summary for every note, where today's method failed on the two longest notes with "the reply did not fit in its context". Users get none of this until the app uses the pipeline.
 
 The pipeline was built for the lab. It reads notes from a saved storage folder, saves nothing between model turns, knows nothing of the app's cancel, pause and progress, and maps no failure to a message. The app's summary step has these protections today, and real users depend on them.
 
@@ -104,7 +104,7 @@ None block implementation.
 
 ### Sources / Research
 
-- `docs/ideas/next/agentic-summary.md`: lab results.
+- `docs/ideas/done/agentic-summary.md`: lab results.
 - `docs/plans/2026-11-20-1211-chore-summary-agent-foundation-plan.md`: KTD7 (blocking runtime), KTD10 (no forced tool choice), KTD14 (catalog limit for agent runs).
 - `docs/solutions/logic-errors/summary-in-a-wake-with-no-network-kept-the-default-budget.md`: probe and retry rules that the new budget keeps.
 - `docs/solutions/runtime-errors/older-build-panicked-on-newer-database-at-launch.md`: why no migration.
@@ -394,7 +394,7 @@ U1 and U2 change `crates/summary-agent` and can go first. U3 builds the turn lay
 
 **Files:**
 - `CONCEPTS.md` ("Context limit", "Summary part" replaced by "Timeline part", new "Review")
-- `docs/ideas/next/agentic-summary.md`, `docs/ideas/next/catalog-context-limit.md` (move both to `done/` after the merge)
+- `docs/ideas/done/agentic-summary.md`, `docs/ideas/done/catalog-context-limit.md` (move both to `done/` after the merge)
 - `licences/generated/*` when the check writes them
 
 **Approach:** update the terms; run `cargo tree -e features -i serde_json` and `-i reqwest` on `main` and on the branch and compare (`preserve_order`, `http3`); run the licence and dependency-age checks.

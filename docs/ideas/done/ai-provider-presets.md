@@ -17,7 +17,7 @@ Rig sends the summary and title requests for every provider. A new AI Provider p
 Today the user must know an OpenAI-compatible address and whether it ends in `/v1`, and Claude works only through a gateway. The later agent work needs an engine that can call tools.
 
 ## Notes / Current state
-The plan holds the requirements. It is the first step before [agentic-summary](../next/agentic-summary.md).
+The plan holds the requirements. It is the first step before [agentic-summary](agentic-summary.md).
 
 ## Outcome
 

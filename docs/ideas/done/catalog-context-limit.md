@@ -15,3 +15,6 @@ When the context limit setting is automatic, the summary path uses the input lim
 
 ## Why
 A model with a larger window, for example Claude Haiku 4.5 (200,000 tokens) or GPT-6 Luna (922,000 tokens), gets a long transcript split into more parts than it needs. The change needs a new budget source, and a saved plan with that source must stay safe for an older build.
+
+## Outcome
+PR #118 (2026-11-26) shipped it: with automatic detection, an OpenAI or Anthropic model that the catalog knows gets the catalog's input limit. A value that the user sets still wins.

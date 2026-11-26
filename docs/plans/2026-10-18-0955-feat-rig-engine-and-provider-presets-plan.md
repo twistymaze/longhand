@@ -138,7 +138,7 @@ flowchart TB
 
 This plan covers the engine swap and the provider settings. The later areas below are the current understanding, not a committed roadmap.
 
-- A summary agent with tools (`docs/ideas/next/agentic-summary.md`)
+- A summary agent with tools (`docs/ideas/done/agentic-summary.md`)
   - Depends on this plan's Rig engine.
   - Shares the provider and model chosen in the AI Provider pane.
   - Adds the Anthropic format for Custom, and measures prompt caching.

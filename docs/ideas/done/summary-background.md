@@ -18,5 +18,5 @@ The transcript often spells names and terms wrong, and the summary repeats the e
 
 ## Notes / Current state
 - Shipped in archived PR 38.
-- Later, the [summary agent](../next/agentic-summary.md) can read this text as its "context about the user".
+- Later, the [summary agent](agentic-summary.md) can read this text as its "context about the user".
 - The Background counts as evidence for names in the summary (the naming rule changes).
