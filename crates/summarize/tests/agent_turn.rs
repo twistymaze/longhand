@@ -430,6 +430,74 @@ async fn an_agent_turn_that_the_model_refuses_for_its_reply_cap_goes_again_with_
     assert_eq!(seen[1].json()["max_tokens"], 4_096);
 }
 
+/// A client of the model `model` on `base` with the Thinking level Low,
+/// chosen by the user or not.
+fn thinking_client(base: &str, model: &str, chosen: bool) -> Client {
+    Client::new(Endpoint {
+        provider: Provider::Custom,
+        base_url: base.into(),
+        model: model.into(),
+        credential: Some("k-secret".into()),
+    })
+    .unwrap()
+    .with_thinking(summarize::Thinking {
+        level: summarize::provider::ThinkingLevel::Low,
+        chosen,
+    })
+}
+
+/// A server that refuses each request with a reasoning option.
+async fn refusing_reasoning() -> common::Mock {
+    let responder: common::Responder = std::sync::Arc::new(|body: &str| {
+        let request: Value = serde_json::from_str(body).unwrap();
+        if request.get("reasoning_effort").is_some() {
+            (
+                400,
+                r#"{"error":{"message":"reasoning_effort is not supported"}}"#.into(),
+            )
+        } else {
+            (200, chat_reply("A summary.", "stop"))
+        }
+    });
+    serve(HashMap::from([(
+        "/v1/chat/completions",
+        Reply::With(responder),
+    )]))
+    .await
+}
+
+/// An automatic Thinking level that the model refuses: the agent turn
+/// goes again with no reasoning option, as a completion does. The model
+/// name is unique, because the client keeps the refusal for the model.
+#[tokio::test]
+async fn a_refused_automatic_thinking_level_sends_the_agent_turn_again_with_no_reasoning() {
+    let mock = refusing_reasoning().await;
+    thinking_client(&mock.base, "automatic-thinking-model", false)
+        .agent_turn(&label(), &first_turn())
+        .await
+        .unwrap();
+    let seen = mock.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert_eq!(seen[0].json()["reasoning_effort"], "low");
+    assert!(seen[1].json().get("reasoning_effort").is_none());
+}
+
+/// A Thinking level that the user chose is never dropped: its refusal is
+/// `ReasoningRefused`, and the turn is not sent again.
+#[tokio::test]
+async fn a_refused_chosen_thinking_level_fails_the_agent_turn() {
+    let mock = refusing_reasoning().await;
+    let error = thinking_client(&mock.base, "chosen-thinking-model", true)
+        .agent_turn(&label(), &first_turn())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, SummarizeError::ReasoningRefused { sent: true }),
+        "{error:?}"
+    );
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn complete_still_refuses_an_empty_reply() {
     let mock = serve(HashMap::from([(

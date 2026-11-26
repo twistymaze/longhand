@@ -691,22 +691,55 @@ impl Client {
         Some(preferences)
     }
 
-    /// Send one agent turn and return the whole reply. The request has the
-    /// Thinking level of the client as an effort, with no fallback. A reply
-    /// with only tool calls is a success. A reply that the endpoint cut off
-    /// is [`SummarizeError::ReplyCutOff`], and a prompt that filled the
+    /// Send one agent turn and return the whole reply. A reply with only
+    /// tool calls is a success. A reply that the endpoint cut off is
+    /// [`SummarizeError::ReplyCutOff`], and a prompt that filled the
     /// context is [`SummarizeError::ContextExceeded`].
+    ///
+    /// The request has the Thinking level of the client, with the rules of
+    /// [`Self::complete`]: when the model or the provider refuses an
+    /// automatic level, the client sends the turn again with no reasoning
+    /// option, and later requests to the same model send none. The refusal
+    /// of a level that the user chose is
+    /// [`SummarizeError::ReasoningRefused`].
     pub async fn agent_turn(
         &self,
         label: &Label,
         turn: &AgentTurn,
     ) -> Result<AgentReply, SummarizeError> {
+        let Thinking { level, chosen } = self.thinking;
         let key = ModelKey::of(self);
+        let level = if !chosen && key.learned().reasoning_refused {
+            ThinkingLevel::ModelDefault
+        } else {
+            level
+        };
+        match self.agent_turn_at(label, turn, &key, effort(level)).await {
+            Err(SummarizeError::ReasoningRefused { .. }) if !chosen => {
+                log::info!(
+                    "{} refused the automatic Thinking level for model {}; sending the agent turn again with no reasoning option",
+                    self.host(),
+                    self.endpoint.model
+                );
+                key.remember_refused();
+                self.agent_turn_at(label, turn, &key, None).await
+            }
+            other => other,
+        }
+    }
+
+    /// [`Self::agent_turn`] with the reasoning option `reasoning`.
+    async fn agent_turn_at(
+        &self,
+        label: &Label,
+        turn: &AgentTurn,
+        key: &ModelKey,
+        reasoning: Option<Reasoning>,
+    ) -> Result<AgentReply, SummarizeError> {
         let max_tokens = key
             .learned()
             .output_cap
             .map_or(turn.max_tokens, |cap| turn.max_tokens.min(cap));
-        let reasoning = effort(self.thinking.level);
         let send = |max_tokens| async move {
             let with =
                 |cap_field| self.agent_turn_with(label, turn, cap_field, max_tokens, reasoning);
@@ -729,7 +762,16 @@ impl Client {
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
-            }) => named_cap(&without_model(excerpt, &self.endpoint.model), max_tokens),
+            }) => {
+                let text = without_model(excerpt, &self.endpoint.model);
+                let cap = named_cap(&text, max_tokens);
+                // A refusal that names an output cap is an output-cap
+                // refusal, as in `complete_level`.
+                if reasoning.is_some() && cap.is_none() && names_reasoning(&text) {
+                    return Err(SummarizeError::ReasoningRefused { sent: true });
+                }
+                cap
+            }
             _ => None,
         };
         let response = match cap {
