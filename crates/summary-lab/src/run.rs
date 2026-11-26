@@ -9,10 +9,13 @@
 //! <out>/baselines/<key>.json                   baselines for later runs
 //! ```
 //!
-//! The baseline is today's summary from the app's own summary code on an
-//! in-memory store (KTD7). A later run uses it again while the note's files,
-//! the model, the endpoint, the context budget and the summary prompt do
-//! not change (KTD8). No file holds a key.
+//! The baseline is the summary from the app's summary pipeline (timeline
+//! parts, a writer and an audit) on an in-memory store (KTD7). A later run
+//! uses it again while the note's files, the model, the endpoint, the
+//! context budget and the summary prompt do not change (KTD8). Baseline
+//! files from before the pipeline came from the old single-call method.
+//! Their reuse key has no [`BASELINE_METHOD`], so no run uses them again.
+//! No file holds a key.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -48,6 +51,11 @@ pub const MANIFEST: &str = "manifest.json";
 pub const SNAPSHOT: &str = "snapshot";
 pub const RESULTS: &str = "results";
 pub const BASELINES: &str = "baselines";
+
+/// The summary method of the baselines, in each reuse key. Change it when
+/// the app's summary method changes, so that no run uses a baseline from
+/// another method.
+pub const BASELINE_METHOD: &str = "pipeline";
 
 /// How a run starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,7 +730,7 @@ pub fn baseline_source(sample: usize) -> String {
 }
 
 /// Baseline `sample` of `note` with `model`: a reused one, or a new one
-/// from the app's summary code. Each sample has its own reuse key, so that
+/// from the app's summary pipeline. Each sample has its own reuse key, so that
 /// the samples are separate summaries.
 #[allow(clippy::too_many_arguments)]
 async fn baseline(
@@ -798,8 +806,9 @@ async fn baseline(
     Ok(file)
 }
 
-/// The reuse key of a baseline (KTD8): the note's files, the model, the
-/// endpoint, the context budget, the routing and the summary prompt.
+/// The reuse key of a baseline (KTD8): the summary method, the note's
+/// files, the model, the endpoint, the context budget, the routing and the
+/// summary prompt.
 fn baseline_key(
     note: &ManifestNote,
     model: &ManifestModel,
@@ -809,6 +818,7 @@ fn baseline_key(
 ) -> String {
     let mut hash = Sha256::new();
     for part in [
+        BASELINE_METHOD,
         note.fingerprint.as_str(),
         &note.note.note_id,
         &model.model,
@@ -823,7 +833,8 @@ fn baseline_key(
         hash.update((part.len() as u64).to_le_bytes());
         hash.update(part.as_bytes());
     }
-    // The model default adds nothing, so that older baselines keep their key.
+    // The model default adds nothing, so that the key of a baseline at the
+    // model default does not change.
     if model.thinking_level != ThinkingLevel::ModelDefault {
         let part = format!("{:?}", model.thinking_level);
         hash.update((part.len() as u64).to_le_bytes());

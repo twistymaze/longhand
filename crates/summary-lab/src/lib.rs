@@ -1,5 +1,5 @@
 //! The summary lab: a dev harness that compares agent summaries with
-//! today's summaries (R16). The app does not depend on this crate.
+//! the summaries of the app's summary pipeline (R16). The app does not depend on this crate.
 
 pub mod config;
 pub mod cross;

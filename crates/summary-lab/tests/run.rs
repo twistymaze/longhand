@@ -58,6 +58,10 @@ fn request_text(request: &Value) -> String {
     text
 }
 
+/// The summary that the writer of the app's pipeline gives: the text of
+/// each baseline.
+const BASELINE_TEXT: &str = "The pipeline summary.";
+
 /// The reply of a scripted judge: 9 for the summary with the baseline's
 /// text, 6 for each other summary.
 fn judge_reply(request: &Value) -> String {
@@ -67,21 +71,51 @@ fn judge_reply(request: &Value) -> String {
         .skip(1)
         .map(|rest| {
             let (label, body) = rest.split_once("\">").unwrap();
-            let score = if body.contains("A point of the meeting") {
-                9
-            } else {
-                6
-            };
+            let score = if body.contains(BASELINE_TEXT) { 9 } else { 6 };
             json!({"label": label, "coverage": score, "faithfulness": score, "overall": score})
         })
         .collect();
     json!({ "scores": scores }).to_string()
 }
 
-/// A reply of the scripted endpoint: agent turns (requests with tools)
-/// get a summary with usage, other requests a short text. `judge/...`
-/// models answer as judges, and `judge/broken` with no JSON. The model
-/// `test/no-summary` gives agent turns no text.
+/// The step of the app's summary pipeline that a request is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Turn {
+    Timeline,
+    Writer,
+    Audit,
+    Revise,
+}
+
+/// The text of the user message of a chat request. The system messages
+/// name every block, so only the user message tells the steps apart.
+fn user_text(request: &Value) -> String {
+    request["messages"][1]["content"].to_string()
+}
+
+/// The pipeline step of `request`, or `None` for a request of the lab's
+/// agent or of a judge.
+fn pipeline_turn(request: &Value) -> Option<Turn> {
+    let text = user_text(request);
+    if text.contains("<findings>") {
+        Some(Turn::Revise)
+    } else if text.contains("<draft>") {
+        Some(Turn::Audit)
+    } else if text.contains("<timeline>") {
+        Some(Turn::Writer)
+    } else if text.contains("First write a <people> block") {
+        Some(Turn::Timeline)
+    } else {
+        None
+    }
+}
+
+/// A reply of the scripted endpoint. The steps of the app's pipeline (the
+/// baseline) get a timeline part, the summary [`BASELINE_TEXT`] and an
+/// audit with no findings. The lab's agent turns (other requests with
+/// tools) get a summary with usage, other requests a short text.
+/// `judge/...` models answer as judges, and `judge/broken` with no JSON.
+/// The model `test/no-summary` gives the lab's agent turns no text.
 async fn setup() -> Setup {
     let storage = tempfile::tempdir().unwrap();
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/storage-folder");
@@ -95,6 +129,13 @@ async fn setup() -> Setup {
         } else if model.starts_with("judge/") {
             judged = judge_reply(&request);
             judged.as_str()
+        } else if let Some(turn) = pipeline_turn(&request) {
+            match turn {
+                Turn::Timeline => "<people>\n</people>\n- [00:00:01] A point of the meeting.",
+                Turn::Writer => BASELINE_TEXT,
+                Turn::Audit => "NONE",
+                Turn::Revise => r#"{"edits": []}"#,
+            }
         } else if request.get("tools").is_some() {
             if model == "test/no-summary" {
                 ""
@@ -102,7 +143,7 @@ async fn setup() -> Setup {
                 "The agent summary."
             }
         } else {
-            "- [00:00:01] A point of the meeting."
+            "A short reply."
         };
         let reply = json!({
             "provider": "HostA",
@@ -248,7 +289,7 @@ async fn a_run_writes_a_manifest_one_baseline_and_three_agent_results_per_note()
     for note in USED {
         let base = baseline(&setup, "first", note);
         assert!(!base.reused);
-        assert!(base.summary.unwrap().contains("A point of the meeting"));
+        assert_eq!(base.summary.as_deref(), Some(BASELINE_TEXT));
         let agents = agent_files(&setup, "first", note);
         assert_eq!(agents.len(), 3);
         assert!(agents.iter().all(|a| a.shape == Shape::Single));
@@ -263,15 +304,23 @@ async fn a_run_writes_a_manifest_one_baseline_and_three_agent_results_per_note()
             path.display()
         );
     }
-    // Every request, also the baseline requests, denies data collection.
+    // The baseline is the app's pipeline: a timeline part, a writer and
+    // an audit for each note. Every request, also the baseline requests,
+    // denies data collection.
     let seen = setup.mock.seen.lock().unwrap();
-    let baselines: Vec<Value> = seen
+    let turns: Vec<Turn> = seen
         .iter()
         .filter(|s| s.method == "POST")
-        .map(|s| s.json())
-        .filter(|body| body.get("tools").is_none())
+        .filter_map(|s| pipeline_turn(&s.json()))
         .collect();
-    assert!(!baselines.is_empty());
+    for turn in [Turn::Timeline, Turn::Writer, Turn::Audit] {
+        assert_eq!(
+            turns.iter().filter(|t| **t == turn).count(),
+            USED.len(),
+            "{turn:?}"
+        );
+    }
+    assert!(!turns.contains(&Turn::Revise));
     assert!(
         seen.iter()
             .filter(|s| s.method == "POST")

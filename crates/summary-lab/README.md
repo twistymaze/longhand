@@ -1,6 +1,6 @@
 # Summary lab
 
-The summary lab is a dev tool. It compares summaries from the summary agent with today's summaries on your own notes. The app does not use it, and it is not in the app build.
+The summary lab is a dev tool. It compares summaries from the summary agent with the summaries of the app's summary pipeline on your own notes. The app does not use it, and it is not in the app build.
 
 ## Before you start
 
@@ -105,7 +105,14 @@ The context budget of a model is `context_tokens` when you set it, else the mode
 
 1. It selects the notes. A note that is busy, has no transcript, has no speech, or cannot be read is skipped. The manifest gives the reason.
 2. It copies the selected notes and the `.longhand` settings into the snapshot. It does not copy symlinks or audio.
-3. For each note and model, it writes the baseline: today's summary from the app's own summary code, with the same context budget. A later run uses the same baseline again while the note, the model, the budget and the summary prompt do not change. A change to the agent's strategy or shape does not make a new baseline.
+3. For each note and model, it writes the baseline: the summary from the app's summary pipeline (timeline parts, a writer and an audit), with the same context budget. A later run uses the same baseline again while the note, the model, the budget and the summary prompt do not change. A change to the agent's strategy or shape does not make a new baseline.
+
+### Baselines from before the pipeline
+
+Baselines that the lab wrote before the app used the summary pipeline came from the old method: one summary call, or part summaries and a merge. A new run does not use these baselines again, because their reuse key has no summary method. They stay in `baselines/` and in the older run folders:
+
+- Delete `baselines/` to remove the old files. The next run writes new baselines.
+- Do not use `compare` or `versus` to compare an older run with a new run. The two runs have different baselines. Start a new run of the older configuration with a new name.
 4. It runs the agent the configured number of times.
 5. Each judge gets the transcript, the manual notes and all the summaries of one note and model, with no labels and in an order from the seed. It scores coverage, faithfulness and overall quality from 1 to 10.
 6. It writes `report.md` and `report.json`.
@@ -126,7 +133,7 @@ The context budget of a model is `context_tokens` when you set it, else the mode
 
 ## Reading the report
 
-- **Loss** is the baseline's overall score less the mean overall score of the agent runs, for each judge. A positive loss means the judge gave the agent summaries lower scores than today's summary from the same model.
+- **Loss** is the baseline's overall score less the mean overall score of the agent runs, for each judge. A positive loss means the judge gave the agent summaries lower scores than the summary of the app's pipeline from the same model.
 - **No summary** is the part of the agent runs that ended with no summary. The outcomes give the reason: `tool_call_limit`, `context_exceeded`, `malformed_calls`, `no_tool_support`, `no_summary`, `cut_off` or `transport`.
 - A missing judge result shows as missing. It is never a score of 0.
 - The report gives measurements only. It does not say whether a model is good enough.
