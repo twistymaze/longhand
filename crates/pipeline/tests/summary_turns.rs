@@ -216,6 +216,72 @@ fn the_key_of_a_turn_does_not_change_with_the_json_key_order_of_its_messages() {
     assert_ne!(key, turns.key(&first_turn("write the timeline")));
 }
 
+/// A turn after a call of `get_note` with `arguments`, whose result is
+/// `result`.
+fn turn_with_call(arguments: Value, result: &str) -> AgentTurn {
+    let call = AssistantContent::tool_call("call_1", name("get_note"), arguments);
+    let AssistantContent::ToolCall(tool_call) = &call else {
+        unreachable!()
+    };
+    let result = Message::tool_result(tool_call.id.clone(), name("get_note"), result);
+    AgentTurn {
+        preamble: "the rules".into(),
+        history: vec![
+            Message::user("write the timeline"),
+            Message::Assistant(AssistantMessage::new(vec![call])),
+        ],
+        prompt: result,
+        tools: vec![get_note(&["first", "last"])],
+        max_tokens: 500,
+        num_ctx: Some(8_192),
+    }
+}
+
+#[test]
+fn each_input_of_a_request_changes_the_key_of_its_turn() {
+    let store = note_store();
+    let base = || turn_with_call(json!({"first": 1, "last": 40}), "1 line one");
+    let local = client("http://127.0.0.1:9/v1");
+    let key =
+        |client: &Client, turn: &AgentTurn| Turns::new(&store, NOTE, client, &Unattended).key(turn);
+    let base_key = key(&local, &base());
+
+    let mut preamble = base();
+    preamble.preamble = "other rules".into();
+    let mut max_tokens = base();
+    max_tokens.max_tokens = 501;
+    let mut description = base();
+    description.tools[0].description = "Read other lines of the note.".into();
+    let mut parameter = base();
+    parameter.tools = vec![get_note(&["first", "last", "step"])];
+    let argument = turn_with_call(json!({"first": 1, "last": 41}), "1 line one");
+    let result = turn_with_call(json!({"first": 1, "last": 40}), "1 line two");
+    let other_provider = Client::new(Endpoint {
+        provider: Provider::LmStudio,
+        ..endpoint("http://127.0.0.1:9/v1", "m")
+    })
+    .unwrap();
+    let other_address = client("http://127.0.0.1:10/v1");
+
+    let cases: [(&str, &Client, AgentTurn); 8] = [
+        ("preamble", &local, preamble),
+        ("max_tokens", &local, max_tokens),
+        ("tool description", &local, description),
+        ("tool parameter", &local, parameter),
+        ("tool-call argument", &local, argument),
+        ("tool-result text", &local, result),
+        ("provider", &other_provider, base()),
+        ("address", &other_address, base()),
+    ];
+    for (input, client, turn) in &cases {
+        assert_ne!(
+            key(client, turn),
+            base_key,
+            "a changed {input} keeps the key"
+        );
+    }
+}
+
 /// A control that the test cancels.
 struct Cancelled;
 
@@ -284,9 +350,12 @@ async fn a_suspended_proceed_holds_the_turn_until_it_is_resumed() {
             eprintln!("the turn did not call proceed");
             std::process::abort();
         }
-        assert_eq!(sent(&mock), 0, "no request while the turn is held");
+        let before = sent(&mock);
         resume.send(()).unwrap();
         running.join().unwrap().unwrap();
+        // The assertion comes after the join, so that a failure does not
+        // leave the worker held.
+        assert_eq!(before, 0, "no request while the turn is held");
     });
     assert_eq!(sent(&mock), 1);
 }

@@ -476,6 +476,16 @@ fn quote(text: &str) -> String {
             "</summary",
             "<session_details",
             "</session_details",
+            "<timeline",
+            "</timeline",
+            "<people",
+            "</people",
+            "<draft",
+            "</draft",
+            "<findings",
+            "</findings",
+            "<instruction",
+            "</instruction",
         ]
         .iter()
         .find(|t| rest.starts_with(**t));

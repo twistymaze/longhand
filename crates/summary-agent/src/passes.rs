@@ -152,21 +152,38 @@ impl Pass<'_> {
         result
     }
 
-    /// The tokens of the manual notes.
-    fn notes_tokens(&self) -> u64 {
-        (self.note.manual_notes.len() as f64 / BYTES_PER_TOKEN) as u64
+    /// The note's share of a writer request: what the Background, the note
+    /// details and the manual notes add to a request with no timeline. The
+    /// free context already keeps room for the fixed rules.
+    fn writer_note_share(&self) -> u64 {
+        let id = &self.note.note_id;
+        let request = |notes: &str, user: UserText<'_>| {
+            prompts::cost(&prompts::from_timeline(
+                "", notes, id, None, &self.text, user,
+            )) as u64
+        };
+        request(&self.note.manual_notes, self.user()).saturating_sub(request("", "".into()))
     }
 
-    /// The lines of one timeline part: the free context less the manual
-    /// notes and the people list, and at most four times the output
-    /// maximum, because a timeline is about a quarter of its lines. The
-    /// lines get at least a quarter of the free context, also when the
-    /// notes are near the budget (KTD8).
+    /// The lines of one timeline part: the free context less the note's
+    /// share of a timeline part request and the people list, and at most
+    /// four times the output maximum, because a timeline is about a quarter
+    /// of its lines. The note's share is what the Background, the note
+    /// details and the manual notes add to a request with no lines; the
+    /// free context already keeps room for the fixed rules. The lines get
+    /// at least a quarter of the free context, also when the note's share
+    /// is near the budget (KTD8).
     fn part_lines(&self, lines: usize, chars: usize) -> usize {
-        let notes = self.notes_tokens();
+        let request = |notes: &str, user: UserText<'_>| {
+            prompts::cost(&prompts::timeline_part(
+                lines, lines, lines, "", notes, "", user,
+            )) as u64
+        };
+        let note_share =
+            request(&self.note.manual_notes, self.user()).saturating_sub(request("", "".into()));
         let free = free_tokens(&self.limits);
         let mut tokens = free
-            .saturating_sub(notes + PEOPLE_TOKENS)
+            .saturating_sub(note_share + PEOPLE_TOKENS)
             .max(free / PART_FLOOR_SHARE);
         if let Some(output) = self.limits.output_max {
             tokens = tokens.min(u64::from(output) * 4);
@@ -262,7 +279,7 @@ impl Pass<'_> {
                 format!("People:\n{people}\n\n{timeline}")
             }
         };
-        let room = free_tokens(&self.limits).saturating_sub(self.notes_tokens());
+        let room = free_tokens(&self.limits).saturating_sub(self.writer_note_share());
         let tokens = |text: &str| (text.len() as f64 / BYTES_PER_TOKEN) as u64;
         let whole = with_people(&parts.join("\n"));
         if tokens(&whole) <= room * 2 / 3 {

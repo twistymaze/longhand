@@ -207,8 +207,9 @@ pub enum RunnerEvent {
         wait: Option<Wait>,
     },
     /// Per window of the transcribe stage, and per call of the summarize
-    /// stage. `summary_step` is the step of a summary in parts, and `None`
-    /// for the transcribe stage.
+    /// stage. `summary_step` is the step of the summary pipeline: the
+    /// timeline parts, the groups, the final writer or the review. It is
+    /// `None` for the other stages.
     Progress {
         note_id: String,
         stage: Stage,

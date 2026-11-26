@@ -70,7 +70,9 @@ const OLD_KEYS: [&str; 2] = ["plan", "whole"];
 const METHOD: &str = "timeline-pipeline-1";
 /// The error when the fixed parts of the writer's request and the prompt
 /// text leave too little of the model's context for the transcript (KTD8,
-/// KTD10). The prompt text and the Background both count (KTD11).
+/// KTD10). The prompt text and the Background both count (KTD11). It is
+/// also the error when the agent's own size check stops a request before
+/// the app sends it.
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
 shorten the prompt or the Background in Settings, or choose a model with a larger context";
 /// The error when the model ends the run with no summary and the user can
@@ -764,7 +766,7 @@ pub fn produce(
             result.outcome,
             result.detail.as_deref().unwrap_or("no detail")
         );
-        let error = turns.error();
+        let error = run_error(result.outcome, turns.error());
         if matches!(error, Some(SummarizeError::ReplyCutOff)) {
             // The next run asks the endpoint for its limit again: the user
             // can give the model a larger context.
@@ -878,10 +880,19 @@ fn failure(outcome: Outcome, error: Option<SummarizeError>, budget: &Budget) -> 
         Some(SummarizeError::ReplyCutOff) => reply_does_not_fit(),
         Some(SummarizeError::Deadline(_)) => no_reply_in_time(),
         Some(e) => format!("summarizing: {e}"),
-        // The agent found that its next request does not fit the budget.
-        None if outcome == Outcome::ContextExceeded => context_limit_message(budget),
+        // The agent found that its next request does not fit the budget and
+        // sent no request: the fixed parts of the request are too large.
+        None if outcome == Outcome::ContextExceeded => PROMPT_TOO_LONG.into(),
         None => NO_SUMMARY.into(),
     }
+}
+
+/// The typed error that caused `outcome`, from the kept `error` of the last
+/// failed turn. A run that ends with [`Outcome::ContextExceeded`] and no
+/// context error ended on the agent's own size check, which sends no
+/// request. The kept error is then from an earlier turn, so it is not used.
+fn run_error(outcome: Outcome, error: Option<SummarizeError>) -> Option<SummarizeError> {
+    error.filter(|e| outcome != Outcome::ContextExceeded || e.is_context_pressure())
 }
 
 /// The message when the model takes less than the budget. Only the user
@@ -1112,7 +1123,8 @@ mod tests {
 
     /// Covers R10, KTD10: the typed error of the last failed turn gives
     /// the message. With no failed turn, a context check of the agent gives
-    /// the Context limit message, and the other outcomes give one message.
+    /// the prompt message, because no request went to the model. The other
+    /// outcomes give one message.
     #[test]
     fn the_typed_error_of_the_last_turn_gives_the_failure_message() {
         let set = budget(32_000, BudgetSource::User);
@@ -1127,11 +1139,34 @@ mod tests {
                 && pressure.contains("Settings > AI Provider > Context limit"),
             "{pressure}"
         );
-        let guess = failure(Outcome::ContextExceeded, None, &default);
+        let guess = failure(
+            Outcome::ContextExceeded,
+            Some(SummarizeError::ContextExceeded),
+            &default,
+        );
         assert!(
             guess.contains("enter the model's context length"),
             "{guess}"
         );
+        // The agent's own size check sent no request: the model did not
+        // refuse a size, so the message is not about the Context limit.
+        let own_check = failure(Outcome::ContextExceeded, None, &set);
+        assert_eq!(own_check, super::PROMPT_TOO_LONG);
+        // A cut-off error of an earlier part is not the cause of the agent's
+        // own size check.
+        let stale = super::run_error(Outcome::ContextExceeded, Some(SummarizeError::ReplyCutOff));
+        assert!(stale.is_none(), "{stale:?}");
+        assert!(matches!(
+            super::run_error(
+                Outcome::ContextExceeded,
+                Some(SummarizeError::ContextExceeded)
+            ),
+            Some(SummarizeError::ContextExceeded)
+        ));
+        assert!(matches!(
+            super::run_error(Outcome::CutOff, Some(SummarizeError::ReplyCutOff)),
+            Some(SummarizeError::ReplyCutOff)
+        ));
         let cut = failure(Outcome::CutOff, Some(SummarizeError::ReplyCutOff), &set);
         assert_eq!(cut, super::reply_does_not_fit());
         let offline = failure(

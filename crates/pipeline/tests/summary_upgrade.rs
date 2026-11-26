@@ -197,6 +197,44 @@ async fn an_auditor_failure_keeps_the_draft_and_the_summary_completes() {
     );
 }
 
+/// Covers R3, KTD12: a reviser edit changes the saved summary, and the
+/// title request is made from the revised summary, not from the draft.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reviser_edit_gives_the_saved_summary_and_the_title_request() {
+    let (store, folder) = note();
+    let mock = serve(|body| match turn_of(body) {
+        Turn::Audit => ok("missed [00:00:09] Sam owns the release notes."),
+        Turn::Revise => {
+            ok(r#"{"edits": [{"find": "The draft summary.", "replace": "The revised summary."}]}"#)
+        }
+        turn => ok(normal(turn)),
+    })
+    .await;
+    let summary = run(
+        &store,
+        folder.path(),
+        endpoint(&mock.base),
+        Arc::new(Unattended),
+    )
+    .await
+    .unwrap();
+    assert_eq!(summary.body, "The revised summary.");
+    assert_eq!(
+        turns(&mock),
+        [Turn::Timeline, Turn::Writer, Turn::Audit, Turn::Revise]
+    );
+    let request = pipeline::summarize::pending_title_request(&store, NOTE)
+        .unwrap()
+        .expect("a title request");
+    let replies: Vec<&str> = request
+        .messages
+        .iter()
+        .filter(|m| m.role == "assistant")
+        .map(|m| m.content.as_str())
+        .collect();
+    assert_eq!(replies, ["The revised summary."]);
+}
+
 /// A chat reply with one call of `get_note` with `arguments`.
 fn get_note_call(arguments: Value) -> (u16, String) {
     let reply = json!({

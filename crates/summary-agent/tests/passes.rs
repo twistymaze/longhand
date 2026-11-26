@@ -303,6 +303,94 @@ async fn notes_near_the_budget_still_give_parts_of_the_floor() {
     );
 }
 
+/// A model that replies by request kind: a timeline part gets a timeline
+/// of about 900 tokens, and each other request gets short notes.
+struct ByKind {
+    seen: Mutex<Vec<RequestKind>>,
+}
+
+impl Model for ByKind {
+    fn turn<'a>(
+        &'a self,
+        label: &'a Label,
+        _turn: &'a AgentTurn,
+    ) -> BoxFuture<'a, Result<AgentReply, SummarizeError>> {
+        self.seen.lock().unwrap().push(label.kind);
+        let reply_text = if label.kind == RequestKind::Timeline {
+            "- [00:00:01] The team talked about the budget.\n".repeat(45)
+        } else {
+            "The summary.".to_string()
+        };
+        Box::pin(async move { Ok(reply(vec![text(&reply_text)], 10, 5)) })
+    }
+}
+
+#[tokio::test]
+async fn a_large_background_sends_a_timeline_that_does_not_fit_to_group_writers() {
+    // 18,000 tokens for each request and a Background of about 11,000
+    // tokens. The joined timeline of about 9,500 tokens fits the room less
+    // the notes, but not the room less the Background, so groups write it.
+    let limits = Limits {
+        context_tokens: 20_000,
+        reply_tokens: Some(2_000),
+        ..Limits::default()
+    };
+    let model = ByKind {
+        seen: Mutex::default(),
+    };
+    let tools = ToolSet::new(Vec::new()).unwrap();
+    let transcript = long_transcript(4_500);
+    let chars = transcript.len();
+    let mut pass = pass_of(&model, limits, transcript, "budget first");
+    pass.background = "The team works on the yearly budget. ".repeat(1_100);
+    let result = pass.timeline(&tools, 4_500, chars).await.result;
+    let kinds = model.seen.lock().unwrap().clone();
+    assert_eq!(
+        result.outcome,
+        Outcome::Summary,
+        "{:?} {kinds:?}",
+        result.detail
+    );
+    assert_eq!(result.summary.as_deref(), Some("The summary."));
+    let writers = kinds.iter().filter(|k| **k == RequestKind::Writer).count();
+    assert!(writers > 1, "{kinds:?}");
+}
+
+#[tokio::test]
+async fn a_large_background_leaves_each_timeline_part_inside_the_budget() {
+    // 18,000 tokens for each request and a Background of about 8,000
+    // tokens. The lines of a part get only the room that the Background,
+    // the rules and the notes leave.
+    let limits = Limits {
+        context_tokens: 20_000,
+        reply_tokens: Some(2_000),
+        ..Limits::default()
+    };
+    let model = Script::new(Vec::new());
+    let tools = ToolSet::new(Vec::new()).unwrap();
+    let transcript = long_transcript(2_000);
+    let chars = transcript.len();
+    let mut pass = pass_of(&model, limits, transcript, "budget first");
+    pass.background = "The team works on the yearly budget. ".repeat(800);
+    let result = pass.timeline(&tools, 2_000, chars).await.result;
+    assert_eq!(result.outcome, Outcome::Summary, "{:?}", result.detail);
+    let kinds = model.kinds();
+    let parts = kinds
+        .iter()
+        .filter(|k| **k == RequestKind::Timeline)
+        .count();
+    assert!(parts > 1, "{kinds:?}");
+    let turns = model.turns();
+    let last = turns
+        .iter()
+        .zip(&kinds)
+        .rfind(|(_, k)| **k == RequestKind::Timeline)
+        .unwrap()
+        .0;
+    // The parts cover the transcript to its last line.
+    assert!(format!("{:?}", last.prompt).contains("to 2000 of 2000 transcript lines"));
+}
+
 #[tokio::test]
 async fn each_step_gives_its_turns_its_own_request_kind() {
     let model = Script::new(vec![
