@@ -558,6 +558,45 @@ fn the_catalog_gives_the_input_limit_of_a_known_hosted_model() {
     );
 }
 
+/// Covers KTD6 of the summary pipeline plan: the summary step takes a
+/// budget from the catalog for OpenAI and Anthropic only. OpenRouter and
+/// Gemini keep the probe, and an unknown model has no catalog budget.
+#[test]
+fn the_catalog_budget_is_for_openai_and_anthropic_only() {
+    assert_eq!(
+        context::catalog_budget(Provider::OpenAi, "gpt-6-luna"),
+        Some(Budget {
+            limit: 922_000,
+            source: BudgetSource::Catalog,
+            output_max: context::catalog_output_max(Provider::OpenAi, "gpt-6-luna"),
+        })
+    );
+    assert_eq!(
+        context::catalog_budget(Provider::Anthropic, "claude-haiku-4-5"),
+        Some(Budget {
+            limit: 200_000,
+            source: BudgetSource::Catalog,
+            output_max: context::catalog_output_max(Provider::Anthropic, "claude-haiku-4-5"),
+        })
+    );
+    assert_eq!(
+        context::catalog_budget(Provider::OpenRouter, "anthropic/claude-haiku-5.5"),
+        None
+    );
+    assert_eq!(
+        context::catalog_budget(Provider::Gemini, "models/gemini-2.5-flash"),
+        None
+    );
+    assert_eq!(
+        context::catalog_budget(Provider::Anthropic, "claude-unknown-9"),
+        None
+    );
+    assert_eq!(
+        context::catalog_budget(Provider::Custom, "gpt-6-luna"),
+        None
+    );
+}
+
 // ------------------------------------------------------- reply allowance (U4)
 
 use summarize::tokens::{Allowance, ReplyKind, reply_allowance, split_reserve, with_margin};

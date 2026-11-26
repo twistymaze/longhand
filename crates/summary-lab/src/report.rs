@@ -18,7 +18,7 @@ pub const REPORT_JSON: &str = "report.json";
 pub const REPORT_MD: &str = "report.md";
 
 /// The KTD7 note about the baseline.
-pub const BASELINE_NOTE: &str = "The baseline is today's summary from the app's summary code. \
+pub const BASELINE_NOTE: &str = "The baseline is the summary from the app's summary pipeline. \
 It does not have the \"Recognition limitation\" line that comes from recognition data.";
 
 /// The scores of one summary.

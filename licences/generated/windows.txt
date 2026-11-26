@@ -2617,6 +2617,8 @@ phf_macros 0.13.1
     Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
 phf_shared 0.13.1
     Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
+pin-project 1.2.0
+pin-project-internal 1.2.0
 pin-project-lite 0.2.17
 plist 1.10.3
     Copyright (c) 2015 Edward Barnard
@@ -2664,9 +2666,11 @@ reqwest 0.13.5
 rfd 0.17.2
     Copyright (c) 2020 Bilal Elmoussaoui
     Copyright (c) 2022 Bartłomiej Maryńczak
+rig-agent 0.47.0
 rig-core 0.47.0
     Copyright (c) 2024, Playgrounds Analytics Inc.
 rig-http 0.47.0
+rig-memory 0.47.0
 rtrb 0.4.1
 rubato 0.16.2
     Copyright (c) 2020 Henrik Enquist
@@ -2841,6 +2845,8 @@ tracing-attributes 0.1.31
     Copyright (c) 2019 Tokio Contributors
 tracing-core 0.1.36
     Copyright (c) 2014 Mathijs van de Nes
+    Copyright (c) 2019 Tokio Contributors
+tracing-futures 0.2.5
     Copyright (c) 2019 Tokio Contributors
 transcribe-cpp 0.4.2
     Copyright (c) 2026 The transcribe.cpp authors

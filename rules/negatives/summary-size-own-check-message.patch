@@ -1,0 +1,13 @@
+diff --git a/crates/pipeline/src/summarize.rs b/crates/pipeline/src/summarize.rs
+index 98bb1aaa..791d02fc 100644
+--- a/crates/pipeline/src/summarize.rs
++++ b/crates/pipeline/src/summarize.rs
+@@ -882,7 +882,7 @@ fn failure(outcome: Outcome, error: Option<SummarizeError>, budget: &Budget) ->
+         Some(e) => format!("summarizing: {e}"),
+         // The agent found that its next request does not fit the budget and
+         // sent no request: the fixed parts of the request are too large.
+-        None if outcome == Outcome::ContextExceeded => PROMPT_TOO_LONG.into(),
++        None if outcome == Outcome::ContextExceeded => context_limit_message(budget),
+         None => NO_SUMMARY.into(),
+     }
+ }

@@ -237,7 +237,7 @@ pub async fn judge(
     order: Vec<Candidate>,
     messages: &[Message],
 ) -> JudgeFile {
-    let label = Label::without_note(RequestKind::Single);
+    let label = Label::without_note(RequestKind::Judge);
     let mut error = String::new();
     for _ in 0..2 {
         match client

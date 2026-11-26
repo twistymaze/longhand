@@ -10,7 +10,8 @@
 //! OpenAI-compatible server (OpenRouter, LM Studio, Custom), the input
 //! token limit in Gemini's model list, and the context length in Ollama's
 //! `/api/show`. OpenAI and Anthropic report no limit, so no request is
-//! sent for them.
+//! sent for them. The summary step takes their limit from Rig's catalog
+//! ([`catalog_budget`]).
 
 use rig_core::catalog::{Catalog, ModelSpec};
 use rig_core::model::ModelInfo;
@@ -37,6 +38,10 @@ pub enum BudgetSource {
     Openrouter,
     Gemini,
     Ollama,
+    /// The input limit of the model in Rig's built-in catalog, for OpenAI
+    /// and Anthropic ([`catalog_budget`]). Only the `budget` key of the
+    /// summary stage holds it, and no older build reads that key.
+    Catalog,
     Default,
 }
 
@@ -114,9 +119,25 @@ pub fn catalog_output_max(provider: Provider, model: &str) -> Option<u32> {
 /// The input limit of `model` on the hosted `provider` in Rig's built-in
 /// catalog: the most tokens that one request can send. `None` for a model
 /// that the catalog does not know, and for the local providers and Custom.
-/// Only the summary agent uses it: the app's summary path does not.
 pub fn catalog_input_limit(provider: Provider, model: &str) -> Option<u32> {
     catalog_limit(provider, model, |spec| spec.input_limit())
+}
+
+/// The budget of `model` from Rig's built-in catalog, for OpenAI and
+/// Anthropic only (KTD6): the input limit, and the output maximum when the
+/// catalog has it. These providers report no limit to a probe. `None` for
+/// another provider and for a model that the catalog does not know. The
+/// other hosted providers keep the probe: OpenRouter routes to hosts with
+/// contexts smaller than the catalog gives, and Gemini reports its limit.
+pub fn catalog_budget(provider: Provider, model: &str) -> Option<Budget> {
+    if !matches!(provider, Provider::OpenAi | Provider::Anthropic) {
+        return None;
+    }
+    Some(Budget {
+        limit: catalog_input_limit(provider, model)?,
+        source: BudgetSource::Catalog,
+        output_max: catalog_output_max(provider, model),
+    })
 }
 
 /// A limit of `model` on the hosted `provider` in Rig's built-in catalog,

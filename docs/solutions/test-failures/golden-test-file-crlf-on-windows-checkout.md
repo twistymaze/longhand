@@ -32,7 +32,7 @@ A golden-file test passed on macOS and failed on Windows CI. Git checked out the
   `assertion left == right failed: ""`
   The message text is the Debug form of the empty Background input (`{background:?}`). It does not show the byte difference.
 - The test reads `crates/summarize/tests/golden/no_background.txt` with `include_str!` (`crates/summarize/tests/background.rs:94`). It then compares `render_all(background)` with that text (line 96).
-- Archived PR 38 introduced the file and the test.
+- Archived PR 38 introduced the file and the test. The summary pipeline change removed them later. The golden files in `crates/summarize/tests/golden/request-bodies/` use the same rule.
 
 ## What Didn't Work
 
@@ -55,7 +55,7 @@ The file already had the same kind of rule for `licences/**` (`.gitattributes:1-
 Check the rule with:
 
 ```
-git check-attr eol crates/summarize/tests/golden/no_background.txt
+git check-attr eol crates/summarize/tests/golden/request-bodies/openai.json
 ```
 
 Expected output: `eol: lf`. The next Windows CI run passed.

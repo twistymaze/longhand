@@ -46,8 +46,9 @@ pub enum ProcessingStep {
     StageStarted {
         stage: String,
     },
-    /// `summary_step` is the step of a summary in parts: "parts", "groups"
-    /// or "final". It is `None` for the transcribe stage.
+    /// `summary_step` is the step of the summary pipeline: "parts",
+    /// "groups", "final" or "review". It is `None` for the transcribe
+    /// stage.
     Progress {
         stage: String,
         segment: u32,
@@ -2497,6 +2498,31 @@ mod tests {
                 }
             })
         );
+    }
+
+    /// Covers R9, KTD13: each summary step goes to the surface by its name.
+    #[test]
+    fn summary_progress_names_each_step() {
+        use pipeline::summarize::SummaryStep;
+        for (step, name) in [
+            (SummaryStep::Parts, "parts"),
+            (SummaryStep::Groups, "groups"),
+            (SummaryStep::Final, "final"),
+            (SummaryStep::Review, "review"),
+        ] {
+            let update = processing_update(RunnerEvent::Progress {
+                note_id: "s".into(),
+                stage: session_core::Stage::Summarize,
+                segment: 0,
+                summary_step: Some(step),
+                done: 1,
+                total: 2,
+            });
+            assert_eq!(
+                serde_json::to_value(&update).unwrap()["update"]["summary_step"],
+                serde_json::json!(name)
+            );
+        }
     }
 
     #[test]

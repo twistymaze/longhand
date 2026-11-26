@@ -119,12 +119,6 @@ impl Limits {
 pub enum RequestKind {
     /// A request for the model's context limit.
     Probe,
-    /// The summary of one part of a transcript that does not fit in one call.
-    Chunk,
-    /// A request that combines the summaries of the parts.
-    Merge,
-    /// The summary of a transcript that fits in one call.
-    Single,
     /// The title turn after a summary.
     Title,
     /// The request for the list of models in Settings.
@@ -134,19 +128,33 @@ pub enum RequestKind {
     Check,
     /// One model call of a summary agent, with tool definitions.
     AgentTurn,
+    /// The timeline of one transcript part.
+    Timeline,
+    /// A writer that writes the summary or the notes of a group of
+    /// timeline parts, or the merge step that joins those notes.
+    Writer,
+    /// An auditor that checks a summary against one transcript part.
+    Audit,
+    /// The reviser that corrects a summary with the findings of the
+    /// auditors.
+    Revise,
+    /// A judge of the summary lab that scores a summary.
+    Judge,
 }
 
 impl RequestKind {
     fn name(self) -> &'static str {
         match self {
             Self::Probe => "probe",
-            Self::Chunk => "chunk",
-            Self::Merge => "merge",
-            Self::Single => "single",
             Self::Title => "title",
             Self::Models => "models",
             Self::Check => "check",
             Self::AgentTurn => "agent turn",
+            Self::Timeline => "timeline",
+            Self::Writer => "writer",
+            Self::Audit => "audit",
+            Self::Revise => "revise",
+            Self::Judge => "judge",
         }
     }
 }
@@ -307,7 +315,7 @@ pub fn error_text(error: &SummarizeError) -> String {
 /// The `location` of a redirect that has no `Location` header.
 pub(crate) const NO_LOCATION: &str = "an unnamed location";
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum SummarizeError {
     #[error("the summarization endpoint is not a valid http(s) URL: {0}")]
     BadUrl(String),
@@ -650,6 +658,11 @@ impl Client {
         &self.endpoint
     }
 
+    /// The Thinking level of the requests.
+    pub fn thinking(&self) -> Thinking {
+        self.thinking
+    }
+
     /// The OpenRouter provider preferences of a request, or `None` when the
     /// request gets no `provider` field. An agent turn also requires a host
     /// that accepts every parameter, so that a host with no tool support is
@@ -672,22 +685,55 @@ impl Client {
         Some(preferences)
     }
 
-    /// Send one agent turn and return the whole reply. The request has the
-    /// Thinking level of the client as an effort, with no fallback. A reply
-    /// with only tool calls is a success. A reply that the endpoint cut off
-    /// is [`SummarizeError::ReplyCutOff`], and a prompt that filled the
+    /// Send one agent turn and return the whole reply. A reply with only
+    /// tool calls is a success. A reply that the endpoint cut off is
+    /// [`SummarizeError::ReplyCutOff`], and a prompt that filled the
     /// context is [`SummarizeError::ContextExceeded`].
+    ///
+    /// The request has the Thinking level of the client, with the rules of
+    /// [`Self::complete`]: when the model or the provider refuses an
+    /// automatic level, the client sends the turn again with no reasoning
+    /// option, and later requests to the same model send none. The refusal
+    /// of a level that the user chose is
+    /// [`SummarizeError::ReasoningRefused`].
     pub async fn agent_turn(
         &self,
         label: &Label,
         turn: &AgentTurn,
     ) -> Result<AgentReply, SummarizeError> {
+        let Thinking { level, chosen } = self.thinking;
         let key = ModelKey::of(self);
+        let level = if !chosen && key.learned().reasoning_refused {
+            ThinkingLevel::ModelDefault
+        } else {
+            level
+        };
+        match self.agent_turn_at(label, turn, &key, effort(level)).await {
+            Err(SummarizeError::ReasoningRefused { .. }) if !chosen => {
+                log::info!(
+                    "{} refused the automatic Thinking level for model {}; sending the agent turn again with no reasoning option",
+                    self.host(),
+                    self.endpoint.model
+                );
+                key.remember_refused();
+                self.agent_turn_at(label, turn, &key, None).await
+            }
+            other => other,
+        }
+    }
+
+    /// [`Self::agent_turn`] with the reasoning option `reasoning`.
+    async fn agent_turn_at(
+        &self,
+        label: &Label,
+        turn: &AgentTurn,
+        key: &ModelKey,
+        reasoning: Option<Reasoning>,
+    ) -> Result<AgentReply, SummarizeError> {
         let max_tokens = key
             .learned()
             .output_cap
             .map_or(turn.max_tokens, |cap| turn.max_tokens.min(cap));
-        let reasoning = effort(self.thinking.level);
         let send = |max_tokens| async move {
             let with =
                 |cap_field| self.agent_turn_with(label, turn, cap_field, max_tokens, reasoning);
@@ -710,7 +756,16 @@ impl Client {
             Err(SummarizeError::Http {
                 status: 400,
                 excerpt,
-            }) => named_cap(&without_model(excerpt, &self.endpoint.model), max_tokens),
+            }) => {
+                let text = without_model(excerpt, &self.endpoint.model);
+                let cap = named_cap(&text, max_tokens);
+                // A refusal that names an output cap is an output-cap
+                // refusal, as in `complete_level`.
+                if reasoning.is_some() && cap.is_none() && names_reasoning(&text) {
+                    return Err(SummarizeError::ReasoningRefused { sent: true });
+                }
+                cap
+            }
             _ => None,
         };
         let response = match cap {
@@ -1829,12 +1884,12 @@ mod tests {
 
     #[test]
     fn the_request_log_names_the_request_and_not_its_content() {
-        let label =
-            Label::note("2026-10-14-0900", RequestKind::Chunk).queued(Duration::from_millis(4_200));
+        let label = Label::note("2026-10-14-0900", RequestKind::Timeline)
+            .queued(Duration::from_millis(4_200));
         let start = start_line(&label, "llm.example.net", "qwen3-30b");
         assert_eq!(
             start,
-            "request start: note 2026-10-14-0900, chunk, host llm.example.net, \
+            "request start: note 2026-10-14-0900, timeline, host llm.example.net, \
              model qwen3-30b, 4200 ms in the queue"
         );
         let reply = Ok((reqwest::StatusCode::OK, b"secret summary text".to_vec()));
@@ -1847,7 +1902,7 @@ mod tests {
         );
         assert_eq!(
             end,
-            "request end: note 2026-10-14-0900, chunk, host llm.example.net, \
+            "request end: note 2026-10-14-0900, timeline, host llm.example.net, \
              model qwen3-30b, 4200 ms in the queue, 91000 ms, HTTP 200"
         );
         assert!(!end.contains("secret"));
@@ -1861,6 +1916,24 @@ mod tests {
             "request start: note 2026-10-14-0900, agent turn, host openrouter.ai, \
              model m, 0 ms in the queue"
         );
+    }
+
+    #[test]
+    fn the_request_log_names_each_step_of_the_timeline_pipeline() {
+        for (kind, name) in [
+            (RequestKind::Timeline, "timeline"),
+            (RequestKind::Writer, "writer"),
+            (RequestKind::Audit, "audit"),
+            (RequestKind::Revise, "revise"),
+        ] {
+            let label = Label::note("2026-10-14-0900", kind);
+            assert_eq!(
+                start_line(&label, "h", "m"),
+                format!(
+                    "request start: note 2026-10-14-0900, {name}, host h, model m, 0 ms in the queue"
+                )
+            );
+        }
     }
 
     #[test]
@@ -1904,10 +1977,10 @@ mod tests {
     fn a_dropped_request_gives_a_cancelled_end_line_unless_it_ended() {
         // `block_on` drops the send future when a note is resumed or the
         // app quits. The log must then show that the request stopped.
-        let label = Label::note("2026-10-14-0900", RequestKind::Chunk);
+        let label = Label::note("2026-10-14-0900", RequestKind::Timeline);
         let armed = EndGuard::new(&label, "h", "m");
         let text = armed.cancelled_text().expect("an armed guard gives a line");
-        assert!(text.starts_with("request end: note 2026-10-14-0900, chunk, host h, model m,"));
+        assert!(text.starts_with("request end: note 2026-10-14-0900, timeline, host h, model m,"));
         assert!(text.ends_with(" ms, cancelled"));
 
         let mut ended = EndGuard::new(&label, "h", "m");

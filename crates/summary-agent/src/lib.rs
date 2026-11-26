@@ -32,7 +32,7 @@ use summarize::{AgentReply, AgentTurn, Client, SummarizeError};
 use crate::compaction::Compacted;
 
 pub use history::HistoryPolicy;
-pub use sources::{BoxFuture, CallResult, NoteSource, ToolSource};
+pub use sources::{BoxFuture, CallResult, MemoryNoteSource, NoteSource, ToolSource};
 
 /// A model that answers agent turns. The summary client is one; a test
 /// gives scripted turns.
@@ -90,7 +90,7 @@ impl Outcome {
 /// account does. A three-hour transcript takes about ten `get_note` reads
 /// at the default result size, so the guards leave room for several full
 /// reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     pub model_calls: usize,
     pub tool_calls: usize,
@@ -106,6 +106,9 @@ pub struct Limits {
     pub output_max: Option<u32>,
     /// The context size for an Ollama request.
     pub num_ctx: Option<u32>,
+    /// How the provider limits the reply allowance:
+    /// `ReplyKind::of(provider, budget source)` in the app.
+    pub reply_kind: ReplyKind,
 }
 
 impl Default for Limits {
@@ -118,6 +121,7 @@ impl Default for Limits {
             reply_tokens: None,
             output_max: None,
             num_ctx: None,
+            reply_kind: ReplyKind::Hosted,
         }
     }
 }
@@ -131,7 +135,7 @@ impl Limits {
     pub fn reply_allowance(&self, request: u64) -> u32 {
         let used = usize::try_from(request).unwrap_or(usize::MAX);
         let room =
-            tokens::reply_allowance(self.context_u32(), used, self.output_max, ReplyKind::Hosted)
+            tokens::reply_allowance(self.context_u32(), used, self.output_max, self.reply_kind)
                 .ceiling;
         self.reply_tokens.map_or(room, |fixed| fixed.min(room))
     }
@@ -272,6 +276,15 @@ impl<'a> ToolSet<'a> {
             by_name,
             definitions,
         })
+    }
+
+    /// A tool set with no tools.
+    pub fn empty() -> Self {
+        Self {
+            sources: Vec::new(),
+            by_name: BTreeMap::new(),
+            definitions: Vec::new(),
+        }
     }
 
     pub fn names(&self) -> BTreeSet<String> {

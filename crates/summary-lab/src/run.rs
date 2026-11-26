@@ -9,10 +9,13 @@
 //! <out>/baselines/<key>.json                   baselines for later runs
 //! ```
 //!
-//! The baseline is today's summary from the app's own summary code on an
-//! in-memory store (KTD7). A later run uses it again while the note's files,
-//! the model, the endpoint, the context budget and the summary prompt do
-//! not change (KTD8). No file holds a key.
+//! The baseline is the summary from the app's summary pipeline (timeline
+//! parts, a writer and an audit) on an in-memory store (KTD7). A later run
+//! uses it again while the note's files, the model, the endpoint, the
+//! context budget and the summary prompt do not change (KTD8). Baseline
+//! files from before the pipeline came from the old single-call method.
+//! Their reuse key has no [`BASELINE_METHOD`], so no run uses them again.
+//! No file holds a key.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -36,7 +39,7 @@ use summary_agent::passes::{self, Pass};
 use summary_agent::shapes::{
     ReadPart, Steps, largest_part, reader_notes_tokens, run_steps, transcript_fits,
 };
-use summary_agent::{Agent, Limits, NoteSource, Outcome, RunResult, ToolSet};
+use summary_agent::{Agent, Limits, MemoryNoteSource, NoteSource, Outcome, RunResult, ToolSet};
 
 use crate::run_config::{RunConfig, Shape, model_folder, result_chars};
 use crate::snapshot::{self, Selected, Skipped};
@@ -48,6 +51,11 @@ pub const MANIFEST: &str = "manifest.json";
 pub const SNAPSHOT: &str = "snapshot";
 pub const RESULTS: &str = "results";
 pub const BASELINES: &str = "baselines";
+
+/// The summary method of the baselines, in each reuse key. Change it when
+/// the app's summary method changes, so that no run uses a baseline from
+/// another method.
+pub const BASELINE_METHOD: &str = "pipeline";
 
 /// How a run starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -722,7 +730,7 @@ pub fn baseline_source(sample: usize) -> String {
 }
 
 /// Baseline `sample` of `note` with `model`: a reused one, or a new one
-/// from the app's summary code. Each sample has its own reuse key, so that
+/// from the app's summary pipeline. Each sample has its own reuse key, so that
 /// the samples are separate summaries.
 #[allow(clippy::too_many_arguments)]
 async fn baseline(
@@ -798,8 +806,9 @@ async fn baseline(
     Ok(file)
 }
 
-/// The reuse key of a baseline (KTD8): the note's files, the model, the
-/// endpoint, the context budget, the routing and the summary prompt.
+/// The reuse key of a baseline (KTD8): the summary method, the note's
+/// files, the model, the endpoint, the context budget, the routing and the
+/// summary prompt.
 fn baseline_key(
     note: &ManifestNote,
     model: &ManifestModel,
@@ -809,6 +818,7 @@ fn baseline_key(
 ) -> String {
     let mut hash = Sha256::new();
     for part in [
+        BASELINE_METHOD,
         note.fingerprint.as_str(),
         &note.note.note_id,
         &model.model,
@@ -823,7 +833,8 @@ fn baseline_key(
         hash.update((part.len() as u64).to_le_bytes());
         hash.update(part.as_bytes());
     }
-    // The model default adds nothing, so that older baselines keep their key.
+    // The model default adds nothing, so that the key of a baseline at the
+    // model default does not change.
     if model.thinking_level != ThinkingLevel::ModelDefault {
         let part = format!("{:?}", model.thinking_level);
         hash.update((part.len() as u64).to_le_bytes());
@@ -864,6 +875,18 @@ fn spent_tokens(results: &Path) -> Result<u64, String> {
 
 fn part(root: &Path, note: &ManifestNote, name: &str) -> String {
     std::fs::read_to_string(root.join(&note.note.folder).join(name)).unwrap_or_default()
+}
+
+/// The start time of the note `note_id` in the storage folder `root`, as
+/// get note gives it.
+fn started(root: &Path, note_id: &str) -> Result<String, String> {
+    let output = NoteTools::new(0)
+        .call(root, "get_note", serde_json::json!({"note_id": note_id}))
+        .map_err(|e| format!("the details of {note_id}: {e}"))?;
+    output["started"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| format!("{note_id} has no start time"))
 }
 
 /// The transcript parts of the `steps` shape for a context budget.
@@ -922,14 +945,21 @@ async fn agent_run(
     };
     let pass = Pass {
         model: client,
-        root: root.to_path_buf(),
-        note_id: note_id.to_string(),
+        note: MemoryNoteSource::new(
+            note_id.to_string(),
+            started(root, note_id)?,
+            transcript.clone(),
+            part(root, note, NOTES_FILE),
+            details.clone(),
+            max_chars,
+        ),
         background: prompt.background.clone(),
-        details: details.clone(),
-        manual_notes: part(root, note, NOTES_FILE),
         text: prompt.text.clone(),
         limits,
         label: label.clone(),
+        // The lab runs one auditor at a time and reports no progress.
+        at_once: 1,
+        progress: None,
     };
     let result = match shape {
         Shape::Auto => unreachable!("auto is resolved above"),
@@ -1009,15 +1039,12 @@ async fn agent_run(
             let tools = ToolSet::new(vec![&source])?;
             pass.timeline(&tools, facts.transcript_lines, facts.transcript_chars)
                 .await
+                .result
         }
     };
     let mut result = result;
     if config.review {
-        let Some(draft) = result
-            .summary
-            .clone()
-            .filter(|_| result.outcome.has_summary())
-        else {
+        let Some(draft) = result.written() else {
             return Ok((shape, result));
         };
         let reviewed = pass

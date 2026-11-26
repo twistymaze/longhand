@@ -1,33 +1,37 @@
-//! The summarize stage (KTD16, R17, R18, R19, R24b). The transcript is
-//! read from `transcript.md` (KTD4), the context budget resolved, and the
-//! summary produced in one call when it fits, which is the normal case, or
-//! in parts merged layer by layer when it does not. Every call's result is
-//! checkpointed, so a quit resumes at the first missing one. A rejection
-//! that shows the model's context is smaller than the budget stops the
-//! run: only the user changes the context limit.
+//! The summarize stage (KTD16, R17, R18, R19, R24b). The stage reads the
+//! transcript from `transcript.md` (KTD4), finds the context budget, and
+//! runs the timeline pipeline of `summary_agent` (KTD1 of the summary
+//! pipeline plan): timeline parts in order, a writer (or group writers and
+//! a merge step), then the review. The pipeline reads the transcript that
+//! the stage read, not a storage folder (KTD2), so a first summary runs in
+//! the working folder before Save.
 //!
-//! The notes document goes whole with every call (KTD6), as it was when the
-//! run started (R36). The note details (the shown type, the tags and a
-//! title that the user typed) go with every call in the same way. After the
-//! final summary, the stage stores the title turn as a pending title
-//! request, unless the user set a title, and sends no title call (KTD3).
-//! The title job sends the request after the save.
+//! The turn layer ([`turns`]) saves the reply of each model turn, so a run
+//! that stops continues from the last completed turn (R6). A rejection that
+//! shows that the model's context is smaller than the budget stops the run:
+//! only the user changes the context limit.
+//!
+//! The notes document goes with each request (KTD6), as it was when the
+//! run started (R36), cut to fit the budget (KTD8). The note details (the
+//! shown type, the tags and a title that the user typed) go with each
+//! request in the same way. After the summary, the stage stores the title
+//! turn as a pending title request, unless the user set a title, and sends
+//! no title call (KTD3). The title job sends the request after the save.
 //!
 //! A run takes a snapshot of the active summary prompt before its first
-//! call and keeps it to the end, also after a resume (KTD4). The snapshot's
-//! text goes into the final call, and `summary.md` records its name.
+//! request and keeps it to the end, also after a resume (KTD4). The
+//! snapshot's text goes to the writer and the merge step, and `summary.md`
+//! records its name.
 
-use std::borrow::Cow;
+use std::cell::RefCell;
 use std::path::Path;
 use std::time::Duration;
 
-use futures_util::StreamExt;
-use futures_util::stream::FuturesUnordered;
 use library::scan::{READ_TIMEOUT, Read, read_timed};
 use serde::{Deserialize, Serialize};
 use session_core::folder::{Summary, SummaryMeta, Transcript, TranscriptLine};
 use session_core::{Segment, SessionRecord, Stage, TitleSource};
-use summarize::chunk::{self, Chunk, Line, Turn};
+use summarize::chunk::{Line, Turn};
 use summarize::client::{Label, Message, RequestKind, Thinking};
 use summarize::prompts::{Details, UserText};
 use summarize::tokens::ReplyKind;
@@ -35,28 +39,45 @@ use summarize::{
     Budget, BudgetSource, Client, Endpoint, OpenRouterRouting, Provider, SummarizeError,
     THINKING_SETTING, context, prompts, tokens,
 };
+use summary_agent::passes::{Pass, Step};
+use summary_agent::{Limits, MemoryNoteSource, Outcome, ToolSet, ToolSource};
 
 use crate::join::TRANSCRIPT_FILE;
 use crate::{Control, SharedStore, StageError, checkpoint, lock};
 
+pub mod turns;
+
 pub use summarize::Prompt;
 
 pub const SUMMARY_FILE: &str = "summary.md";
-/// The layer structure that the run committed to, a `Plan`.
-pub const PLAN: &str = "plan";
+/// The context budget of the run, a `SavedBudget` (KTD5): the budget, the
+/// source of the requests, the Ollama context size and the output maximum.
+/// A resumed run uses it, so its requests are the same as before.
+pub const BUDGET: &str = "budget";
 /// The snapshot of the summary prompt that the run uses, a [`Prompt`]
-/// (KTD4). It is saved next to the plan, before the first call, and a
-/// resumed run uses it in place of the active prompt.
+/// (KTD4). It is saved before the first request, and a resumed run uses it
+/// in place of the active prompt.
 pub const PROMPT: &str = "prompt";
-/// The result of the whole-transcript call. The key is not a part note's
-/// key, so a run that decides the fit again never uses one result for the
-/// other (KTD5).
-pub const WHOLE: &str = "whole";
-/// The error when the fixed parts of the final call and the prompt text
-/// leave too little of the model's context for the transcript (KTD8). The
-/// prompt text and the Background both count (KTD11).
+/// The fingerprint of the raw manual notes that the run read, a string.
+pub const SOURCE_NOTES: &str = "source-notes";
+/// The keys of the part, merge and final method of older builds (KTD7):
+/// the plan and the whole-transcript call. Their part and merge calls have
+/// the keys of [`is_layer_key`]. This build deletes them.
+const OLD_KEYS: [&str; 2] = ["plan", "whole"];
+/// The method of the summary, in the value under [`INPUT`] (KTD7). An
+/// older build compares the value with its own fingerprint, sees a changed
+/// input, and forgets its calls.
+const METHOD: &str = "timeline-pipeline-1";
+/// The error when the fixed parts of the writer's request and the prompt
+/// text leave too little of the model's context for the transcript (KTD8,
+/// KTD10). The prompt text and the Background both count (KTD11). It is
+/// also the error when the agent's own size check stops a request before
+/// the app sends it.
 const PROMPT_TOO_LONG: &str = "the summary prompt is too long for this model's context; \
 shorten the prompt or the Background in Settings, or choose a model with a larger context";
+/// The error when the model ends the run with no summary and the user can
+/// do nothing about it (KTD10). The log holds the cause.
+const NO_SUMMARY: &str = "the model did not write a summary";
 /// The error when a reply is cut off at the largest allowance that the
 /// context and the provider permit (R4, KTD8).
 fn reply_does_not_fit() -> String {
@@ -74,13 +95,13 @@ fn no_reply_in_time() -> String {
 /// string means that the reply held no title.
 pub const TITLE: &str = "title";
 /// The pending title turn, a [`TitleRequest`] (KTD3). The Summarize stage
-/// stores it after the final call, and the title job sends it and deletes
-/// it. It is a row in the store, so it stays after Save removes the working
+/// stores it after the summary, and the title job sends it and deletes it.
+/// It is a row in the store, so it stays after Save removes the working
 /// folder.
 pub const TITLE_REQUEST: &str = session_core::jobs::TITLE_REQUEST;
-/// The fingerprint of the transcript and the notes that the cached calls
-/// were made from, a string. A run whose input has another fingerprint
-/// makes every call again.
+/// The method and the fingerprint of the input to the requests, a string:
+/// the transcript, the notes and the note details. A run whose input has
+/// another value makes every request again.
 pub const INPUT: &str = "input";
 /// The data of the summary that the stage wrote, a [`SummaryMeta`]. The
 /// save writes it into `longhand.json`, because `summary.md` has no
@@ -91,8 +112,6 @@ const CONTEXT_STEP: usize = 2_048;
 /// The smallest Ollama context size, unless the context limit is smaller
 /// (KTD7).
 const SMALLEST_CONTEXT: u32 = 4_096;
-/// How many times a cut-off reply gets more room.
-const MAX_SHRINKS: usize = 6;
 const CANCEL_POLL: Duration = Duration::from_millis(250);
 
 /// `client` with the OpenRouter routing rules of `endpoint`, when it has
@@ -131,21 +150,8 @@ pub struct SummaryEndpoint {
     pub openrouter: Option<OpenRouterRouting>,
 }
 
-/// The layer structure a run committed to, so a resumed run reuses the
-/// checkpoints it made rather than re-chunking under a different budget.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Plan {
-    budget: Budget,
-    /// Per layer, what it was built under; later layers inherit the last.
-    layers: Vec<Room>,
-    /// The provider, the address and the model that made the plan's calls
-    /// (KTD11). A plan from an older version has none.
-    #[serde(default)]
-    source: Option<Source>,
-}
-
-/// Where the calls of a plan went: the provider, the full address (scheme,
-/// host, port and path) and the model (KTD11).
+/// Where the requests of a run went: the provider, the full address
+/// (scheme, host, port and path) and the model (KTD11).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Source {
     provider: String,
@@ -178,34 +184,28 @@ fn context_size(need: usize, limit: u32) -> u32 {
     rounded.max(SMALLEST_CONTEXT).min(limit)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct Room {
-    limit: u32,
-    /// The split reserve: the tokens that the split decision and the part
-    /// sizes keep for the reply (KTD1). Each request sends its own reply
-    /// allowance ([`Calls::allowance`]).
-    reserve: u32,
+/// The context budget that a run committed to (KTD5), so a resumed run
+/// sends the same requests and reuses their saved replies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SavedBudget {
+    budget: Budget,
+    /// The provider, the address and the model of the requests (KTD11).
+    source: Source,
+    /// The Ollama context size of each request of the run, or `None` for
+    /// another provider (KTD7, KTD9). One value for the run, so Ollama
+    /// does not load the model again.
+    num_ctx: Option<u32>,
+    /// The smaller of the probe's and the client's output maximum.
+    output_max: Option<u32>,
 }
 
-impl Room {
-    fn new(limit: u32) -> Self {
-        Self {
-            limit,
-            reserve: tokens::split_reserve(limit),
-        }
-    }
-}
-
-impl Plan {
-    /// True when the plan's calls went to `source` and the context limit
-    /// setting `user` still gives this plan's budget. A plan with another
-    /// provider, address or model, or with no source, is made again
-    /// (KTD11). A set limit keeps a plan under the same limit, whatever gave
-    /// it, so its calls are not sent again. With no set limit, a plan under
-    /// a set limit, under a learned limit of an older version, or under an
-    /// older default is made again.
+impl SavedBudget {
+    /// True when the requests went to `source` and the context limit
+    /// setting `user` still gives this budget. A set limit keeps a budget
+    /// under the same limit, whatever gave it. With no set limit, a budget
+    /// under a set limit or under an older default is made again.
     fn agrees_with(&self, user: Option<u32>, source: &Source) -> bool {
-        if self.source.as_ref() != Some(source) {
+        if &self.source != source {
             return false;
         }
         match (user, self.budget.source) {
@@ -214,23 +214,6 @@ impl Plan {
             (None, BudgetSource::Default) => self.budget.limit == context::DEFAULT_LIMIT,
             (None, _) => true,
         }
-    }
-
-    fn room(&self, layer: usize) -> Room {
-        *self
-            .layers
-            .get(layer)
-            .unwrap_or(self.layers.last().expect("a plan has a layer"))
-    }
-
-    /// Rebuild `layer` and everything after it under `room`.
-    fn replace_from(&mut self, layer: usize, room: Room) {
-        self.layers.truncate(layer);
-        while self.layers.len() < layer {
-            let last = *self.layers.last().expect("a plan has a layer");
-            self.layers.push(last);
-        }
-        self.layers.push(room);
     }
 }
 
@@ -242,10 +225,15 @@ pub struct TitleRequest {
     /// The reply cap in tokens. It is never less than
     /// [`prompts::TITLE_REPLY_MIN`].
     pub cap: u32,
-    /// The context limit of the final call, which limits the Ollama context
-    /// size of the title turn (KTD7). A request from an older version has
-    /// none.
+    /// The context limit of the run, which limits the Ollama context size
+    /// of the title turn (KTD7). A request from an older version has none.
     pub limit: Option<u32>,
+    /// The Ollama context size of the run's requests. The title turn uses
+    /// it, so Ollama does not load the model again (KTD12). A request from
+    /// an older version, or for another provider, has none. An older build
+    /// ignores the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub num_ctx: Option<u32>,
 }
 
 /// The stored form of a [`TitleRequest`]. A [`Message`] has a fixed role
@@ -256,6 +244,8 @@ struct StoredTitleRequest {
     cap: u32,
     #[serde(default)]
     limit: Option<u32>,
+    #[serde(default)]
+    num_ctx: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -299,6 +289,7 @@ pub fn pending_title_request(
         messages,
         cap: stored.cap,
         limit: stored.limit,
+        num_ctx: stored.num_ctx,
     }))
 }
 
@@ -337,13 +328,16 @@ pub fn send_title_request(
     let runtime = Runtime::new()?;
     control.proceed()?;
     let label = Label::note(note_id, RequestKind::Title).queued(queued);
-    // The title turn needs its prompt and its reply cap. With no saved
+    // The title turn uses the context size of the run. A request from an
+    // older version needs its prompt and its reply cap. With no saved
     // limit, the limit of the setting applies, or none.
     let num_ctx = (endpoint.provider == Provider::Ollama).then(|| {
-        context_size(
-            tokens::with_margin(cost(&request.messages)) + request.cap as usize,
-            request.limit.or(endpoint.context_limit).unwrap_or(u32::MAX),
-        )
+        request.num_ctx.unwrap_or_else(|| {
+            context_size(
+                tokens::with_margin(prompts::cost(&request.messages)) + request.cap as usize,
+                request.limit.or(endpoint.context_limit).unwrap_or(u32::MAX),
+            )
+        })
     });
     let reply = runtime.block_on(
         client.complete(&label, &request.messages, request.cap, num_ctx),
@@ -364,16 +358,20 @@ fn client_endpoint(endpoint: &SummaryEndpoint) -> Endpoint {
     }
 }
 
-/// The step of a summary in parts that a progress report is about.
+/// The step of the summary pipeline that a progress report is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryStep {
-    /// One call for each part of the transcript.
+    /// One request for each timeline part of the transcript. The total
+    /// grows when a part is halved.
     Parts,
-    /// The calls that combine the part summaries in groups, in every layer
-    /// before the last.
+    /// The writers of the groups of timeline parts, when the whole
+    /// timeline does not fit in one writer's context.
     Groups,
-    /// The last call, which writes the summary from all the summaries.
+    /// The writer or the merge step, which writes the summary.
     Final,
+    /// The auditors, which run at the same time. `done` is the number of
+    /// audit parts that are complete. The reviser reports a total of one.
+    Review,
 }
 
 impl SummaryStep {
@@ -382,12 +380,9 @@ impl SummaryStep {
             Self::Parts => "parts",
             Self::Groups => "groups",
             Self::Final => "final",
+            Self::Review => "review",
         }
     }
-}
-
-fn call_key(layer: usize, index: usize) -> String {
-    format!("l{layer:02}-{index:05}")
 }
 
 /// The bytes of the `transcript.md` in `folder`, or `None` when the file
@@ -597,11 +592,12 @@ pub fn run(
     checkpoint::mark_complete(store, note_id, Stage::Summarize, segments.len())
 }
 
-/// Summarize the `transcript.md` in `folder`, resuming any calls already
-/// made. Writes nothing but checkpoints. `active` is the summary prompt of
-/// the note type, which the run uses when it saved no snapshot before, or
-/// when its inputs changed and every call runs again (KTD3). `queued` is
-/// the time that the job waited for its turn in the summary queue.
+/// Summarize the `transcript.md` in `folder` with the timeline pipeline,
+/// and reuse the saved reply of each turn that a run made before. Writes
+/// nothing but checkpoints. `active` is the summary prompt of the note
+/// type, which the run uses when it saved no snapshot before, or when its
+/// inputs changed and every request runs again (KTD3). `queued` is the
+/// time that the job waited for its turn in the summary queue.
 #[allow(clippy::too_many_arguments)]
 pub fn produce(
     store: &SharedStore,
@@ -615,31 +611,34 @@ pub fn produce(
 ) -> Result<Summary, StageError> {
     crate::follow::follow_folder(&mut lock(store), note_id, false)?;
     let transcript = read_transcript(folder)?;
-    let lines = lines_of(&transcript);
-    let said = lines.iter().any(|line| matches!(line, Line::Turn(_)));
+    let said = lines_of(&transcript)
+        .iter()
+        .any(|line| matches!(line, Line::Turn(_)));
     let notes = session_notes(store, note_id)?;
     let raw_notes = lock(store).notes(note_id)?;
     checkpoint::put(
         store,
         note_id,
         Stage::Summarize,
-        "source-notes",
+        SOURCE_NOTES,
         &session_core::folder::fingerprint(raw_notes.as_bytes()),
     )?;
     let details = note_details(store, note_id)?;
-    // Cached calls stand only for the transcript, the notes and the note
+    // Saved turns stand only for the transcript, the notes and the note
     // details that they were made from. Another computer can replace
     // `transcript.md`, and the notes and the details can change, between a
     // failed run and a regeneration.
-    let input = input_fingerprint(&transcript, &notes, &details)?;
+    let input = input_value(&transcript, &notes, &details)?;
     let saved = checkpoint::get::<String>(store, note_id, Stage::Summarize, INPUT)?;
     if saved.as_deref() != Some(input.as_str()) {
         forget_calls(store, note_id)?;
         checkpoint::put(store, note_id, Stage::Summarize, INPUT, &input)?;
-        // Every call runs again, so the run uses the prompt that it was
+        // Every request runs again, so the run uses the prompt that it was
         // given, which is the prompt of the type now (KTD3).
         checkpoint::put(store, note_id, Stage::Summarize, PROMPT, &active)?;
     }
+    // A run of an older build can leave its plan and its calls (R15).
+    forget_old_method(store, note_id)?;
     let client = Client::new(client_endpoint(&endpoint))
         .map_err(|e| StageError::Failed(e.to_string()))?
         .with_retry_waits(endpoint.retry_waits.clone())
@@ -656,175 +655,16 @@ pub fn produce(
     let prompt = match checkpoint::get::<Prompt>(store, note_id, Stage::Summarize, PROMPT)? {
         Some(saved) => saved,
         None => {
-            // A run from before prompts were saved can have a plan and
-            // cached calls made with another prompt. Remove them, so that
-            // no result goes out under the name of the active prompt. The
-            // stage's completion and failure records stay.
+            // A run from before prompts were saved can have saved replies
+            // made with another prompt. Remove them, so that no result goes
+            // out under the name of the active prompt. The stage's
+            // completion and failure records stay.
             forget_calls(store, note_id)?;
             checkpoint::put(store, note_id, Stage::Summarize, PROMPT, &active)?;
             active
         }
     };
-
-    // A plan whose calls went to another provider, address or model, or
-    // whose budget the context limit setting does not give now, is made
-    // again, with its calls (KTD11).
-    let source = Source::of(&client);
-    let saved = checkpoint::get::<Plan>(store, note_id, Stage::Summarize, PLAN)?;
-    let saved = match saved {
-        Some(plan) if !plan.agrees_with(endpoint.context_limit, &source) => {
-            forget_calls(store, note_id)?;
-            None
-        }
-        other => other,
-    };
-    let mut plan = match saved {
-        Some(plan) => plan,
-        None => {
-            control.proceed()?;
-            let probed = if endpoint.context_limit.is_some() {
-                None
-            } else {
-                // An endpoint that cannot be reached fails the stage before
-                // a plan is kept, so the next run probes it again.
-                runtime
-                    .block_on(
-                        context::probe(
-                            &client,
-                            &Label::note(note_id, RequestKind::Probe).queued(queued),
-                        ),
-                        control,
-                    )?
-                    .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
-            };
-            let budget = context::resolve(endpoint.context_limit, probed);
-            log::info!(
-                "summarizing {note_id} with {} on {}: budget {} tokens ({:?})",
-                endpoint.model,
-                client.host(),
-                budget.limit,
-                budget.source
-            );
-            let plan = Plan {
-                budget,
-                layers: vec![Room::new(budget.limit)],
-                source: Some(source),
-            };
-            checkpoint::put(store, note_id, Stage::Summarize, PLAN, &plan)?;
-            plan
-        }
-    };
-
-    let mut shrinks = 0;
-    let mut calls = Calls {
-        store,
-        note_id,
-        client: &client,
-        runtime: &runtime,
-        control,
-        notes: &notes,
-        text: &prompt.text,
-        title_text: &prompt.title_text,
-        background: &prompt.background,
-        details: &details,
-        ollama: endpoint.provider == Provider::Ollama,
-        reply_kind: ReplyKind::of(endpoint.provider, plan.budget.source),
-        output_max: plan.budget.output_max,
-        queued,
-        progress: &mut *progress,
-        grouped: 0,
-        at_once: endpoint.requests_at_once.max(1) as usize,
-    };
-    let done = if !said {
-        // Nothing was said (AE16): there is nothing to send.
-        None
-    } else {
-        Some(loop {
-            match calls.summarize(&lines, &plan) {
-                Ok(done) => break done,
-                // The model takes less than the budget. Only the user
-                // changes the context limit, so the run stops and says so.
-                Err(Pressure { layer, room }) => {
-                    log::warn!(
-                        "{} rejected a layer-{layer} prompt under {} tokens ({:?})",
-                        client.host(),
-                        room.limit,
-                        plan.budget.source
-                    );
-                    // The default is a guess. A limit that the user set or
-                    // that the server reported is too large now.
-                    let action = if plan.budget.source == BudgetSource::Default {
-                        "enter the model's context length".to_string()
-                    } else {
-                        format!("enter a limit lower than {}", room.limit)
-                    };
-                    return Err(StageError::Failed(format!(
-                        "the model did not accept {} tokens of text; {action} in \
-                         Settings > AI Provider > Context limit",
-                        room.limit
-                    )));
-                }
-                Err(CutOff {
-                    layer,
-                    room,
-                    resplit: true,
-                }) if shrinks < MAX_SHRINKS
-                    && (room.reserve * 2).min(room.limit / 2) > room.reserve =>
-                {
-                    // The prompt fit and the reply did not, at the largest
-                    // allowance: send less with each request, so that the
-                    // reply gets more of the same context (KTD8).
-                    shrinks += 1;
-                    let reserve = (room.reserve * 2).min(room.limit / 2);
-                    log::warn!(
-                        "{} cut off a layer-{layer} reply at {} tokens; retrying with {reserve}",
-                        client.host(),
-                        room.reserve
-                    );
-                    forget_layers_from(store, note_id, layer)?;
-                    plan.replace_from(
-                        layer,
-                        Room {
-                            limit: room.limit,
-                            reserve,
-                        },
-                    );
-                    checkpoint::put(store, note_id, Stage::Summarize, PLAN, &plan)?;
-                }
-                Err(CutOff { .. }) => {
-                    // A note in one request, or a split that gives no
-                    // larger allowance, fails at once (R4). The next run
-                    // asks the endpoint for its limit again: the user can
-                    // raise the context length.
-                    forget_calls(store, note_id)?;
-                    return Err(StageError::Failed(reply_does_not_fit()));
-                }
-                Err(Stop(e)) => return Err(e),
-            }
-        })
-    };
-    // A title problem never fails the summary (R14): an error is logged,
-    // and the note keeps its title.
-    let text = match done {
-        Some(done) => {
-            if let Err(e) = calls.store_title_request(&done) {
-                log::warn!("could not store the title request of {note_id}: {e}");
-                if let Err(e) = delete_title_request(store, note_id) {
-                    log::warn!("could not delete the title request of {note_id}: {e}");
-                }
-            }
-            done.reply
-        }
-        None => {
-            // With nothing said, no title turn is due.
-            if let Err(e) = delete_title_request(store, note_id) {
-                log::warn!("could not delete the title request of {note_id}: {e}");
-            }
-            String::from("Nothing was transcribed in this note.")
-        }
-    };
-
-    Ok(Summary {
+    let meta = |body: String| Summary {
         meta: SummaryMeta::Complete {
             endpoint_host: client.host(),
             model: endpoint.model.clone(),
@@ -834,605 +674,369 @@ pub fn produce(
             prompt_name: said.then(|| prompt.name.clone()),
             prompt_id: said.then(|| prompt.id.clone()),
         },
-        body: text,
-    })
+        body,
+    };
+    if !said {
+        // Nothing was said (AE16, R17): there is nothing to send, and no
+        // title turn is due.
+        if let Err(e) = delete_title_request(store, note_id) {
+            log::warn!("could not delete the title request of {note_id}: {e}");
+        }
+        return Ok(meta(String::from("Nothing was transcribed in this note.")));
+    }
+
+    let budget = run_budget(
+        store, note_id, &endpoint, &client, &runtime, control, queued,
+    )?;
+    let limit = budget.budget.limit;
+    let user = UserText {
+        background: &prompt.background,
+        details: &details,
+    };
+    // The fixed parts of the writer's request and the prompt text must
+    // leave at least half of the prompt allowance for the timeline (KTD8,
+    // KTD10). The title reserve is not part of this check (KTD4).
+    let allowance = tokens::prompt_allowance(limit, tokens::split_reserve(limit));
+    if prompts::overhead("", &prompt.text, user) * 2 > allowance {
+        // The next run takes the budget from the endpoint again. A model
+        // with a larger context can then run the same prompt.
+        lock(store).delete_checkpoint(note_id, Stage::Summarize, BUDGET)?;
+        return Err(StageError::Failed(PROMPT_TOO_LONG.into()));
+    }
+    let notes = prompts::fit_notes(
+        &notes,
+        allowance.saturating_sub(prompts::title_reserve(&prompt.title_text, user)),
+        &prompt.text,
+        user,
+    );
+    let started = {
+        let record = note_record(store, note_id)?;
+        let segments = lock(store).segments(note_id)?;
+        record.start(&segments).to_rfc3339()
+    };
+    let reply_kind = ReplyKind::of(endpoint.provider, budget.budget.source);
+    let turns = turns::Turns::new(store, note_id, &client, control);
+    let steps = RefCell::new(progress);
+    let report = |step: Step, done: usize, total: usize| {
+        let step = match step {
+            Step::Parts => SummaryStep::Parts,
+            Step::Groups => SummaryStep::Groups,
+            Step::Final => SummaryStep::Final,
+            Step::Review => SummaryStep::Review,
+        };
+        (*steps.borrow_mut())(step, done, total);
+    };
+    let pass = Pass {
+        model: &turns,
+        note: MemoryNoteSource::new(
+            note_id.to_string(),
+            started,
+            transcript,
+            notes,
+            details.clone(),
+            tokens::result_chars(limit),
+        ),
+        background: prompt.background.clone(),
+        text: prompt.text.clone(),
+        limits: Limits {
+            context_tokens: u64::from(limit),
+            output_max: budget.output_max,
+            num_ctx: budget.num_ctx,
+            reply_kind,
+            ..Limits::default()
+        },
+        label: Label::note(note_id, RequestKind::AgentTurn).queued(queued),
+        at_once: endpoint.requests_at_once.max(1) as usize,
+        progress: Some(&report),
+    };
+    let tools = ToolSet::new(vec![&pass.note as &dyn ToolSource]).map_err(StageError::Failed)?;
+    let (lines, chars) = (pass.note.transcript_lines(), pass.note.transcript_chars());
+
+    turns.clear_error();
+    let timeline = runtime.block_on(pass.timeline(&tools, lines, chars), control)?;
+    // The agent gets a cancel as an error, so a cancel is checked before
+    // the outcome is used (R7).
+    if turns.cancelled() || control.is_cancelled() {
+        return Err(StageError::Cancelled);
+    }
+    let result = timeline.result;
+    let Some(draft) = result.written() else {
+        log::warn!(
+            "the summary of {note_id} stopped: {:?} ({})",
+            result.outcome,
+            result.detail.as_deref().unwrap_or("no detail")
+        );
+        let error = run_error(result.outcome, turns.error());
+        if matches!(error, Some(SummarizeError::ReplyCutOff)) {
+            // The next run asks the endpoint for its limit again: the user
+            // can give the model a larger context.
+            lock(store).delete_checkpoint(note_id, Stage::Summarize, BUDGET)?;
+        }
+        return Err(StageError::Failed(failure(
+            result.outcome,
+            error,
+            &budget.budget,
+        )));
+    };
+
+    turns.clear_error();
+    let review = runtime.block_on(pass.review(&draft, lines, chars), control)?;
+    // A cancel during the review never publishes the draft (R7).
+    if turns.cancelled() || control.is_cancelled() {
+        return Err(StageError::Cancelled);
+    }
+    if let Some(detail) = &review.detail {
+        log::info!("the review of the summary of {note_id}: {detail}");
+    }
+    let body = review.written().unwrap_or(draft);
+
+    // A title problem never fails the summary (R14): an error is logged,
+    // and the note keeps its title.
+    let title = TitleTurn {
+        writer: timeline.writer.as_deref(),
+        summary: &body,
+        title_text: &prompt.title_text,
+        user,
+        budget: &budget,
+        reply_kind,
+    };
+    if let Err(e) = store_title_request(store, note_id, &title) {
+        log::warn!("could not store the title request of {note_id}: {e}");
+        if let Err(e) = delete_title_request(store, note_id) {
+            log::warn!("could not delete the title request of {note_id}: {e}");
+        }
+    }
+    Ok(meta(body))
 }
 
-/// Remove the plan, every cached call, the title proposal and the title
-/// request.
-fn forget_calls(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
-    forget_layers_from(store, note_id, 0)?;
-    let guard = lock(store);
-    guard.delete_checkpoint(note_id, Stage::Summarize, PLAN)?;
-    guard.delete_checkpoint(note_id, Stage::Summarize, TITLE)?;
-    guard.delete_checkpoint(note_id, Stage::Summarize, TITLE_REQUEST)?;
-    Ok(())
+/// The saved budget of the run, or a new one (KTD5, KTD6). A saved budget
+/// whose requests went to another provider, address or model, or that
+/// the context limit setting does not give now, is made again, and the
+/// saved replies go with it (KTD11). A new budget is the user's context
+/// limit, else the catalog limit of an OpenAI or Anthropic model, else the
+/// probe, else the default. An endpoint that cannot be reached fails the
+/// stage before a budget is saved, so the next run probes it again.
+#[allow(clippy::too_many_arguments)]
+fn run_budget(
+    store: &SharedStore,
+    note_id: &str,
+    endpoint: &SummaryEndpoint,
+    client: &Client,
+    runtime: &Runtime,
+    control: &dyn Control,
+    queued: Duration,
+) -> Result<SavedBudget, StageError> {
+    let source = Source::of(client);
+    let saved = checkpoint::get::<SavedBudget>(store, note_id, Stage::Summarize, BUDGET)?;
+    match saved {
+        Some(saved) if saved.agrees_with(endpoint.context_limit, &source) => return Ok(saved),
+        Some(_) => forget_calls(store, note_id)?,
+        None => {}
+    }
+    control.proceed()?;
+    let found = if endpoint.context_limit.is_some() {
+        None
+    } else if let Some(budget) = context::catalog_budget(endpoint.provider, &endpoint.model) {
+        Some(budget)
+    } else {
+        runtime
+            .block_on(
+                context::probe(
+                    client,
+                    &Label::note(note_id, RequestKind::Probe).queued(queued),
+                ),
+                control,
+            )?
+            .map_err(|e| StageError::Failed(format!("summarizing: {e}")))?
+    };
+    let budget = context::resolve(endpoint.context_limit, found);
+    log::info!(
+        "summarizing {note_id} with {} on {}: budget {} tokens ({:?})",
+        endpoint.model,
+        client.host(),
+        budget.limit,
+        budget.source
+    );
+    let saved = SavedBudget {
+        budget,
+        source,
+        num_ctx: (endpoint.provider == Provider::Ollama)
+            .then(|| context_size(budget.limit as usize, budget.limit)),
+        output_max: [budget.output_max, client.output_max()]
+            .into_iter()
+            .flatten()
+            .min(),
+    };
+    checkpoint::put(store, note_id, Stage::Summarize, BUDGET, &saved)?;
+    Ok(saved)
 }
 
-fn forget_layers_from(store: &SharedStore, note_id: &str, layer: usize) -> Result<(), StageError> {
+/// The message of a run that ended with no summary (KTD10). The typed
+/// error of the last turn decides it, when that turn failed. Outcomes with
+/// no action for the user give one message.
+fn failure(outcome: Outcome, error: Option<SummarizeError>, budget: &Budget) -> String {
+    match error {
+        Some(e) if e.is_context_pressure() => context_limit_message(budget),
+        Some(SummarizeError::ReplyCutOff) => reply_does_not_fit(),
+        Some(SummarizeError::Deadline(_)) => no_reply_in_time(),
+        Some(e) => format!("summarizing: {e}"),
+        // The agent found that its next request does not fit the budget and
+        // sent no request: the fixed parts of the request are too large.
+        None if outcome == Outcome::ContextExceeded => PROMPT_TOO_LONG.into(),
+        None => NO_SUMMARY.into(),
+    }
+}
+
+/// The typed error that caused `outcome`, from the kept `error` of the last
+/// failed turn. A run that ends with [`Outcome::ContextExceeded`] and no
+/// context error ended on the agent's own size check, which sends no
+/// request. The kept error is then from an earlier turn, so it is not used.
+fn run_error(outcome: Outcome, error: Option<SummarizeError>) -> Option<SummarizeError> {
+    error.filter(|e| outcome != Outcome::ContextExceeded || e.is_context_pressure())
+}
+
+/// The message when the model takes less than the budget. Only the user
+/// changes the context limit, so the run stops and says so.
+fn context_limit_message(budget: &Budget) -> String {
+    // The default is a guess. A limit that the user set, that the catalog
+    // gave or that the server reported is too large now.
+    let action = if budget.source == BudgetSource::Default {
+        "enter the model's context length".to_string()
+    } else {
+        format!("enter a limit lower than {}", budget.limit)
+    };
+    format!(
+        "the model did not accept {} tokens of text; {action} in \
+         Settings > AI Provider > Context limit",
+        budget.limit
+    )
+}
+
+/// True for the key of a part or merge call of an older build: `l`, two
+/// digits, `-` and five digits (KTD7). A turn key never has this form.
+fn is_layer_key(key: &str) -> bool {
+    let bytes = key.as_bytes();
+    bytes.len() == 9
+        && bytes[0] == b'l'
+        && bytes[1..3].iter().all(u8::is_ascii_digit)
+        && bytes[3] == b'-'
+        && bytes[4..].iter().all(u8::is_ascii_digit)
+}
+
+/// True for a key of the part, merge and final method of older builds.
+fn is_old_method_key(key: &str) -> bool {
+    OLD_KEYS.contains(&key) || is_layer_key(key)
+}
+
+/// Remove the keys of the part, merge and final method of older builds
+/// (R15, KTD7).
+fn forget_old_method(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
     let guard = lock(store);
     for (key, _) in guard.checkpoints(note_id, Stage::Summarize)? {
-        // The whole call is in layer 0.
-        let at = if key == WHOLE {
-            Some(0)
-        } else {
-            key.strip_prefix('l')
-                .and_then(|k| k.get(..2))
-                .and_then(|l| l.parse::<usize>().ok())
-        };
-        if at.is_some_and(|l| l >= layer) {
+        if is_old_method_key(&key) {
             guard.delete_checkpoint(note_id, Stage::Summarize, &key)?;
         }
     }
     Ok(())
 }
 
-enum Outcome {
-    /// The prompt at `layer`, built under `room`, was too big for the model.
-    Pressure {
-        layer: usize,
-        room: Room,
-    },
-    /// The reply at `layer` ran out of its largest allowance. `resplit` is
-    /// true when the request is a summary part or a merge, and a smaller
-    /// prompt gives a larger allowance (KTD8).
-    CutOff {
-        layer: usize,
-        room: Room,
-        resplit: bool,
-    },
-    Stop(StageError),
-}
-use Outcome::{CutOff, Pressure, Stop};
-
-impl From<StageError> for Outcome {
-    fn from(e: StageError) -> Self {
-        Stop(e)
+/// Remove the budget, every saved turn, the keys of the older method, the
+/// title proposal and the title request.
+fn forget_calls(store: &SharedStore, note_id: &str) -> Result<(), StageError> {
+    let guard = lock(store);
+    for (key, _) in guard.checkpoints(note_id, Stage::Summarize)? {
+        if key.starts_with(turns::TURN_PREFIX) || is_old_method_key(&key) {
+            guard.delete_checkpoint(note_id, Stage::Summarize, &key)?;
+        }
     }
+    for key in [BUDGET, TITLE, TITLE_REQUEST] {
+        guard.delete_checkpoint(note_id, Stage::Summarize, key)?;
+    }
+    Ok(())
 }
 
-struct Calls<'a> {
-    store: &'a SharedStore,
-    note_id: &'a str,
-    client: &'a Client,
-    runtime: &'a Runtime,
-    control: &'a dyn Control,
-    /// The notes document as it was when the run started (R36).
-    notes: &'a str,
-    /// The text of the run's prompt snapshot (KTD4).
-    text: &'a str,
-    /// The title text of the run's prompt snapshot. Every call that can be
-    /// the final call keeps room for the title turn with it (KTD4).
+/// What the title turn is made from (KTD12).
+struct TitleTurn<'a> {
+    /// The messages of the last writing step: the writer, or the merge
+    /// step. `None` when no writing step ran.
+    writer: Option<&'a [Message]>,
+    /// The summary after the review.
+    summary: &'a str,
     title_text: &'a str,
-    /// The Background of the run's prompt snapshot. Every call carries it,
-    /// so every budget counts it (KTD11).
-    background: &'a str,
-    /// The note details as they were when the run started. Every call
-    /// carries them, so every budget counts them.
-    details: &'a Details,
-    /// The requests go to Ollama, so each request gives its context size
-    /// (KTD7).
-    ollama: bool,
-    /// How the provider kind limits the reply allowance (KTD2).
+    user: UserText<'a>,
+    budget: &'a SavedBudget,
     reply_kind: ReplyKind,
-    /// The output maximum that the probe gave, if any (KTD3).
-    output_max: Option<u32>,
-    /// The time that the job waited for its turn in the summary queue.
-    queued: Duration,
-    /// Takes the step, the calls of the step done, and the calls of the
-    /// step.
-    progress: &'a mut dyn FnMut(SummaryStep, usize, usize),
-    /// The calls that combined summaries in groups in this attempt, in all
-    /// layers before the last.
-    grouped: usize,
-    /// How many requests of one layer go at the same time (R13, KTD9).
-    at_once: usize,
 }
 
-/// One request of a layer: the key of its saved result, its index in the
-/// layer and its messages.
-struct Job<'m> {
-    key: String,
-    index: usize,
-    messages: Cow<'m, [Message]>,
-}
-
-/// A [`Job`] with its prompt estimate with the margin, `used`, and its
-/// reply allowance.
-struct Prepared<'m> {
-    job: Job<'m>,
-    used: usize,
-    allowance: tokens::Allowance,
-}
-
-/// What the requests of one layer have in common.
-struct Shared<'a> {
-    client: &'a Client,
-    control: &'a dyn Control,
-    room: Room,
-    /// The Ollama context size of each request (KTD7).
-    num_ctx: Option<u32>,
-    layer: usize,
-}
-
-/// The final call: its messages, its reply, which is the summary, and the
-/// room that it was built under (KTD3).
-struct Final {
-    messages: Vec<Message>,
-    reply: String,
-    room: Room,
-}
-
-impl<'a> Calls<'a> {
-    /// The user's own texts that every call carries: the Background of the
-    /// prompt snapshot and the note details.
-    fn user(&self) -> UserText<'a> {
-        UserText {
-            background: self.background,
-            details: self.details,
-        }
-    }
-
-    /// The Ollama context size for a request that needs `need` tokens under
-    /// `room`, or `None` for another provider (KTD7).
-    fn num_ctx(&self, need: usize, room: Room) -> Option<u32> {
-        self.ollama.then(|| context_size(need, room.limit))
-    }
-
-    /// The output maximum: the smaller of the probe's and the client's
-    /// ([`Client::output_max`]).
-    fn output_max(&self) -> Option<u32> {
-        [self.output_max, self.client.output_max()]
-            .into_iter()
-            .flatten()
-            .min()
-    }
-
-    /// The reply allowance of a request with `messages` under `room` (R1,
-    /// KTD2).
-    fn allowance(&self, messages: &[Message], room: Room) -> tokens::Allowance {
-        let used = tokens::with_margin(cost(messages));
-        tokens::reply_allowance(room.limit, used, self.output_max(), self.reply_kind)
-    }
-
-    fn summarize(&mut self, lines: &[Line], plan: &Plan) -> Result<Final, Outcome> {
-        let (text, title_text) = (self.text, self.title_text);
-        let user = self.user();
-        let room = plan.room(0);
-        // The final call's fixed parts and the prompt text must leave at
-        // least half of the prompt allowance for the transcript (KTD8). The
-        // title reserve is not part of this check (KTD4).
-        if prompts::overhead("", text, user) * 2
-            > tokens::prompt_allowance(room.limit, room.reserve)
-        {
-            // Remove the plan, so that the next run takes the budget from
-            // the endpoint again. A model with a larger context can then
-            // run the same prompt.
-            lock(self.store)
-                .delete_checkpoint(self.note_id, Stage::Summarize, PLAN)
-                .map_err(StageError::from)?;
-            return Err(Stop(StageError::Failed(PROMPT_TOO_LONG.into())));
-        }
-        let notes = fit_notes(room, self.notes, text, title_text, user);
-        let whole = prompts::whole(lines, &notes, text, user);
-        let title_reserve = prompts::title_reserve(title_text, user);
-        if tokens::with_margin(cost(&whole) + title_reserve) + room.reserve as usize
-            <= room.limit as usize
-        {
-            // One call: its prompt estimate and its reply allowance.
-            let num_ctx = self.num_ctx(
-                tokens::with_margin(cost(&whole)) + self.allowance(&whole, room).first as usize,
-                room,
-            );
-            let reply = self.call_one(WHOLE.into(), 0, &whole, room, num_ctx)?;
-            return Ok(Final {
-                messages: whole,
-                reply,
-                room,
-            });
-        }
-
-        // Too long for one call: parts, then merges until one remains. Every
-        // request of the run gives the room limit as its Ollama context
-        // size, so Ollama does not load the model again (KTD7). The cut-off
-        // path changes the split reserve, not the limit.
-        let num_ctx = self.num_ctx(room.limit as usize, room);
-        let allowance = chunk_allowance(room, &notes, text, title_text, user);
-        let chunks: Vec<Chunk> = chunk::chunk(lines, allowance);
-        let total = chunks.len();
-        (self.progress)(SummaryStep::Parts, 0, total);
-        let jobs = chunks
-            .iter()
-            .enumerate()
-            .map(|(i, c)| Job {
-                key: call_key(0, i),
-                index: i,
-                messages: Cow::Owned(prompts::part(c, i, total, &notes, user)),
-            })
-            .collect();
-        let mut summaries = self.call_many(
-            0,
-            jobs,
-            room,
-            total,
-            Some((SummaryStep::Parts, 0, total)),
-            num_ctx,
-        )?;
-        self.grouped = 0;
-        let mut layer = 1;
-        if summaries.len() == 1 {
-            // The margins let one chunk hold what one whole call could not:
-            // its notes still need the summary's shape.
-            let only = [summaries[0].as_str()];
-            let room = plan.room(1);
-            let notes = fit_notes(room, self.notes, text, title_text, user);
-            let messages = prompts::merge(&only, true, &notes, text, user);
-            (self.progress)(SummaryStep::Final, 0, 1);
-            let reply = self.call_one(call_key(1, 0), 1, &messages, room, num_ctx)?;
-            return Ok(Final {
-                messages,
-                reply,
-                room,
-            });
-        }
-        while summaries.len() > 1 {
-            let room = plan.room(layer);
-            let notes = fit_notes(room, self.notes, text, title_text, user);
-            let allowance = chunk_allowance(room, &notes, text, title_text, user);
-            let costs: Vec<usize> = summaries.iter().map(|s| tokens::estimate(s) + 8).collect();
-            let groups = chunk::merge_groups(&costs, allowance);
-            if groups.len() == 1 {
-                // The last merge: one group holds every summary.
-                let parts: Vec<&str> = summaries.iter().map(String::as_str).collect();
-                let messages = prompts::merge(&parts, true, &notes, text, user);
-                (self.progress)(SummaryStep::Final, 0, 1);
-                let reply = self.call_one(call_key(layer, 0), layer, &messages, room, num_ctx)?;
-                return Ok(Final {
-                    messages,
-                    reply,
-                    room,
-                });
-            }
-            // One count for the group calls of all the layers before the
-            // last. The calls of later layers are an estimate with replies
-            // of the full reserve.
-            let steps = self.grouped
-                + merge_calls(&costs, allowance, room.reserve as usize + 8).saturating_sub(1);
-            (self.progress)(SummaryStep::Groups, self.grouped, steps);
-            // A group of one summary needs no call: the summary goes on to
-            // the next layer.
-            let jobs: Vec<Job> = groups
-                .iter()
-                .enumerate()
-                .filter(|(_, g)| g.len() > 1)
-                .map(|(i, g)| {
-                    let parts: Vec<&str> =
-                        summaries[g.clone()].iter().map(String::as_str).collect();
-                    Job {
-                        key: call_key(layer, i),
-                        index: i,
-                        messages: Cow::Owned(prompts::merge(&parts, false, &notes, text, user)),
-                    }
-                })
-                .collect();
-            let calls = jobs.len();
-            let mut merged = self
-                .call_many(
-                    layer,
-                    jobs,
-                    room,
-                    groups.len(),
-                    Some((SummaryStep::Groups, self.grouped, steps)),
-                    num_ctx,
-                )?
-                .into_iter();
-            self.grouped += calls;
-            summaries = groups
-                .iter()
-                .map(|g| {
-                    if g.len() == 1 {
-                        summaries[g.start].clone()
-                    } else {
-                        merged.next().expect("a merged summary for each group")
-                    }
-                })
-                .collect();
-            layer += 1;
-        }
-        Err(Stop(StageError::Failed(
-            "the transcript gave no summaries to combine".into(),
-        )))
-    }
-
-    /// Store the title turn of the final call `done` as the pending title
-    /// request (KTD3), unless no title turn is due: the user set a title, a
-    /// Transcribe Again run keeps the title that the note has (R16, KTD14),
-    /// or a title was proposed before. A Transcribe Again of a note with no
-    /// title proposes one. The stage sends no call here. When the context
-    /// leaves less than [`prompts::TITLE_REPLY_MIN`] for the reply (KTD12),
-    /// the stage stores no request and the summary still completes (R14).
-    fn store_title_request(&self, done: &Final) -> Result<(), StageError> {
-        let proposed =
-            checkpoint::get::<String>(self.store, self.note_id, Stage::Summarize, TITLE)?.is_some();
-        let (user_title, keeps_title) = {
-            let guard = lock(self.store);
-            let title = guard.title(self.note_id)?;
-            (
-                title
-                    .as_ref()
-                    .is_some_and(|t| t.source == TitleSource::User),
-                title.is_some() && guard.transcribe_again_marks(self.note_id)?.model.is_some(),
-            )
-        };
-        if proposed || user_title || keeps_title {
-            return delete_title_request(self.store, self.note_id);
-        }
-        let messages =
-            prompts::title_turn(&done.messages, &done.reply, self.title_text, self.user());
-        // The title request gets the first allowance of the same rule as
-        // a summary request (KTD11).
-        let cap = self.allowance(&messages, done.room).first;
-        if cap < prompts::TITLE_REPLY_MIN {
-            log::warn!(
-                "the title turn for {} leaves {cap} tokens of the context for the reply, under {}; \
-                 the session keeps the title it has",
-                self.note_id,
-                prompts::TITLE_REPLY_MIN
-            );
-            return delete_title_request(self.store, self.note_id);
-        }
-        checkpoint::put(
-            self.store,
-            self.note_id,
-            Stage::Summarize,
-            TITLE_REQUEST,
-            &TitleRequest {
-                messages,
-                cap,
-                limit: Some(done.room.limit),
-            },
+/// Store the title turn as the pending title request (KTD3, KTD12), unless
+/// no title turn is due: the user set a title, a Transcribe Again run
+/// keeps the title that the note has (R16, KTD14), or a title was proposed
+/// before. A Transcribe Again of a note with no title proposes one. The
+/// stage sends no call here. When the context of the run leaves less than
+/// [`prompts::TITLE_REPLY_MIN`] for the reply, the stage stores no request
+/// and the summary still completes (R14).
+fn store_title_request(
+    store: &SharedStore,
+    note_id: &str,
+    turn: &TitleTurn,
+) -> Result<(), StageError> {
+    let proposed = checkpoint::get::<String>(store, note_id, Stage::Summarize, TITLE)?.is_some();
+    let (user_title, keeps_title) = {
+        let guard = lock(store);
+        let title = guard.title(note_id)?;
+        (
+            title
+                .as_ref()
+                .is_some_and(|t| t.source == TitleSource::User),
+            title.is_some() && guard.transcribe_again_marks(note_id)?.model.is_some(),
         )
-    }
-
-    /// One call, with its result saved under `key`, in `layer`. `num_ctx`
-    /// is the Ollama context size of the request (KTD7).
-    fn call_one(
-        &mut self,
-        key: String,
-        layer: usize,
-        messages: &[Message],
-        room: Room,
-        num_ctx: Option<u32>,
-    ) -> Result<String, Outcome> {
-        let job = Job {
-            key,
-            index: 0,
-            messages: Cow::Borrowed(messages),
-        };
-        let mut replies = self.call_many(layer, vec![job], room, 1, None, num_ctx)?;
-        Ok(replies.remove(0))
-    }
-
-    /// The calls `jobs` of `layer`, of `total` calls in the layer, with
-    /// their results in the order of `jobs`. Each result is saved under the
-    /// key of its job, and a result saved before is used again with no
-    /// request. Up to [`Self::at_once`] requests are open at the same time
-    /// (R13, KTD9). Each call that is done reports `step`: the step, the
-    /// calls done before plus the calls of `jobs` done, and the calls of
-    /// the step (R14). The calls can finish in any order. The first failure
-    /// stops the requests that are still open. `num_ctx` is the Ollama
-    /// context size of each request (KTD7).
-    fn call_many(
-        &mut self,
-        layer: usize,
-        jobs: Vec<Job<'_>>,
-        room: Room,
-        total: usize,
-        step: Option<(SummaryStep, usize, usize)>,
-        num_ctx: Option<u32>,
-    ) -> Result<Vec<String>, Outcome> {
-        let output_max = self.output_max();
-        let allowance =
-            |used| tokens::reply_allowance(room.limit, used, output_max, self.reply_kind);
-        // Only a smaller prompt gives a reply allowance larger than this.
-        let largest = allowance(0).ceiling;
-        let jobs: Vec<Prepared> = jobs
-            .into_iter()
-            .map(|job| {
-                let used = tokens::with_margin(cost(&job.messages));
-                Prepared {
-                    job,
-                    used,
-                    allowance: allowance(used),
-                }
-            })
-            .collect();
-        let kind = |key: &str| {
-            if key == WHOLE {
-                RequestKind::Single
-            } else if layer == 0 {
-                RequestKind::Chunk
-            } else {
-                RequestKind::Merge
-            }
-        };
-        let (store, note_id, client, control) =
-            (self.store, self.note_id, self.client, self.control);
-        let (queued, at_once, runtime) = (self.queued, self.at_once, self.runtime);
-        let shared = &Shared {
-            client,
-            control,
-            room,
-            num_ctx,
-            layer,
-        };
-        let progress = &mut *self.progress;
-        let mut report = |done: usize| {
-            if let Some((step, before, of)) = step {
-                progress(step, before + done, of.max(before + done));
-            }
-        };
-        let mut replies: Vec<Option<String>> = vec![None; jobs.len()];
-        let work = async {
-            let mut done = 0;
-            let mut open = FuturesUnordered::new();
-            let mut next = jobs.iter().enumerate();
-            loop {
-                while open.len() < at_once {
-                    let Some((slot, prepared)) = next.next() else {
-                        break;
-                    };
-                    let key = &prepared.job.key;
-                    if let Some(saved) =
-                        checkpoint::get::<String>(store, note_id, Stage::Summarize, key)?
-                    {
-                        replies[slot] = Some(saved);
-                        done += 1;
-                        report(done);
-                        continue;
-                    }
-                    control.proceed()?;
-                    let label = Label::note(note_id, kind(key)).queued(queued);
-                    open.push(async move { (slot, request(shared, &label, prepared).await) });
-                }
-                let Some((slot, reply)) = open.next().await else {
-                    return Ok(());
-                };
-                let Prepared { job, allowance, .. } = &jobs[slot];
-                match reply? {
-                    Ok(text) => {
-                        checkpoint::put(store, note_id, Stage::Summarize, &job.key, &text)?;
-                        replies[slot] = Some(text);
-                        done += 1;
-                        report(done);
-                    }
-                    Err(e) if e.is_context_pressure() => return Err(Pressure { layer, room }),
-                    // At the ceiling: only a smaller prompt gives a larger
-                    // allowance, and a note in one request is not split.
-                    Err(SummarizeError::ReplyCutOff) => {
-                        return Err(CutOff {
-                            layer,
-                            room,
-                            resplit: job.key != WHOLE && largest > allowance.ceiling,
-                        });
-                    }
-                    Err(e) => {
-                        return Err(Stop(StageError::Failed(describe(
-                            layer, job.index, total, &e,
-                        ))));
-                    }
-                }
-            }
-        };
-        // A cancel drops the requests that are still open, as the first
-        // failure does (KTD9).
-        runtime.block_on(work, control)??;
-        Ok(replies
-            .into_iter()
-            .map(|reply| reply.expect("a reply for each call"))
-            .collect())
-    }
-}
-
-/// Send the messages of `prepared` until a reply comes that is not cut off
-/// below the ceiling of its allowance. Below the ceiling, the same request
-/// goes again with the doubled allowance (KTD8). An Ollama context size
-/// grows to hold it, and never gets smaller. The outer error stops the
-/// stage.
-async fn request(
-    shared: &Shared<'_>,
-    label: &Label,
-    prepared: &Prepared<'_>,
-) -> Result<Result<String, SummarizeError>, StageError> {
-    let Shared {
-        client,
-        control,
-        room,
-        layer,
-        ..
-    } = *shared;
-    let (job, used, allowance) = (&prepared.job, prepared.used, prepared.allowance);
-    let (mut cap, mut num_ctx) = (allowance.first, shared.num_ctx);
-    loop {
-        match client.complete(label, &job.messages, cap, num_ctx).await {
-            Ok(completion) => return Ok(Ok(completion.text)),
-            Err(SummarizeError::ReplyCutOff) if cap < allowance.ceiling => {
-                let next = cap.saturating_mul(2).min(allowance.ceiling);
-                log::warn!(
-                    "{} cut off a layer-{layer} reply at {cap} tokens; sending it again with {next}",
-                    client.host()
-                );
-                num_ctx =
-                    num_ctx.map(|size| size.max(context_size(used + next as usize, room.limit)));
-                cap = next;
-                control.proceed()?;
-            }
-            Err(e) => return Ok(Err(e)),
-        }
-    }
-}
-
-fn describe(layer: usize, index: usize, total: usize, e: &SummarizeError) -> String {
-    let e = match e {
-        SummarizeError::Deadline(_) => no_reply_in_time(),
-        e => e.to_string(),
     };
-    if layer == 0 && total > 1 {
-        format!("summarizing part {} of {total}: {e}", index + 1)
-    } else if layer == 0 {
-        format!("summarizing: {e}")
-    } else {
-        format!("combining the summaries (layer {layer}): {e}")
+    let Some(writer) = turn.writer else {
+        return delete_title_request(store, note_id);
+    };
+    if proposed || user_title || keeps_title {
+        return delete_title_request(store, note_id);
     }
-}
-
-fn cost(messages: &[Message]) -> usize {
-    tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
-}
-
-/// The notes document, cut when it would take too much of what `room`
-/// lets a prompt use with the prompt `text` and the `user` text (the
-/// Background and the note details), after the room for the title turn
-/// with `title_text` (KTD4, KTD11).
-fn fit_notes(room: Room, notes: &str, text: &str, title_text: &str, user: UserText) -> String {
-    prompts::fit_notes(
-        notes,
-        tokens::prompt_allowance(room.limit, room.reserve)
-            .saturating_sub(prompts::title_reserve(title_text, user)),
-        text,
-        user,
+    let messages = prompts::title_turn(writer, turn.summary, turn.title_text, turn.user);
+    // The title request gets the first allowance of the same rule as a
+    // summary request, under the run's budget (KTD11, KTD12).
+    let limit = turn.budget.budget.limit;
+    let cap = tokens::reply_allowance(
+        limit,
+        tokens::with_margin(prompts::cost(&messages)),
+        turn.budget.output_max,
+        turn.reply_kind,
+    )
+    .first;
+    if cap < prompts::TITLE_REPLY_MIN {
+        log::warn!(
+            "the title turn for {note_id} leaves {cap} tokens of the context for the reply, under {}; \
+             the note keeps the title it has",
+            prompts::TITLE_REPLY_MIN
+        );
+        return delete_title_request(store, note_id);
+    }
+    checkpoint::put(
+        store,
+        note_id,
+        Stage::Summarize,
+        TITLE_REQUEST,
+        &TitleRequest {
+            messages,
+            cap,
+            limit: Some(limit),
+            num_ctx: turn.budget.num_ctx,
+        },
     )
 }
 
-/// What is left for the transcript or the summaries in one call, after the
-/// prompt's fixed parts, the notes, the prompt `text`, the `user` text (the
-/// Background and the note details) and the room for the title turn with
-/// `title_text` (KTD4, KTD11).
-/// The number of merge calls for summaries that cost `costs` under
-/// `allowance`, when each merged summary costs `reply`. The count includes
-/// the last merge, and one summary also gets one merge call. A real merged
-/// summary is often shorter than `reply`, so the run can need fewer calls.
-fn merge_calls(costs: &[usize], allowance: usize, reply: usize) -> usize {
-    let mut costs = costs.to_vec();
-    let mut calls = 0;
-    loop {
-        let groups = chunk::merge_groups(&costs, allowance);
-        if groups.len() <= 1 {
-            return calls + 1;
-        }
-        calls += groups.iter().filter(|g| g.len() > 1).count();
-        costs = groups
-            .iter()
-            .map(|g| if g.len() == 1 { costs[g.start] } else { reply })
-            .collect();
-    }
-}
-
-fn chunk_allowance(room: Room, notes: &str, text: &str, title_text: &str, user: UserText) -> usize {
-    tokens::prompt_allowance(room.limit, room.reserve)
-        .saturating_sub(prompts::overhead(notes, text, user))
-        .saturating_sub(prompts::title_reserve(title_text, user))
-        .max(1)
+/// The value under [`INPUT`]: the method tag and the fingerprint of the
+/// input (KTD7). An older build stores the fingerprint alone.
+fn input_value(transcript: &str, notes: &str, details: &Details) -> Result<String, StageError> {
+    Ok(format!(
+        "{METHOD}:{}",
+        input_fingerprint(transcript, notes, details)?
+    ))
 }
 
 /// Stages run on the blocking pool; the client is async. Inside the app's
@@ -1485,10 +1089,21 @@ impl Runtime {
 #[cfg(test)]
 mod tests {
     use summarize::chunk::{Line, Turn};
+    use summarize::{Budget, BudgetSource, SummarizeError};
+    use summary_agent::Outcome;
 
     use super::{
-        Details, clean_title, describe, input_fingerprint, lines_of, merge_calls, read_transcript,
+        Details, SavedBudget, Source, clean_title, failure, input_fingerprint, input_value,
+        is_old_method_key, lines_of, read_transcript,
     };
+
+    fn budget(limit: u32, source: BudgetSource) -> Budget {
+        Budget {
+            limit,
+            source,
+            output_max: None,
+        }
+    }
 
     /// Covers KTD10, R16: a deadline failure names the Thinking setting.
     /// That a deadline sends no second request is shown in the client
@@ -1496,86 +1111,149 @@ mod tests {
     #[test]
     fn a_deadline_failure_names_the_thinking_setting() {
         for what in ["response", "data", "complete reply"] {
-            for (layer, total) in [(0, 1), (0, 3), (1, 1)] {
-                let text = describe(layer, 0, total, &summarize::SummarizeError::Deadline(what));
-                assert!(text.contains("Thinking"), "{text}");
-                assert!(text.contains(summarize::THINKING_SETTING), "{text}");
-            }
+            let text = failure(
+                Outcome::Transport,
+                Some(SummarizeError::Deadline(what)),
+                &budget(32_000, BudgetSource::User),
+            );
+            assert!(text.contains("Thinking"), "{text}");
+            assert!(text.contains(summarize::THINKING_SETTING), "{text}");
         }
     }
 
+    /// Covers R10, KTD10: the typed error of the last failed turn gives
+    /// the message. With no failed turn, a context check of the agent gives
+    /// the prompt message, because no request went to the model. The other
+    /// outcomes give one message.
     #[test]
-    fn merge_calls_counts_every_layer_and_the_last_merge() {
-        // One summary still gets one merge call.
-        assert_eq!(merge_calls(&[10], 25, 10), 1);
-        // Two groups of two, then one merge of the two results.
-        assert_eq!(merge_calls(&[10, 10, 10, 10], 25, 10), 3);
-        // A group of one is not a call; it goes on to the next layer.
-        assert_eq!(merge_calls(&[10, 10, 10, 10, 10], 25, 10), 4);
-        // Everything fits in one group: only the last merge.
-        assert_eq!(merge_calls(&[5, 5, 5], 100, 5), 1);
+    fn the_typed_error_of_the_last_turn_gives_the_failure_message() {
+        let set = budget(32_000, BudgetSource::User);
+        let default = budget(summarize::context::DEFAULT_LIMIT, BudgetSource::Default);
+        let pressure = failure(
+            Outcome::ContextExceeded,
+            Some(SummarizeError::ContextExceeded),
+            &set,
+        );
+        assert!(
+            pressure.contains("enter a limit lower than 32000")
+                && pressure.contains("Settings > AI Provider > Context limit"),
+            "{pressure}"
+        );
+        let guess = failure(
+            Outcome::ContextExceeded,
+            Some(SummarizeError::ContextExceeded),
+            &default,
+        );
+        assert!(
+            guess.contains("enter the model's context length"),
+            "{guess}"
+        );
+        // The agent's own size check sent no request: the model did not
+        // refuse a size, so the message is not about the Context limit.
+        let own_check = failure(Outcome::ContextExceeded, None, &set);
+        assert_eq!(own_check, super::PROMPT_TOO_LONG);
+        // A cut-off error of an earlier part is not the cause of the agent's
+        // own size check.
+        let stale = super::run_error(Outcome::ContextExceeded, Some(SummarizeError::ReplyCutOff));
+        assert!(stale.is_none(), "{stale:?}");
+        assert!(matches!(
+            super::run_error(
+                Outcome::ContextExceeded,
+                Some(SummarizeError::ContextExceeded)
+            ),
+            Some(SummarizeError::ContextExceeded)
+        ));
+        assert!(matches!(
+            super::run_error(Outcome::CutOff, Some(SummarizeError::ReplyCutOff)),
+            Some(SummarizeError::ReplyCutOff)
+        ));
+        let cut = failure(Outcome::CutOff, Some(SummarizeError::ReplyCutOff), &set);
+        assert_eq!(cut, super::reply_does_not_fit());
+        let offline = failure(
+            Outcome::Transport,
+            Some(SummarizeError::Transport("connection refused".into())),
+            &set,
+        );
+        assert!(
+            offline.contains("could not reach the endpoint"),
+            "{offline}"
+        );
+        for outcome in [
+            Outcome::ToolCallLimit,
+            Outcome::MalformedCalls,
+            Outcome::NoSummary,
+            Outcome::CutOff,
+        ] {
+            assert_eq!(
+                failure(outcome, None, &set),
+                "the model did not write a summary"
+            );
+        }
     }
 
+    fn saved(limit: u32, source: BudgetSource, at: &Source) -> SavedBudget {
+        SavedBudget {
+            budget: budget(limit, source),
+            source: at.clone(),
+            num_ctx: None,
+            output_max: None,
+        }
+    }
+
+    /// Covers KTD5: a saved budget is kept only while the context limit
+    /// setting gives it.
     #[test]
-    fn a_saved_plan_is_kept_only_while_the_context_limit_setting_gives_its_budget() {
-        use summarize::{Budget, BudgetSource};
-        let at = super::Source {
+    fn a_saved_budget_is_kept_only_while_the_context_limit_setting_gives_it() {
+        let at = Source {
             provider: "custom".into(),
             address: "https://litellm.example/v1".into(),
             model: "m".into(),
         };
-        let plan = |limit, source| super::Plan {
-            budget: Budget {
-                limit,
-                source,
-                output_max: None,
-            },
-            layers: vec![super::Room::new(limit)],
-            source: Some(at.clone()),
-        };
         let default = summarize::context::DEFAULT_LIMIT;
         let cases = [
-            // A set limit keeps a plan under the same limit, whatever gave it.
-            (plan(32_000, BudgetSource::User), Some(32_000), true),
-            (plan(32_000, BudgetSource::Litellm), Some(32_000), true),
-            (plan(32_000, BudgetSource::User), Some(64_000), false),
-            (plan(default, BudgetSource::Default), Some(32_000), false),
-            // With no set limit, a probed plan stays.
-            (plan(1_000_000, BudgetSource::Litellm), None, true),
-            (plan(default, BudgetSource::Default), None, true),
-            // A cleared limit, a learned limit or an older default plans again.
-            (plan(32_000, BudgetSource::User), None, false),
-            (plan(20_000, BudgetSource::Learned), None, false),
-            (plan(8_192, BudgetSource::Default), None, false),
+            // A set limit keeps a budget under the same limit, whatever
+            // gave it.
+            (saved(32_000, BudgetSource::User, &at), Some(32_000), true),
+            (
+                saved(32_000, BudgetSource::Litellm, &at),
+                Some(32_000),
+                true,
+            ),
+            (saved(32_000, BudgetSource::User, &at), Some(64_000), false),
+            (
+                saved(default, BudgetSource::Default, &at),
+                Some(32_000),
+                false,
+            ),
+            // With no set limit, a probed or catalog budget stays.
+            (saved(1_000_000, BudgetSource::Litellm, &at), None, true),
+            (saved(400_000, BudgetSource::Catalog, &at), None, true),
+            (saved(default, BudgetSource::Default, &at), None, true),
+            // A cleared limit or an older default makes a new budget.
+            (saved(32_000, BudgetSource::User, &at), None, false),
+            (saved(8_192, BudgetSource::Default, &at), None, false),
         ];
-        for (plan, user, kept) in cases {
-            assert_eq!(plan.agrees_with(user, &at), kept, "{plan:?} with {user:?}");
+        for (budget, user, kept) in cases {
+            assert_eq!(
+                budget.agrees_with(user, &at),
+                kept,
+                "{budget:?} with {user:?}"
+            );
         }
     }
 
-    /// Covers R26, KTD11: a plan is kept only for the provider, the full
-    /// address and the model that made its calls. A plan with no source is
-    /// from an older version and is made again.
+    /// Covers R26, KTD11: a budget is kept only for the provider, the full
+    /// address and the model of its requests.
     #[test]
-    fn a_saved_plan_is_kept_only_for_the_provider_address_and_model_that_made_it() {
-        use summarize::{Budget, BudgetSource};
-        let source = |provider: &str, address: &str, model: &str| super::Source {
+    fn a_saved_budget_is_kept_only_for_the_provider_address_and_model_of_its_requests() {
+        let source = |provider: &str, address: &str, model: &str| Source {
             provider: provider.into(),
             address: address.into(),
             model: model.into(),
         };
         let at = source("custom", "https://gw.example:8443/v1", "m");
-        let plan = |source| super::Plan {
-            budget: Budget {
-                limit: 32_000,
-                source: BudgetSource::User,
-                output_max: None,
-            },
-            layers: vec![super::Room::new(32_000)],
-            source,
-        };
         let limit = Some(32_000);
-        assert!(plan(Some(at.clone())).agrees_with(limit, &at));
+        assert!(saved(32_000, BudgetSource::User, &at).agrees_with(limit, &at));
         for other in [
             source("anthropic", "https://gw.example:8443/v1", "m"),
             source("custom", "http://gw.example:8443/v1", "m"),
@@ -1585,11 +1263,10 @@ mod tests {
             source("custom", "https://gw.example:8443/v1", "n"),
         ] {
             assert!(
-                !plan(Some(at.clone())).agrees_with(limit, &other),
+                !saved(32_000, BudgetSource::User, &at).agrees_with(limit, &other),
                 "{other:?}"
             );
         }
-        assert!(!plan(None).agrees_with(limit, &at));
     }
 
     /// Covers R6, KTD7: the size is rounded up to a multiple of 2,048, is
@@ -1606,23 +1283,54 @@ mod tests {
         assert_eq!(context_size(usize::MAX / 2, 32_000), 32_000);
     }
 
-    /// A note with no details has the fingerprint of an earlier build, so a
-    /// checkpoint from that build stays valid.
+    /// Covers R14, KTD7: the value under `input` has a method tag, so an
+    /// older build, which stores the fingerprint alone, sees a changed
+    /// input and forgets its calls. The details still change the value.
     #[test]
-    fn a_note_with_no_details_has_the_fingerprint_of_an_earlier_build() {
+    fn the_input_value_differs_from_the_value_of_an_older_build() {
         let earlier = session_core::folder::fingerprint(b"# Transcript\n\0My notes\n");
         assert_eq!(
             input_fingerprint("# Transcript\n", "My notes\n", &Details::default()).unwrap(),
             earlier
         );
+        let value = input_value("# Transcript\n", "My notes\n", &Details::default()).unwrap();
+        assert_ne!(value, earlier);
+        assert!(value.ends_with(&earlier), "{value}");
         let typed = Details {
             note_type: Some("Pathfinder".into()),
             ..Details::default()
         };
         assert_ne!(
-            input_fingerprint("# Transcript\n", "My notes\n", &typed).unwrap(),
-            earlier
+            input_value("# Transcript\n", "My notes\n", &typed).unwrap(),
+            value
         );
+    }
+
+    /// Covers R15, KTD7: the keys of the older method are a named list and
+    /// the exact layer key form. No turn key and no other key of the stage
+    /// matches.
+    #[test]
+    fn only_the_keys_of_the_older_method_are_old_method_keys() {
+        for key in ["plan", "whole", "l00-00000", "l12-00345"] {
+            assert!(is_old_method_key(key), "{key}");
+        }
+        for key in [
+            "turn-0123456789abcdef",
+            "turn-l00-00000",
+            "l00-0000",
+            "l0a-00000",
+            "l00-000001",
+            "budget",
+            "prompt",
+            "input",
+            super::SOURCE_NOTES,
+            "title",
+            "title_request",
+            "meta",
+            "done",
+        ] {
+            assert!(!is_old_method_key(key), "{key}");
+        }
     }
 
     #[test]
@@ -1647,10 +1355,10 @@ mod tests {
         .into()
     }
 
-    /// Covers R13: the summary input holds the pause line between the
-    /// turns before and after it.
+    /// Covers R13: the lines of a transcript hold the pause line between
+    /// the turns before and after it.
     #[test]
-    fn a_pause_line_stays_between_its_turns_in_the_summary_input() {
+    fn a_pause_line_stays_between_its_turns_in_the_lines() {
         let text = "# Transcript\n\n- [00:00:00] Speaker 1: Before.\n\n--- pause 00:14:00 ---\n\n- [00:01:00] Speaker 2: After.\n";
         let lines = lines_of(text);
         assert_eq!(
@@ -1662,12 +1370,6 @@ mod tests {
                 },
                 turn(60_000, 2, "After."),
             ]
-        );
-        let input = &summarize::prompts::whole(&lines, "", "Summarize.", "")[1].content;
-        assert_eq!(
-            input.matches("\n--- pause 00:14:00 ---\n").count(),
-            1,
-            "{input}"
         );
     }
 

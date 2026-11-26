@@ -166,16 +166,16 @@ fn chunking_never_puts_a_pause_line_at_the_end_of_a_part() {
     }
 }
 
-/// A part with a pause line carries the pause rule. The chunk costs leave
-/// room for it, so each part request still fits.
+/// A step part with a pause line carries the pause rule. The chunk costs
+/// leave room for it, so each step part request still fits.
 #[test]
-fn each_part_request_with_pause_lines_fits_the_allowance() {
+fn each_step_part_request_with_pause_lines_fits_the_allowance() {
     let all = with_pauses(2_000);
     let allowance = prompt_allowance(4_096, split_reserve(4_096));
-    let chunks = chunk(&all, allowance - prompts::overhead(NOTES, &topic(), ""));
+    let chunks = chunk(&all, allowance - prompts::overhead("", &topic(), ""));
     assert!(chunks.len() > 2);
     for (i, c) in chunks.iter().enumerate() {
-        let messages = prompts::part(c, i, chunks.len(), NOTES, "");
+        let messages = prompts::step_part(c, i, chunks.len(), NOTE_ID, "");
         assert!(messages[1].content.contains("not recorded"));
         assert!(request_cost(&messages) <= allowance);
     }
@@ -185,23 +185,16 @@ fn request_cost(messages: &[Message]) -> usize {
     summarize::tokens::estimate_messages(messages.iter().map(|m| m.content.as_str()))
 }
 
-const NOTES: &str = "# Plan\n\n- the decision\n- and why\n";
+const NOTE_ID: &str = "2026-10-14-0900";
 
-#[test]
-fn each_chunk_request_contains_the_notes_document_once() {
-    let all = turns(2_000);
-    let allowance = prompt_allowance(4_096, split_reserve(4_096));
-    let notes = prompts::fit_notes(NOTES, allowance, &topic(), "");
-    assert_eq!(notes, NOTES);
-    let chunks = chunk(&all, allowance - prompts::overhead(&notes, &topic(), ""));
-    assert!(chunks.len() > 2);
-    for (i, c) in chunks.iter().enumerate() {
-        let messages = prompts::part(c, i, chunks.len(), &notes, "");
-        let user = &messages[1].content;
-        assert_eq!(user.matches(NOTES).count(), 1, "{user}");
-        assert_eq!(user.matches("<notes>").count(), 1);
-        assert!(request_cost(&messages) <= allowance);
-    }
+/// The lines of a chunk as one text: one rendered line for each line.
+fn text_of(chunk: &Chunk) -> String {
+    chunk
+        .lines
+        .iter()
+        .map(render_line)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[test]
@@ -222,19 +215,25 @@ fn a_notes_document_longer_than_the_allowance_is_cut_with_a_marker_and_the_reque
     // The cut keeps whole lines of the document.
     let kept = notes.strip_suffix(prompts::NOTES_CUT).unwrap();
     assert!(long.starts_with(kept) && kept.ends_with('\n'));
-    // Room remains for the transcript.
+    // At least half of the room after the fixed parts remains for the
+    // transcript or the timeline.
     let room = allowance - prompts::overhead(&notes, &topic(), "");
-    assert!(room >= allowance / 3, "{room} of {allowance}");
+    let fixed = prompts::overhead("", &topic(), "");
+    assert!(room >= (allowance - fixed) / 2, "{room} of {allowance}");
     let chunks = chunk(&all, room);
+    assert!(chunks.len() > 2);
     for (i, c) in chunks.iter().enumerate() {
-        let messages = prompts::part(c, i, chunks.len(), &notes, "");
-        assert!(messages[1].content.contains(prompts::NOTES_CUT));
+        let messages = prompts::step_part(c, i, chunks.len(), NOTE_ID, "");
         assert!(request_cost(&messages) <= allowance);
     }
-    assert!(request_cost(&prompts::merge(&[], true, &notes, &topic(), "")) <= allowance);
+    // A writer with the cut notes and a timeline of that size fits.
+    let writer = prompts::from_timeline(&text_of(&chunks[0]), &notes, NOTE_ID, None, &topic(), "");
+    let user = &writer[1].content;
+    assert_eq!(user.matches(prompts::NOTES_CUT).count(), 1, "{user}");
+    assert!(request_cost(&writer) <= allowance);
 }
 
-/// The default prompt text: the final call reserves room for it.
+/// The default prompt text: the writer reserves room for it.
 fn topic() -> String {
     prompts::built_in(prompts::TOPIC_SUMMARY_ID).unwrap().text
 }

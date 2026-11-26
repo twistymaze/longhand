@@ -162,7 +162,7 @@ fn line_times(lines: &[&str]) -> Vec<Option<u64>> {
 
 /// Cut `text` to at most `max` characters. Returns the text and whether it
 /// was cut.
-fn capped(text: &str, max: usize) -> (String, bool) {
+pub fn capped(text: &str, max: usize) -> (String, bool) {
     if text.chars().count() <= max {
         (text.to_string(), false)
     } else {
@@ -197,7 +197,7 @@ fn text_part(root: &Path, note: &Note, name: &str, budget: &mut usize) -> PartTe
 
 /// The transcript lines that `request` asks for, as hunks within `budget`
 /// characters. At least one line comes back when any is selected.
-fn transcript_part(
+pub fn transcript_part(
     text: &str,
     request: &TranscriptRequest,
     budget: usize,

@@ -5,8 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# A dev harness that compares agent summaries with today's summaries. The
-# app does not depend on this crate.
+# A dev harness that compares agent summaries with the summaries of the
+# app's summary pipeline. The app does not depend on this crate.
 [[bin]]
 name = "summary-lab"
 path = "src/main.rs"
@@ -17,7 +17,7 @@ chrono = "0.4"
 futures-util = "0.3"
 library = { path = "../library" }
 note-tools = { path = "../note-tools" }
-# Today's summary on an in-memory store is the baseline (KTD7).
+# The app's summary pipeline on an in-memory store is the baseline (KTD7).
 pipeline = { path = "../pipeline" }
 rig-core = { version = "=0.47.0", default-features = false }
 serde.workspace = true

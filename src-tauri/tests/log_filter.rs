@@ -164,7 +164,7 @@ async fn a_summary_request_writes_no_rig_line_and_no_request_content() {
         let note = format!("log-ok-{provider:?}");
         let reply = client(provider, &mock.base)
             .complete(
-                &Label::note(&note, RequestKind::Single),
+                &Label::note(&note, RequestKind::Writer),
                 &messages(),
                 100,
                 Some(4096),
@@ -216,7 +216,7 @@ async fn a_failed_summary_request_writes_the_error_kind_and_status_only() {
     let note = "log-failed";
     client(provider, &mock.base)
         .complete(
-            &Label::note(note, RequestKind::Single),
+            &Label::note(note, RequestKind::Writer),
             &messages(),
             100,
             None,
